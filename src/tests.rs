@@ -107,8 +107,9 @@ fn instances_properties_and_errors() {
         end
         assert(Message(function() return F.Nope end) == 'Nope is not a valid member of Frame "Frame"')
         assert(Message(function() F.Size = 5 end) == "Unable to assign property Size. UDim2 expected, got number")
-        assert(Message(function() F.BorderMode = "Nope" end) == "Unable to assign property BorderMode. EnumItem of type BorderMode expected, got string")
-        assert(Message(function() F.BorderMode = Enum.Font.Arial end) == "Unable to assign property BorderMode. EnumItem of type BorderMode expected, got Enum.Font.Arial")
+        -- (a name the enum lacks: measured, tools/parity/probes/values.luau's `Invalid value "wood" for enum Material`)
+        assert(Message(function() F.BorderMode = "Nope" end) == 'Unable to assign property BorderMode. Invalid value "Nope" for enum BorderMode')
+        assert(Message(function() F.BorderMode = Enum.Font.Arial end) == "Unable to assign property BorderMode. EnumItem of type BorderMode expected, got an EnumItem of type Font")
         assert(Message(function() F.AbsoluteSize = Vector2.new() end) == "Unable to assign property AbsoluteSize. Property is read only")
         -- (any value goes into a boolean or number property, as in a playing client: Lua truth, Luau's number reading or 0)
         F.Visible = 0
@@ -118,7 +119,8 @@ fn instances_properties_and_errors() {
         F.BackgroundTransparency = "x"
         assert(F.BackgroundTransparency == 0)
         assert(Message(function() F.Parent = 5 end) == "@: invalid argument #3 (Instance expected, got number)")
-        assert(Message(function() F.Parent = F end) == "Attempt to set parent of Frame to Frame would result in circular reference")
+        -- (measured, tools/parity/probes/hierarchy.luau)
+        assert(Message(function() F.Parent = F end) == "Attempt to set Frame as its own parent")
         assert(Message(function() return Instance.new("NotAClass") end) == 'Unable to create an Instance of type "NotAClass"')
         assert(Message(function() return F:GetPropertyChangedSignal("Nope") end) == "Nope is not a valid property name.")
         assert(Message(function() F:SetAttribute("A", {}) end) == "Array is not a supported attribute type")
@@ -605,6 +607,121 @@ fn set_attribute_checks_names_and_types_as_roblox_does() {
     );
 }
 
+/// An attribute can hold an Instance (Studio 0.744 takes one; measured in a playing client,
+/// tools/parity/probes/instance_attributes.luau): a read gives a new InstanceHandle that prints the instance's current
+/// name and has no members, the attribute keeps a destroyed or loose instance, and a handle can be stored again.
+#[test]
+fn an_attribute_holds_an_instance_as_a_handle() {
+    let (lua, engine) = start();
+    run(
+        &lua,
+        &engine,
+        r#"
+        local Holder = Instance.new("Folder")
+        Holder.Parent = workspace
+        local Target = Instance.new("Part")
+        Target.Name = "Target"
+        Target.Parent = workspace
+        Holder:SetAttribute("Ref", Target)
+        local Read = Holder:GetAttribute("Ref")
+        print(typeof(Read), type(Read), tostring(Read), Read == Target, Holder:GetAttribute("Ref") == Read, rawequal(Holder:GetAttribute("Ref"), Read))
+        print(pcall(function() return Read.Name end))
+        print(pcall(function() return Read:IsA("Part") end))
+        print(typeof(Holder:GetAttributes().Ref), ({ [Read] = true })[Holder:GetAttribute("Ref")])
+        Target.Name = "Renamed"
+        Target:Destroy()
+        print(tostring(Holder:GetAttribute("Ref")))
+        Holder:SetAttribute("Loose", Instance.new("Folder"))
+        Holder:SetAttribute("Again", Holder:GetAttribute("Ref"))
+        print(tostring(Holder:GetAttribute("Loose")), typeof(Holder:GetAttribute("Again")), tostring(Holder:GetAttribute("Again")))
+        "#,
+    );
+    // the loose folder and the destroyed part are kept by the attributes alone (the Lua values made above are gone)
+    lua.gc_collect().unwrap();
+    lua.gc_collect().unwrap();
+    engine_lua::raw::collect(&lua, &engine).unwrap();
+    run(&lua, &engine, r#"print(tostring(workspace.Folder:GetAttribute("Loose")), tostring(workspace.Folder:GetAttribute("Ref")))"#);
+    assert_eq!(
+        lines(&engine),
+        vec![
+            "print: InstanceHandle userdata Target false true false",
+            "print: false Name is not a valid member of InstanceHandle",
+            "print: false IsA is not a valid member of InstanceHandle",
+            "print: InstanceHandle nil",
+            "print: Renamed",
+            "print: Folder InstanceHandle Renamed",
+            "print: Folder Renamed",
+        ]
+    );
+}
+
+/// Texts and forms measured in a playing client (Studio 0.744; tools/parity/probes/hierarchy.luau, values.luau,
+/// coercion.luau, frame_phases.luau, lifetime.luau).
+#[test]
+fn parents_enums_and_casts_answer_as_a_playing_client_does() {
+    let (lua, engine) = start();
+    run(
+        &lua,
+        &engine,
+        r#"
+        local function Try(F) local Ok, Message = pcall(F) return if Ok then "ok" else Message end
+        local Self = Instance.new("Folder")
+        Self.Name = "Self"
+        print(Try(function() Self.Parent = Self end))
+        print(Try(function() game:GetService("Lighting").Parent = workspace end), Try(function() game:GetService("Lighting"):Destroy() end))
+        print(game:GetService("Lighting").Parent == game, (string.gsub(Try(function() game.Parent = workspace end), game.Name, "<game>")))
+        local Part = Instance.new("Part")
+        for _, Value in { "512", 512.5, "wood" } do
+            print(Try(function() Part.Material = Value end), tostring(Part.Material))
+        end
+        print(Try(function() Part.CFrame = Vector3.zero end))
+        print(Try(function() typeof() end), type(getmetatable("")))
+        print(Try(function() game:GetService("RunService"):BindToRenderStep("x", "high", function() end) end))
+        local Debris = game:GetService("Debris")
+        print(Try(function() Debris:AddItem({}, 1) end), Try(function() Debris:AddItem(nil, 1) end), Try(function() Debris:AddItem(Part, "x") end))
+        local Gone = Instance.new("Part")
+        Gone.Parent = workspace
+        Debris:AddItem(Gone, 0)
+        print(Gone.Parent)
+        "#,
+    );
+    assert_eq!(
+        lines(&engine),
+        vec![
+            "print: Attempt to set Self as its own parent",
+            "print: Cannot change Parent of type Lighting The Parent property of Lighting is locked",
+            "print: true The Parent property of <game> is locked, current parent: NULL, new parent Workspace",
+            "print: ok Enum.Material.Wood",
+            "print: ok Enum.Material.Wood",
+            "print: Unable to assign property Material. Invalid value \"wood\" for enum Material Enum.Material.Wood",
+            "print: Unable to assign property CFrame. CoordinateFrame expected, got Vector3",
+            "print: missing argument #1 string",
+            "print: Unable to cast string to int",
+            "print: Unable to cast value to Object ok Unable to cast string to double",
+            "print: nil",
+        ]
+    );
+}
+
+/// A new instance reads its class's default name, which Studio does not always make the class's own (a BindableEvent
+/// is "Event", measured in a playing client; a BoolValue "Value" and a WedgePart "Wedge" from Studio's defaults), and
+/// the DataModel's full name is its Name (measured: tools/parity/probes/instances.luau).
+#[test]
+fn new_instances_read_their_default_names_and_the_data_model_its_full_name() {
+    let (lua, engine) = start();
+    run(
+        &lua,
+        &engine,
+        r#"
+        local Value = Instance.new("BoolValue")
+        print(Instance.new("BindableEvent").Name, Value.Name, Instance.new("WedgePart").Name, Instance.new("Folder").Name, Value:GetFullName())
+        Value.Name = "Named"
+        print(Value.Name, game:GetFullName() == game.Name, workspace:GetFullName())
+        "#,
+    );
+    assert_eq!(lines(&engine), vec!["print: Event Value Wedge Folder Value", "print: Named true Workspace"]);
+}
+
 #[test]
 fn instance_methods_answer_and_raise_as_roblox_does() {
     // Measured in a playing client (Studio 0.744, tools/parity/probes/instances.luau), with `:` and read with `.`
@@ -1047,7 +1164,8 @@ fn modules_require_and_environments() {
     assert!(output[2].ends_with("Module code did not return exactly one value"), "{output:?}");
     assert_eq!(output[3], "print: false boom");
     assert!(output[4].ends_with("Requested module experienced an error while loading"), "{output:?}");
-    assert!(output[5].ends_with("require(assetId) is not supported offline (asset 5)"), "{output:?}");
+    // (a playing client's text: measured, tools/parity/probes/errors.luau)
+    assert!(output[5].ends_with("require(assetId) cannot be called from a client.  assetId = 5"), "{output:?}");
     assert!(output.contains(&"print: first late".to_string()) && output.contains(&"print: second late".to_string()), "{output:?}");
 }
 
@@ -2667,6 +2785,135 @@ fn place_content_replaces_a_snapshot_placeholder_with_the_stored_instance() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An enum property refuses what it cannot read with a playing client's and a server's texts (Studio 0.744,
+/// tools/parity/probes/enum_assignment.luau): nil and other types "EnumItem, number, or string expected", a value no item
+/// has "Invalid value", truncated and unquoted for a number or a numeric string.
+#[test]
+fn enum_properties_refuse_with_the_measured_texts() {
+    let (lua, engine) = start();
+    run(
+        &lua,
+        &engine,
+        r#"
+        local function Try(F) local Ok, Message = pcall(F) return if Ok then "ok" else Message end
+        local Part, Label = Instance.new("Part"), Instance.new("TextLabel")
+        print(Try(function() Part.Material = nil end))
+        print(Try(function() Label.Font = Vector3.zero end))
+        print(Try(function() Label.Font = "256" end))
+        print(Try(function() Label.Font = 512.5 end))
+        print(Try(function() Label.Font = "Wood" end))
+        "#,
+    );
+    assert_eq!(
+        lines(&engine),
+        vec![
+            "print: Unable to assign property Material. EnumItem, number, or string expected, got nil",
+            "print: Unable to assign property Font. EnumItem, number, or string expected, got Vector3",
+            "print: Unable to assign property Font. Invalid value 256 for enum Font",
+            "print: Unable to assign property Font. Invalid value 512 for enum Font",
+            "print: Unable to assign property Font. Invalid value \"Wood\" for enum Font",
+        ]
+    );
+}
+
+/// A directory of the source tree that holds only scripts stands for the instance the place keeps them in: the place's
+/// hierarchy lists that path as a Part (a published place holds a Part with its scripts inside while the source tree has
+/// only the scripts), so the directory is a Part, Studio-only, with its scripts and the hierarchy's other children in it,
+/// and a clone of it is a Part a script can move; it was a Folder, and setting its CFrame raised `CFrame is not a valid
+/// member of Folder`. A directory the hierarchy lists as a Folder or a script, or does not list, stays a Folder, and
+/// place content's stored instance keeps the directory's scripts.
+#[test]
+fn a_directory_of_scripts_is_the_instance_the_place_keeps_them_in() {
+    use rbx_dom_weak::{InstanceBuilder, WeakDom, types::{Variant, Vector3}};
+    let dir = std::env::temp_dir().join(format!("ree-dir-classes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (project, repo) = (dir.join("project"), dir.join("repo"));
+    let skill = project.join("place/ReplicatedStorage/Effects/Skill");
+    for sub in ["Frog/Inner", "Plain", "Lonely", "Coded", "Wind"] {
+        std::fs::create_dir_all(skill.join(sub)).unwrap();
+    }
+    std::fs::write(skill.join("Frog/SelfDestruct.server.luau"), "return nil").unwrap();
+    std::fs::write(skill.join("Frog/Inner/Helper.luau"), "return 1").unwrap();
+    std::fs::write(skill.join("Plain/A.luau"), "return 1").unwrap();
+    std::fs::write(skill.join("Lonely/B.luau"), "return 1").unwrap();
+    std::fs::write(skill.join("Coded/C.luau"), "return 1").unwrap();
+    std::fs::write(skill.join("Wind/Textures.server.luau"), "-- the source tree's").unwrap();
+    std::fs::create_dir_all(project.join(super::project::SNAPSHOTS_DIR)).unwrap();
+    std::fs::write(project.join(super::project::PLACES_FILE), r#"{"environments":[{"name":"Lobby","projectFile":"place/default.project.json"}]}"#).unwrap();
+    let node = |name: &str, class: &str, parent: i64| format!(r#"{{"name":"{name}","className":"{class}","parent":{parent}}}"#);
+    let nodes = [
+        node("game", "DataModel", -1),
+        node("ReplicatedStorage", "ReplicatedStorage", 0),
+        node("Effects", "Folder", 1),
+        node("Skill", "Folder", 2),
+        node("Frog", "Part", 3),
+        node("SelfDestruct", "Script", 4),
+        node("Spark", "ParticleEmitter", 4),
+        node("Inner", "Attachment", 4),
+        node("Plain", "Folder", 3),
+        node("Coded", "ModuleScript", 3),
+        node("Wind", "Part", 3),
+    ];
+    std::fs::write(project.join(super::project::SNAPSHOTS_DIR).join("Lobby.json"), format!(r#"{{"nodes":[{}]}}"#, nodes.join(","))).unwrap();
+    // Wind as the place stores it: a sized Part with a mesh, and an older copy of its script
+    let mut place = WeakDom::new(InstanceBuilder::new("DataModel"));
+    let root = place.root_ref();
+    let wind = place.insert(root, InstanceBuilder::new("Part").with_name("Wind").with_property("Size", Vector3::new(2.0, 3.0, 4.0)));
+    place.insert(wind, InstanceBuilder::new("SpecialMesh").with_name("Mesh"));
+    place.insert(wind, InstanceBuilder::new("Script").with_name("Textures").with_property("Source", Variant::String("-- the place's older copy".into())));
+    let content = repo.join("data/place-content/Lobby/ReplicatedStorage/Effects/Skill");
+    std::fs::create_dir_all(&content).unwrap();
+    let mut bytes = Vec::new();
+    rbx_binary::to_writer(&mut bytes, &place, &[wind]).unwrap();
+    std::fs::write(content.join("Wind.rbxm"), bytes).unwrap();
+
+    let engine = Engine::new(Options { repo, ..Options::default() }).expect("engine");
+    let lua = Lua::new();
+    let spec = super::mount::ProjectSpec { roots: vec![project.join("place").to_string_lossy().replace('\\', "/")], ..Default::default() };
+    super::mount::mount_project(&lua, &engine, &spec, std::time::Instant::now()).expect("mount");
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local Skill = game:GetService("ReplicatedStorage").Effects.Skill
+        local Frog = Skill.Frog
+        assert(Frog.ClassName == "Part" and Frog:IsA("BasePart"), "the place's class " .. Frog.ClassName)
+        assert(Frog.SelfDestruct.ClassName == "Script", "its script")
+        assert(Frog.Inner.ClassName == "Attachment" and Frog.Inner.Helper.ClassName == "ModuleScript", "a nested directory takes its class too")
+        assert(Frog:FindFirstChild("Spark") and Frog.Spark.ClassName == "ParticleEmitter", "the hierarchy's other children")
+        local Copy = Frog:Clone()
+        Copy.Parent = workspace
+        Copy.CFrame = CFrame.new(1, 2, 3)
+        assert(Copy.ClassName == "Part" and Copy.Position == Vector3.new(1, 2, 3) and Copy:FindFirstChild("SelfDestruct"), "a clone is a Part with its script")
+        assert(Skill.Plain.ClassName == "Folder" and Skill.Lonely.ClassName == "Folder" and Skill.Coded.ClassName == "Folder", "Folder, unlisted and script paths stay Folders")
+        local Wind = Skill.Wind
+        local Count = 0
+        for _, Child in Skill:GetChildren() do
+            if Child.Name == "Wind" then
+                Count += 1
+            end
+        end
+        assert(Count == 1, "one Wind")
+        assert(Wind.ClassName == "Part" and Wind.Size == Vector3.new(2, 3, 4) and Wind:FindFirstChild("Mesh"), "place content's stored Wind")
+        local Scripts = 0
+        for _, Child in Wind:GetChildren() do
+            if Child.Name == "Textures" then
+                Scripts += 1
+            end
+        end
+        assert(Scripts == 1, "the source tree's script replaces the stored copy")
+        print("ok")
+        "#,
+    );
+    assert!(output.contains(&"print: ok".to_string()), "{output:?}");
+    let state = engine.state.borrow();
+    let textures = state.dom.descendants(engine.world().game).into_iter().find(|&id| state.dom.at(id).name.as_bytes() == b"Textures").expect("Textures");
+    assert!(state.dom.at(textures).source_path().is_some_and(|path| path.ends_with("Wind/Textures.server.luau")), "the source tree's script");
+    drop(state);
+    drop(lua);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A model file's stored pivot (WorldPivotData) is the model's pivot, not its parts' centre, and a
 /// nested model's stored pivot moves with its ancestor: a scene moved with PivotTo can aim its camera
 /// rig from a nested rig's pivot.
@@ -3179,8 +3426,9 @@ fn the_work_clock_charges_what_studio_spends() {
         end)
         "#,
     );
-    // (the parity bench: a Folder 0.36 us to make, 0.52 to enter the workspace; a Part 0.83 and 1.47)
-    assert!(output.contains(&"print: folder 0.9 parts 240.0".to_string()), "{output:?}");
+    // (the parity bench: a Folder 0.36 us to make, 0.52 to enter the workspace; a Part 0.83 and 1.47; and the frame's first entry
+    // into the workspace 13.5 more, its first part's 12.5: the engine's code for them running cold, cost.rs PATH_FIRST)
+    assert!(output.contains(&"print: folder 14.4 parts 252.5".to_string()), "{output:?}");
     crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
     assert!(lines(&engine).contains(&"print: next frame true".to_string()), "{:?}", lines(&engine));
 }
@@ -4247,6 +4495,10 @@ fn the_work_clock_prices_datatype_operations_as_the_studio_bench_measured() {
         Within("CFrame:ToEulerAnglesXYZ", Per(function(N) for _ = 1, N do local _, _, _ = A:ToEulerAnglesXYZ() end end), 15, 29)
         Within("CFrame.Rotation", Per(function(N) for _ = 1, N do local _ = A.Rotation end end), 13, 24)
         Within("CFrame + Vector3", Per(function(N) for _ = 1, N do local _ = A + V end end), 16, 29)
+        -- FuzzyEq compares both parts of a pair a micro-stud apart (the bench: 26.5) and stops at the position of one a stud
+        -- apart (15.5)
+        Within("CFrame:FuzzyEq near", Per(function(N) local C = A * CFrame.new(1e-6, 0, 0) for _ = 1, N do local _ = A:FuzzyEq(C) end end), 20, 34)
+        Within("CFrame:FuzzyEq moved", Per(function(N) for _ = 1, N do local _ = A:FuzzyEq(B) end end), 11, 21)
         Within("CFrame.Angles", Per(function(N) for _ = 1, N do local _ = CFrame.Angles(0.1, 0.2, 0.3) end end), 30, 54)
         -- (fromEulerAnglesXYZ has no row: Angles' price)
         Within("CFrame.fromEulerAnglesXYZ", Per(function(N) for _ = 1, N do local _ = CFrame.fromEulerAnglesXYZ(0.1, 0.2, 0.3) end end), 30, 54)
@@ -4421,9 +4673,10 @@ fn a_frames_first_touch_of_a_table_or_function_costs_what_a_client_pays_once_a_f
     for line in &one {
         let values: Vec<f64> = line.split_once(": ").unwrap().1.split(' ').map(|v| v.parse().unwrap()).collect();
         let (cold, hot, made) = (values[0], values[1], values[2]);
-        // 200 records, the list and the walk's closure and function cold: 200 ns a record and about 1.3 ns of the rest
+        // 200 records, the list and the walk's closure and function cold: 200 ns a record and about 1.3 ns of the rest (and, the frame
+        // the walk first runs, its code not run the frame before: cost.rs LUAU_RARE_PROTO, 3.5 ns a record)
         let extra = cold - hot;
-        assert!((200.0..205.0).contains(&extra), "a cold record {extra:.1} ns over the hot walk, a client 140-210");
+        assert!((200.0..206.0).contains(&extra), "a cold record {extra:.1} ns over the hot walk, a client 140-210");
         assert!((made - hot).abs() < 3.0, "a table made in the frame is hot: {made:.1} against {hot:.1} ns");
     }
 }
@@ -4451,6 +4704,12 @@ fn counting_cold_touches_leaves_what_a_script_reads_of_memory_as_it_was() {
                         if Index % 3 == 0 then
                             table.insert(_G.Kept, Record)
                         end
+                    end
+                    -- (cold calls: a C function's, a datatype's, a function run every other frame)
+                    local _ = math.noise({frame} * 0.1) + CFrame.new({frame}, 0, 0).X
+                    if {frame} % 2 == 0 then
+                        _G.Every = _G.Every or function(X) return X * 2 end
+                        local _ = _G.Every({frame})
                     end
                     for _, Record in _G.Kept do
                         Record.A += 1
@@ -4518,6 +4777,235 @@ fn a_members_first_use_in_a_frame_costs_the_engines_code_running_cold() {
         assert!((values[1] - 0.5).abs() < 0.05, "a property's first read in a frame {:.2} us over the second, a client 0.3-1.5", values[1]);
         assert!((values[2] - 0.8).abs() < 0.05, "a method's first call in a frame {:.2} us over the second, a client 0.6-0.95", values[2]);
     }
+}
+
+/// The engine paths an effect's cast runs (cost.rs Path, first_cloned, first_destroyed): the frame's first clone, entry into the
+/// Workspace, destroy, PivotTo, BulkMoveTo and Emit run the engine's code cold (a clone and a destroy each class's code too), so they
+/// cost a client more than the same call right after on another instance; in the next frame the first pays again.
+#[test]
+fn an_effects_engine_paths_cost_their_code_running_cold_at_a_frames_first_use() {
+    let (lua, engine) = start();
+    crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    run(
+        &lua,
+        &engine,
+        r#"
+        local function Template()
+            local P = Instance.new("Part")
+            P.Anchored = true
+            local A = Instance.new("Attachment")
+            A.Parent = P
+            local E = Instance.new("ParticleEmitter")
+            E.Parent = P
+            return P
+        end
+        _G.A, _G.B = Template(), Template()
+        _G.Folder = Instance.new("Folder")
+        _G.Folder.Parent = workspace
+        _G.Moved = {}
+        for I = 1, 4 do
+            local P = Instance.new("Part")
+            P.Anchored = true
+            P.Parent = workspace
+            _G.Moved[I] = P
+        end
+        _G.Emitters = { Instance.new("ParticleEmitter"), Instance.new("ParticleEmitter") }
+        _G.Emitters[1].Parent, _G.Emitters[2].Parent = _G.Moved[1], _G.Moved[2]
+        "#,
+    );
+    let source = r#"
+        local function Two(First, Second)
+            local T0 = os.clock()
+            local X = First()
+            local T1 = os.clock()
+            local Y = Second()
+            local T2 = os.clock()
+            return ((T1 - T0) - (T2 - T1)) * 1e6, X, Y
+        end
+        local M, E = _G.Moved, _G.Emitters
+        local Here = CFrame.new(0, 50, 0)
+        local Clone, CA, CB = Two(function() return _G.A:Clone() end, function() return _G.B:Clone() end)
+        local Enter = Two(function() CA.Parent = _G.Folder end, function() CB.Parent = _G.Folder end)
+        local Destroy = Two(function() CA:Destroy() end, function() CB:Destroy() end)
+        local Pivot = Two(function() M[1]:PivotTo(Here) end, function() M[2]:PivotTo(Here) end)
+        local Bulk = Two(function() workspace:BulkMoveTo({ M[3] }, { Here }) end, function() workspace:BulkMoveTo({ M[4] }, { Here }) end)
+        local Emit = Two(function() E[1]:Emit(1) end, function() E[2]:Emit(1) end)
+        print(string.format("%.3f %.3f %.3f %.3f %.3f %.3f", Clone, Enter, Destroy, Pivot, Bulk, Emit))
+    "#;
+    crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    run(&lua, &engine, source);
+    for _ in 0..2 {
+        crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+        let output = run(&lua, &engine, source);
+        let values: Vec<f64> = output.last().unwrap().split_once(": ").unwrap().1.split(' ').map(|v| v.parse().unwrap()).collect();
+        // (a method's first call 0.8 us more as well: cost.rs FIRST_CALL)
+        assert!((values[0] - (0.8 + 25.0 + 30.0 + 12.0 + 35.0)).abs() < 0.1, "a frame's first clone of a part with an attachment and an emitter {:.2} us over the second, a client 100", values[0]);
+        assert!((values[1] - 26.0).abs() < 0.1, "a frame's first part into the Workspace {:.2} us over the second, a client 26", values[1]);
+        assert!((values[2] - (0.8 + 10.0 + 36.0 + 11.0 + 11.0)).abs() < 0.1, "a frame's first destroy of the same {:.2} us over the second, a client 62", values[2]);
+        assert!((values[3] - 16.8).abs() < 0.1, "a frame's first PivotTo {:.2} us over the second, a client 17-23", values[3]);
+        assert!((values[4] - 28.8).abs() < 0.1, "a frame's first BulkMoveTo {:.2} us over the second, a client 25-30", values[4]);
+        assert!((values[5] - 5.2).abs() < 0.1, "a frame's first Emit {:.2} us over the second, a client 5.2", values[5]);
+    }
+}
+
+/// A destroy undoes the engine's frame work on an instance in the Workspace since an earlier frame (cost.rs destroy_live): a part that
+/// entered it a frame before costs more to destroy than one parented in the same frame, which the parity corpus destroys.
+#[test]
+fn an_instance_in_the_workspace_since_an_earlier_frame_costs_more_to_destroy() {
+    let (lua, engine) = start();
+    crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    run(&lua, &engine, r#"_G.Old = Instance.new("Part") _G.Old.Parent = workspace"#);
+    crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local function Fresh()
+            local P = Instance.new("Part")
+            P.Parent = workspace
+            return P
+        end
+        Fresh():Destroy()
+        local Young = Fresh()
+        local T0 = os.clock()
+        _G.Old:Destroy()
+        local T1 = os.clock()
+        Young:Destroy()
+        local T2 = os.clock()
+        print(string.format("%.3f", ((T1 - T0) - (T2 - T1)) * 1e6))
+        "#,
+    );
+    let extra: f64 = output.last().unwrap().split_once(": ").unwrap().1.parse().unwrap();
+    // (the old part's touch is a first touch of the frame too: cost.rs COLD_TOUCH)
+    assert!((extra - 4.445).abs() < 0.02, "a part a frame old {extra:.3} us dearer to destroy than one parented now, a client 4.4");
+}
+
+/// A lone instance's first touch in a frame (cost.rs COLD_TOUCH_ALONE): parts made one after another and touched in that order pay
+/// the plain first touch; parts made among other instances pay the lone price, unless they were touched the frame before.
+#[test]
+fn a_lone_instances_first_touch_costs_more_than_one_made_with_the_last() {
+    let (lua, engine) = start();
+    crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    run(
+        &lua,
+        &engine,
+        r#"
+        _G.Together, _G.Lone = {}, {}
+        for I = 1, 21 do
+            _G.Together[I] = Instance.new("Part")
+        end
+        for I = 1, 21 do
+            _G.Lone[I] = Instance.new("Part")
+            for _ = 1, 3 do
+                Instance.new("Folder")
+            end
+        end
+        _G.Other = Instance.new("Folder")
+        "#,
+    );
+    let source = r#"
+        local function Pass(List)
+            local T0 = os.clock()
+            for I = 2, #List do
+                local _ = List[I]:GetAttribute("Missing")
+            end
+            return (os.clock() - T0) / (#List - 1) * 1e6
+        end
+        local _ = _G.Other:GetAttribute("Missing")
+        local _ = _G.Together[1]:GetAttribute("Missing")
+        local Together = Pass(_G.Together)
+        local _ = _G.Lone[1]:GetAttribute("Missing")
+        local Lone = Pass(_G.Lone)
+        print(string.format("%.4f", Lone - Together))
+    "#;
+    for _ in 0..2 {
+        crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    }
+    let output = run(&lua, &engine, source);
+    let lone: f64 = output.last().unwrap().split_once(": ").unwrap().1.parse().unwrap();
+    assert!((lone - 0.275).abs() < 0.005, "a lone part's first touch {lone:.3} us over one made with the last, a client 0.29");
+    crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    let output = run(&lua, &engine, source);
+    let again: f64 = output.last().unwrap().split_once(": ").unwrap().1.parse().unwrap();
+    assert!(again.abs() < 0.005, "touched the frame before, a lone part pays the plain first touch: {again:.3} us more");
+}
+
+/// A move of a part no code touched in this frame or the one before reads it cold (cost.rs BULK_COLD_PART); a part a script moves every
+/// frame pays none.
+#[test]
+fn a_part_moved_every_frame_pays_no_cold_move() {
+    let (lua, engine) = start();
+    crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    run(
+        &lua,
+        &engine,
+        r#"
+        local function Group()
+            local Parts, Places = {}, {}
+            for I = 1, 8 do
+                local P = Instance.new("Part")
+                P.Anchored = true
+                P.Parent = workspace
+                Parts[I], Places[I] = P, CFrame.new(I * 4, 20, 0)
+            end
+            return { Parts, Places }
+        end
+        _G.Moved, _G.Other = Group(), Group()
+        "#,
+    );
+    let source = r#"
+        workspace:BulkMoveTo(_G.Other[1], _G.Other[2])
+        local T0 = os.clock()
+        workspace:BulkMoveTo(_G.Moved[1], _G.Moved[2])
+        print(string.format("%.3f", (os.clock() - T0) * 1e6))
+    "#;
+    for _ in 0..2 {
+        crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    }
+    let output = run(&lua, &engine, source);
+    let cold: f64 = output.last().unwrap().split_once(": ").unwrap().1.parse().unwrap();
+    crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    let output = run(&lua, &engine, source);
+    let warm: f64 = output.last().unwrap().split_once(": ").unwrap().1.parse().unwrap();
+    assert!((cold - warm - 8.0 * 1.25).abs() < 0.01, "8 parts untouched for two frames {:.3} us dearer to move than the same moved the frame before", cold - warm);
+}
+
+/// A script's first call in a frame of a C function and of a datatype's operation (cost.rs LUAU_COLD_CFUNC, LUAU_COLD_HOSTFUNC), and a
+/// function's first run in a frame when its code did not run the frame before (LUAU_RARE_PROTO): the code runs cold.
+#[test]
+fn a_frames_first_calls_of_library_and_datatype_functions_cost_their_code_running_cold() {
+    let (lua, engine) = start();
+    engine_lua::modules::interpret_all(&lua, &engine);
+    crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    // (the prelude makes a library function's wrapper at a script's first use of it, and what a frame makes reads warm in it)
+    run(&lua, &engine, "_G.Rare = function(X) return X + 1 end local _ = CFrame.new(0, 0, 0)");
+    let source = r#"
+        local function Two(First, Second)
+            local T0 = os.clock()
+            First()
+            local T1 = os.clock()
+            Second()
+            local T2 = os.clock()
+            return ((T1 - T0) - (T2 - T1)) * 1e6
+        end
+        local C = Two(function() return math.noise(0.5) end, function() return math.noise(1.5) end)
+        local Host = Two(function() return CFrame.new(1, 2, 3) end, function() return CFrame.new(3, 2, 1) end)
+        local T0 = os.clock()
+        _G.Rare(1)
+        local Rare = (os.clock() - T0) * 1e6
+        print(string.format("%.4f %.4f %.4f", C, Host, Rare))
+    "#;
+    let mut rare = Vec::new();
+    for _ in 0..2 {
+        crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+        let output = run(&lua, &engine, source);
+        let values: Vec<f64> = output.last().unwrap().split_once(": ").unwrap().1.split(' ').map(|v| v.parse().unwrap()).collect();
+        assert!((values[0] - 2.5).abs() < 0.02, "a frame's first math.noise {:.3} us over the second, a client 0.9-4.0 for a C function", values[0]);
+        assert!((values[1] - 0.9).abs() < 0.02, "a frame's first CFrame.new {:.3} us over the second, a client 0.55-2.5 for a datatype's", values[1]);
+        rare.push(values[2]);
+    }
+    // (the first frame's call found the function's code not run the frame before; the second's found it run)
+    assert!((rare[0] - rare[1] - 0.7).abs() < 0.01, "a function run first in a frame, not the frame before, {:.3} us dearer", rare[0] - rare[1]);
 }
 
 /// Vector3 members and methods on the work clock (the op_cost probe's `datatype` rows in a lobby playtest's client, the
@@ -6104,6 +6592,50 @@ fn a_scripts_environment_resolves_imports_at_load_and_takes_fast_calls() {
     let output = run(&lua, &engine, "print(_G.Safe.Names()) print(_G.Unsafe.Names())");
     let names = "print: Vector3 Instance RaycastParams SharedTable table userdata";
     assert_eq!(output.iter().filter(|line| line.as_str() == names).count(), 2, "{output:?}");
+}
+
+/// `math.isnan`, `math.isinf` and `math.isfinite` (Luau's since 0.701) are builtins a script calls as fast
+/// calls, as a client does (the parity bench's `arith.isnan` rows: a loop step calling one 4.9-6.2 ns in a module, 20-22 after
+/// getfenv), and getfenv makes them plain C calls; the answers are the same either way.
+#[test]
+fn a_scripts_number_classifiers_are_fast_calls() {
+    let (lua, engine) = start();
+    engine_lua::modules::interpret_all(&lua, &engine);
+    crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    let source = |prefix: &str| {
+        format!(
+            "{prefix}return function(N) local s = 0 for i = 1, N do local x = i * 0.5 if math.isnan(x) then s += 1 end if math.isinf(x) then s += 2 end if math.isfinite(x) then s += 4 end end return s end\n"
+        )
+    };
+    run(
+        &lua,
+        &engine,
+        &format!(
+            r#"
+            local Folder = Instance.new("Folder")
+            local Safe, Unsafe = Instance.new("ModuleScript"), Instance.new("ModuleScript")
+            Safe.Parent, Unsafe.Parent = Folder, Folder
+            __setSource(Safe, {safe:?})
+            __setSource(Unsafe, {unsafe:?})
+            _G.Safe, _G.Unsafe = require(Safe), require(Unsafe)
+            "#,
+            safe = source(""),
+            unsafe = source("local _ = getfenv()\n")
+        ),
+    );
+    let sample = |module: &str| {
+        let before = vm_counts(&engine);
+        let output = run(&lua, &engine, &format!("print(_G.{module}(1000))"));
+        let after = vm_counts(&engine);
+        (output, after.ops[21] - before.ops[21], after.ops[73] - before.ops[73], after.ccalls - before.ccalls)
+    };
+    // (CALL is opcode 21, FASTCALL1 73; the snippet that calls the module makes a call or two of its own, and print one C call)
+    let (output, calls, fast, ccalls) = sample("Safe");
+    assert!(output.contains(&"print: 4000".to_string()), "{output:?}");
+    assert!(calls < 10 && fast >= 3000 && ccalls < 10, "a safe environment: {calls} calls, {fast} fast calls, {ccalls} C calls");
+    let (output, calls, _, ccalls) = sample("Unsafe");
+    assert!(output.contains(&"print: 4000".to_string()), "{output:?}");
+    assert!(calls >= 3000 && ccalls >= 3000, "after getfenv: {calls} calls, {ccalls} C calls");
 }
 
 /// A `--!native` module's instructions are priced as a client's machine code takes them (cost.rs NATIVE_OPS: a keyed table read or

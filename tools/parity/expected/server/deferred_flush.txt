@@ -1,0 +1,9 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+defer-chain start,d1,[Heartbeat],d2,d3,[PreAnimation],[PreSimulation],[PostSimulation],[Heartbeat],[PreAnimation],[PreSimulation],[PostSimulation]
+event-chain start,e1,[Heartbeat],e2,e3,[PreAnimation],[PreSimulation],[PostSimulation],[Heartbeat],[PreAnimation],[PreSimulation],[PostSimulation]
+mixed start,d,f1,[Heartbeat],f1,f1-defer,f2,f1-defer,f2,[PreAnimation],[PreSimulation],[PostSimulation],[Heartbeat],[PreAnimation],[PreSimulation],[PostSimulation]
+property start,changed1,[Heartbeat],defer-from-changed,changed2,[PreAnimation],[PreSimulation],[PostSimulation],[Heartbeat],[PreAnimation],[PreSimulation],[PostSimulation]
+spawn-and-wait start,d,spawned,d-end,[Heartbeat],handler,waiter,waiter-defer,[PreAnimation],[PreSimulation],[PostSimulation],[Heartbeat],[PreAnimation],[PreSimulation],[PostSimulation]
+due-together start,[Heartbeat],[PreAnimation],[PreSimulation],[PostSimulation],delay-a,wait-a,delay-b,wait-b,delay-a-defer,wait-a-defer,[Heartbeat],legacy-wait,legacy-delay,legacy-spawn,[PreAnimation],[PreSimulation],[PostSimulation]
+from-heartbeat hb-handler,[Heartbeat],hb-defer,hb-defer2,[PreAnimation],[PreSimulation],[PostSimulation],hb-delay,hb-wait,[Heartbeat],[PreAnimation],[PreSimulation],[PostSimulation]

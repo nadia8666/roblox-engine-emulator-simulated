@@ -1,0 +1,13 @@
+# engine: Roblox Studio 0.744.0.7441077, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+sides IsClient=ok true | IsServer=ok false | IsStudio=ok true | IsRunning=ok true | IsRunMode=ok false | IsEdit=error The current thread cannot call 'IsEdit' (lacking capability PluginOrOpenCloud) | local-player true
+event RenderStepped read ok RBXScriptSignal | connect ok true | once ok true
+event PreRender read ok RBXScriptSignal | connect ok true | once ok true
+event PreAnimation read ok RBXScriptSignal | connect ok true | once ok true
+event PreSimulation read ok RBXScriptSignal | connect ok true | once ok true
+event PostSimulation read ok RBXScriptSignal | connect ok true | once ok true
+event Stepped read ok RBXScriptSignal | connect ok true | once ok true
+event Heartbeat read ok RBXScriptSignal | connect ok true | once ok true
+bind ok  | unbind ok  | unbind-missing ok 
+camera true ok true
+fires prerender true bound true true

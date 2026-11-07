@@ -107,8 +107,14 @@ impl Ord for Timer {
 pub enum Phase {
     Simulation,
     Heartbeat,
+    /// The render-step bindings
     RenderStep,
+    /// The frame's layout point: after the render-step bindings, before RenderStepped (a host's lazy layout marks it here)
     Tween,
+    /// RenderStepped and PreRender
+    RenderEvents,
+    /// TweenService's step: after the PreRender handlers on a playing client, before the Heartbeat handlers on a server
+    TweenStep,
     PreRender,
     Render,
 }
@@ -1024,6 +1030,8 @@ pub fn error_message(error: &LuaError) -> String {
         LuaError::CallbackError { cause, .. } => error_message(cause),
         LuaError::SyntaxError { message, .. } => message.clone(),
         LuaError::WithContext { cause, .. } => error_message(cause),
+        // mlua's reference stack could not hold a callback's arguments: mlua 0.12 returns this where 0.11 panicked (lua/refs.rs)
+        LuaError::StackError => super::lua::refs::message(),
         other => other.to_string(),
     }
 }
@@ -1347,7 +1355,7 @@ fn run_hooks(lua: &Lua, engine: &Rc<Engine>, phase: Phase, delta: f64) -> LuaRes
     // HookBuckets
     profile::enter(match phase {
         Phase::Simulation | Phase::Heartbeat => "heartbeat",
-        Phase::PreRender | Phase::Render => "renderEvents",
+        Phase::RenderEvents | Phase::PreRender | Phase::Render => "renderEvents",
         _ => "other",
     });
     let result = (|| {
@@ -1398,7 +1406,15 @@ fn heartbeat_timers(lua: &Lua, engine: &Rc<Engine>, at: f64, delta: f64, limit: 
         // before the Heartbeat handlers.
         run_timers(lua, engine, true, None, TimerFlush::AfterAll)?;
         run_hooks(lua, engine, Phase::Simulation, delta)?;
-        return run_timers(lua, engine, false, limit, TimerFlush::OncePass);
+        run_timers(lua, engine, false, limit, TimerFlush::OncePass)?;
+        // A server has no render step: it steps its tweens after the task.wait resumptions and before the Heartbeat
+        // handlers (measured, a Studio 0.744 server's game script: tools/parity/probes/tween.luau; a tween played at a
+        // resumption point has moved by the first Heartbeat and a 0.09 s tween ends at the sixth, a frame before a
+        // client's), its events delivered after the Heartbeat handlers. Not measured: where among the simulation events.
+        if engine.options.server() {
+            step_tweens(lua, engine, delta)?;
+        }
+        return Ok(());
     }
     // Edit mode has no simulation step: Motor6D.Transform changes apply where it would run
     // (world::joints; play mode applies them after PreSimulation)
@@ -1407,6 +1423,29 @@ fn heartbeat_timers(lua: &Lua, engine: &Rc<Engine>, at: f64, delta: f64, limit: 
     crate::animation::arrivals(engine);
     run_timers(lua, engine, true, None, TimerFlush::EachResumption)?;
     run_timers(lua, engine, false, limit, TimerFlush::EachResumption)
+}
+
+/// A server's tween step (heartbeat_timers): the tween step, then the frame's layout point, their events queued as deferred work.
+fn step_tweens(lua: &Lua, engine: &Rc<Engine>, delta: f64) -> LuaResult<()> {
+    run_phase(lua, engine, Phase::TweenStep, "tweens", delta)?;
+    run_phase(lua, engine, Phase::Tween, "tweens", delta)
+}
+
+/// A phase's hooks with no resumption point between them.
+fn run_phase(lua: &Lua, engine: &Rc<Engine>, phase: Phase, label: &'static str, delta: f64) -> LuaResult<()> {
+    profile::enter(label);
+    let hooks = engine.state.borrow().sched.hooks_of(phase);
+    let result = hooks.into_iter().try_for_each(|hook| hook(lua, engine, delta));
+    profile::leave();
+    result
+}
+
+/// A client's tween step (with `phases` after it: the frame's layout point in edit mode), its events held back (`held`).
+fn step_tweens_held(lua: &Lua, engine: &Rc<Engine>, phases: &[Phase], delta: f64) -> LuaResult<()> {
+    engine.state.borrow_mut().sched.holding = true;
+    let result = phases.iter().try_for_each(|&phase| run_phase(lua, engine, phase, "tweens", delta));
+    engine.state.borrow_mut().sched.holding = false;
+    result
 }
 
 /// A Heartbeat's handlers (after its resumptions), with delta `delta` (float32).
@@ -1469,8 +1508,9 @@ fn heartbeat(lua: &Lua, engine: &Rc<Engine>, at: f64, delta: f64) -> LuaResult<(
     heartbeat_handlers(lua, engine, delta)
 }
 
-/// The render step: bindings, the tween step (its events held back), a resumption point,
-/// RenderStepped / PreRender, then the render hooks (layout).
+/// The render step: a playing client's bindings, RenderStepped / PreRender, the tween step and one resumption point; edit mode's
+/// bindings, tween step and flush, then RenderStepped / PreRender (a server's tweens step in heartbeat_timers); then the render
+/// hooks (input, layout).
 fn render(lua: &Lua, engine: &Rc<Engine>, delta: f64) -> LuaResult<()> {
     {
         let mut state = engine.state.borrow_mut();
@@ -1491,34 +1531,46 @@ fn render(lua: &Lua, engine: &Rc<Engine>, delta: f64) -> LuaResult<()> {
         engine.state.borrow_mut().sched.cold_tracking = true;
     }
     flush_deferred(lua, engine)?;
-    // Measured order: the render-step bindings, the tween step, then one resumption point that
-    // runs what the bindings deferred (their handlers already see the tweened values), then
-    // RenderStepped and PreRender, then the events of the tween step (a tweened property's
-    // Changed handlers run after the PreRender handlers) followed by what the PreRender handlers
-    // deferred.
-    profile::enter("renderBindings");
-    let bindings = engine.state.borrow().sched.hooks_of(Phase::RenderStep);
-    let result = bindings.into_iter().try_for_each(|hook| hook(lua, engine, delta));
-    profile::leave();
-    result?;
-    profile::enter("tweens");
-    engine.state.borrow_mut().sched.holding = true;
-    let tweens = engine.state.borrow().sched.hooks_of(Phase::Tween);
-    let result = tweens.into_iter().try_for_each(|hook| hook(lua, engine, delta));
-    profile::leave();
-    result?;
-    engine.state.borrow_mut().sched.holding = false;
-    // (a playing client runs one pass here: what the bindings' deferred work defers waits for the PreRender
-    // handlers' flush; measured, Studio 0.744, tools/parity/probes/deferred_points.luau)
-    if engine.state.borrow().sched.edit_mode {
+    run_phase(lua, engine, Phase::RenderStep, "renderBindings", delta)?;
+    let server = engine.options.server();
+    let edit_mode = engine.state.borrow().sched.edit_mode;
+    if !server && !edit_mode {
+        // A playing client (measured, roblox-sim's rendered and headless clients of Studio 0.744's engine: notes/macro
+        // orderprobe.luau, bindprobe.luau): the bindings (at any priority, First to Last), RenderStepped and PreRender run with
+        // no resumption point between them, then the
+        // tween step (a RenderStepped or PreRender handler reads a tween's value from before it, and a tween played there or in
+        // a binding takes its first step that frame), then one resumption point: the tween step's events (a tweened
+        // property's Changed handlers) first, then what the bindings and the RenderStepped and PreRender handlers deferred, in
+        // the order they deferred it, all seeing the stepped values. The frame's layout point stays after the bindings.
+        run_phase(lua, engine, Phase::Tween, "tweens", delta)?;
+        run_phase(lua, engine, Phase::RenderEvents, "renderEvents", delta)?;
+        step_tweens_held(lua, engine, &[Phase::TweenStep], delta)?;
+        {
+            let mut state = engine.state.borrow_mut();
+            let held = std::mem::take(&mut state.sched.held);
+            for job in held.into_iter().rev() {
+                state.sched.deferred.push_front(job);
+            }
+        }
         flush_deferred(lua, engine)?;
     } else {
-        flush_deferred_once(lua, engine)?;
-    }
-    {
-        let mut state = engine.state.borrow_mut();
-        let held = std::mem::take(&mut state.sched.held);
-        state.sched.deferred.extend(held);
+        // A server (its tweens step before its Heartbeat handlers: heartbeat_timers) and edit mode: the tween step after the
+        // bindings, its events after the RenderStepped and PreRender handlers, one pass for the bindings' deferred work (edit
+        // mode: a full flush)
+        if !server {
+            step_tweens_held(lua, engine, &[Phase::TweenStep, Phase::Tween], delta)?;
+        }
+        if edit_mode {
+            flush_deferred(lua, engine)?;
+        } else {
+            flush_deferred_once(lua, engine)?;
+        }
+        {
+            let mut state = engine.state.borrow_mut();
+            let held = std::mem::take(&mut state.sched.held);
+            state.sched.deferred.extend(held);
+        }
+        run_hooks(lua, engine, Phase::RenderEvents, delta)?;
     }
     run_hooks(lua, engine, Phase::PreRender, delta)?;
     run_hooks(lua, engine, Phase::Render, delta)?;

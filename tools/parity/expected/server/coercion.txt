@@ -1,0 +1,31 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+coerce IntValue.Value 3 -3 3 -3 1 2 -1 2147483648 2147483649 -2147483649 9007199254740992 0 0 0 0 5 3 5 16 1000 0 0 0 0 0 1 0 0
+coerce NumberValue.Value 2.7000000000000002 -2.7000000000000002 2.5 -2.5 0.5 1.5 -0.5 2147483648 2147483648.5 -2147483649 9007199254740992 1e+20 nan inf -inf 5 2.7000000000000002 5 16 1000 0 0 0 0 0 1 0 0
+coerce Frame.ZIndex 2 -2 2 -2 0 1 0 -2147483648 -2147483648 -2147483648 -2147483648 -2147483648 -2147483648 -2147483648 -2147483648 5 2 5 16 1000 0 0 0 0 0 1 0 0
+coerce Frame.LayoutOrder 2 -2 2 -2 0 1 0 -2147483648 -2147483648 -2147483648 -2147483648 -2147483648 -2147483648 -2147483648 -2147483648 5 2 5 16 1000 0 0 0 0 0 1 0 0
+coerce Frame.BorderSizePixel 2 0 2 0 0 1 0 0 0 0 0 0 0 0 0 5 2 5 16 100 0 0 0 0 0 1 0 0
+coerce Part.Transparency 2.7000000476837158 -2.7000000476837158 2.5 -2.5 0.5 1.5 -0.5 2147483648 2147483648 -2147483648 9007199254740992 1.0000000200408773e+20 nan inf -inf 5 2.7000000476837158 5 16 1000 0 0 0 0 0 1 0 0
+coerce TextLabel.TextSize 2 1 2 1 1 1 1 1 1 1 1 1 1 1 1 5 2 5 16 100 1 1 1 1 1 1 1 1
+coerce BoolValue.Value boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:false boolean:true boolean:true boolean:true boolean:true
+coerce Part.Anchored boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:true boolean:false boolean:true boolean:true boolean:true boolean:true
+coerce StringValue.Value "2.7" "-2.7" "2.5" "-2.5" "0.5" "1.5" "-0.5" "2147483648" "2147483648.5" "-2147483649" "9007199254740992" "100000000000000000000" "nan" "inf" "-inf" "5" "2.7" " 5 " "0x10" "1e3" "five" "" E(Unable to assign property Value. string expected, got boolean) E(Unable to assign property Value. string expected, got boolean) "0" "1" E(Unable to assign property Value. string expected, got table) E(Unable to assign property Value. string expected, got Vector3)
+coerce Part.Name "2.7" "-2.7" "2.5" "-2.5" "0.5" "1.5" "-0.5" "2147483648" "2147483648.5" "-2147483649" "9007199254740992" "100000000000000000000" "nan" "inf" "-inf" "5" "2.7" " 5 " "0x10" "1e3" "five" "" E(Unable to assign property Name. string expected, got boolean) E(Unable to assign property Name. string expected, got boolean) "0" "1" E(Unable to assign property Name. string expected, got table) E(Unable to assign property Name. string expected, got Vector3)
+coerce TextLabel.Text "2.7" "-2.7" "2.5" "-2.5" "0.5" "1.5" "-0.5" "2147483648" "2147483648.5" "-2147483649" "9007199254740992" "100000000000000000000" "nan" "inf" "-inf" "5" "2.7" " 5 " "0x10" "1e3" "five" "" E(Unable to assign property Text. string expected, got boolean) E(Unable to assign property Text. string expected, got boolean) "0" "1" E(Unable to assign property Text. string expected, got table) E(Unable to assign property Text. string expected, got Vector3)
+coerce-nil IntValue.Value=0 NumberValue.Value=0 Frame.ZIndex=0 Frame.LayoutOrder=0 Frame.BorderSizePixel=0 Part.Transparency=0 TextLabel.TextSize=1 BoolValue.Value=boolean:false Part.Anchored=boolean:false StringValue.Value=E(Unable to assign property Value. string expected, got nil) Part.Name=E(Unable to assign property Name. string expected, got nil) TextLabel.Text=E(Unable to assign property Text. string expected, got nil)
+datatype-write Size=table error Unable to assign property Size. Vector3 expected, got table
+datatype-write Size=Vector2 error Unable to assign property Size. Vector3 expected, got Vector2
+datatype-write Size=vector ok 
+datatype-write CFrame=Vector3 error Unable to assign property CFrame. CoordinateFrame expected, got Vector3
+datatype-write Color=BrickColor error Unable to assign property Color. Color3 expected, got BrickColor
+datatype-write BrickColor=Color3 error Unable to assign property BrickColor. BrickColor expected, got Color3
+datatype-write BrickColor=number error Unable to assign property BrickColor. BrickColor expected, got number
+datatype-write BrickColor=string error Unable to assign property BrickColor. BrickColor expected, got string
+datatype-write UDim2=UDim error Unable to assign property Size. UDim2 expected, got UDim
+datatype-write UDim2=table error Unable to assign property Size. UDim2 expected, got table
+datatype-write Position=string error Unable to assign property Position. UDim2 expected, got string
+datatype-write Rotation=string ok 
+datatype-write Font=string ok 
+datatype-write FontFace=string error Unable to assign property FontFace. Font expected, got string
+datatype-write Material=string-number ok 
+after-writes 4, 5, 6 | Medium stone grey | 0.639215708 0.635294139 0.647058845

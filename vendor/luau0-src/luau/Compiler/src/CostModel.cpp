@@ -1,10 +1,12 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "CostModel.h"
 
+#include "Luau/Bytecode.h"
 #include "Luau/Common.h"
 #include "Luau/DenseHash.h"
 
 #include "ConstantFolding.h"
+#include "Utils.h"
 
 #include <limits.h>
 
@@ -105,7 +107,6 @@ struct CostVisitor : AstVisitor
     CostVisitor(const DenseHashMap<AstExprCall*, int>& builtins, const DenseHashMap<AstExpr*, Constant>& constants)
         : builtins(builtins)
         , constants(constants)
-        , vars(nullptr)
     {
     }
 
@@ -119,7 +120,7 @@ struct CostVisitor : AstVisitor
             return model(expr->expr);
         }
         else if (node->is<AstExprConstantNil>() || node->is<AstExprConstantBool>() || node->is<AstExprConstantNumber>() ||
-                 node->is<AstExprConstantString>())
+                 node->is<AstExprConstantString>() || node->is<AstExprConstantInteger>())
         {
             return Cost(0, Cost::kLiteral);
         }
@@ -141,8 +142,9 @@ struct CostVisitor : AstVisitor
         {
             // builtin cost modeling is different from regular calls because we use FASTCALL to compile these
             // thus we use a cheaper baseline, don't account for function, and assume constant/local copy is free
-            bool builtin = builtins.find(expr) != nullptr;
-            bool builtinShort = builtin && expr->args.size <= 2; // FASTCALL1/2
+            const int* bfid = builtins.find(expr);
+            bool builtin = bfid != nullptr && *bfid != LBF_NONE;
+            bool builtinShort = builtin && expr->args.size <= 3u; // FASTCALL1/2/3
 
             Cost cost = builtin ? 2 : 3;
 
@@ -166,7 +168,7 @@ struct CostVisitor : AstVisitor
         {
             return model(expr->expr) + model(expr->index) + 1;
         }
-        else if (AstExprFunction* expr = node->as<AstExprFunction>())
+        else if (node->is<AstExprFunction>())
         {
             return 10; // high baseline cost due to allocation
         }
@@ -201,7 +203,13 @@ struct CostVisitor : AstVisitor
         }
         else if (AstExprIfElse* expr = node->as<AstExprIfElse>())
         {
-            return model(expr->condition) + model(expr->trueExpr) + model(expr->falseExpr) + 2;
+            Cost cond = model(expr->condition);
+
+            // propagate constant mask from condition to the local variable if it exists
+            if (expr->conditionLocal && cond.constant != 0)
+                vars[expr->conditionLocal] = cond.constant;
+
+            return cond + model(expr->trueExpr) + model(expr->falseExpr) + 2;
         }
         else if (AstExprInterpString* expr = node->as<AstExprInterpString>())
         {
@@ -212,6 +220,10 @@ struct CostVisitor : AstVisitor
                 cost += model(innerExpression);
 
             return cost;
+        }
+        else if (AstExprInstantiate* expr = node->as<AstExprInstantiate>())
+        {
+            return model(expr->expr);
         }
         else
         {
@@ -279,6 +291,9 @@ struct CostVisitor : AstVisitor
     {
         Cost condition = model(node->condition);
 
+        if (node->conditionLocal && condition.constant != 0)
+            vars[node->conditionLocal] = condition.constant;
+
         loop(node->body, condition);
         return false;
     }
@@ -293,6 +308,27 @@ struct CostVisitor : AstVisitor
 
     bool visit(AstStatIf* node) override
     {
+        if (node->conditionLocal)
+        {
+            Cost arg = model(node->condition);
+
+            if (arg.constant != 0)
+                vars[node->conditionLocal] = arg.constant;
+        }
+
+        if (isConstantFalse(constants, node->condition))
+        {
+            if (node->elsebody)
+                node->elsebody->visit(this);
+            return false;
+        }
+
+        if (isConstantTrue(constants, node->condition))
+        {
+            node->thenbody->visit(this);
+            return false;
+        }
+
         // unconditional 'else' may require a jump after the 'if' body
         // note: this ignores cases when 'then' always terminates and also assumes comparison requires an extra instruction which may be false
         result += 1 + (node->elsebody && !node->elsebody->is<AstStatIf>());
@@ -372,6 +408,21 @@ struct CostVisitor : AstVisitor
 
         return false;
     }
+
+    bool visit(AstStatBlock* node) override
+    {
+        for (size_t i = 0; i < node->body.size; ++i)
+        {
+            AstStat* stat = node->body.data[i];
+
+            stat->visit(this);
+
+            if (alwaysTerminates(constants, stat))
+                break;
+        }
+
+        return false;
+    }
 };
 
 uint64_t modelCost(
@@ -393,8 +444,8 @@ uint64_t modelCost(
 
 uint64_t modelCost(AstNode* root, AstLocal* const* vars, size_t varCount)
 {
-    DenseHashMap<AstExprCall*, int> builtins{nullptr};
-    DenseHashMap<AstExpr*, Constant> constants{nullptr};
+    DenseHashMap<AstExprCall*, int> builtins;
+    DenseHashMap<AstExpr*, Constant> constants;
 
     return modelCost(root, vars, varCount, builtins, constants);
 }

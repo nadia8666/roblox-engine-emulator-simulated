@@ -746,7 +746,7 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
         }));
     }
     let shared = tweens;
-    engine.state.borrow_mut().sched.add_hook(Phase::Tween, Rc::new(move |lua, engine, delta| step_tweens(lua, engine, &shared, delta)));
+    engine.state.borrow_mut().sched.add_hook(Phase::TweenStep, Rc::new(move |lua, engine, delta| step_tweens(lua, engine, &shared, delta)));
 }
 
 #[cfg(test)]

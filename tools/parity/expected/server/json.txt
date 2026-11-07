@@ -1,0 +1,113 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+encode-numbers 0 -0 1 -1 0.5 0.1 0.3333333333333333 100 1000000000000000 10000000000000000 100000000000000000 100000000000000000000 1e21 9007199254740992 9007199254740994 9223372036854776000 1e300 1e-7 5e-324 123456789.125 0.30000000000000007 -1e-10 4294967296 {"m":null,"t":"numeric","v":"inf"} {"m":null,"t":"numeric","v":"-inf"} {"m":null,"t":"numeric","v":"nan"}
+encode-number-arrays [0] [-0] [1] [-1] [0.5] [0.1] [0.3333333333333333] [100] [1000000000000000] [10000000000000000] [100000000000000000] [100000000000000000000] [1e21] [9007199254740992] [9007199254740994] [9223372036854776000] [1e300] [1e-7] [5e-324] [123456789.125] [0.30000000000000007] [-1e-10] [4294967296] [{"m":null,"t":"numeric","v":"inf"}] [{"m":null,"t":"numeric","v":"-inf"}] [{"m":null,"t":"numeric","v":"nan"}]
+encode-strings "" "plain" "quote\"" "back\\slash" "slash/" "new\nline" "tab\t" "cr\r" "nul\u0000byte" "\u0001\u0002\u001F" "\x7F" "é" "€" "😀" E(Can't convert to JSON) E(Can't convert to JSON) "<>&'" "  "
+encode-empty []
+encode-array [1,"two",true,false]
+encode-nested [[1,[2,[3]]]]
+encode-dict-one {"Key":1}
+encode-mixed [1,2]
+encode-sparse ["a"]
+encode-hole [1,null,3]
+encode-zero-key {"0":"z"}
+encode-float-key {"1":"x"}
+encode-bool-key E(Invalid table key type used)
+encode-numeric-string-key {"1":"x"}
+encode-negative-key {"-1":"x"}
+encode-function [null]
+encode-instance [null]
+encode-vector3 [null]
+encode-enum [null]
+encode-nil null
+encode-bool true
+encode-buffer {"m":null,"t":"buffer","base64":"AAA="}
+encode-cyclic E(tables cannot be cyclic)
+encode-deep E(Max lua stack size reached)
+encode-metatable [1]
+encode-shared [[1],[1]]
+decode "1" -> n1
+decode "-0" -> n0
+decode "1.0" -> n1
+decode "1e2" -> n100
+decode "1E+2" -> n100
+decode "0.1" -> n0.10000000000000001
+decode "1e400" -> E(Can't parse JSON)
+decode "-1e400" -> E(Can't parse JSON)
+decode "123456789012345678901234567890" -> n1.2345678901234568e+29
+decode "9007199254740993" -> n9007199254740992
+decode "\"a\\u00e9\"" -> "aé"
+decode "\"\\ud83d\\ude00\"" -> "😀"
+decode "\"\\ud83d\"" -> E(Can't parse JSON)
+decode "\"\\/\"" -> "/"
+decode "\"tab	in\"" -> E(Can't parse JSON)
+decode "[1,2,3]" -> {#1:n1,#2:n2,#3:n3}
+decode "[]" -> {}
+decode "{}" -> {}
+decode "{\"a\":1,\"b\":[true,false,null]}" -> {a:n1,b:{#1:true,#2:false}}
+decode "[null,1]" -> {#2:n1}
+decode "[1,null]" -> {#1:n1}
+decode "{\"a\":null}" -> {}
+decode "{\"1\":\"x\"}" -> {1:"x"}
+decode "{\"1\":\"x\",\"2\":\"y\"}" -> {1:"x",2:"y"}
+decode " [ 1 , 2 ] " -> {#1:n1,#2:n2}
+decode "[1,]" -> E(Can't parse JSON)
+decode "{\"a\":1,}" -> E(Can't parse JSON)
+decode "01" -> E(Can't parse JSON)
+decode "+1" -> E(Can't parse JSON)
+decode ".5" -> E(Can't parse JSON)
+decode "NaN" -> E(Can't parse JSON)
+decode "Infinity" -> E(Can't parse JSON)
+decode "'x'" -> E(Can't parse JSON)
+decode "" -> E(Can't parse JSON)
+decode "nul" -> E(Can't parse JSON)
+decode "true false" -> E(Can't parse JSON)
+decode "\"unterminated" -> E(Can't parse JSON)
+decode "[1 2]" -> E(Can't parse JSON)
+decode "{\"a\" 1}" -> E(Can't parse JSON)
+decode "\"\\x\"" -> E(Can't parse JSON)
+decode "{\"a\":1,\"a\":2}" -> {a:n2}
+decode "\"\\u0000\"" -> "\000"
+decode-nonstring ok 5
+roundtrip 1 n-1140786886
+roundtrip 2 "\x7F bb"
+roundtrip 3 E(Can't parse JSON)
+roundtrip 4 n292.5
+roundtrip 5 "\\\"\x01"
+roundtrip 6 n102.14285714285714
+roundtrip 7 true
+roundtrip 8 E(Can't parse JSON)
+roundtrip 9 E(Can't parse JSON)
+roundtrip 10 n-1776411664
+roundtrip 11 n-85
+roundtrip 12 true
+roundtrip 13 n-1996466843
+roundtrip 14 n-143924473
+roundtrip 15 n189
+roundtrip 16 n571462063
+roundtrip 17 true
+roundtrip 18 n273
+roundtrip 19 {}
+roundtrip 20 E(Can't parse JSON)
+roundtrip 21 n35633626
+roundtrip 22 n318.33333333333331
+roundtrip 23 {k3:{k7:{k6:true,k7:n40.857142857142854,k9:n158}},k6:n977369078}
+roundtrip 24 n-1065559679
+roundtrip 25 n-400565212
+roundtrip 26 {k4:n195.66666666666666,k8:{k2:true,k6:n-208}}
+roundtrip 27 "\000b aa0"
+roundtrip 28 n569908781
+roundtrip 29 {k3:n-1256069689,k5:n1592345694,k8:"\""}
+roundtrip 30 "\x01\"\x7F\x7F\x7F"
+roundtrip 31 {}
+roundtrip 32 n-592
+roundtrip 33 n-466
+roundtrip 34 n320
+roundtrip 35 false
+roundtrip 36 {k2:{k6:false,k7:n-971},k6:n2071658381}
+roundtrip 37 false
+roundtrip 38 n297068313
+roundtrip 39 n-61.399999999999999
+roundtrip 40 E(Can't parse JSON)
+generateguid ok 36 true 38 38
+urlencode ok a%20b%26c%3Dd%2F%C3%A9%3F%7E%2A%27%28%29%21

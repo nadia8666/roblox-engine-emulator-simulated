@@ -1,0 +1,40 @@
+# Topic: imports resolve in the environment a chunk is loaded into
+#
+# What it does: luau_load resolves a chunk's imports (GETIMPORT) at load from the environment it is given, when that
+# environment is safe, rather than from the loading thread's globals.
+#
+# Why upstream lacks it: Roblox loads each script on a thread whose globals are the script's environment, where
+# upstream's L->gt is that table. A host that passes each script's environment to luau_load instead resolved nothing at
+# load, so every import was a global lookup.
+
+diff --git a/luau/VM/src/lvmload.cpp b/luau/VM/src/lvmload.cpp
+index 4e95bfd..e8f70c6 100644
+--- a/luau/VM/src/lvmload.cpp
++++ b/luau/VM/src/lvmload.cpp
+@@ -190,6 +190,7 @@ static void resolveImportSafe(lua_State* L, LuaTable* env, TValue* k, uint32_t i
+ {
+     struct ResolveImport
+     {
++        LuaTable* env;
+         TValue* k;
+         uint32_t id;
+ 
+@@ -205,12 +206,15 @@ static void resolveImportSafe(lua_State* L, LuaTable* env, TValue* k, uint32_t i
+             setnilvalue(L->top);
+             L->top++;
+ 
+-            luaV_getimport(L, L->gt, self->k, L->top - 1, self->id, /* propagatenil= */ true);
++            luaV_getimport(L, self->env, self->k, L->top - 1, self->id, /* propagatenil= */ true);
+         }
+     };
+ 
+-    ResolveImport ri = {k, id};
+-    if (L->gt->safeenv)
++    // imports resolve in the environment the chunk is loaded into, when it is safe: a host that loads each script into an
++    // environment of its own (luau_load's env) resolves them as one that loads each script on a thread whose globals are that
++    // environment (Roblox's sandboxed script threads), where upstream's L->gt is that table
++    ResolveImport ri = {env, k, id};
++    if (env->safeenv)
+     {
+         // luaD_pcall will make sure that if any C/Lua calls during import resolution fail, the thread state is restored back
+         int oldTop = lua_gettop(L);

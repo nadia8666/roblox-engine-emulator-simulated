@@ -41,9 +41,12 @@ chrono = "=0.4.45"
 glam = "=0.30.10"
 # Lune's Roblox datatypes as Luau values, patched (vendor/, tools/vendor.mjs)
 lune-roblox = { path = "vendor/lune-roblox", version = "=0.3.4" }
-mlua = { version = "=0.11.4", features = ["luau", "serialize", "async"] }
-# Keep the VM ABI/source release aligned with the canonical Luau patch (vendor/luau0-src).
-mlua-sys = "=0.8.3"
+# mlua 0.12.2 / mlua-sys 0.13.0 bind Luau 0.740's C API, the newest any mlua release binds; the vendored VM is a later
+# release whose C API mlua uses the same way (patches/luau/upstream.json; docs/building.md "Updating Luau").
+# mlua-sys compiles vendor/luau0-src through the [patch] below, so the versions move with the VM's C API, not on their own;
+# it is vendored too (vendor/mlua-sys, tools/vendor.mjs's MLUA_SYS), so moving it moves that pin.
+mlua = { version = "=0.12.2", features = ["luau", "serde", "async"] }
+mlua-sys = "=0.13.0"
 # EditableImage pixels: assets decoded, snapshots of drawn images written (src/images.rs); ror's version
 png = "=0.18.1"
 rayon = "=1.11.0"
@@ -65,12 +68,18 @@ base64 = "=0.13.1"
 
 [workspace]
 resolver = "3"
+# profile-view: the profile viewer (`ree profile view|render` runs its binary), a crate of its own so the engine's has
+# no terminal UI; a plain `cargo build` or `cargo test` here covers both
+members = ["profile-view"]
+default-members = [".", "profile-view"]
 exclude = ["vendor"]
 
-# The patched Luau VM (vendor/luau0-src). Only a workspace root's [patch] applies: a crate that
-# depends on this one adds the same entry, pointing at this repository (docs/api.md "Use from another crate").
+# The patched Luau VM (vendor/luau0-src), and mlua-sys with its bytecode version range (vendor/mlua-sys: 0.13.0 reads the
+# bytecode of a Luau newer than 0.740 as text). Only a workspace root's [patch] applies: a crate that
+# depends on this one adds the same entries, pointing at this repository (docs/api.md "Use from another crate").
 [patch.crates-io]
 luau0-src = { path = "vendor/luau0-src" }
+mlua-sys = { path = "vendor/mlua-sys" }
 
 # `--release` is the everyday build: full optimisation, incremental, many codegen units, so an edit rebuilds
 # in seconds. `lto = false` keeps cargo's ThinLTO across this crate's codegen units: the engine's cross-module

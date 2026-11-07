@@ -1,0 +1,71 @@
+# Topic: Vector3 members answered by the VM
+#
+# What it does: a vector's component by a key the compiler could not fold (`v[axis]`), and Magnitude / Unit in either
+# case, are answered by luaV_gettable itself, computed as the vector library computes them, where the host's metatable
+# served them with a function call.
+#
+# Why upstream lacks it: Roblox answers Vector3's members in its own engine; a host built on the plain VM has only the
+# vector metatable.
+
+diff --git a/luau/VM/src/lvmutils.cpp b/luau/VM/src/lvmutils.cpp
+index 3ed95eb..aff347b 100644
+--- a/luau/VM/src/lvmutils.cpp
++++ b/luau/VM/src/lvmutils.cpp
+@@ -170,6 +170,48 @@ static LUAU_NOINLINE void callTM(lua_State* L, const TValue* f, const TValue* p1
+     }
+ }
+ 
++// The members of a Vector3 the VM answers itself, where the engine's Luau used to serve them with a function call: a
++// component by a key the compiler could not fold (`v[axis]`), and Magnitude / Unit (either case), computed as the
++// vector library's magnitude and normalize do. Methods and the error for an unknown member come from the metatable's
++// __index table and its metatable. A read for a script's own instruction is counted (lua_WorkCounters).
++static bool luaV_vectormember(lua_State* L, const float* v, const TString* name, StkId res)
++{
++    const char* s = getstr(name);
++    if (s[1] == '\0')
++    {
++        int ic = (s[0] | ' ') - 'x';
++        if (unsigned(ic) >= 3 || (s[0] != 'x' + ic && s[0] != 'X' + ic))
++            return false;
++        setnvalue(res, v[ic]);
++        return true;
++    }
++    if (strcmp(s + 1, "agnitude") == 0 && (s[0] == 'M' || s[0] == 'm'))
++    {
++        if (luaE_interpretedinsn(L))
++            L->global->work.vectormagnitudes++;
++#if LUA_VECTOR_SIZE == 4
++        setnvalue(res, sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2] + v[3] * v[3]));
++#else
++        setnvalue(res, sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]));
++#endif
++        return true;
++    }
++    if (strcmp(s + 1, "nit") == 0 && (s[0] == 'U' || s[0] == 'u'))
++    {
++        if (luaE_interpretedinsn(L))
++            L->global->work.vectorunits++;
++#if LUA_VECTOR_SIZE == 4
++        float invSqrt = 1.0f / sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2] + v[3] * v[3]);
++        setvvalue(L, res, v[0] * invSqrt, v[1] * invSqrt, v[2] * invSqrt, v[3] * invSqrt);
++#else
++        float invSqrt = 1.0f / sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
++        setvvalue(L, res, v[0] * invSqrt, v[1] * invSqrt, v[2] * invSqrt, 0.0f);
++#endif
++        return true;
++    }
++    return false;
++}
++
+ void luaV_gettable(lua_State* L, const TValue* t, TValue* key, StkId val)
+ {
+     int loop;
+@@ -242,6 +284,8 @@ void luaV_gettable(lua_State* L, const TValue* t, TValue* key, StkId val)
+             setobj2s(L, val, &lco->staticmembers[offset - lco->numberofinstancemembers]);
+             return;
+         }
++        else if (ttisvector(t) && ttisstring(key) && luaV_vectormember(L, vvalue(t), tsvalue(key), val))
++            return;
+         else if (ttisnil(tm = luaT_gettmbyobj(L, t, TM_INDEX)))
+             luaG_indexerror(L, t, key);
+         if (ttisfunction(tm))

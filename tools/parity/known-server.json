@@ -1,0 +1,382 @@
+{
+	"aliases": [
+		{
+			"line": "method-model | ok false | ok false",
+			"why": "Model:MoveTo itself: a client leaves a model outside the DataModel where it is (the exact name too); ree moves it"
+		}
+	],
+	"buffer_vector_time": [
+		{
+			"line": "vector-format error invalid argument #2 to 'format' (string expected, got Vector3) ok 1, 2, 3 concat error @86: attempt to concatenate string with Vector3",
+			"why": "the VM names a native vector `vector` in its own errors (string.format, concatenation, arithmetic); a client names it Vector3"
+		},
+		{
+			"line": "DateTime-locales ok mardi 14 novembre 2023 22:13 | 2023年11月14日 火曜日 22:13 | 14. Nov. 2023 22:13",
+			"why": "DateTime formats only in en-us: other locales (en-gb, fr, ja, de) are not emulated"
+		}
+	],
+	"camelcase": [
+		{
+			"line": "cframe-unknown | error position is not a valid member of CFrame | error fuzzyEq is not a valid member of CFrame",
+			"why": "an unknown datatype member: a client raises '<key> is not a valid member of <Type>' (some types quote the key); ree reads nil where a Lune type has fields and methods (mlua's __index), else raises mlua's 'attempt to get an unknown field'"
+		},
+		{
+			"line": "color3-unknown | error toHSV is not a valid member of Color3",
+			"why": "an unknown datatype member: a client raises '<key> is not a valid member of <Type>' (some types quote the key); ree reads nil where a Lune type has fields and methods (mlua's __index), else raises mlua's 'attempt to get an unknown field'"
+		},
+		{
+			"line": "udim-unknown | error x is not a valid member of UDim2 | error 'scale' is not a valid member of UDim",
+			"why": "an unknown datatype member: a client raises '<key> is not a valid member of <Type>' (some types quote the key); ree reads nil where a Lune type has fields and methods (mlua's __index), else raises mlua's 'attempt to get an unknown field'"
+		},
+		{
+			"line": "brickcolor-unknown | error 'R' is not a valid member of BrickColor | error 'color' is not a valid member of BrickColor",
+			"why": "an unknown datatype member: a client raises '<key> is not a valid member of <Type>' (some types quote the key); ree reads nil where a Lune type has fields and methods (mlua's __index), else raises mlua's 'attempt to get an unknown field'"
+		},
+		{
+			"line": "ray-unknown | error origin is not a valid member of Ray",
+			"why": "an unknown datatype member: a client raises '<key> is not a valid member of <Type>' (some types quote the key); ree reads nil where a Lune type has fields and methods (mlua's __index), else raises mlua's 'attempt to get an unknown field'"
+		},
+		{
+			"line": "datatype-unknown | error nextNumber is not a valid member of Random | error 'time' is not a valid member of TweenInfo | error 'min' is not a valid member of NumberRange | error 'width' is not a valid member of Rect | error 'top' is not a valid member of Faces",
+			"why": "an unknown datatype member: a client raises '<key> is not a valid member of <Type>' (some types quote the key); ree reads nil where a Lune type has fields and methods (mlua's __index), else raises mlua's 'attempt to get an unknown field'"
+		}
+	],
+	"chunknames": [
+		{
+			"line": "odd-names info ReplicatedStorage.ParityProbes.Chunk",
+			"why": "Roblox keeps one compiled chunk per source text: a module whose Source matches an earlier module's carries that module's chunk name (not emulated: ree names every module by its own full name)"
+		},
+		{
+			"line": "odd-names fail ReplicatedStorage.ParityProbes.Chunk:3: inside",
+			"why": "Roblox keeps one compiled chunk per source text: a module whose Source matches an earlier module's carries that module's chunk name (not emulated: ree names every module by its own full name)"
+		},
+		{
+			"line": "odd-names index ReplicatedStorage.ParityProbes.Chunk:4: attempt to index nil with 'Field'",
+			"why": "Roblox keeps one compiled chunk per source text: a module whose Source matches an earlier module's carries that module's chunk name (not emulated: ree names every module by its own full name)"
+		},
+		{
+			"line": "odd-names trace t / ReplicatedStorage.ParityProbes.Chunk:5 function trace",
+			"why": "Roblox keeps one compiled chunk per source text: a module whose Source matches an earlier module's carries that module's chunk name (not emulated: ree names every module by its own full name)"
+		},
+		{
+			"line": "loose info ReplicatedStorage.ParityProbes.Chunk",
+			"why": "Roblox keeps one compiled chunk per source text: a module whose Source matches an earlier module's carries that module's chunk name (not emulated: ree names every module by its own full name)"
+		},
+		{
+			"line": "loose fail ReplicatedStorage.ParityProbes.Chunk:3: inside",
+			"why": "Roblox keeps one compiled chunk per source text: a module whose Source matches an earlier module's carries that module's chunk name (not emulated: ree names every module by its own full name)"
+		},
+		{
+			"line": "loose index ReplicatedStorage.ParityProbes.Chunk:4: attempt to index nil with 'Field'",
+			"why": "Roblox keeps one compiled chunk per source text: a module whose Source matches an earlier module's carries that module's chunk name (not emulated: ree names every module by its own full name)"
+		},
+		{
+			"line": "loose trace t / ReplicatedStorage.ParityProbes.Chunk:5 function trace",
+			"why": "Roblox keeps one compiled chunk per source text: a module whose Source matches an earlier module's carries that module's chunk name (not emulated: ree names every module by its own full name)"
+		},
+		{
+			"line": "long info ReplicatedStorage.ParityProbes.Chunk",
+			"why": "Roblox keeps one compiled chunk per source text: a module whose Source matches an earlier module's carries that module's chunk name (not emulated: ree names every module by its own full name)"
+		},
+		{
+			"line": "long fail ReplicatedStorage.ParityProbes.Chunk:3: inside",
+			"why": "Roblox keeps one compiled chunk per source text: a module whose Source matches an earlier module's carries that module's chunk name (not emulated: ree names every module by its own full name)"
+		},
+		{
+			"line": "long index ReplicatedStorage.ParityProbes.Chunk:4: attempt to index nil with 'Field'",
+			"why": "Roblox keeps one compiled chunk per source text: a module whose Source matches an earlier module's carries that module's chunk name (not emulated: ree names every module by its own full name)"
+		},
+		{
+			"line": "long trace t / ReplicatedStorage.ParityProbes.Chunk:5 function trace",
+			"why": "Roblox keeps one compiled chunk per source text: a module whose Source matches an earlier module's carries that module's chunk name (not emulated: ree names every module by its own full name)"
+		},
+		{
+			"line": "require-broken false Requested module experienced an error while loading",
+			"why": "require of a module that errored or required itself: a client raises `Requested module experienced an error while loading` and logs the module's own error once (or `Requested module was required recursively`); ree raises the module's own error"
+		},
+		{
+			"line": "require-broken-zero false Requested module experienced an error while loading",
+			"why": "require of a module that errored or required itself: a client raises `Requested module experienced an error while loading` and logs the module's own error once (or `Requested module was required recursively`); ree raises the module's own error"
+		},
+		{
+			"line": "require-cycle false Requested module experienced an error while loading",
+			"why": "require of a module that errored or required itself: a client raises `Requested module experienced an error while loading` and logs the module's own error once (or `Requested module was required recursively`); ree raises the module's own error"
+		},
+		{
+			"line": "require-string error error requiring \"ReplicatedStorage.ParityRequires.Two\": require path must start with a valid prefix: ./, ../, or @",
+			"why": "require by a string path: the client's text names the prefixes a path must start with (./, ../, @); ree's differs"
+		}
+	],
+	"datatypes": [
+		{
+			"line": "v3-precision 0.100000001 0.200000003 0.300000012 0.333333343 16777216 0 true",
+			"why": "a playing client flushes subnormal floats to zero (Vector3.new(0, 0, 1e-45).Z is 0); ree keeps them"
+		}
+	],
+	"datetime": [
+		{
+			"line": "locale-default error invalid argument #3 to 'FormatUniversalTime' (string expected, got nil) | ok 14 November 2023 | ok November 14, 2023 | ok November 14, 2023 | ok 5",
+			"why": "DateTime formats only in en-us: other locales (en-gb, fr, ja, de) are not emulated"
+		}
+	],
+	"errors": [
+		{
+			"line": "error instance-new-number | Unable to create an Instance of type \"5\"",
+			"why": "Instance.new(5): a client names the number in its text; ree's text differs"
+		},
+		{
+			"line": "error vector3-arith-bad | @88: attempt to perform arithmetic (add) on Vector3 and number",
+			"why": "the VM names a native vector `vector` in its own errors (string.format, concatenation, arithmetic); a client names it Vector3"
+		},
+		{
+			"line": "error vector3-newindex | X cannot be assigned to",
+			"why": "assigning a component of a vector: the VM's own text, not the client's `X cannot be assigned to`"
+		},
+		{
+			"line": "error cframe-bad-arg | @91: invalid argument #1 to 'new' (Vector3 expected, got string)",
+			"why": "argument errors of Lune's datatype methods carry mlua's conversion text, not the client's"
+		},
+		{
+			"line": "error cframe-mul-bad | @92: invalid argument #2 (Vector3 expected, got number)",
+			"why": "argument errors of Lune's datatype methods carry mlua's conversion text, not the client's"
+		},
+		{
+			"line": "error color3-index | A is not a valid member of Color3",
+			"why": "a Color3's unknown member: Lune's text, not the client's `A is not a valid member of Color3`"
+		},
+		{
+			"line": "error enumitem-newindex | Value is not a valid member of EnumItem",
+			"why": "assigning an EnumItem's member: ree's text, not the client's `Value is not a valid member of EnumItem`"
+		},
+		{
+			"line": "error tween-bad-type | TweenService:Create property named 'Size' cannot be tweened due to type mismatch (property is a 'Vector3', but given type is 'double')",
+			"why": "TweenService:Create's type-mismatch text names the property's and the value's types as the client does not here"
+		},
+		{
+			"line": "error require-number | Downloading asset failed for asset id 5.  Is the asset id correct and is the asset type \"Model\"?",
+			"why": "require(assetId) on a server downloads the asset and names it when that fails (Downloading asset failed for asset id 5 ...); ree runs offline and refuses with its own message"
+		},
+		{
+			"line": "loadstring ok function ok function: ADDR",
+			"why": "capture setup: the server capture's place copy turns on ServerScriptService.LoadStringEnabled for the sim's bridge; a game place leaves it off, as ree does"
+		},
+		{
+			"line": "collectgarbage ok number | error missing argument #1 to 'collectgarbage' (string expected) | error collectgarbage must be called with 'count'; use gcinfo() instead | error collectgarbage must be called with 'count'; use gcinfo() instead",
+			"why": "collectgarbage's argument checks: the client's texts are not emulated"
+		},
+		{
+			"line": "settings error The current thread cannot call 'settings' (lacking capability Plugin) | ok Instance",
+			"why": "settings() is refused to a client's game script (lacking capability Plugin); ree answers it"
+		}
+	],
+	"instances": [
+		{
+			"line": "default Model PrimaryPart=nil(nil) LevelOfDetail=error:The current thread cannot read 'LevelOfDetail' (lacking capability PluginOrOpenCloud) ModelStreamingMode=EnumItem(Enum.ModelStreamingMode.Default) WorldPivot=CF(0 0 0 1 0 0 0 1 0 0 0 1) Name=string(Model)",
+			"why": "error text: a client refuses LevelOfDetail to a game script for lacking a capability (PluginOrOpenCloud); ree does not model capabilities and calls it no member"
+		},
+		{
+			"line": "attribute-name \"Ünï\" error Attribute name contains illegal character '\\xC3' (\"Ünï\")",
+			"why": "error text: a client names the first illegal byte of a non-ASCII name (a lone UTF-8 lead byte, Ã); ree's messages are UTF-8 text and name the whole character"
+		},
+		{
+			"line": "tags a,b has true false",
+			"why": "GetTags order: a client listed b then a as a,b (sorted or hashed: two tags do not tell); ree lists them in the order added"
+		}
+	],
+	"json_numbers": [
+		{
+			"line": "decode 0.30000000000000004=0.30000000000000004 0.30000000000000007=0.30000000000000004 195.66666666666666=195.66666666666666 1.7976931348623157e308=1.7976931348623157e+308 2.2250738585072014e-308=2.2250738585072014e-308 4.9e-324=0 2.4703282292062327e-324=0 9007199254740993=9007199254740992 9007199254740992.5=9007199254740992 123456789012345678901234567890=1.2345678901234568e+29 0.1000000000000000055511151231257827=0.10000000000000001 1e23=9.9999999999999992e+22 8.98846567431158e307=8.9884656743115795e+307 1.00000000000000011102230246251565404236316680908203125=1 1.000000000000000111022302462515654042363166809082031251=1.0000000000000002 0.000001=9.9999999999999995e-07 1e-7=9.9999999999999995e-08 -0.0=-0 -0=0 0e10=0 1E-2=0.01 12345678901234567890e-30=1.2345678901234568e-11",
+			"why": "a server's JSONDecode reads 4.9e-324 as 0, where a client (and ree) reads the smallest subnormal"
+		}
+	],
+	"lifetime": [
+		{
+			"line": "weak-values-left Closure,DelayedThread,EnumItem,HeldByHandler,HeldByOther,InWorld,String,Vector3",
+			"why": "garbage collection: ree keeps a table and a signal a script dropped one collection longer than a client"
+		}
+	],
+	"logservice": [
+		{
+			"line": "spawned-error after-spawn,error(parity-log spawned error;Instance),|Hear,out(MessageError:parity-log spawned error +2 lines)",
+			"why": "ScriptContext.Error: a server passes the erroring script as the third argument; ree passes nil"
+		},
+		{
+			"line": "index-error error(@103: attempt to index nil with 'parity-log field';Instance),|Hear,out(MessageError:@103: attempt to index nil with 'parity-log field' +3 lines)",
+			"why": "ScriptContext.Error: a client fires it when the error is raised, with the script and a `<chunk>, line <n> - function <f>` trace; ree fires it on a server only, with nil and Luau's trace"
+		},
+		{
+			"line": "table-error |Hear,out(MessageError:Error occurred, no output from Luau. +3 lines)",
+			"why": "an error whose value is a table: a client logs `Error occurred, no output from Luau.` with the stack; ree logs the value's text"
+		},
+		{
+			"line": "handler-error after-fire,|Hear,error(@115: parity-log handler error;Instance),out(MessageError:@115: parity-log handler error +3 lines)",
+			"why": "ScriptContext.Error: a client fires it when the error is raised, with the script and a `<chunk>, line <n> - function <f>` trace; ree fires it on a server only, with nil and Luau's trace"
+		},
+		{
+			"line": "deferred-error |Hear,error(parity-log deferred error;Instance),out(MessageError:parity-log deferred error +2 lines)",
+			"why": "ScriptContext.Error: a server passes the erroring script as the third argument; ree passes nil"
+		},
+		{
+			"line": "history got=true:table,MessageWarning:parity-log warn one:number,MessageWarning:parity-log warn two:number,MessageWarning:parity-log warn three:number",
+			"why": "LogService:GetLogHistory is not emulated"
+		}
+	],
+	"logservice_text": [
+		{
+			"line": "nested-functions out MessageError[@41: parity-text named /     Stack Begin /     Script '<probe>', Line @41 - function Named /     Script '<probe>', Line @44 - function Outer /     Stack End] trace [ServerScriptService.ParityProbe, line 241 - function Named / ServerScriptService.ParityProbe, line 244 - function Outer / ]",
+			"why": "ScriptContext.Error: a client fires it when the error is raised, with the script and a `<chunk>, line <n> - function <f>` trace; ree fires it on a server only, with nil and Luau's trace"
+		},
+		{
+			"line": "level0 out MessageError[parity-text level0 /     Stack Begin /     Script '<probe>', Line @51 /     Stack End] trace [ServerScriptService.ParityProbe, line 251 / ]",
+			"why": "ScriptContext.Error: a client fires it when the error is raised, with the script and a `<chunk>, line <n> - function <f>` trace; ree fires it on a server only, with nil and Luau's trace"
+		},
+		{
+			"line": "level2 out MessageError[@58: parity-text level2 /     Stack Begin /     Script '<probe>', Line @56 - function Inner /     Script '<probe>', Line @58 /     Stack End] trace [ServerScriptService.ParityProbe, line 256 - function Inner / ServerScriptService.ParityProbe, line 258 / ]",
+			"why": "ScriptContext.Error: a client fires it when the error is raised, with the script and a `<chunk>, line <n> - function <f>` trace; ree fires it on a server only, with nil and Luau's trace"
+		},
+		{
+			"line": "index out MessageError[@63: attempt to index nil with 'parity-text field' /     Stack Begin /     Script '<probe>', Line @63 /     Stack End] trace [ServerScriptService.ParityProbe, line 263 / ]",
+			"why": "ScriptContext.Error: a client fires it when the error is raised, with the script and a `<chunk>, line <n> - function <f>` trace; ree fires it on a server only, with nil and Luau's trace"
+		},
+		{
+			"line": "handler out MessageError[@68: parity-text handler /     Stack Begin /     Script '<probe>', Line @68 /     Stack End] trace [ServerScriptService.ParityProbe, line 268 / ]",
+			"why": "ScriptContext.Error: a client fires it when the error is raised, with the script and a `<chunk>, line <n> - function <f>` trace; ree fires it on a server only, with nil and Luau's trace"
+		},
+		{
+			"line": "deferred out MessageError[@73: parity-text deferred /     Stack Begin /     Script '<probe>', Line @73 /     Stack End] trace [ServerScriptService.ParityProbe, line 273 / ]",
+			"why": "ScriptContext.Error: a client fires it when the error is raised, with the script and a `<chunk>, line <n> - function <f>` trace; ree fires it on a server only, with nil and Luau's trace"
+		}
+	],
+	"math_classify": [
+		{
+			"line": "math-error Vector3 isnan error @109: invalid argument #1 to 'isnan' (number expected, got Vector3) | isinf error invalid argument #1 to 'isinf' (number expected, got Vector3) | isfinite error @111: invalid argument #1 to 'isfinite' (number expected, got Vector3)",
+			"why": "the VM names a vector `vector` in an argument error (luaT_objtypename), the client Vector3 (as vector-format)"
+		}
+	],
+	"reflection": [
+		{
+			"line": "count 656 633",
+			"why": "the class list follows the compiled-in API dump, Studio 0.740 (640 classes); the capture's client is 0.744 (656)"
+		},
+		{
+			"line": "Permits held true true nil",
+			"why": "ree emulates no SecurityCapabilities: Permits holds none and reports itself as not emulated (Output missing)"
+		}
+	],
+	"require_errors": [
+		{
+			"line": "pcall-broken error Requested module experienced an error while loading",
+			"why": "require of a module that errored or required itself: a client raises `Requested module experienced an error while loading` and logs the module's own error once (or `Requested module was required recursively`); ree raises the module's own error"
+		},
+		{
+			"line": "pcall-broken-log MessageError:ReplicatedStorage.ParityRequireLog.Broken:2: parity-req failed",
+			"why": "require of a module that errored or required itself: a client raises `Requested module experienced an error while loading` and logs the module's own error once (or `Requested module was required recursively`); ree raises the module's own error"
+		},
+		{
+			"line": "pcall-table error Requested module experienced an error while loading",
+			"why": "require of a module that errored or required itself: a client raises `Requested module experienced an error while loading` and logs the module's own error once (or `Requested module was required recursively`); ree raises the module's own error"
+		},
+		{
+			"line": "pcall-index error Requested module experienced an error while loading",
+			"why": "require of a module that errored or required itself: a client raises `Requested module experienced an error while loading` and logs the module's own error once (or `Requested module was required recursively`); ree raises the module's own error"
+		},
+		{
+			"line": "pcall-index-log MessageError:ReplicatedStorage.ParityRequireLog.Indexer:2: attempt to index nil with 'parity-req index'",
+			"why": "require of a module that errored or required itself: a client raises `Requested module experienced an error while loading` and logs the module's own error once (or `Requested module was required recursively`); ree raises the module's own error"
+		},
+		{
+			"line": "pcall-cycle error Requested module experienced an error while loading",
+			"why": "require of a module that errored or required itself: a client raises `Requested module experienced an error while loading` and logs the module's own error once (or `Requested module was required recursively`); ree raises the module's own error"
+		},
+		{
+			"line": "pcall-cycle-log MessageError:Requested module was required recursively",
+			"why": "require of a module that errored or required itself: a client raises `Requested module experienced an error while loading` and logs the module's own error once (or `Requested module was required recursively`); ree raises the module's own error"
+		},
+		{
+			"line": "spawned-log MessageError:ReplicatedStorage.ParityRequireLog.Spawned:1: parity-req spawned | MessageError:Requested module experienced an error while loading",
+			"why": "require of a module that errored or required itself: a client raises `Requested module experienced an error while loading` and logs the module's own error once (or `Requested module was required recursively`); ree raises the module's own error"
+		},
+		{
+			"line": "pcall-outer-log MessageError:Requested module experienced an error while loading",
+			"why": "require of a module that errored or required itself: a client raises `Requested module experienced an error while loading` and logs the module's own error once (or `Requested module was required recursively`); ree raises the module's own error"
+		},
+		{
+			"line": "shared-after ReplicatedStorage.ParityRequireLog.Second | ReplicatedStorage.ParityRequireLog.Second",
+			"why": "chunk names: modules with identical source share the first compiled one's chunk name in a client; ree names each module by its own path"
+		},
+		{
+			"line": "shared-renamed ReplicatedStorage.ParityRequireLog.Second",
+			"why": "chunk names: modules with identical source share the first compiled one's chunk name in a client; ree names each module by its own path"
+		},
+		{
+			"line": "shared-destroyed ReplicatedStorage.ParityRequireLog.Second",
+			"why": "chunk names: modules with identical source share the first compiled one's chunk name in a client; ree names each module by its own path"
+		},
+		{
+			"line": "shared-clone ReplicatedStorage.ParityRequireLog.Second",
+			"why": "chunk names: modules with identical source share the first compiled one's chunk name in a client; ree names each module by its own path"
+		}
+	],
+	"tostring": [
+		{
+			"line": "color3-lerp 0.416666657 0.333333343 0.666666627 | 0 0.75 -1 | error Argument 3 missing or nil",
+			"why": "error text: Color3:Lerp without its alpha raises \"Argument 3 missing or nil\" in a client, mlua's conversion error in ree"
+		}
+	],
+	"tween": [
+		{
+			"line": "ease Bezier In E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier)",
+			"why": "TweenService:GetValue of Bezier: a client answers from its own curve; ree raises (the curve is not measured)"
+		},
+		{
+			"line": "ease Bezier Out E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier)",
+			"why": "TweenService:GetValue of Bezier: a client answers from its own curve; ree raises (the curve is not measured)"
+		},
+		{
+			"line": "ease Bezier InOut E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier)",
+			"why": "TweenService:GetValue of Bezier: a client answers from its own curve; ree raises (the curve is not measured)"
+		},
+		{
+			"line": "ease Spring In E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier)",
+			"why": "TweenService:GetValue of Spring: a client answers from its own spring; ree raises (the spring is not measured)"
+		},
+		{
+			"line": "ease Spring Out E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier)",
+			"why": "TweenService:GetValue of Spring: a client answers from its own spring; ree raises (the spring is not measured)"
+		},
+		{
+			"line": "ease Spring InOut E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier)",
+			"why": "TweenService:GetValue of Spring: a client answers from its own spring; ree raises (the spring is not measured)"
+		},
+		{
+			"line": "getvalue-errors error Unable to cast string to float | ok 0.5",
+			"why": "GetValue's argument casts: a client raises `Unable to cast string to float` for an alpha string; ree reads it"
+		},
+		{
+			"line": "tween-final 10 10 1 10 0 0 -1 0 -8.74227766e-08 0 1 0 8.74227766e-08 0 -1 Enum.PlaybackState.Completed",
+			"why": "a tweened CFrame's last digits: TweenService interpolates it in its own order (not the CFrame:Lerp model)"
+		},
+		{
+			"line": "tween-errors error TweenService:Create property named 'Value' cannot be tweened due to type mismatch (property is a 'double', but given type is 'string') | ok Tween | ok Tween",
+			"why": "TweenService:Create's type-mismatch text names the property's and the value's types as the client does not here"
+		}
+	],
+	"values": [
+		{
+			"line": "value SharedTable typeof=SharedTable type=userdata tostring=SharedTable: ADDR",
+			"why": "SharedTable is a userdata in a client; ree makes it a table"
+		},
+		{
+			"line": "value FloatCurveKey typeof=FloatCurveKey type=userdata tostring={Linear, 0, 1, nil, nil}",
+			"why": "FloatCurveKey has no constructor in ree"
+		},
+		{
+			"line": "value RotationCurveKey typeof=RotationCurveKey type=userdata tostring={Linear, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0}",
+			"why": "RotationCurveKey has no constructor in ree"
+		},
+		{
+			"line": "value SecurityCapabilities typeof=SecurityCapabilities type=userdata tostring=",
+			"why": "SecurityCapabilities has no constructor in ree"
+		}
+	]
+}

@@ -1,0 +1,2291 @@
+# Topic: a host's profile of the interpreter, of what it allocates and of the heap it holds
+#
+# What it does: lprofile.cpp and its hooks. While a profile steps, every thread runs the single-step interpreter, which
+# counts each instruction, books what the work counters moved (priced by the host) to it, keeps a calling-context tree,
+# counts the calls of functions the compiler inlined where their copies run (lua_ProfileInline) and records the outcome
+# of each inline cache; the allocation callback learns what an allocation is for
+# (lua_allocblock), a thread's stack growth included; an object can be marked to report its freeing
+# (lua_profilemark); a table's rehash reports its sizes before and after (lua_setprofilerehash), and a table's shape and
+# the inline caches' summed outcomes can be read (lua_profiletable, lua_profilecachetotals); lua_enumheap walks every
+# object and every reference the collector follows. Off, the interpreter pays one thread-local load per entry.
+#
+# Why upstream lacks it: Roblox's profilers live in its engine; the VM's own coverage and single-step hooks give no
+# per-instruction cost.
+
+diff --git a/luau/VM/include/lua.h b/luau/VM/include/lua.h
+index 80a85ef..a5f4ce9 100644
+--- a/luau/VM/include/lua.h
++++ b/luau/VM/include/lua.h
+@@ -400,6 +400,112 @@ LUA_API void lua_setgcclock(lua_State* L, double (*clock)(void* ud), void* ud);
+ // every vector. The table is held for the collector (a weak-keyed one keeps its weak keys).
+ LUA_API void lua_settypeofnames(lua_State* L, int idx, const char* vectorname);
+ 
++/*
++** profiling (lprofile.cpp): a host's profile of this thread's VM. Off, the interpreter pays one thread-local load per entry.
++** While a profile steps, every thread runs the interpreter's single-step variant: each instruction it dispatches is counted,
++** what the work counters (priced by `prices`, one price per 8-byte slot of lua_WorkCounters) and the host's own charges
++** (`*hostwork + *hostdrained`) moved since the previous instruction is booked to that instruction, a calling-context tree
++** is kept, and the instructions with an inline cache record its outcome. Native code keeps running natively, unseen.
++*/
++#define LUA_PROFILE_EXEMPT 1 // a host's own function (lua_setworkexempt)
++#define LUA_PROFILE_NATIVE 2 // compiled to native code
++#define LUA_PROFILE_CACHES 4 // outcomes per instruction: hit, miss (repredicted), slow (metatable path, unsafe environment), other (not a table)
++
++// a copy of a function Luau's compiler inlined into another (-O2): the function, its instructions there, and the calls it
++// stood for (the times its frame stepped into it from outside it)
++typedef struct lua_ProfileInline
++{
++    int function; // the inlined function, a lua_ProfileFunction id
++    int firstpc; // its first and last instruction in the function it was inlined into
++    int lastpc;
++    int parent; // the copy it sits in (an index into the same inlines; -1 for none), when the copied function had it inlined too
++    uint64_t entries;
++} lua_ProfileInline;
++
++typedef struct lua_ProfileFunction
++{
++    const char* source; // the chunk's name as lua_getinfo's short_src gives it
++    const char* name; // "" when anonymous
++    int linedefined;
++    int flags; // LUA_PROFILE_EXEMPT, LUA_PROFILE_NATIVE
++    int sizecode;
++    const uint32_t* code; // its instructions as first seen
++    const int* lines; // the line of each instruction
++    const uint64_t* counts; // dispatches per instruction (NULL without stepping)
++    const double* work; // what was booked to each instruction, in the prices' unit
++    const uint64_t* caches; // LUA_PROFILE_CACHES outcomes per instruction, NULL when none ran
++    uint64_t nativeentries; // entries into its native code
++    double nativework; // booked while its native code ran
++    int ninlines; // copies of other functions inlined into it (while stepping)
++    const lua_ProfileInline* inlines;
++} lua_ProfileFunction;
++
++typedef struct lua_ProfileNode
++{
++    int parent; // -1 for the root (0)
++    int function; // >= 0 a lua_ProfileFunction; -1 the root; < -1 the C function -2 - index (lua_profilecfunction)
++    int callpc; // the parent function's instruction that made the call, -1 when not known (a C or native caller)
++    uint64_t calls;
++    uint64_t insns; // instructions this node executed itself
++    double work; // booked to this node itself
++} lua_ProfileNode;
++
++// starts a profile of L's VM on this thread (0: one runs already). Without `stepping` it only names functions for lua_profilestack
++LUA_API int lua_profilestart(lua_State* L, int stepping, const double* prices, int nprices, const double* hostwork, const double* hostdrained);
++// stops stepping (the last instruction's booking is made); the results stay until lua_profilefree
++LUA_API void lua_profilestop(lua_State* L);
++LUA_API int lua_profilefunctions(lua_State* L, void (*each)(void* ud, int id, const lua_ProfileFunction* f), void* ud);
++LUA_API int lua_profilenodes(lua_State* L, void (*each)(void* ud, int id, const lua_ProfileNode* n), void* ud);
++LUA_API const char* lua_profilecfunction(lua_State* L, int index);
++// the phase what follows belongs to: frames hang from a node of their own (function -1, callpc the phase; phase 0 is the root)
++LUA_API void lua_profilephase(lua_State* L, int phase);
++// what was charged while no instruction ran (between resumptions)
++LUA_API double lua_profileengine(lua_State* L);
++LUA_API void lua_profilefree(lua_State* L);
++// the frames of L, innermost first: function ids as lua_ProfileNode's, and their current lines (-1 for C and native frames)
++LUA_API int lua_profilestack(lua_State* L, int* functions, int* lines, int max);
++
++// what the memory an onallocate callback reports is for (lua_allocblock)
++#define LUA_ALLOC_OTHER 0
++#define LUA_ALLOC_OBJECT 1 // a collectable object: lua_allocblock returns its block
++#define LUA_ALLOC_TABLE 2 // a table's array or hash part
++#define LUA_ALLOC_THREAD 3 // a thread's stack or call frames
++#define LUA_ALLOC_STRINGS 4 // the string table
++#define LUA_ALLOC_PROTO 5 // a loaded function's arrays (code, constants, line info)
++
++// during an onallocate callback: the collectable object allocated (NULL for other memory) and what the memory is for
++LUA_API void* lua_allocblock(lua_State* L, int* kind);
++// an object's type (LUA_T*), and for a userdata its tag, its data and its metatable's __type
++LUA_API int lua_profileobject(void* block, int* tag, void** data, const char** type);
++// where a userdata's data starts in its block (lua_enumheap names a userdata by its data)
++LUA_API size_t lua_profileudataoffset(void);
++// marks an object: the profile's `freed` hook is called when the collector frees it
++LUA_API void lua_profilemark(void* block);
++LUA_API void lua_setprofilefreed(lua_State* L, void (*freed)(void* ud, void* block), void* ud);
++// a table rehashed to fit a new key: the table, its array and hash sizes (nodes, 0 for none) before and after, the keys it
++// moved with the new one (what the work counters' `rehashed` counts: a key that is not an integer leaves the array part in
++// place) and whether a script's own instruction made it
++LUA_API void lua_setprofilerehash(lua_State* L,
++    void (*rehash)(void* ud, lua_State* L, void* table, int oldarray, int oldnodes, int newarray, int newnodes, int keys, int script), void* ud);
++// a table's shape (ptr as lua_enumheap names it: the table): its array part's slots and how many hold a value, its hash part's
++// nodes (0: none) and how many hold a value; 0 when ptr is not a table
++LUA_API int lua_profiletable(void* ptr, int* arrayslots, int* arrayused, int* nodes, int* nodesused);
++// the bytes of a table itself, of an array slot and of a hash node
++LUA_API void lua_profiletablebytes(size_t* header, size_t* slot, size_t* node);
++// the outcomes of the instructions with an inline cache, summed over the profile's functions (a host's own aside) by kind:
++// builtin fast path (the FASTCALL family), global slot (GETGLOBAL, SETGLOBAL), import (GETIMPORT), method slot (NAMECALL),
++// table key slot (GETTABLEKS, SETTABLEKS); LUA_PROFILE_CACHES outcomes each, into out[5 * LUA_PROFILE_CACHES]
++LUA_API int lua_profilecachetotals(lua_State* L, uint64_t* out);
++// every collectable object (as luaC_enumheap gives them, lgcdebug.cpp) and every reference the collector follows between
++// them, with the collector's roots as edges from NULL (the main thread, the registry, the basic types' metatables, the
++// fixed objects): what no edge reaches is garbage the next collection frees. Objects a sweep has yet to free go to `dead`
++// (type and size; NULL: left out)
++LUA_API void lua_enumheap(lua_State* L, void* context, void (*node)(void* context, void* ptr, uint8_t tt, uint8_t memcat, size_t size, const char* name),
++    void (*edge)(void* context, void* from, void* to, const char* name), void (*dead)(void* context, uint8_t tt, size_t size));
++// the collector's state: GCSpause 0, GCSpropagate 1, GCSpropagateagain 2, GCSatomic 3, GCSsweep 4 (lgc.h)
++LUA_API int lua_gcstate(lua_State* L);
++
++/*
+ ** memory statistics
+ ** all allocated bytes are attributed to the memory category of the running thread (0..LUA_MEMORY_CATEGORIES-1)
+ */
+diff --git a/luau/VM/src/ldo.cpp b/luau/VM/src/ldo.cpp
+index 6262d7a..b8942f5 100644
+--- a/luau/VM/src/ldo.cpp
++++ b/luau/VM/src/ldo.cpp
+@@ -8,6 +8,7 @@
+ #include "lmem.h"
+ #include "ltable.h"
+ #include "lvm.h"
++#include "lprofile.h"
+ 
+ #if LUA_USE_LONGJMP
+ #include <setjmp.h>
+@@ -182,6 +183,23 @@ static void correctstack(lua_State* L, TValue* oldstack)
+     L->base = (L->base - oldstack) + L->stack;
+ }
+ 
++// reports a growth of this thread's own stack or CallInfo array to the allocation callback, which walks the
++// frames: only once the thread points at the new block (luaM_realloc_ skips these), and a frame being set up
++// for the call that needs the room has no pc yet, so it is reported from its caller's
++static void reportthreadalloc(lua_State* L, void* block, size_t osize, size_t nsize, int fornewci)
++{
++    if (LUAU_LIKELY(!L->global->cb.onallocate))
++        return;
++
++    if (fornewci)
++        L->ci--;
++    luaP_allockind = LUA_ALLOC_THREAD;
++    L->global->cb.onallocate(L, block, osize, nsize, L->memcat, LUA_T_ALL, 0);
++    luaP_allockind = 0;
++    if (fornewci)
++        L->ci++;
++}
++
+ void luaD_reallocstack(lua_State* L, int newsize, int fornewci)
+ {
+     // throw 'out of memory' error because space for a custom error message cannot be guaranteed here
+@@ -202,6 +220,7 @@ void luaD_reallocstack(lua_State* L, int newsize, int fornewci)
+ 
+     TValue* oldstack = L->stack;
+     int realsize = newsize + EXTRA_STACK;
++    int oldsize = L->stacksize;
+     LUAU_ASSERT(L->stack_last - L->stack == L->stacksize - EXTRA_STACK);
+     luaM_reallocarray(L, L->stack, L->stacksize, realsize, TValue, L->memcat);
+     TValue* newstack = L->stack;
+@@ -210,15 +229,18 @@ void luaD_reallocstack(lua_State* L, int newsize, int fornewci)
+     L->stacksize = realsize;
+     L->stack_last = newstack + newsize;
+     correctstack(L, oldstack);
++    reportthreadalloc(L, L->stack, size_t(oldsize) * sizeof(TValue), size_t(realsize) * sizeof(TValue), fornewci);
+ }
+ 
+ void luaD_reallocCI(lua_State* L, int newsize)
+ {
+     CallInfo* oldci = L->base_ci;
++    int oldsize = L->size_ci;
+     luaM_reallocarray(L, L->base_ci, L->size_ci, newsize, CallInfo, L->memcat);
+     L->size_ci = newsize;
+     L->ci = (L->ci - oldci) + L->base_ci;
+     L->end_ci = L->base_ci + L->size_ci - 1;
++    reportthreadalloc(L, L->base_ci, size_t(oldsize) * sizeof(CallInfo), size_t(newsize) * sizeof(CallInfo), 0);
+ }
+ 
+ void luaD_growstack(lua_State* L, int n)
+diff --git a/luau/VM/src/lgc.cpp b/luau/VM/src/lgc.cpp
+index 303b54a..1e0d5a0 100644
+--- a/luau/VM/src/lgc.cpp
++++ b/luau/VM/src/lgc.cpp
+@@ -13,6 +13,7 @@
+ #include "lbuffer.h"
+ #include "lclass.h"
+ #include "lvector.h"
++#include "lprofile.h"
+ 
+ #include <string.h>
+ 
+@@ -782,6 +783,9 @@ static void freeobj(lua_State* L, GCObject* o, lua_Page* page)
+ {
+     if (o->gch.marked & bitmask(HASHIDBIT))
+         luaH_forgetid(o);
++    if (o->gch.marked & bitmask(PROFBIT))
++        luaP_freed(L, o);
++
+     switch (o->gch.tt)
+     {
+     case LUA_TPROTO:
+@@ -831,6 +835,8 @@ void freeobjtagged<LUA_TBUFFER>(lua_State* L, GCObject* o, lua_Page* page)
+ {
+     if (o->gch.marked & bitmask(HASHIDBIT))
+         luaH_forgetid(o);
++    if (o->gch.marked & bitmask(PROFBIT))
++        luaP_freed(L, o);
+     luaB_freebuffer(L, gco2buf(o), page);
+ }
+ 
+diff --git a/luau/VM/src/lgc.h b/luau/VM/src/lgc.h
+index 4699f47..4ac0bf0 100644
+--- a/luau/VM/src/lgc.h
++++ b/luau/VM/src/lgc.h
+@@ -59,6 +59,8 @@
+ #define FIXEDBIT 3
+ // the object has an id in ltable.cpp's hash map (luaH_forgetid when it is freed)
+ #define HASHIDBIT 4
++// a host's profile marked the object (lua_profilemark): freeing it calls the profile's hook (lprofile.cpp luaP_freed)
++#define PROFBIT 5
+ #define WHITEBITS bit2mask(WHITE0BIT, WHITE1BIT)
+ 
+ #define iswhite(x) test2bits((x)->gch.marked, WHITE0BIT, WHITE1BIT)
+diff --git a/luau/VM/src/lmem.cpp b/luau/VM/src/lmem.cpp
+index 09210ac..bb33501 100644
+--- a/luau/VM/src/lmem.cpp
++++ b/luau/VM/src/lmem.cpp
+@@ -5,6 +5,8 @@
+ #include "lstate.h"
+ #include "ldo.h"
+ #include "ldebug.h"
++#include "lprofile.h"
++#include "lgc.h"
+ 
+ #include <string.h>
+ 
+@@ -668,6 +670,7 @@ void* luaM_new_(lua_State* L, size_t nsize, uint8_t memcat)
+     if (LUAU_UNLIKELY(!!g->cb.onallocate))
+     {
+         g->cb.onallocate(L, block, 0, nsize, memcat, LUA_T_ALL, 0);
++        luaP_allockind = 0;
+     }
+ 
+     return block;
+@@ -690,6 +693,7 @@ void* luaM_trynew_(lua_State* L, size_t nsize, uint8_t memcat)
+     if (LUAU_UNLIKELY(!!g->cb.onallocate))
+     {
+         g->cb.onallocate(L, block, 0, nsize, memcat, LUA_T_ALL, 0);
++        luaP_allockind = 0;
+     }
+ 
+     return block;
+@@ -730,7 +734,11 @@ GCObject* luaM_newgco_(lua_State* L, size_t nsize, uint8_t memcat, int tt, int t
+ 
+     if (LUAU_UNLIKELY(!!g->cb.onallocate))
+     {
++        // (lua_allocblock: the callback can name the object once it is initialized)
++        luaP_allocblock = block;
+         g->cb.onallocate(L, block, 0, nsize, memcat, tt, tag);
++        luaP_allocblock = NULL;
++        luaP_allockind = 0;
+     }
+ 
+     return (GCObject*)block;
+@@ -778,7 +786,11 @@ GCObject* luaM_newgcocaged_(lua_State* L, size_t nsize, uint8_t memcat, int tt,
+ 
+     if (LUAU_UNLIKELY(!!g->cb.onallocate))
+     {
++        // (lua_allocblock: the callback can name the object once it is initialized)
++        luaP_allocblock = block;
+         g->cb.onallocate(L, block, 0, nsize, memcat, tt, tag);
++        luaP_allocblock = NULL;
++        luaP_allockind = 0;
+     }
+ 
+     return (GCObject*)block;
+@@ -823,7 +835,11 @@ GCObject* luaM_newgcotagged_(lua_State* L, size_t nsize, uint8_t memcat)
+ 
+     if (LUAU_UNLIKELY(!!g->cb.onallocate))
+     {
++        // (lua_allocblock: the callback can name the object once it is initialized)
++        luaP_allocblock = block;
+         g->cb.onallocate(L, block, 0, nsize, memcat, type, 0);
++        luaP_allocblock = NULL;
++        luaP_allockind = 0;
+     }
+ 
+     return (GCObject*)block;
+@@ -853,7 +869,11 @@ GCObject* luaM_newgcofixed_(lua_State* L, size_t nsize, uint8_t memcat, int tt)
+ 
+     if (LUAU_UNLIKELY(!!g->cb.onallocate))
+     {
++        // (lua_allocblock: the callback can name the object once it is initialized)
++        luaP_allocblock = block;
+         g->cb.onallocate(L, block, 0, nsize, memcat, tt, 0);
++        luaP_allocblock = NULL;
++        luaP_allockind = 0;
+     }
+ 
+     return (GCObject*)block;
+@@ -1048,9 +1068,11 @@ void* luaM_realloc_(lua_State* L, void* block, size_t osize, size_t nsize, uint8
+     g->totalbytes = (g->totalbytes - osize) + nsize;
+     g->memcatbytes[memcat] += nsize - osize;
+ 
+-    if (LUAU_UNLIKELY(!!g->cb.onallocate))
++    // a thread's own stack and CallInfo array are reported by ldo.cpp (reportthreadalloc) once the thread points at the new block
++    if (LUAU_UNLIKELY(!!g->cb.onallocate) && block != (void*)L->stack && block != (void*)L->base_ci)
+     {
+         g->cb.onallocate(L, result, osize, nsize, memcat, LUA_T_ALL, 0);
++        luaP_allockind = 0;
+     }
+ 
+     return result;
+diff --git a/luau/VM/src/lprofile.cpp b/luau/VM/src/lprofile.cpp
+new file mode 100644
+index 0000000..12c00d4
+--- /dev/null
++++ b/luau/VM/src/lprofile.cpp
+@@ -0,0 +1,1541 @@
++// This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
++// A host's profile of the interpreter (lua.h "profiling"; the engine's patches/luau/12-profiling.patch). While a profile steps, every thread of its
++// VM runs luau_execute's single-step variant, whose dispatch calls luaP_step before each instruction:
++// - it counts the instructions each function executes, by instruction;
++// - it books what the work counters (lua_workcounters, priced by the host) and the host's own charges moved since the
++//   previous instruction to that instruction, so a line's cost is exact and its sum is the host's clock;
++// - it keeps a calling-context tree (call counts, inclusive costs, callers and callees) from the frames it sees;
++// - it records the outcome of the instructions with an inline cache (GETGLOBAL / SETGLOBAL / GETTABLEKS / SETTABLEKS /
++//   NAMECALL slot predictions, GETIMPORT's resolved import, FASTCALL's fast path), read before the instruction runs.
++// Native code keeps running natively (its instructions are not dispatched, so not seen): a function's entries into it
++// and the work booked while it ran are kept apart. Nothing here allocates on the VM's heap or changes what the
++// interpreter does.
++#include "lprofile.h"
++
++#include "lua.h"
++#include "lstate.h"
++#include "lfunc.h"
++#include "ltable.h"
++#include "ltm.h"
++#include "lgc.h"
++#include "ldebug.h"
++#include "lbytecode.h"
++#include "lmem.h"
++#include "lstring.h"
++#include "ludata.h"
++#include "lbuffer.h"
++
++#include <algorithm>
++#include <atomic>
++#include <string.h>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++// (the flags under which the collector marks the roots and references the heap walk follows: lgc.cpp)
++LUAU_FASTFLAG(LuauGcTraceUdata)
++LUAU_FASTFLAG(LuauFastpcall)
++LUAU_FASTFLAG(LuauCoroutineFinally)
++
++thread_local lua_ProfileState* luaP_state = NULL;
++thread_local uint8_t luaP_allockind = 0;
++thread_local void* luaP_allocblock = NULL;
++
++namespace
++{
++
++enum
++{
++    CACHE_HIT = 0,
++    CACHE_MISS = 1,
++    CACHE_SLOW = 2,
++    CACHE_OTHER = 3,
++};
++
++struct ProfFunction
++{
++    Proto* proto = NULL;
++    std::string source;
++    std::string name;
++    int linedefined = 0;
++    int flags = 0;
++    std::vector<uint32_t> code;
++    std::vector<int> lines;
++    std::vector<uint64_t> counts;
++    std::vector<double> work;
++    std::vector<uint64_t> caches;
++    uint64_t nativeentries = 0;
++    double nativework = 0;
++    // the last line its instructions carry, and its chunk (an index into lua_ProfileState::chunks; -1 when not stepping)
++    int lastline = 0;
++    int chunk = -1;
++    // copies of other functions Luau's compiler inlined into this one (-O2 compiles a small local function's body into its
++    // callers, on the body's own lines): the innermost copy each instruction sits in (index + 1, 0 for none) and the
++    // copies, found at its first step
++    bool inlinesfound = false;
++    std::vector<int> inlineof;
++    std::vector<lua_ProfileInline> inlines;
++};
++
++// the functions of one chunk the profile registered, and the innermost of them that carries each line
++struct ProfChunk
++{
++    std::vector<int> functions;
++    std::vector<int> owner;
++    bool dirty = true;
++};
++
++struct ProfCFunction
++{
++    lua_CFunction f;
++    const char* debugname;
++    std::string name;
++};
++
++struct ProfNode
++{
++    int parent;
++    int function;
++    int callpc;
++    uint64_t calls;
++    uint64_t insns;
++    double work;
++};
++
++struct ProfFrame
++{
++    int depth;
++    Closure* cl;
++    int node;
++    bool returning;
++    // the instruction this frame stepped last (kept for a function with inlined copies, to tell an entry into one)
++    int lastpc;
++};
++
++struct NodeKey
++{
++    int parent;
++    int function;
++    int callpc;
++
++    bool operator==(const NodeKey& other) const
++    {
++        return parent == other.parent && function == other.function && callpc == other.callpc;
++    }
++};
++
++struct NodeKeyHash
++{
++    size_t operator()(const NodeKey& key) const
++    {
++        uint64_t h = uint64_t(uint32_t(key.parent)) * 0x9e3779b97f4a7c15ull;
++        h ^= uint64_t(uint32_t(key.function)) * 0xc2b2ae3d27d4eb4full;
++        h ^= uint64_t(uint32_t(key.callpc)) * 0x165667b19e3779f9ull;
++        return size_t(h ^ (h >> 29));
++    }
++};
++
++struct CFunctionKey
++{
++    lua_CFunction f;
++    const char* debugname;
++
++    bool operator==(const CFunctionKey& other) const
++    {
++        return f == other.f && debugname == other.debugname;
++    }
++};
++
++struct CFunctionKeyHash
++{
++    size_t operator()(const CFunctionKey& key) const
++    {
++        return std::hash<const void*>()((const void*)key.f) ^ (std::hash<const void*>()(key.debugname) * 31);
++    }
++};
++
++static_assert(sizeof(lua_WorkCounters) % sizeof(uint64_t) == 0, "the work counters are 8-byte slots");
++const int kWorkSlots = int(sizeof(lua_WorkCounters) / sizeof(uint64_t));
++const int kOpsSlot = int(offsetof(lua_WorkCounters, ops) / sizeof(uint64_t));
++const int kHostOpsSlot = int(offsetof(lua_WorkCounters, hostops) / sizeof(uint64_t));
++const int kNativeOpsSlot = int(offsetof(lua_WorkCounters, nativeops) / sizeof(uint64_t));
++
++} // namespace
++
++struct lua_ProfileState
++{
++    global_State* g = NULL;
++    // the stepping interpreter counts instructions (else the profile only names functions for lua_profilestack)
++    bool stepping = false;
++    // work is booked (the host gave prices for the work counters' slots)
++    bool pricing = false;
++    std::vector<double> prices;
++    std::vector<int> scalars;
++    const double* hostwork = NULL;
++    const double* hostdrained = NULL;
++    double lasthost = 0;
++    lua_WorkCounters last;
++    // the instruction dispatched last, and the counts its dispatch is in: ops for a script's function, nativeops for one a code
++    // generator would compile (LUAU_PROTO_WORK_NATIVE), hostops for a host's own
++    int lastop = -1;
++    int lastbase = 0;
++    // where the next booking goes: an instruction of a function (pc -1: its native code) and its tree node, or the
++    // engine (target -1: what was charged while no instruction ran)
++    int target = -1;
++    int targetpc = 0;
++    int targetnode = 0;
++    double enginework = 0;
++    // the frame the last step ran in
++    lua_State* lastL = NULL;
++    CallInfo* lastci = NULL;
++    std::vector<ProfFrame>* lastframes = NULL;
++    int lastnode = 0;
++    // a host's own function (lua_setworkexempt) books to the script instruction that called it
++    int hosttarget = -1;
++    int hosttargetpc = 0;
++    int hosttargetnode = 0;
++    // the node a thread's outermost frame hangs from: the root, or the current phase's node (lua_profilephase)
++    int phaseroot = 0;
++    // nesting of the stepping interpreter
++    int depth = 0;
++    // native code ran: any counter may move across a frame change
++    bool nativeseen = false;
++    // a fastcall whose outcome the next step tells
++    lua_State* fastL = NULL;
++    CallInfo* fastci = NULL;
++    const Instruction* fastnext = NULL;
++    int fastfunction = 0;
++    int fastpc = 0;
++    std::vector<ProfFunction> functions;
++    std::vector<ProfCFunction> cfunctions;
++    std::unordered_map<CFunctionKey, int, CFunctionKeyHash> cfunctionids;
++    std::vector<ProfNode> nodes;
++    std::unordered_map<NodeKey, int, NodeKeyHash> children;
++    std::unordered_map<lua_State*, std::vector<ProfFrame>> threads;
++    // while stepping, every function of a chunk is registered when the first one is seen (by the chunk's source), so a
++    // function's copies inlined into another are known by the lines they carry even when it never runs itself
++    std::vector<ProfChunk> chunks;
++    std::unordered_map<std::string, int> chunkids;
++    // whether a function's own instructions hold a copy of another's (inlined into it): (function << 32 | other) -> yes
++    std::unordered_map<uint64_t, bool> inlinedin;
++    // objects marked with lua_profilemark
++    void (*freed)(void* ud, void* block) = NULL;
++    void* freedud = NULL;
++    // tables that rehashed (lua_setprofilerehash)
++    void (*rehash)(void* ud, lua_State* L, void* table, int oldarray, int oldnodes, int newarray, int newnodes, int keys, int script) = NULL;
++    void* rehashud = NULL;
++};
++
++static lua_ProfileState* stateof(lua_State* L)
++{
++    lua_ProfileState* s = luaP_state;
++    return s && s->g == L->global ? s : NULL;
++}
++
++bool luaP_stepping(lua_State* L)
++{
++    lua_ProfileState* s = luaP_state;
++    return s && s->stepping && s->g == L->global;
++}
++
++bool luaP_native(lua_State* L)
++{
++    return luaP_stepping(L);
++}
++
++static int functionof(lua_ProfileState* s, Proto* p)
++{
++    uintptr_t id = uintptr_t(p->userdata);
++    if (id != 0 && id <= s->functions.size() && s->functions[id - 1].proto == p)
++        return int(id - 1);
++
++    ProfFunction f;
++    f.proto = p;
++    char buf[LUA_IDSIZE];
++    f.source = p->source ? luaO_chunkid(buf, sizeof(buf), getstr(p->source), p->source->len) : "?";
++    if (p->debugname)
++        f.name = getstr(p->debugname);
++    f.linedefined = p->linedefined;
++    f.flags = ((p->flags & LUAU_PROTO_WORK_EXEMPT) ? LUA_PROFILE_EXEMPT : 0) | (p->execdata ? LUA_PROFILE_NATIVE : 0);
++    f.code.assign(p->code, p->code + p->sizecode);
++    f.lines.resize(p->sizecode);
++    f.lastline = p->linedefined;
++    for (int pc = 0; pc < p->sizecode; ++pc)
++    {
++        f.lines[pc] = luaG_getline(p, pc);
++        f.lastline = std::max(f.lastline, f.lines[pc]);
++    }
++    if (s->stepping)
++    {
++        f.counts.assign(p->sizecode, 0);
++        f.work.assign(p->sizecode, 0.0);
++        std::string source = p->source ? std::string(getstr(p->source), p->source->len) : std::string();
++        auto known = s->chunkids.find(source);
++        if (known == s->chunkids.end())
++        {
++            known = s->chunkids.emplace(source, int(s->chunks.size())).first;
++            s->chunks.emplace_back();
++        }
++        f.chunk = known->second;
++    }
++    s->functions.push_back(std::move(f));
++    p->userdata = (void*)uintptr_t(s->functions.size());
++    int index = int(s->functions.size() - 1);
++    if (s->stepping)
++    {
++        ProfChunk& chunk = s->chunks[s->functions[index].chunk];
++        chunk.functions.push_back(index);
++        chunk.dirty = true;
++        // (the functions it defines: one inlined elsewhere is known by its lines before, or without, running itself)
++        for (int i = 0; i < p->sizep; ++i)
++            functionof(s, p->p[i]);
++    }
++    return index;
++}
++
++// the innermost registered function of a chunk carrying each line
++static const std::vector<int>& chunkowners(lua_ProfileState* s, ProfChunk& chunk)
++{
++    if (!chunk.dirty)
++        return chunk.owner;
++    chunk.dirty = false;
++    std::vector<int> bysize = chunk.functions;
++    std::stable_sort(
++        bysize.begin(),
++        bysize.end(),
++        [s](int a, int b)
++        {
++            return s->functions[a].lastline - s->functions[a].linedefined > s->functions[b].lastline - s->functions[b].linedefined;
++        }
++    );
++    int last = 0;
++    for (int id : bysize)
++        last = std::max(last, s->functions[id].lastline);
++    chunk.owner.assign(size_t(last) + 1, -1);
++    // (larger first, so a nested function's lines end as its own)
++    for (int id : bysize)
++        for (int line = std::max(0, s->functions[id].linedefined); line <= s->functions[id].lastline; ++line)
++            chunk.owner[line] = id;
++    return chunk.owner;
++}
++
++static bool closureop(int op)
++{
++    return op == LOP_NEWCLOSURE || op == LOP_DUPCLOSURE || op == LOP_CAPTURE;
++}
++
++// whether `function`'s own instructions carry a line of `other`'s (other than creating its closure): `other` was inlined into
++// it, so a copy of `function` inlined elsewhere holds copies of `other`
++static bool inlinedinto(lua_ProfileState* s, int function, int other)
++{
++    uint64_t key = (uint64_t(uint32_t(function)) << 32) | uint32_t(other);
++    auto known = s->inlinedin.find(key);
++    if (known != s->inlinedin.end())
++        return known->second;
++    const ProfFunction& f = s->functions[function];
++    const ProfFunction& o = s->functions[other];
++    bool inlined = false;
++    for (size_t pc = 0; pc < f.code.size() && !inlined; ++pc)
++        inlined = f.lines[pc] >= o.linedefined && f.lines[pc] <= o.lastline && !closureop(LUAU_INSN_OP(f.code[pc]));
++    s->inlinedin.emplace(key, inlined);
++    return inlined;
++}
++
++// the copies of other functions inlined into `function`: runs of its instructions on another function's lines (a function
++// enclosing it aside). A copy of a function inlined into the copied one sits inside its copy; the same instructions on the
++// same lines again right after a copy are the next copy of that function
++static void findinlines(lua_ProfileState* s, int function)
++{
++    ProfFunction& f = s->functions[function]; // (nothing below registers a function: the reference stays valid)
++    f.inlinesfound = true;
++    if (f.chunk < 0)
++        return;
++    const std::vector<int>& owner = chunkowners(s, s->chunks[f.chunk]);
++    int n = int(f.code.size());
++    std::vector<int> ownerof(n, -1);
++    bool any = false;
++    for (int pc = 0; pc < n; ++pc)
++    {
++        int line = f.lines[pc];
++        if (line < 0 || size_t(line) >= owner.size())
++            continue;
++        int o = owner[line];
++        if (o < 0 || o == function)
++            continue;
++        const ProfFunction& other = s->functions[o];
++        if (other.linedefined <= f.linedefined && f.lastline <= other.lastline)
++            continue;
++        ownerof[pc] = o;
++        any = true;
++    }
++    if (!any)
++        return;
++    // a closure's creation is the defining function's own, and so is the rest of the statement creating it that lies on the
++    // closure's first or last line, next to it (the call it is an argument of, `function a.b()`'s store, a `return function`)
++    for (int pc = 0; pc < n; ++pc)
++    {
++        int op = LUAU_INSN_OP(f.code[pc]);
++        if (op != LOP_NEWCLOSURE && op != LOP_DUPCLOSURE)
++            continue;
++        ownerof[pc] = -1;
++        int d = LUAU_INSN_D(f.code[pc]);
++        Proto* created = NULL;
++        if (op == LOP_NEWCLOSURE && d >= 0 && d < f.proto->sizep)
++            created = f.proto->p[d];
++        else if (op == LOP_DUPCLOSURE && d >= 0 && d < f.proto->sizek && ttisfunction(&f.proto->k[d]) && !clvalue(&f.proto->k[d])->isC)
++            created = clvalue(&f.proto->k[d])->l.p;
++        uintptr_t id = created ? uintptr_t(created->userdata) : 0;
++        if (id == 0 || id > s->functions.size() || s->functions[id - 1].proto != created)
++            continue;
++        int q = int(id - 1);
++        int first = s->functions[q].linedefined;
++        int last = s->functions[q].lastline;
++        for (int k = pc - 1; k >= 0 && ownerof[k] == q && (f.lines[k] == first || f.lines[k] == last); --k)
++            ownerof[k] = -1;
++        for (int k = pc + 1; k < n && (LUAU_INSN_OP(f.code[k]) == LOP_CAPTURE || (ownerof[k] == q && (f.lines[k] == first || f.lines[k] == last))); ++k)
++            ownerof[k] = -1;
++    }
++    std::vector<int> open;
++    for (int pc = 0; pc < n; ++pc)
++    {
++        int o = ownerof[pc];
++        while (!open.empty())
++        {
++            int top = f.inlines[open.back()].function;
++            if (o >= 0 && (o == top || inlinedinto(s, top, o)))
++                break;
++            f.inlines[open.back()].lastpc = pc - 1;
++            open.pop_back();
++        }
++        if (o < 0)
++            continue;
++        if (!open.empty() && f.inlines[open.back()].function == o)
++        {
++            lua_ProfileInline& top = f.inlines[open.back()];
++            int length = pc - top.firstpc;
++            bool again = length > 0 && pc + length <= n;
++            for (int i = 0; again && i < length; ++i)
++                again = LUAU_INSN_OP(f.code[top.firstpc + i]) == LUAU_INSN_OP(f.code[pc + i]) && f.lines[top.firstpc + i] == f.lines[pc + i];
++            if (!again)
++                continue;
++            top.lastpc = pc - 1;
++            int parent = top.parent;
++            open.pop_back();
++            f.inlines.push_back(lua_ProfileInline{o, pc, pc, parent, 0});
++            open.push_back(int(f.inlines.size() - 1));
++            continue;
++        }
++        f.inlines.push_back(lua_ProfileInline{o, pc, pc, open.empty() ? -1 : open.back(), 0});
++        open.push_back(int(f.inlines.size() - 1));
++    }
++    while (!open.empty())
++    {
++        f.inlines[open.back()].lastpc = n - 1;
++        open.pop_back();
++    }
++    if (f.inlines.empty())
++        return;
++    // (a copy comes after the one it sits in, so the innermost is written last)
++    f.inlineof.assign(n, 0);
++    for (size_t i = 0; i < f.inlines.size(); ++i)
++        for (int pc = f.inlines[i].firstpc; pc <= f.inlines[i].lastpc; ++pc)
++            f.inlineof[pc] = int(i + 1);
++}
++
++// counts the copies `at` enters: the ones it sits in that the frame's previous instruction did not (a call made inside a copy
++// returns to its frame's last instruction, still inside; a loop inside a copy jumps within it)
++static void enterinlines(lua_ProfileState* s, ProfFunction& f, int at)
++{
++    ProfFrame* frame = (s->lastframes && !s->lastframes->empty()) ? &s->lastframes->back() : NULL;
++    int prev = frame ? frame->lastpc : -1;
++    if (frame)
++        frame->lastpc = at;
++    int from = (prev >= 0 && size_t(prev) < f.inlineof.size()) ? f.inlineof[prev] : 0;
++    for (int copy = f.inlineof[at]; copy != 0; copy = f.inlines[copy - 1].parent + 1)
++    {
++        bool inside = false;
++        for (int c = from; c != 0 && !inside; c = f.inlines[c - 1].parent + 1)
++            inside = c == copy;
++        if (inside)
++            break;
++        f.inlines[copy - 1].entries++;
++    }
++}
++
++static int cfunctionof(lua_ProfileState* s, Closure* cl)
++{
++    // (a C function's name is a string object: its characters stay while the closure does)
++    const char* debugname = cl->c.debugname ? getstr(cl->c.debugname) : NULL;
++    CFunctionKey key = {cl->c.f, debugname};
++    auto found = s->cfunctionids.find(key);
++    if (found != s->cfunctionids.end())
++        return found->second;
++    ProfCFunction c = {cl->c.f, debugname, debugname ? debugname : ""};
++    s->cfunctions.push_back(c);
++    int id = int(s->cfunctions.size() - 1);
++    s->cfunctionids.emplace(key, id);
++    return id;
++}
++
++static int child(lua_ProfileState* s, int parent, int function, int callpc)
++{
++    NodeKey key = {parent, function, callpc};
++    auto found = s->children.find(key);
++    if (found != s->children.end())
++        return found->second;
++    ProfNode node = {parent, function, callpc, 0, 0, 0.0};
++    s->nodes.push_back(node);
++    int id = int(s->nodes.size() - 1);
++    s->children.emplace(key, id);
++    return id;
++}
++
++// the tree node of L's current frame, from the frames this thread showed before (an error may have unwound frames, a
++// C function may have called a function again at the same depth: a frame that returned or holds another function goes)
++static void reconcile(lua_ProfileState* s, lua_State* L)
++{
++    std::vector<ProfFrame>* frames = (L == s->lastL && s->lastframes) ? s->lastframes : &s->threads[L];
++    int depth = int(L->ci - L->base_ci);
++    while (!frames->empty())
++    {
++        ProfFrame& top = frames->back();
++        if (top.depth > depth || top.returning)
++        {
++            frames->pop_back();
++            continue;
++        }
++        CallInfo* ci = L->base_ci + top.depth;
++        if (!ttisfunction(ci->func) || clvalue(ci->func) != top.cl)
++        {
++            frames->pop_back();
++            continue;
++        }
++        break;
++    }
++    int parent = frames->empty() ? s->phaseroot : frames->back().node;
++    for (int d = frames->empty() ? 0 : frames->back().depth + 1; d <= depth; ++d)
++    {
++        CallInfo* ci = L->base_ci + d;
++        if (!ttisfunction(ci->func))
++            continue;
++        Closure* cl = clvalue(ci->func);
++        int function = cl->isC ? -2 - cfunctionof(s, cl) : functionof(s, cl->l.p);
++        int callpc = -1;
++        if (d > 0)
++        {
++            CallInfo* up = ci - 1;
++            if (isLua(up) && !(up->flags & LUA_CALLINFO_NATIVE))
++                callpc = pcRel(up->savedpc, ci_func(up)->l.p);
++        }
++        int node = child(s, parent, function, callpc);
++        s->nodes[node].calls++;
++        frames->push_back(ProfFrame{d, cl, node, false, -1});
++        parent = node;
++    }
++    s->lastL = L;
++    s->lastci = L->ci;
++    s->lastframes = frames;
++    s->lastnode = frames->empty() ? 0 : frames->back().node;
++    s->hosttarget = -1;
++    for (auto it = frames->rbegin(); it != frames->rend(); ++it)
++    {
++        if (it->cl->isC || (it->cl->l.p->flags & LUAU_PROTO_WORK_EXEMPT))
++            continue;
++        Proto* p = it->cl->l.p;
++        CallInfo* ci = L->base_ci + it->depth;
++        s->hosttarget = functionof(s, p);
++        s->hosttargetpc = (ci->flags & LUA_CALLINFO_NATIVE) ? -1 : pcRel(ci->savedpc, p);
++        s->hosttargetnode = it->node;
++        break;
++    }
++}
++
++static void add(lua_ProfileState* s, double delta)
++{
++    if (s->target >= 0)
++    {
++        ProfFunction& f = s->functions[s->target];
++        if (s->targetpc >= 0 && size_t(s->targetpc) < f.work.size())
++            f.work[s->targetpc] += delta;
++        else
++            f.nativework += delta;
++        s->nodes[s->targetnode].work += delta;
++    }
++    else
++    {
++        s->enginework += delta;
++    }
++}
++
++// books what the work counters and the host's charges moved since the last booking: the instruction dispatched since
++// (one count in its function's instruction array) and what it did (allocations, calls, the host's charges)
++static void book(lua_ProfileState* s, lua_State* L)
++{
++    if (!s->pricing)
++        return;
++    double delta = 0;
++    if (s->hostwork && s->hostdrained)
++    {
++        double host = *s->hostwork + *s->hostdrained;
++        delta = host - s->lasthost;
++        s->lasthost = host;
++    }
++    const uint64_t* now = reinterpret_cast<const uint64_t*>(&s->g->work);
++    uint64_t* last = reinterpret_cast<uint64_t*>(&s->last);
++    if (s->nativeseen && (L != s->lastL || L->ci != s->lastci))
++    {
++        // (native code may have run since the last step and moved any instruction count)
++        for (int i = 0; i < 256; ++i)
++        {
++            for (int base : {kOpsSlot, kHostOpsSlot, kNativeOpsSlot})
++            {
++                int slot = base + i;
++                if (now[slot] != last[slot])
++                {
++                    delta += s->prices[slot] * double(int64_t(now[slot] - last[slot]));
++                    last[slot] = now[slot];
++                }
++            }
++        }
++    }
++    else if (s->lastop >= 0)
++    {
++        int slot = s->lastbase + s->lastop;
++        if (now[slot] != last[slot])
++        {
++            delta += s->prices[slot] * double(int64_t(now[slot] - last[slot]));
++            last[slot] = now[slot];
++        }
++    }
++    for (int slot : s->scalars)
++    {
++        if (now[slot] != last[slot])
++        {
++            delta += s->prices[slot] * double(int64_t(now[slot] - last[slot]));
++            last[slot] = now[slot];
++        }
++    }
++    if (delta != 0)
++        add(s, delta);
++}
++
++static void cacheoutcome(ProfFunction& f, int pc, int outcome)
++{
++    if (f.caches.empty())
++        f.caches.assign(f.code.size() * LUA_PROFILE_CACHES, 0);
++    f.caches[size_t(pc) * LUA_PROFILE_CACHES + outcome]++;
++}
++
++static bool slothit(LuaNode* n, TValue* kv)
++{
++    return ttisstring(gkey(n)) && tsvalue(gkey(n)) == tsvalue(kv) && !ttisnil(gval(n));
++}
++
++// what the instruction's inline cache will do, read as the interpreter reads it (the same fasttm calls in the same order,
++// so the metatables' cached absence of a metamethod ends as it would)
++static int classify(lua_State* L, Closure* cl, const Instruction* pc, int op)
++{
++    Instruction insn = *pc;
++    TValue* k = cl->l.p->k;
++    StkId base = L->base;
++    switch (op)
++    {
++    case LOP_GETGLOBAL:
++    case LOP_SETGLOBAL:
++    {
++        LuaTable* h = cl->env;
++        LuaNode* n = &h->node[LUAU_INSN_C(insn) & h->nodemask8];
++        bool hit = slothit(n, &k[pc[1]]) && (op == LOP_GETGLOBAL || !h->readonly);
++        return hit ? CACHE_HIT : CACHE_MISS;
++    }
++    case LOP_GETIMPORT:
++    {
++        TValue* kv = &k[LUAU_INSN_D(insn)];
++        if (!ttisnil(kv) && cl->env->safeenv)
++            return CACHE_HIT;
++        return cl->env->safeenv ? CACHE_MISS : CACHE_SLOW;
++    }
++    case LOP_GETTABLEKS:
++    case LOP_SETTABLEKS:
++    {
++        StkId rb = base + LUAU_INSN_B(insn);
++        if (!ttistable(rb))
++            return CACHE_OTHER;
++        LuaTable* h = hvalue(rb);
++        LuaNode* n = &h->node[LUAU_INSN_C(insn) & h->nodemask8];
++        if (slothit(n, &k[pc[1]]) && (op == LOP_GETTABLEKS || !h->readonly))
++            return CACHE_HIT;
++        if (op == LOP_GETTABLEKS)
++            return h->metatable ? CACHE_SLOW : CACHE_MISS;
++        return fastnotm(h->metatable, TM_NEWINDEX) && !h->readonly ? CACHE_MISS : CACHE_SLOW;
++    }
++    case LOP_NAMECALL:
++    {
++        StkId rb = base + LUAU_INSN_B(insn);
++        TValue* kv = &k[pc[1]];
++        if (ttistable(rb))
++        {
++            LuaTable* h = hvalue(rb);
++            LuaNode* n = &h->node[tsvalue(kv)->hash & (sizenode(h) - 1)];
++            if (slothit(n, kv))
++                return CACHE_HIT;
++            const TValue* mt = 0;
++            if (gnext(n) == 0 && (mt = fasttm(L, h->metatable, TM_INDEX)) && ttistable(mt))
++            {
++                LuaNode* mtn = &hvalue(mt)->node[LUAU_INSN_C(insn) & hvalue(mt)->nodemask8];
++                if (slothit(mtn, kv))
++                    return CACHE_HIT;
++            }
++            return CACHE_MISS;
++        }
++        LuaTable* mt = ttisuserdata(rb) ? uvalue(rb)->metatable : L->global->mt[ttype(rb)];
++        if (fasttm(L, mt, TM_NAMECALL))
++            return CACHE_OTHER;
++        const TValue* tmi = fasttm(L, mt, TM_INDEX);
++        if (tmi && ttistable(tmi))
++        {
++            LuaTable* h = hvalue(tmi);
++            return slothit(&h->node[LUAU_INSN_C(insn) & h->nodemask8], kv) ? CACHE_HIT : CACHE_MISS;
++        }
++        return CACHE_SLOW;
++    }
++    }
++    return -1;
++}
++
++void luaP_step(lua_State* L, Closure* cl, const Instruction* pc)
++{
++    lua_ProfileState* s = luaP_state;
++    if (!s->stepping || s->g != L->global)
++        return;
++    Proto* p = cl->l.p;
++    int op = LUAU_INSN_OP(*pc);
++
++    if (s->fastL)
++    {
++        bool fell = L == s->fastL && L->ci == s->fastci && pc == s->fastnext;
++        cacheoutcome(s->functions[s->fastfunction], s->fastpc, fell ? CACHE_MISS : CACHE_HIT);
++        s->fastL = NULL;
++    }
++
++    book(s, L);
++
++    int function = functionof(s, p);
++    if (L != s->lastL || L->ci != s->lastci)
++        reconcile(s, L);
++    ProfFunction& f = s->functions[function];
++    int node = s->lastnode;
++    bool exempt = (p->flags & LUAU_PROTO_WORK_EXEMPT) != 0;
++    int at = -1;
++
++    if (op == LOP_NATIVECALL)
++    {
++        // entering the function's native code, which no step sees: the work booked until the next step is its
++        f.nativeentries++;
++        f.flags |= LUA_PROFILE_NATIVE;
++        s->nativeseen = true;
++    }
++    else
++    {
++        at = int(pc - p->code);
++        if (unsigned(at) >= unsigned(f.counts.size()))
++            return;
++        f.counts[at]++;
++        s->nodes[node].insns++;
++        if (!f.inlinesfound)
++            findinlines(s, function);
++        if (!f.inlineof.empty())
++            enterinlines(s, f, at);
++
++        switch (op)
++        {
++        case LOP_GETGLOBAL:
++        case LOP_SETGLOBAL:
++        case LOP_GETIMPORT:
++        case LOP_GETTABLEKS:
++        case LOP_SETTABLEKS:
++        case LOP_NAMECALL:
++            cacheoutcome(f, at, classify(L, cl, pc, op));
++            break;
++        case LOP_FASTCALL:
++        case LOP_FASTCALL1:
++        case LOP_FASTCALL2:
++        case LOP_FASTCALL2K:
++        case LOP_FASTCALL3:
++            if (!cl->env->safeenv)
++            {
++                // (an unsafe environment never takes the fast path)
++                cacheoutcome(f, at, CACHE_SLOW);
++            }
++            else
++            {
++                s->fastL = L;
++                s->fastci = L->ci;
++                s->fastnext = pc + ((op == LOP_FASTCALL || op == LOP_FASTCALL1) ? 1 : 2);
++                s->fastfunction = function;
++                s->fastpc = at;
++            }
++            break;
++        case LOP_RETURN:
++            if (s->lastframes && !s->lastframes->empty())
++                s->lastframes->back().returning = true;
++            break;
++        }
++    }
++
++    if (exempt)
++    {
++        s->target = s->hosttarget;
++        s->targetpc = s->hosttargetpc;
++        s->targetnode = s->hosttargetnode;
++    }
++    else
++    {
++        s->target = function;
++        s->targetpc = at;
++        s->targetnode = node;
++    }
++    s->lastop = op;
++    s->lastbase = exempt ? kHostOpsSlot : (p->flags & LUAU_PROTO_WORK_NATIVE) ? kNativeOpsSlot : kOpsSlot;
++}
++
++void luaP_nativeenter(lua_State* L, Closure* cl)
++{
++    lua_ProfileState* s = luaP_state;
++    if (!s || !s->stepping || s->g != L->global || cl->isC)
++        return;
++    book(s, L);
++    int function = functionof(s, cl->l.p);
++    if (L != s->lastL || L->ci != s->lastci)
++        reconcile(s, L);
++    ProfFunction& f = s->functions[function];
++    f.nativeentries++;
++    f.flags |= LUA_PROFILE_NATIVE;
++    s->nativeseen = true;
++    if (cl->l.p->flags & LUAU_PROTO_WORK_EXEMPT)
++    {
++        s->target = s->hosttarget;
++        s->targetpc = s->hosttargetpc;
++        s->targetnode = s->hosttargetnode;
++    }
++    else
++    {
++        s->target = function;
++        s->targetpc = -1;
++        s->targetnode = s->lastnode;
++    }
++    // (native code dispatches no instruction: none is priced at the next booking)
++    s->lastop = -1;
++}
++
++void luaP_enter(lua_State* L)
++{
++    if (lua_ProfileState* s = stateof(L))
++        s->depth++;
++}
++
++void luaP_leave(lua_State* L)
++{
++    lua_ProfileState* s = stateof(L);
++    if (!s || s->depth == 0)
++        return;
++    if (--s->depth == 0 && s->stepping)
++    {
++        // the last instruction's charges are its own; what is charged until the next one runs is the engine's
++        book(s, L);
++        s->target = -1;
++    }
++}
++
++void luaP_threadgone(lua_State* L, lua_State* L1)
++{
++    lua_ProfileState* s = stateof(L);
++    if (!s)
++        return;
++    if (s->lastL == L1)
++    {
++        s->lastL = NULL;
++        s->lastci = NULL;
++        s->lastframes = NULL;
++    }
++    if (s->fastL == L1)
++        s->fastL = NULL;
++    s->threads.erase(L1);
++}
++
++void luaP_freed(lua_State* L, GCObject* o)
++{
++    lua_ProfileState* s = stateof(L);
++    if (s && s->freed)
++        s->freed(s->freedud, o);
++}
++
++int lua_profilestart(lua_State* L, int stepping, const double* prices, int nprices, const double* hostwork, const double* hostdrained)
++{
++    if (luaP_state)
++        return 0;
++    lua_ProfileState* s = new lua_ProfileState();
++    s->g = L->global;
++    s->stepping = stepping != 0;
++    if (s->stepping && prices && nprices == kWorkSlots)
++    {
++        s->pricing = true;
++        s->prices.assign(prices, prices + nprices);
++        for (int slot = 0; slot < kWorkSlots; ++slot)
++        {
++            bool ops = (slot >= kOpsSlot && slot < kOpsSlot + 256) || (slot >= kHostOpsSlot && slot < kHostOpsSlot + 256) ||
++                       (slot >= kNativeOpsSlot && slot < kNativeOpsSlot + 256);
++            if (!ops)
++                s->scalars.push_back(slot);
++        }
++        s->hostwork = hostwork;
++        s->hostdrained = hostdrained;
++        s->lasthost = hostwork && hostdrained ? *hostwork + *hostdrained : 0;
++    }
++    s->last = L->global->work;
++    ProfNode root = {-1, -1, -1, 0, 0, 0.0};
++    s->nodes.push_back(root);
++    luaP_allockind = 0;
++    luaP_allocblock = NULL;
++    luaP_state = s;
++    return 1;
++}
++
++void lua_profilestop(lua_State* L)
++{
++    lua_ProfileState* s = stateof(L);
++    if (!s || !s->stepping)
++        return;
++    book(s, L);
++    s->stepping = false;
++}
++
++int lua_profilefunctions(lua_State* L, void (*each)(void* ud, int id, const lua_ProfileFunction* f), void* ud)
++{
++    lua_ProfileState* s = stateof(L);
++    if (!s)
++        return 0;
++    for (size_t i = 0; i < s->functions.size(); ++i)
++    {
++        const ProfFunction& f = s->functions[i];
++        lua_ProfileFunction out;
++        out.source = f.source.c_str();
++        out.name = f.name.c_str();
++        out.linedefined = f.linedefined;
++        out.flags = f.flags;
++        out.sizecode = int(f.code.size());
++        out.code = f.code.data();
++        out.lines = f.lines.data();
++        out.counts = f.counts.empty() ? NULL : f.counts.data();
++        out.work = f.work.empty() ? NULL : f.work.data();
++        out.caches = f.caches.empty() ? NULL : f.caches.data();
++        out.nativeentries = f.nativeentries;
++        out.nativework = f.nativework;
++        out.ninlines = int(f.inlines.size());
++        out.inlines = f.inlines.empty() ? NULL : f.inlines.data();
++        each(ud, int(i), &out);
++    }
++    return int(s->functions.size());
++}
++
++int lua_profilenodes(lua_State* L, void (*each)(void* ud, int id, const lua_ProfileNode* n), void* ud)
++{
++    lua_ProfileState* s = stateof(L);
++    if (!s)
++        return 0;
++    for (size_t i = 0; i < s->nodes.size(); ++i)
++    {
++        const ProfNode& n = s->nodes[i];
++        lua_ProfileNode out = {n.parent, n.function, n.callpc, n.calls, n.insns, n.work};
++        each(ud, int(i), &out);
++    }
++    return int(s->nodes.size());
++}
++
++const char* lua_profilecfunction(lua_State* L, int index)
++{
++    lua_ProfileState* s = stateof(L);
++    if (!s || index < 0 || size_t(index) >= s->cfunctions.size())
++        return NULL;
++    return s->cfunctions[index].name.c_str();
++}
++
++void lua_profilephase(lua_State* L, int phase)
++{
++    lua_ProfileState* s = stateof(L);
++    if (!s || !s->stepping)
++        return;
++    // (what was charged so far is the instruction's that made it; the frames are followed again under the new phase)
++    book(s, L);
++    s->phaseroot = phase <= 0 ? 0 : child(s, 0, -1, phase);
++    s->threads.clear();
++    s->lastL = NULL;
++    s->lastci = NULL;
++    s->lastframes = NULL;
++    s->fastL = NULL;
++}
++
++double lua_profileengine(lua_State* L)
++{
++    lua_ProfileState* s = stateof(L);
++    return s ? s->enginework : 0;
++}
++
++void lua_profilefree(lua_State* L)
++{
++    lua_ProfileState* s = stateof(L);
++    if (!s)
++        return;
++    luaP_state = NULL;
++    delete s;
++}
++
++int lua_profilestack(lua_State* L, int* functions, int* lines, int max)
++{
++    lua_ProfileState* s = stateof(L);
++    if (!s)
++        return 0;
++    int n = 0;
++    for (CallInfo* ci = L->ci; ci > L->base_ci && n < max; --ci)
++    {
++        if (!ttisfunction(ci->func))
++            continue;
++        Closure* cl = clvalue(ci->func);
++        if (cl->isC)
++        {
++            functions[n] = -2 - cfunctionof(s, cl);
++            lines[n] = -1;
++        }
++        else
++        {
++            Proto* p = cl->l.p;
++            functions[n] = functionof(s, p);
++            lines[n] = (ci->flags & LUA_CALLINFO_NATIVE) ? -1 : luaG_getline(p, pcRel(ci->savedpc, p));
++        }
++        n++;
++    }
++    return n;
++}
++
++void* lua_allocblock(lua_State* L, int* kind)
++{
++    (void)L;
++    if (kind)
++        *kind = luaP_allocblock ? LUA_ALLOC_OBJECT : luaP_allockind;
++    return luaP_allocblock;
++}
++
++int lua_profileobject(void* block, int* tag, void** data, const char** type)
++{
++    GCObject* o = (GCObject*)block;
++    if (tag)
++        *tag = -1;
++    if (data)
++        *data = NULL;
++    if (type)
++        *type = NULL;
++    if (o->gch.tt != LUA_TUSERDATA)
++        return o->gch.tt;
++    Udata* u = gco2u(o);
++    if (tag)
++        *tag = u->tag;
++    if (data)
++        *data = u->data;
++    if (type && u->metatable && u->metatable->node != &luaH_dummynode)
++    {
++        LuaTable* h = u->metatable;
++        for (int i = 0; i < sizenode(h); ++i)
++        {
++            const LuaNode& n = h->node[i];
++            if (ttisstring(&n.key) && ttisstring(&n.val) && strcmp(svalue(&n.key), "__type") == 0)
++            {
++                *type = svalue(&n.val);
++                break;
++            }
++        }
++    }
++    return LUA_TUSERDATA;
++}
++
++size_t lua_profileudataoffset(void)
++{
++    return offsetof(Udata, data);
++}
++
++void lua_profilemark(void* block)
++{
++    GCObject* o = (GCObject*)block;
++    o->gch.marked |= bitmask(PROFBIT);
++}
++
++void lua_setprofilefreed(lua_State* L, void (*freed)(void* ud, void* block), void* ud)
++{
++    if (lua_ProfileState* s = stateof(L))
++    {
++        s->freed = freed;
++        s->freedud = ud;
++    }
++}
++
++void lua_setprofilerehash(
++    lua_State* L,
++    void (*rehash)(void* ud, lua_State* L, void* table, int oldarray, int oldnodes, int newarray, int newnodes, int keys, int script),
++    void* ud
++)
++{
++    if (lua_ProfileState* s = stateof(L))
++    {
++        s->rehash = rehash;
++        s->rehashud = ud;
++    }
++}
++
++void luaP_rehash(lua_State* L, LuaTable* t, int oldarray, int oldnodes, int keys)
++{
++    lua_ProfileState* s = stateof(L);
++    if (!s || !s->rehash)
++        return;
++    int nodes = t->node == &luaH_dummynode ? 0 : sizenode(t);
++    s->rehash(s->rehashud, L, t, oldarray, oldnodes, t->sizearray, nodes, keys, luaE_scriptinsn(L) ? 1 : 0);
++}
++
++int lua_profiletable(void* ptr, int* arrayslots, int* arrayused, int* nodes, int* nodesused)
++{
++    GCObject* o = (GCObject*)ptr;
++    if (o->gch.tt != LUA_TTABLE)
++        return 0;
++    LuaTable* h = gco2h(o);
++    int used = 0;
++    for (int i = 0; i < h->sizearray; ++i)
++        if (!ttisnil(&h->array[i]))
++            used++;
++    int size = h->node == &luaH_dummynode ? 0 : sizenode(h);
++    int nodeused = 0;
++    for (int i = 0; i < size; ++i)
++        if (!ttisnil(gval(&h->node[i])))
++            nodeused++;
++    if (arrayslots)
++        *arrayslots = h->sizearray;
++    if (arrayused)
++        *arrayused = used;
++    if (nodes)
++        *nodes = size;
++    if (nodesused)
++        *nodesused = nodeused;
++    return 1;
++}
++
++void lua_profiletablebytes(size_t* header, size_t* slot, size_t* node)
++{
++    if (header)
++        *header = sizeof(LuaTable);
++    if (slot)
++        *slot = sizeof(TValue);
++    if (node)
++        *node = sizeof(LuaNode);
++}
++
++// the cache kind of an instruction with an inline cache (lua_profilecachetotals' order), -1 for the others
++static int cachekind(int op)
++{
++    switch (op)
++    {
++    case LOP_FASTCALL:
++    case LOP_FASTCALL1:
++    case LOP_FASTCALL2:
++    case LOP_FASTCALL2K:
++    case LOP_FASTCALL3:
++        return 0;
++    case LOP_GETGLOBAL:
++    case LOP_SETGLOBAL:
++        return 1;
++    case LOP_GETIMPORT:
++        return 2;
++    case LOP_NAMECALL:
++        return 3;
++    case LOP_GETTABLEKS:
++    case LOP_SETTABLEKS:
++        return 4;
++    }
++    return -1;
++}
++
++int lua_profilecachetotals(lua_State* L, uint64_t* out)
++{
++    for (int i = 0; i < 5 * LUA_PROFILE_CACHES; ++i)
++        out[i] = 0;
++    lua_ProfileState* s = stateof(L);
++    if (!s)
++        return 0;
++    for (const ProfFunction& f : s->functions)
++    {
++        if (f.caches.empty() || (f.flags & LUA_PROFILE_EXEMPT))
++            continue;
++        for (size_t pc = 0; pc < f.code.size(); ++pc)
++        {
++            int kind = cachekind(LUAU_INSN_OP(f.code[pc]));
++            if (kind < 0)
++                continue;
++            for (int outcome = 0; outcome < LUA_PROFILE_CACHES; ++outcome)
++                out[kind * LUA_PROFILE_CACHES + outcome] += f.caches[pc * LUA_PROFILE_CACHES + outcome];
++        }
++    }
++    return 1;
++}
++
++// The heap as the collector sees it: luaC_enumheap's nodes (lgcdebug.cpp: the same sizes and names) and every reference
++// the collector follows (lgc.cpp's traverse functions and cleartable), which differs from luaC_enumheap's edges in a
++// prototype's source, debug name, upvalue and local names, a thread's namecall and open upvalues, the strings of a weak
++// table (never cleared) and a weak-valued array part (not followed); and its roots (markroot, atomic) as edges from NULL:
++// the main thread, the registry, the basic types' metatables and the fixed objects. So an object no edge reaches is one
++// the next collection frees. Objects the collector found dead and has not swept yet go to `dead`, by type and size only:
++// during a sweep a dead closure can hold a prototype already freed (luaC_enumheap asserts on it).
++namespace
++{
++struct HeapWalk
++{
++    lua_State* L;
++    void* context;
++    void (*node)(void* context, void* ptr, uint8_t tt, uint8_t memcat, size_t size, const char* name);
++    void (*edge)(void* context, void* from, void* to, const char* name);
++    void (*dead)(void* context, uint8_t tt, size_t size);
++};
++
++void* walkpointer(GCObject* gco)
++{
++    return gco->gch.tt == LUA_TUSERDATA ? (void*)gco2u(gco)->data : (void*)gco;
++}
++
++// An object's size, read from its own fields only (a dead object's references may be freed already)
++size_t walksize(GCObject* o)
++{
++    switch (o->gch.tt)
++    {
++    case LUA_TSTRING:
++        return sizestring(gco2ts(o)->len);
++    case LUA_TTABLE:
++    {
++        LuaTable* h = gco2h(o);
++        return sizeof(LuaTable) + (h->node == &luaH_dummynode ? 0 : sizenode(h) * sizeof(LuaNode)) + h->sizearray * sizeof(TValue);
++    }
++    case LUA_TFUNCTION:
++    {
++        Closure* cl = gco2cl(o);
++        return cl->isC ? sizeCclosure(cl->nupvalues) : sizeLclosure(cl->nupvalues);
++    }
++    case LUA_TUSERDATA:
++        return sizeudata(gco2u(o)->len);
++    case LUA_TTHREAD:
++    {
++        lua_State* th = gco2th(o);
++        return sizeof(lua_State) + sizeof(TValue) * th->stacksize + sizeof(CallInfo) * th->size_ci;
++    }
++    case LUA_TBUFFER:
++        return sizebuffer(gco2buf(o)->len);
++    case LUA_TPROTO:
++    {
++        Proto* p = gco2p(o);
++        return sizeof(Proto) + sizeof(Instruction) * p->sizecode + sizeof(Proto*) * p->sizep + sizeof(TValue) * p->sizek + p->sizelineinfo +
++               sizeof(LocVar) * p->sizelocvars + sizeof(TString*) * p->sizeupvalues;
++    }
++    case LUA_TUPVAL:
++        return sizeof(UpVal);
++    }
++    return 0;
++}
++
++void walknode(HeapWalk* w, GCObject* gco, size_t size, const char* name)
++{
++    w->node(w->context, walkpointer(gco), gco->gch.tt, gco->gch.memcat, size, name);
++}
++
++void walkedge(HeapWalk* w, GCObject* from, GCObject* to, const char* name)
++{
++    w->edge(w->context, walkpointer(from), walkpointer(to), name);
++}
++
++void walkedges(HeapWalk* w, GCObject* from, TValue* data, size_t size, const char* name)
++{
++    for (size_t i = 0; i < size; ++i)
++        if (iscollectable(&data[i]))
++            walkedge(w, from, gcvalue(&data[i]), name);
++}
++
++void walktable(HeapWalk* w, LuaTable* h)
++{
++    walknode(w, obj2gco(h), walksize(obj2gco(h)), h == hvalue(registry(w->L)) ? "registry" : NULL);
++    bool weakkey = false;
++    bool weakvalue = false;
++    if (const TValue* mode = gfasttm(w->L->global, h->metatable, TM_MODE))
++    {
++        if (ttisstring(mode))
++        {
++            weakkey = strchr(svalue(mode), 'k') != NULL;
++            weakvalue = strchr(svalue(mode), 'v') != NULL;
++        }
++    }
++    // (a weak reference is no edge, but a weak table keeps its strings: cleartable never clears a string)
++    if (h->node != &luaH_dummynode)
++    {
++        for (int i = 0; i < sizenode(h); ++i)
++        {
++            const LuaNode& n = h->node[i];
++            if (!ttisnil(&n.val) && (iscollectable(&n.key) || iscollectable(&n.val)))
++            {
++                if (iscollectable(&n.key) && (!weakkey || ttisstring(&n.key)))
++                    walkedge(w, obj2gco(h), gcvalue(&n.key), "[key]");
++                if (iscollectable(&n.val) && (!weakvalue || ttisstring(&n.val)))
++                {
++                    char buf[32];
++                    const char* name = buf;
++                    if (ttisstring(&n.key))
++                        name = svalue(&n.key);
++                    else if (ttisnumber(&n.key))
++                        snprintf(buf, sizeof(buf), "%.14g", nvalue(&n.key));
++                    else
++                        snprintf(buf, sizeof(buf), "[%s]", getstr(w->L->global->ttname[n.key.tt]));
++                    // (in a table weak in both, a string value stays while its key does: cleartable clears the entry of
++                    // a freed key without marking the value)
++                    if (weakkey && weakvalue && iscollectable(&n.key) && !ttisstring(&n.key))
++                        walkedge(w, gcvalue(&n.key), gcvalue(&n.val), name);
++                    else
++                        walkedge(w, obj2gco(h), gcvalue(&n.val), name);
++                }
++            }
++        }
++    }
++    for (int i = 0; i < h->sizearray; ++i)
++        if (iscollectable(&h->array[i]) && (!weakvalue || ttisstring(&h->array[i])))
++            walkedge(w, obj2gco(h), gcvalue(&h->array[i]), "array");
++    if (h->metatable)
++        walkedge(w, obj2gco(h), obj2gco(h->metatable), "metatable");
++}
++
++void walkclosure(HeapWalk* w, Closure* cl)
++{
++    if (cl->isC)
++    {
++        walknode(w, obj2gco(cl), walksize(obj2gco(cl)), cl->c.debugname ? getstr(cl->c.debugname) : NULL);
++        // (traverseclosure marks a C function's name)
++        if (cl->c.debugname)
++            walkedge(w, obj2gco(cl), obj2gco(cl->c.debugname), "name");
++    }
++    else
++    {
++        Proto* p = cl->l.p;
++        char buf[LUA_IDSIZE];
++        if (p->source)
++            snprintf(buf, sizeof(buf), "%s:%d %s", p->debugname ? getstr(p->debugname) : "unnamed", p->linedefined, getstr(p->source));
++        else
++            snprintf(buf, sizeof(buf), "%s:%d", p->debugname ? getstr(p->debugname) : "unnamed", p->linedefined);
++        walknode(w, obj2gco(cl), walksize(obj2gco(cl)), buf);
++    }
++    walkedge(w, obj2gco(cl), obj2gco(cl->env), "env");
++    if (cl->isC)
++    {
++        if (cl->nupvalues)
++            walkedges(w, obj2gco(cl), cl->c.upvals, cl->nupvalues, "upvalue");
++    }
++    else
++    {
++        walkedge(w, obj2gco(cl), obj2gco(cl->l.p), "proto");
++        if (cl->nupvalues)
++            walkedges(w, obj2gco(cl), cl->l.uprefs, cl->nupvalues, "upvalue");
++    }
++}
++
++void walkudata(HeapWalk* w, Udata* u)
++{
++    const char* name = NULL;
++    if (LuaTable* h = u->metatable)
++    {
++        if (h->node != &luaH_dummynode)
++        {
++            for (int i = 0; i < sizenode(h); ++i)
++            {
++                const LuaNode& n = h->node[i];
++                if (ttisstring(&n.key) && ttisstring(&n.val) && strcmp(svalue(&n.key), "__type") == 0)
++                {
++                    name = svalue(&n.val);
++                    break;
++                }
++            }
++        }
++    }
++    walknode(w, obj2gco(u), walksize(obj2gco(u)), name);
++    if (u->metatable)
++        walkedge(w, obj2gco(u), obj2gco(u->metatable), "metatable");
++}
++
++void walkthread(HeapWalk* w, lua_State* th)
++{
++    size_t size = walksize(obj2gco(th));
++    Closure* tcl = NULL;
++    for (CallInfo* ci = th->base_ci; ci <= th->ci; ++ci)
++    {
++        if (ttisfunction(ci->func))
++        {
++            tcl = clvalue(ci->func);
++            break;
++        }
++    }
++    if (tcl && !tcl->isC && tcl->l.p->source)
++    {
++        Proto* p = tcl->l.p;
++        char buf[LUA_IDSIZE];
++        snprintf(buf, sizeof(buf), "thread at %s:%d %s", p->debugname ? getstr(p->debugname) : "unnamed", p->linedefined, getstr(p->source));
++        walknode(w, obj2gco(th), size, buf);
++    }
++    else
++    {
++        walknode(w, obj2gco(th), size, NULL);
++    }
++    walkedge(w, obj2gco(th), obj2gco(th->gt), "globals");
++    if (th->top > th->stack)
++        walkedges(w, obj2gco(th), th->stack, th->top - th->stack, "stack");
++    // (traversestack marks these too)
++    if (th->namecall)
++        walkedge(w, obj2gco(th), obj2gco(th->namecall), "namecall");
++    if (FFlag::LuauCoroutineFinally && th->finalizers)
++        walkedge(w, obj2gco(th), obj2gco(th->finalizers), "finalizers");
++    for (UpVal* uv = th->openupval; uv; uv = uv->u.open.threadnext)
++        walkedge(w, obj2gco(th), obj2gco(uv), "open upvalue");
++}
++
++void walkproto(HeapWalk* w, Proto* p)
++{
++    size_t size = walksize(obj2gco(p));
++    char buf[LUA_IDSIZE];
++    if (p->source)
++        snprintf(buf, sizeof(buf), "proto %s:%d %s", p->debugname ? getstr(p->debugname) : "unnamed", p->linedefined, getstr(p->source));
++    else
++        snprintf(buf, sizeof(buf), "proto %s:%d", p->debugname ? getstr(p->debugname) : "unnamed", p->linedefined);
++    walknode(w, obj2gco(p), size, buf);
++    if (p->sizek)
++        walkedges(w, obj2gco(p), p->k, p->sizek, "constants");
++    for (int i = 0; i < p->sizep; ++i)
++        walkedge(w, obj2gco(p), obj2gco(p->p[i]), "protos");
++    // (traverseproto marks the names too)
++    if (p->source)
++        walkedge(w, obj2gco(p), obj2gco(p->source), "source");
++    if (p->debugname)
++        walkedge(w, obj2gco(p), obj2gco(p->debugname), "debugname");
++    for (int i = 0; i < p->sizeupvalues; ++i)
++        if (p->upvalues[i])
++            walkedge(w, obj2gco(p), obj2gco(p->upvalues[i]), "upvalue name");
++    for (int i = 0; i < p->sizelocvars; ++i)
++        if (p->locvars[i].varname)
++            walkedge(w, obj2gco(p), obj2gco(p->locvars[i].varname), "local name");
++    if (p->optimized)
++        walkedge(w, obj2gco(p), obj2gco(p->optimized), "optimized");
++    if (p->deoptimized)
++        walkedge(w, obj2gco(p), obj2gco(p->deoptimized), "deoptimized");
++}
++
++void walkobject(HeapWalk* w, GCObject* o)
++{
++    switch (o->gch.tt)
++    {
++    case LUA_TSTRING:
++        return walknode(w, o, walksize(o), NULL);
++    case LUA_TTABLE:
++        return walktable(w, gco2h(o));
++    case LUA_TFUNCTION:
++        return walkclosure(w, gco2cl(o));
++    case LUA_TUSERDATA:
++        return walkudata(w, gco2u(o));
++    case LUA_TTHREAD:
++        return walkthread(w, gco2th(o));
++    case LUA_TBUFFER:
++        return walknode(w, o, walksize(o), NULL);
++    case LUA_TPROTO:
++        return walkproto(w, gco2p(o));
++    case LUA_TUPVAL:
++    {
++        UpVal* uv = gco2uv(o);
++        walknode(w, o, walksize(o), NULL);
++        if (iscollectable(uv->v))
++            walkedge(w, o, gcvalue(uv->v), "value");
++        return;
++    }
++    default:
++        // (a type the walk does not open: user-defined classes and objects)
++        return walknode(w, o, walksize(o), NULL);
++    }
++}
++
++bool walkvisit(void* context, lua_Page* page, GCObject* gco)
++{
++    HeapWalk* w = (HeapWalk*)context;
++    // (dead, not swept yet: garbage whose references may already be freed)
++    if (isdead(w->L->global, gco))
++    {
++        if (w->dead)
++            w->dead(w->context, gco->gch.tt, walksize(gco));
++        return false;
++    }
++    walkobject(w, gco);
++    // (the collector never frees a fixed object: the type and metamethod names, the memory error messages)
++    if (isfixed(gco))
++        w->edge(w->context, NULL, walkpointer(gco), "fixed");
++    return false;
++}
++} // namespace
++
++void lua_enumheap(
++    lua_State* L,
++    void* context,
++    void (*node)(void* context, void* ptr, uint8_t tt, uint8_t memcat, size_t size, const char* name),
++    void (*edge)(void* context, void* from, void* to, const char* name),
++    void (*dead)(void* context, uint8_t tt, size_t size)
++)
++{
++    HeapWalk w = {L, context, node, edge, dead};
++    global_State* g = L->global;
++    walkobject(&w, obj2gco(g->mainthread));
++    // the roots markroot and atomic mark
++    edge(context, NULL, walkpointer(obj2gco(g->mainthread)), "main thread");
++    if (iscollectable(registry(L)))
++        edge(context, NULL, walkpointer(gcvalue(registry(L))), "registry");
++    for (int i = 0; i < LUA_T_COUNT; ++i)
++    {
++        if (g->mt[i])
++        {
++            char buf[64];
++            snprintf(buf, sizeof(buf), "metatable of %s", getstr(g->ttname[i]));
++            edge(context, NULL, walkpointer(obj2gco(g->mt[i])), buf);
++        }
++    }
++    // (the rest of markroot's and atomic's roots, under the flags that mark them)
++    if (FFlag::LuauGcTraceUdata && iscollectable(&g->weakregistry))
++        edge(context, NULL, walkpointer(gcvalue(&g->weakregistry)), "weak registry");
++    for (int i = 0; i < LUA_UTAG_LIMIT; ++i)
++        if (g->udatamt[i])
++            edge(context, NULL, walkpointer(obj2gco(g->udatamt[i])), "userdata metatable");
++    for (int i = 0; i < UTAG_INTERNAL_LIMIT; ++i)
++    {
++        const lua_UdataDirectAccessData& direct = g->udatadirect[i];
++        for (const TValue* tm : {&direct.indextm, &direct.newindextm, &direct.namecalltm})
++            if (iscollectable(tm))
++                edge(context, NULL, walkpointer(gcvalue(tm)), "userdata direct access");
++        if (g->udatadirectfields[i])
++            edge(context, NULL, walkpointer(obj2gco(g->udatadirectfields[i])), "userdata direct fields");
++    }
++    if (FFlag::LuauFastpcall)
++    {
++        if (g->builtinPcall)
++            edge(context, NULL, walkpointer(obj2gco(g->builtinPcall)), "pcall");
++        if (g->builtinXpcall)
++            edge(context, NULL, walkpointer(obj2gco(g->builtinXpcall)), "xpcall");
++    }
++    if (g->typeofnames)
++        edge(context, NULL, walkpointer(obj2gco(g->typeofnames)), "typeof names");
++    if (g->vectortypename)
++        edge(context, NULL, walkpointer(obj2gco(g->vectortypename)), "typeof names");
++    luaM_visitgco(L, &w, walkvisit);
++}
++
++int lua_gcstate(lua_State* L)
++{
++    return L->global->gcstate;
++}
+diff --git a/luau/VM/src/lprofile.h b/luau/VM/src/lprofile.h
+new file mode 100644
+index 0000000..524ad2b
+--- /dev/null
++++ b/luau/VM/src/lprofile.h
+@@ -0,0 +1,59 @@
++// This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
++#pragma once
++
++#include "lobject.h"
++
++// A host's profile of this thread's VM (lprofile.cpp, lua.h "profiling"). Off, the interpreter pays one thread-local load
++// per luau_execute entry; the allocator and the collector pay nothing beyond the callbacks they already make.
++struct lua_ProfileState;
++
++extern thread_local lua_ProfileState* luaP_state;
++
++// set right before a storage allocation (a table's array or hash part, a thread's stack, the string table, a function's
++// prototype arrays) and read by the allocation callback (lua_allocblock): what the memory is for; only the store when no
++// profile runs. Both are the allocating thread's, as luaP_state is: VMs on other threads allocate at the same time, and a
++// callback that read another thread's block would read, and mark, an object of that VM's heap.
++extern thread_local uint8_t luaP_allockind;
++// the collectable object an allocation callback reports (NULL for other memory)
++extern thread_local void* luaP_allocblock;
++
++// whether L's VM runs the stepping interpreter for a profile (luau_execute)
++LUAI_FUNC bool luaP_stepping(lua_State* L);
++// whether native code runs natively while the stepping interpreter counts the rest
++LUAI_FUNC bool luaP_native(lua_State* L);
++// the stepping interpreter's hook, before each instruction it dispatches
++LUAI_FUNC void luaP_step(lua_State* L, Closure* cl, const Instruction* pc);
++// native code is entered from C or resumed by a return into it: its work is booked to it until the next step
++LUAI_FUNC void luaP_nativeenter(lua_State* L, Closure* cl);
++// the stepping interpreter was entered or left (a resumption, a call from C)
++LUAI_FUNC void luaP_enter(lua_State* L);
++LUAI_FUNC void luaP_leave(lua_State* L);
++// a thread was freed or reset: its frames go
++LUAI_FUNC void luaP_threadgone(lua_State* L, lua_State* L1);
++// an object marked with lua_profilemark is being freed
++LUAI_FUNC void luaP_freed(lua_State* L, GCObject* o);
++// a table rehashed to fit a new key (ltable.cpp rehash, once resized): its array and hash sizes before, and the keys it
++// moved with the new one (what the work counters' `rehashed` counts); the profile's rehash hook (lua_setprofilerehash)
++LUAI_FUNC void luaP_rehash(lua_State* L, LuaTable* t, int oldarray, int oldnodes, int keys);
++
++// luau_execute<true> holds one while it runs (its destructor also runs when an error unwinds it)
++struct luaP_Execute
++{
++    lua_State* L;
++    explicit luaP_Execute(lua_State* L)
++        : L(L)
++    {
++        if (luaP_state)
++            luaP_enter(L);
++    }
++    ~luaP_Execute()
++    {
++        if (luaP_state)
++            luaP_leave(L);
++    }
++};
++
++struct luaP_NoExecute
++{
++    explicit luaP_NoExecute(lua_State*) {}
++};
+diff --git a/luau/VM/src/lstate.cpp b/luau/VM/src/lstate.cpp
+index 6ef02d9..3280270 100644
+--- a/luau/VM/src/lstate.cpp
++++ b/luau/VM/src/lstate.cpp
+@@ -10,6 +10,7 @@
+ #include "ldo.h"
+ #include "ldebug.h"
+ #include "ludata.h"
++#include "lprofile.h"
+ 
+ #include <string.h>
+ 
+@@ -28,11 +29,13 @@ typedef struct LG
+ static void stack_init(lua_State* L1, lua_State* L)
+ {
+     // initialize CallInfo array
++    luaP_allockind = LUA_ALLOC_THREAD;
+     L1->base_ci = luaM_newarray(L, BASIC_CI_SIZE, CallInfo, L1->memcat);
+     L1->ci = L1->base_ci;
+     L1->size_ci = BASIC_CI_SIZE;
+     L1->end_ci = L1->base_ci + L1->size_ci - 1;
+     // initialize stack array
++    luaP_allockind = LUA_ALLOC_THREAD;
+     L1->stack = luaM_newarray(L, BASIC_STACK_SIZE + EXTRA_STACK, TValue, L1->memcat);
+     L1->stacksize = BASIC_STACK_SIZE + EXTRA_STACK;
+     TValue* stack = L1->stack;
+@@ -141,6 +144,8 @@ void luaE_freethread(lua_State* L, lua_State* L1, lua_Page* page)
+     if (g->cb.userthread)
+         g->cb.userthread(NULL, L1);
+ 
++    if (luaP_state)
++        luaP_threadgone(L, L1);
+     freestack(L, L1);
+     luaM_freegco(L, L1, sizeof(lua_State), L1->memcat, page);
+ }
+@@ -150,6 +155,8 @@ void lua_resetthread(lua_State* L)
+     api_check(L, !L->isactive);
+     api_check(L, L->status != LUA_OK || L->ci == L->base_ci);
+ 
++    if (luaP_state)
++        luaP_threadgone(L, L);
+     // close upvalues before clearing anything
+     luaF_close(L, L->stack);
+ 
+diff --git a/luau/VM/src/lstring.cpp b/luau/VM/src/lstring.cpp
+index b93b721..43731ec 100644
+--- a/luau/VM/src/lstring.cpp
++++ b/luau/VM/src/lstring.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include "lgc.h"
+ #include "lmem.h"
++#include "lprofile.h"
+ 
+ #include <string.h>
+ 
+@@ -50,6 +51,7 @@ unsigned int luaS_hash(const char* str, size_t len)
+ static void luaS_rehash(lua_State* L, int newsize, uint32_t saltmult, uint32_t saltadd)
+ {
+     global_State* g = L->global;
++    luaP_allockind = LUA_ALLOC_STRINGS;
+     TString** newhash = luaM_newarray(L, newsize, TString*, 0);
+     stringtable* tb = &g->strt;
+     uint8_t hashshift = uint8_t(32 - luaO_log2(unsigned(newsize)));
+diff --git a/luau/VM/src/ltable.cpp b/luau/VM/src/ltable.cpp
+index 4ff877c..33f24ca 100644
+--- a/luau/VM/src/ltable.cpp
++++ b/luau/VM/src/ltable.cpp
+@@ -34,6 +34,7 @@
+ #include "lmem.h"
+ #include "lnumutils.h"
+ #include "ltm.h"
++#include "lprofile.h"
+ 
+ #include <string.h>
+ 
+@@ -735,6 +736,7 @@ static void setarrayvector(lua_State* L, LuaTable* t, int size)
+         luaG_runerror(L, "table overflow");
+     if (size > t->sizearray)
+         countstored(L, size * sizeof(TValue));
++    luaP_allockind = LUA_ALLOC_TABLE;
+     luaM_reallocarray(L, t->array, t->sizearray, size, TValue, t->memcat);
+     TValue* array = t->array;
+     for (int i = t->sizearray; i < size; i++)
+@@ -758,6 +760,7 @@ static void setnodevector(lua_State* L, LuaTable* t, int size)
+             luaG_runerror(L, "table overflow");
+         size = twoto(lsize);
+         countstored(L, size * sizeof(LuaNode));
++        luaP_allockind = LUA_ALLOC_TABLE;
+         t->node = luaM_newarray(L, size, LuaNode, t->memcat);
+         for (i = 0; i < size; i++)
+         {
+@@ -805,6 +808,7 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
+ 
+         if (nasize != oldsizearray)
+         {
++            luaP_allockind = LUA_ALLOC_TABLE;
+             newarray = luaM_newarray(L, nasize, TValue, t->memcat);
+ 
+             if (nasize < oldsizearray)
+@@ -832,6 +836,7 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
+             // if we allocated a new array part, we have to be careful to with hash part allocation failure
+             if (oldarray != newarray)
+             {
++                luaP_allockind = LUA_ALLOC_TABLE;
+                 newnode = luaM_trynewarray(L, nhsize, LuaNode, t->memcat);
+ 
+                 if (newnode == nullptr)
+@@ -842,6 +847,7 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
+             }
+             else
+             {
++                luaP_allockind = LUA_ALLOC_TABLE;
+                 newnode = luaM_newarray(L, nhsize, LuaNode, t->memcat);
+             }
+ 
+@@ -922,6 +928,7 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
+         TValue* oldarray = t->array;
+ 
+         // shrink array
++        luaP_allockind = LUA_ALLOC_TABLE;
+         t->array = luaM_newarray(L, nasize, TValue, t->memcat);
+         t->sizearray = nasize;
+ 
+@@ -1001,7 +1008,11 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
+         // (the keys this rehash moves: the hash part's and the new one; the array part stays)
+         if (luaE_scriptinsn(L))
+             L->global->work.rehashed += nh;
++        // (the hash part's size before, for a profile's rehash hook)
++        int oldnodes = t->node == dummynode ? 0 : sizenode(t);
+         resize(L, t, t->sizearray, nh);
++        if (luaP_state)
++            luaP_rehash(L, t, t->sizearray, oldnodes, nh);
+         return;
+     }
+ 
+@@ -1057,8 +1068,15 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
+     if (luaE_scriptinsn(L))
+         L->global->work.rehashed += totaluse;
+ 
++    // (the sizes before, for a profile's rehash hook)
++    int oldasize = t->sizearray;
++    int oldnodes = t->node == dummynode ? 0 : sizenode(t);
++
+     // resize the table to new computed sizes
+     resize(L, t, nasize, nh);
++
++    if (luaP_state)
++        luaP_rehash(L, t, oldasize, oldnodes, totaluse);
+ }
+ 
+ /*
+@@ -1535,6 +1553,7 @@ LuaTable* luaH_clone(lua_State* L, LuaTable* tt)
+     if (tt->sizearray)
+     {
+         countstored(L, tt->sizearray * sizeof(TValue));
++        luaP_allockind = LUA_ALLOC_TABLE;
+         t->array = luaM_newarray(L, tt->sizearray, TValue, t->memcat);
+         maybesetaboundary(t, getaboundary(tt));
+         t->sizearray = tt->sizearray;
+@@ -1546,6 +1565,7 @@ LuaTable* luaH_clone(lua_State* L, LuaTable* tt)
+     {
+         int size = 1 << tt->lsizenode;
+         countstored(L, size * sizeof(LuaNode));
++        luaP_allockind = LUA_ALLOC_TABLE;
+         t->node = luaM_newarray(L, size, LuaNode, t->memcat);
+         t->lsizenode = tt->lsizenode;
+         t->nodemask8 = tt->nodemask8;
+diff --git a/luau/VM/src/lvmexecute.cpp b/luau/VM/src/lvmexecute.cpp
+index f8e2c1d..b688637 100644
+--- a/luau/VM/src/lvmexecute.cpp
++++ b/luau/VM/src/lvmexecute.cpp
+@@ -15,8 +15,10 @@
+ #include "lbuiltins.h"
+ #include "lnumutils.h"
+ #include "lbytecode.h"
++#include "lprofile.h"
+ 
+ #include <string.h>
++#include <type_traits>
+ 
+ LUAU_FASTFLAGVARIABLE(DebugLuauUserDefinedClassesRuntime)
+ LUAU_FASTFLAGVARIABLE(LuauPromoteProto)
+@@ -287,16 +289,22 @@ static void luau_execute(lua_State* L)
+     LUAU_ASSERT(L->isactive);
+     LUAU_ASSERT(!isblack(obj2gco(L))); // we don't use luaC_threadbarrier because active threads never turn black
+ 
++    // a host's profile follows the stepping interpreter's nesting (lprofile.cpp)
++    typename std::conditional<SingleStep, luaP_Execute, luaP_NoExecute>::type profiled(L);
++
+     // (a frame that starts here: luau_execute also continues a frame once a call it made returns, as the yieldable pcall and
+     // the fast pcall continue their caller, which is not a call)
+     if ((clvalue(L->ci->func)->l.p->flags & LUAU_PROTO_WORK_EXEMPT) && L->ci->savedpc == L->ci->p->code && luaE_scriptframe(L, L->ci - 1))
+         L->global->work.hostcalls++;
+ 
+ #if VM_HAS_NATIVE
+-    if ((L->ci->flags & LUA_CALLINFO_NATIVE) && !SingleStep)
++    // (native code runs natively while a profile steps the rest)
++    if ((L->ci->flags & LUA_CALLINFO_NATIVE) && (!SingleStep || luaP_native(L)))
+     {
+         Proto* p = L->ci->p;
+         LUAU_ASSERT(p->execdata);
++        if (SingleStep)
++            luaP_nativeenter(L, clvalue(L->ci->func));
+ 
+         if (L->global->ecb.enter(L, p) == 0)
+             return;
+@@ -335,6 +343,10 @@ reentry:
+                     goto exit;
+             }
+ 
++            // a host's profile counts and books this instruction (lprofile.cpp)
++            if (luaP_state)
++                luaP_step(L, cl, pc);
++
+ #if VM_USE_CGOTO
+             VM_COUNT_OP(LUAU_INSN_OP(*pc));
+             VM_CONTINUE(LUAU_INSN_OP(*pc));
+@@ -1132,7 +1144,7 @@ reentry:
+                     // codeentry may point to NATIVECALL instruction when proto is compiled to native code
+                     // this will result in execution continuing in native code, and is equivalent to if (p->execdata) but has no additional overhead
+                     // note that p->codeentry may point *outside* of p->code..p->code+p->sizecode, but that pointer never gets saved to savedpc.
+-                    pc = SingleStep ? p->code : p->codeentry;
++                    pc = (SingleStep && !luaP_native(L)) ? p->code : p->codeentry;
+                     if ((ccl->l.p->flags & LUAU_PROTO_WORK_EXEMPT) && !(cl->l.p->flags & LUAU_PROTO_WORK_EXEMPT))
+                         L->global->work.hostcalls++;
+                     cl = ccl;
+@@ -1249,7 +1261,7 @@ reentry:
+                     // codeentry may point to NATIVECALL instruction when proto is compiled to native code
+                     // this will result in execution continuing in native code, and is equivalent to if (p->execdata) but has no additional overhead
+                     // note that p->codeentry may point *outside* of p->code..p->code+p->sizecode, but that pointer never gets saved to savedpc.
+-                    pc = SingleStep ? p->code : p->codeentry;
++                    pc = (SingleStep && !luaP_native(L)) ? p->code : p->codeentry;
+                     if ((ccl->l.p->flags & LUAU_PROTO_WORK_EXEMPT) && !(cl->l.p->flags & LUAU_PROTO_WORK_EXEMPT))
+                         L->global->work.hostcalls++;
+                     cl = ccl;
+@@ -1343,8 +1355,10 @@ reentry:
+                 Proto* nextproto = cip->p;
+ 
+ #if VM_HAS_NATIVE
+-                if (LUAU_UNLIKELY((cip->flags & LUA_CALLINFO_NATIVE) && !SingleStep))
++                if (LUAU_UNLIKELY((cip->flags & LUA_CALLINFO_NATIVE) && (!SingleStep || luaP_native(L))))
+                 {
++                    if (SingleStep)
++                        luaP_nativeenter(L, nextcl);
+                     if (L->global->ecb.enter(L, nextproto) == 1)
+                         goto reentry;
+                     else
+@@ -3811,7 +3825,7 @@ reentry:
+                     Proto* p = L->ci->p;
+ 
+                     // reentry into the call (see LOP_CALL for description of how native calls are handled with 'codeentry')
+-                    pc = SingleStep ? p->code : p->codeentry;
++                    pc = (SingleStep && !luaP_native(L)) ? p->code : p->codeentry;
+                     if ((fcl->l.p->flags & LUAU_PROTO_WORK_EXEMPT) && !(cl->l.p->flags & LUAU_PROTO_WORK_EXEMPT))
+                         L->global->work.hostcalls++;
+                     cl = fcl;
+@@ -4022,7 +4036,8 @@ exit:;
+ 
+ void luau_execute(lua_State* L)
+ {
+-    if (L->singlestep)
++    // (a host's profile steps every thread of its VM: lprofile.cpp)
++    if (L->singlestep || (luaP_state && luaP_stepping(L)))
+         luau_execute<true>(L);
+     else
+         luau_execute<false>(L);
+diff --git a/luau/VM/src/lvmload.cpp b/luau/VM/src/lvmload.cpp
+index e8f70c6..b88cfee 100644
+--- a/luau/VM/src/lvmload.cpp
++++ b/luau/VM/src/lvmload.cpp
+@@ -14,6 +14,7 @@
+ #include "lmem.h"
+ #include "lbytecode.h"
+ #include "lapi.h"
++#include "lprofile.h"
+ 
+ #include <string.h>
+ 
+@@ -51,6 +52,7 @@ struct TempBuffer
+     {
+         LUAU_ASSERT(this->L == nullptr);
+         this->L = L;
++        luaP_allockind = LUA_ALLOC_PROTO;
+         this->data = luaM_newarray(L, count, T, 0);
+         this->count = count;
+     }
+@@ -454,6 +456,7 @@ static int loadsafe(
+                     // transform v1 into v2 format
+                     int headersize = typesize > 127 ? 4 : 3;
+ 
++                    luaP_allockind = LUA_ALLOC_PROTO;
+                     p->typeinfo = luaM_newarray(L, headersize + typesize, uint8_t, p->memcat);
+                     p->sizetypeinfo = headersize + typesize;
+ 
+@@ -484,6 +487,7 @@ static int loadsafe(
+                 {
+                     uint8_t* types = (uint8_t*)data + offset;
+ 
++                    luaP_allockind = LUA_ALLOC_PROTO;
+                     p->typeinfo = luaM_newarray(L, typesize, uint8_t, p->memcat);
+                     p->sizetypeinfo = typesize;
+                     memcpy(p->typeinfo, types, typesize);
+@@ -498,6 +502,7 @@ static int loadsafe(
+         }
+ 
+         const int sizecode = readVarInt(data, size, offset);
++        luaP_allockind = LUA_ALLOC_PROTO;
+         p->code = luaM_newarray(L, sizecode, Instruction, p->memcat);
+         p->sizecode = sizecode;
+ 
+@@ -507,6 +512,7 @@ static int loadsafe(
+         p->codeentry = p->code;
+ 
+         const int sizek = readVarInt(data, size, offset);
++        luaP_allockind = LUA_ALLOC_PROTO;
+         p->k = luaM_newarray(L, sizek, TValue, p->memcat);
+         p->sizek = sizek;
+ 
+@@ -743,6 +749,7 @@ static int loadsafe(
+         }
+ 
+         const int sizep = readVarInt(data, size, offset);
++        luaP_allockind = LUA_ALLOC_PROTO;
+         p->p = luaM_newarray(L, sizep, Proto*, p->memcat);
+         p->sizep = sizep;
+ 
+@@ -765,6 +772,7 @@ static int loadsafe(
+             int absoffset = (p->sizecode + 3) & ~3;
+ 
+             const int sizelineinfo = absoffset + intervals * sizeof(int);
++            luaP_allockind = LUA_ALLOC_PROTO;
+             p->lineinfo = luaM_newarray(L, sizelineinfo, uint8_t, p->memcat);
+             p->sizelineinfo = sizelineinfo;
+ 
+@@ -790,6 +798,7 @@ static int loadsafe(
+         if (debuginfo)
+         {
+             const int sizelocvars = readVarInt(data, size, offset);
++            luaP_allockind = LUA_ALLOC_PROTO;
+             p->locvars = luaM_newarray(L, sizelocvars, LocVar, p->memcat);
+             p->sizelocvars = sizelocvars;
+ 
+@@ -804,6 +813,7 @@ static int loadsafe(
+             const int sizeupvalues = readVarInt(data, size, offset);
+             LUAU_ASSERT(sizeupvalues == p->nups);
+ 
++            luaP_allockind = LUA_ALLOC_PROTO;
+             p->upvalues = luaM_newarray(L, sizeupvalues, TString*, p->memcat);
+             p->sizeupvalues = sizeupvalues;
+ 

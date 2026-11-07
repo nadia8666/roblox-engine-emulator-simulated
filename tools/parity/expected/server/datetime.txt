@@ -1,0 +1,53 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+tokens YYYY=2023 | YY=23 | Y=Y | Q=Q | Qo=Qo | M=11 | Mo=11o | MM=11 | MMM=Nov | MMMM=November | D=14 | Do=14o | DD=14 | DDD=318 | DDDo=318o | DDDD=318 | d=2 | do=2o | dd=Tu | ddd=Tue | dddd=Tuesday | e=e | E=E | w=w | wo=wo | ww=ww | W=W | Wo=Wo | WW=WW | gg=gg | gggg=gggg | GG=GG | GGGG=GGGG | H=22 | HH=22 | h=10 | hh=10 | k=k | kk=kk | m=13 | mm=13 | s=20 | ss=20 | S=1 | SS=12 | SSS=123 | SSSS=1231 | A=PM | a=pm | Z=Z | ZZ=ZZ | X=X | x=x | LT=10:13 PM | LTS=10:13:20 PM | L=11/14/2023 | l=11/14/2023 | LL=November 14, 2023 | ll=Nov 14, 2023 | LLL=November 14, 2023 10:13 PM | lll=Nov 14, 2023 10:13 PM | LLLL=Tuesday, November 14, 2023 10:13 PM | llll=Tue, Nov 14, 2023 10:13 PM | [text]=text | [YYYY]=YYYY | YYYY[-]MM=2023-11 | zz=zz
+morning 4 04 4 04 k AM am 4:00 AM 4:00:00 AM
+midnight 12 12 0 00 k kk AM 12:00 AM
+ordinals 1o,2o,3o,4o,11o,12o,13o,21o,22o,23o,31o
+locale-default error invalid argument #3 to 'FormatUniversalTime' (string expected, got nil) | ok 14 November 2023 | ok November 14, 2023 | ok November 14, 2023 | ok 5
+seconds 0.5 0 0 0
+seconds 1.9990000000000001 1000 1 1000
+seconds -0.5 0 0 0
+seconds -1.5 -1000 -1 -1000
+seconds 0.001 0 0 0
+seconds 1700000000.9999001 1700000000000 1700000000 1700000000000
+millis 1.5 1 0 1970-01-01 00:00:00.001
+millis -1.5 -1 0 1969-12-31 23:59:59.999
+millis 0.40000000000000002 0 0 1970-01-01 00:00:00.000
+millis 1700000000123.7 1700000000123 1700000000 2023-11-14 22:13:20.123
+millis -0.5 0 0 1970-01-01 00:00:00.000
+negative-fields 1969,12,31,23,59,58,500
+range error Error interpreting timestamp as a precise point in time. Fields out of range. UnixTimestamp should be between -17987443200 and 253402300799. | error Error interpreting timestamp as a precise point in time. Fields out of range. UnixTimestamp should be between -17987443200 and 253402300799. | error Error interpreting timestamp as a precise point in time. Fields out of range. UnixTimestamp should be between -17987443200 and 253402300799. | error Error interpreting timestamp as a precise point in time. Fields out of range. UnixTimestamp should be between -17987443200 and 253402300799. | ok 12000
+iso 2020-02-29T12:34:56Z 1582979696000
+iso 2020-02-29T12:34:56.789Z 1582979696789
+iso 2020-02-29T12:34:56.789+02:00 1582972496789
+iso 2020-02-29T12:34:56-05:30 1582999496000
+iso 2020-02-29T12:34:56+0200 nil
+iso 2020-02-29 1582934400000
+iso 2020-02-29T12:34 1582979640000
+iso 2020-02-29t12:34:56z 1582979696000
+iso 2020-02-29 12:34:56Z 1582979696000
+iso 2020-02-30T00:00:00Z nil
+iso 2020-02-29T24:00:00Z 1583020800000
+iso 2020-02-29T12:34:56.1234567Z 1582979696123
+iso 20200229T123456Z nil
+iso +002020-02-29T12:34:56Z nil
+iso 2020-02-29T12:34:60Z 1582979700000
+iso  2020-02-29T12:34:56Z 1582979696000
+iso-out 2023-11-14T22:13:20Z 1969-12-31T23:59:59Z error Error interpreting timestamp as a precise point in time. Fields out of range. UnixTimestamp should be between -17987443200 and 253402300799.
+universal ok 1609459200000 | ok 0 | ok 1614556799999
+universal-fields 2021,13,1 error Error interpreting year, month, day, hour, minute, second as a precise point in time. Fields out of range.
+universal-fields 2021,2,29 error Error interpreting year, month, day, hour, minute, second as a precise point in time. Fields out of range.
+universal-fields 2021,1,1,24 ok 1609545600000
+universal-fields 2021,1,1,0,60 ok 1609462800000
+universal-fields 2021,1,1,0,0,60 ok 1609459260000
+universal-fields 2021,1,1,0,0,0,1000 ok 1609459201000
+universal-fields 2021,0,1 error Error interpreting year, month, day, hour, minute, second as a precise point in time. Fields out of range.
+universal-fields 2021,1,0 error Error interpreting year, month, day, hour, minute, second as a precise point in time. Fields out of range.
+universal-fields 2021.5,1.5,1.5 ok 1609459200000
+universal-fields -1,1,1 error Error interpreting year, month, day, hour, minute, second as a precise point in time. Fields out of range.
+universal-fields 10000,1,1 error Over the max DateTime supported: 9999-12-31T23:59:59Z
+universal-fields 2021,1,1,-1 ok 1609455600000
+os.date-specifiers %a=Tue | %A=Tuesday | %b=Nov | %B=November | %c=Tue Nov 14 22:13:20 2023 | %C=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %d=14 | %D=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %e=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %F=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %g=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %G=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %h=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %H=22 | %I=10 | %j=318 | %m=11 | %M=13 | %n=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %p=PM | %r=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %R=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %S=20 | %t=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %T=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %u=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %U=46 | %V=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %w=2 | %W=46 | %x=11/14/23 | %X=22:13:20 | %y=23 | %Y=2023 | %%=% | %E=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %Ec=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %Oy=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %#d=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %-d=E(invalid argument #1 to 'date' (invalid conversion specifier)) | %=%
+os.date-args ok 2023 | ok 1969 | ok 2023 | ok 5 | ok nil | ok nil | ok 20
+os.time-args ok 1577836800 | ok 1577880000 | ok 1577880000 | ok nil | error invalid argument #1 to 'time' (table expected, got number) | ok 1577880000

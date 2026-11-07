@@ -1,0 +1,76 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+bindable-order after-fire,h5,h4,h3,h2,h1
+property-order after-write,c4,c3,c2,c1,p4,p3,p2,p1
+once-connected-before true
+once-connected-after-fire false
+once-connected-later false
+once normal 1,once 1,normal 2
+disconnect-during-fire later 1,first 1,disconnected-later,added 2,first 2
+disconnect-before-run 
+wait fired,handler-b,waited x nil 3,handler-a
+table-same false nested-same false meta false missing nil
+instance-same true function function
+fire-mixed ok 
+mixed-received 1,2
+fire-sparse ok 
+sparse-received a nil nil
+fire-float-keys ok 
+float-keys-received table
+fire-cyclic error tables cannot be cyclic
+copy float-key ok  | n=1 {string:1=a}
+copy bool-key error Invalid table key type used | nothing arrived
+copy instance-key ok  | n=1 {string:<Instance> (Part)=p}
+copy function-key ok  | n=1 {string:<Function> (function: ADDR)=1}
+copy gap-start ok  | n=1 {string:2=b string:5=e}
+copy zero-key ok  | n=1 {number:1=a number:2=b}
+copy negative-key ok  | n=1 {string:-1=n}
+copy fraction-keys ok  | n=1 {string:-1=a string:2=b}
+copy big-keys ok  | n=1 {string:-9223372036854775808=c string:2147483648=a}
+copy table-key ok  | n=1 {string:<Table> (table: ADDR)=1}
+copy vector-key ok  | n=1 {string:<Vector3> (1, 2, 3)=1}
+copy enum-key ok  | n=1 {string:<token> (Enum.Material.Plastic)=1}
+copy thread-key error Invalid table key type used | nothing arrived
+copy buffer-key ok  | n=1 {string:<Buffer> (buffer: ADDR)=1}
+copy string-and-number-key ok  | n=1 {string:1=n}
+copy thread-arg ok  | n=1 nil
+copy thread-in-array ok  | n=1 {number:1=a number:3=c}
+copy long-sparse ok  | n=1 {number:1=a number:2=b}
+copy string-number-keys ok  | n=1 {string:1=x string:2=y}
+copy constructor-hole ok  | n=1 {number:1=a number:3=c}
+copy nested-mixed ok  | n=1 {number:1={number:1=1 number:2=2}}
+copy nested-meta ok  | n=1 {number:1={number:1=1}}
+copy frozen ok  | n=1 {number:1=1}
+copy function-value ok  | n=1 {string:F=function}
+copy thread-value ok  | n=1 {}
+copy instance-value ok  | n=1 {string:I=Instance}
+copy datatype-values ok  | n=1 {string:C=Color3 string:E=EnumItem string:V=Vector3}
+copy buffer-value ok  | n=1 {string:B=buffer}
+copy empty ok  | n=1 {}
+copy trailing-nil ok  | n=2 x , nil
+copy only-nils ok  | n=2 nil , nil
+copy shared-subtable ok  | n=1 {string:A={number:1=1} string:B={number:1=1}}
+copy shared-subtable same false
+copy same-table-twice ok  | n=2 {number:1=1} , {number:1=1}
+copy same-table-twice same false
+copy buffer-arg ok  | n=1 buffer
+copy buffer-arg same false
+copy function-arg ok  | n=1 function
+copy function-arg same true
+copy two-handlers same false wait-is-sent false wait-is-handler false
+invoke arg-same false back-same false back-is-inside false
+invoke inside {number:1=1} back {number:1=1} second {number:1=1}
+invoke cyclic error tables cannot be cyclic
+invoke cyclic-result error tables cannot be cyclic
+bindable-reentrant depth 80
+changed-reentrant writes 80 value 81
+connection RBXScriptConnection true
+disconnected false
+signal tostring Signal Event | Signal Changed | Signal SizeChanged
+connect-nonfunction ok Connection
+connect-nil ok Connection
+connect-nil-fire connected false logged 4 Attempt to connect failed: Passed value is not a function | Attempt to connect failed: Passed value is not a function | Attempt to connect failed: Passed value is not a function | Attempt to connect failed: Passed value is not a function
+connect-nil-handlers function-handler
+bad-property-signal error NotAProperty is not a valid property name.
+signal-equal true true
+handler-error second-handler-still-runs

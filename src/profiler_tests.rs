@@ -49,7 +49,7 @@ fn main_state(lua: &Lua) -> *mut mlua::ffi::lua_State {
 
 fn ops(lua: &Lua) -> (u64, u64) {
     let counters = unsafe { &*crate::cost::lua_workcounters(main_state(lua)) };
-    (counters.ops.iter().sum(), counters.hostops.iter().sum())
+    (counters.ops.iter().sum(), crate::cost::host_instructions(counters))
 }
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -140,14 +140,15 @@ fn booked_work_adds_up_to_the_work_clock_and_leaves_it_unchanged() {
 
 /// The inline caches are read as the interpreter reads them: a table key read from one table hits its slot after its
 /// first miss; a key the table lacks is looked up every time (a miss); a key its metatable's __index gives takes the
-/// slow path; a global hits its slot.
+/// slow path; a global hits its slot. (The table is a clone: a compiler since Luau 0.744 reads a local table that a
+/// constructor built and nothing changes as constants.)
 #[test]
 fn inline_caches_tell_hits_from_misses() {
     let _lock = lock();
     let lua = Lua::new();
     lua.enable_jit(false);
     let state = main_state(&lua);
-    let source = "local same = {a = 1, b = 2, c = 3}\nlocal x = 0\nfor i = 1, 100 do\n\tx += same.c\nend\nlocal empty = {}\nfor i = 1, 100 do\n\tx += empty.c or 0\nend\nlocal inherited = setmetatable({}, {__index = {c = 1}})\nfor i = 1, 100 do\n\tx += inherited.c\nend\nG = 0\nfor i = 1, 100 do\n\tG += 1\nend\nresult = x\n";
+    let source = "local same = table.clone({a = 1, b = 2, c = 3})\nlocal x = 0\nfor i = 1, 100 do\n\tx += same.c\nend\nlocal empty = {}\nfor i = 1, 100 do\n\tx += empty.c or 0\nend\nlocal inherited = setmetatable({}, {__index = {c = 1}})\nfor i = 1, 100 do\n\tx += inherited.c\nend\nG = 0\nfor i = 1, 100 do\n\tG += 1\nend\nresult = x\n";
     let function = lua.load(source).set_name("=caches").into_function().unwrap();
     assert!(vm::start(state, true, None, None));
     function.call::<()>(()).unwrap();
@@ -175,6 +176,53 @@ fn inline_caches_tell_hits_from_misses() {
     assert_eq!(inherited, [0, 0, 100, 0], "a key its metatable gives: the metatable's path");
     let globals = outcomes(16, "GETGLOBAL");
     assert!(globals[0] >= 99 && globals.iter().sum::<u64>() == 100, "{globals:?}");
+}
+
+/// The profiler names opcodes and type tags as the vendored VM numbers them: Bytecode.h's opcodes in order, and lua.h's
+/// type tags (a Luau release that adds an opcode or a type moves the ones after it)
+#[test]
+fn opcode_names_and_type_tags_follow_the_vendored_headers() {
+    let identifier = |text: &str| -> String { text.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect() };
+    let bytecode = include_str!("../vendor/luau0-src/luau/Common/include/Luau/Bytecode.h");
+    let opcodes = &bytecode[bytecode.find("enum LuauOpcode").unwrap()..];
+    let opcodes = &opcodes[..opcodes.find("};").unwrap()];
+    let names: Vec<String> = opcodes.lines().filter_map(|line| line.trim().strip_prefix("LOP_")).map(identifier).filter(|name| name != "_COUNT").collect();
+    assert_eq!(names, vm::OPCODES, "src/profiler/vm.rs OPCODES");
+    // lua.h's lua_Type with float vectors (LUA_VECTOR_DOUBLE 0, the layout mlua-sys binds)
+    let header = include_str!("../vendor/luau0-src/luau/VM/include/lua.h");
+    let types = &header[header.find("enum lua_Type").unwrap()..];
+    let types = &types[..types.find("};").unwrap()];
+    let (mut tags, mut skipping) = (Vec::new(), false);
+    for line in types.lines().map(str::trim) {
+        if line.starts_with("#if") {
+            skipping = line.contains("LUA_VECTOR_DOUBLE == 1");
+        } else if line.starts_with("#endif") {
+            skipping = false;
+        } else if let Some(rest) = line.strip_prefix("LUA_T").filter(|_| !skipping) {
+            let name = identifier(rest);
+            // (LUA_T_ALL, LUA_T_COUNT: counts, not tags)
+            if name.starts_with('_') {
+                break;
+            }
+            tags.push(name);
+        }
+    }
+    let tag = |name: &str| tags.iter().position(|found| found == name).unwrap_or_else(|| panic!("LUA_T{name} in {tags:?}")) as i32;
+    let ours = [
+        ("STRING", vm::T_STRING),
+        ("TABLE", vm::T_TABLE),
+        ("FUNCTION", vm::T_FUNCTION),
+        ("USERDATA", vm::T_USERDATA),
+        ("THREAD", vm::T_THREAD),
+        ("BUFFER", vm::T_BUFFER),
+        ("CLASS", vm::T_CLASS),
+        ("OBJECT", vm::T_OBJECT),
+        ("PROTO", vm::T_PROTO),
+        ("UPVAL", vm::T_UPVAL),
+    ];
+    for (name, value) in ours {
+        assert_eq!(tag(name), value, "LUA_T{name}: {tags:?}");
+    }
 }
 
 /// Allocations are typed exactly (every one), and their stacks name the allocating line; an Instance's userdata
@@ -212,7 +260,7 @@ thread_local! {
     static LAST_ALLOCATION: std::cell::Cell<(usize, i32)> = const { std::cell::Cell::new((0, -1)) };
 }
 
-unsafe extern "C-unwind" fn keep_allocation(state: *mut mlua::ffi::lua_State, _old: usize, _new: usize) {
+unsafe extern "C-unwind" fn keep_allocation(state: *mut mlua::ffi::lua_State, _block: *mut std::ffi::c_void, _old: usize, _new: usize, _memcat: u8, _tt: i32, _tag: i32) {
     let (block, kind) = vm::alloc_block(state);
     LAST_ALLOCATION.with(|last| last.set((block as usize, kind)));
 }
@@ -569,6 +617,53 @@ fn host_time_is_booked_in_milliseconds_where_it_was_spent() {
     assert!(spin["self"]["time_ms"].as_f64().unwrap() >= 0.8 * sampled, "the loop's function holds the time: {spin}");
 }
 
+/// A small local function `-O2` inlines runs as copies in its callers, with no frame of its own: the profile finds the copies by
+/// the lines they carry and counts a call each time one is entered (two copies in a row count apart, a loop around one counts
+/// each turn), a call that did make a frame stays a call, and the summary, the JSON and a diff show the inlined calls.
+#[test]
+fn inlined_functions_count_their_calls_where_their_copies_run() {
+    let _lock = lock();
+    let (lua, engine) = start();
+    let config = Config { print: false, ..Config::new(Kinds::WORK, temp_dir("inlined")) };
+    let session = profiler::Session::begin(config.clone());
+    crate::luau_profile::install(&lua);
+    // (middle and twice are a table's: only a local function is inlined, so they keep their frames)
+    let source = "--!optimize 2\nlocal function leaf(x)\n\treturn x * 2 + 1\nend\nlocal M = {}\nfunction M.middle(n)\n\tlocal total = 0\n\tfor i = 1, n do\n\t\ttotal += leaf(i)\n\tend\n\treturn total\nend\nfunction M.twice(n)\n\tlocal total = 0\n\tfor i = 1, n do\n\t\tlocal a = leaf(i)\n\t\tlocal b = leaf(i)\n\t\ttotal += a + b\n\tend\n\treturn total\nend\nlocal sum = 0\nfor round = 1, 10 do\n\tsum += M.middle(100)\nend\nsum += M.twice(50)\nlocal ok, value = pcall(leaf, 3)\nsum += value\nlocal done = pcall(function(step)\n\tsum += step\nend, 1)\nprint(sum)\n";
+    let output = run(&lua, &engine, "inlining", source);
+    assert_eq!(output.last().map(String::as_str), Some("107208"), "{output:?}");
+    profiler::collect(&lua);
+    session.finish(profiler::Run { command: "test".into(), status: "ok".into(), ..Default::default() }).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(config.out.join("profile.json")).unwrap()).unwrap();
+    let summary = std::fs::read_to_string(config.out.join("summary.txt")).unwrap();
+    let _ = std::fs::remove_dir_all(&config.out);
+    let functions = json["functions"].as_array().unwrap();
+    let named = |name: &str| {
+        functions
+            .iter()
+            .find(|f| f["module"] == "inlining" && f["name"].as_str().is_some_and(|n| n == name || n.ends_with(&format!(".{name}"))))
+            .unwrap_or_else(|| panic!("no {name}: {}", json["functions"]))
+    };
+    let (leaf, middle, twice) = (named("leaf"), named("middle"), named("twice"));
+    // (a call through a local holding it is inlined too: pcall's makes a frame)
+    assert_eq!(leaf["calls"], 1, "the call through pcall made a frame: {leaf}");
+    let inlined = &leaf["inlined"];
+    assert_eq!(inlined["calls"], 10 * 100 + 50 * 2, "{inlined}");
+    let into = |caller: &serde_json::Value| inlined["into"].as_array().unwrap().iter().find(|row| row["function"] == caller["id"]).cloned().unwrap_or_else(|| panic!("{inlined}"));
+    let (in_middle, in_twice) = (into(middle), into(twice));
+    assert_eq!((in_middle["copies"].as_u64(), in_middle["calls"].as_u64()), (Some(1), Some(1000)), "{in_middle}");
+    assert_eq!((in_twice["copies"].as_u64(), in_twice["calls"].as_u64()), (Some(2), Some(100)), "two copies side by side: {in_twice}");
+    assert!(inlined["insns"].as_u64().unwrap() >= 1100, "{inlined}");
+    // (the instructions stay their callers' own: the VM ran them in those frames)
+    assert!(middle["self"]["insns"].as_u64().unwrap() >= inlined["insns"].as_u64().unwrap() * 1000 / 1100, "{middle}");
+    let edge = json["edges"].as_array().unwrap().iter().find(|e| e["caller"] == middle["id"] && e["callee"] == leaf["id"] && e["inlined"] == true).unwrap_or_else(|| panic!("{}", json["edges"]));
+    assert_eq!(edge["calls"], 1000);
+    assert!(json["lines"].as_array().unwrap().iter().any(|l| l["function"] == middle["id"] && l["inlined"] == leaf["id"] && l["line"] == 3), "{}", json["lines"]);
+    assert!(summary.contains("inlined functions") && summary.lines().any(|line| line.contains("leaf") && line.contains("1,100")), "{summary}");
+    // (the statement creating a closure on its first and last lines, a call it is an argument of, is not a copy of it)
+    let inlined_here: Vec<&serde_json::Value> = functions.iter().filter(|f| f["module"] == "inlining" && f["inlined"].is_object()).collect();
+    assert_eq!(inlined_here.len(), 1, "only leaf was inlined: {inlined_here:?}");
+}
+
 /// ree's own caches are counted while a profile asks: a property read twice hits the member dispatch the second time,
 /// and an Instance pushed again hits its userdata.
 #[test]
@@ -728,6 +823,92 @@ fn a_profile_writes_its_files_and_diffs() {
     let _ = std::fs::remove_dir_all(&after);
 }
 
+/// A profile of a clip-shaped run: the game mounts in startup, attacks in steady while a harness module watches, and
+/// idles after; `watch` spins `watched` times. `phases` is `--profile-phase`. Returns the summary and profile.json.
+fn harness_profile(name: &str, watched: u32, phases: Option<&str>) -> (String, serde_json::Value) {
+    let (lua, engine) = start();
+    let config = Config { print: false, phases: phases.map(str::to_string), ..Config::new(Kinds::WORK, temp_dir(name)) };
+    let session = profiler::Session::begin(config.clone());
+    crate::luau_profile::install(&lua);
+    // (a table's function: -O2 inlines a small local function into its caller)
+    let spin = |function: &str, rounds: u32| format!("local M = {{}}\nfunction M.{function}(n)\n\tlocal x = 0\n\tfor i = 1, n do\n\t\tx += i % 7\n\tend\n\treturn x\nend\nresult = M.{function}({rounds})\n");
+    run(&lua, &engine, "ReplicatedStorage.Scene.Mount", &spin("mount", 40000));
+    profiler::phase("steady");
+    run(&lua, &engine, "ReplicatedStorage.Scene.Attack", &spin("attack", 20000));
+    run(&lua, &engine, "ReplicatedStorage.RURFixtures.Clip", &spin("watch", watched));
+    // (the engine's chunk that calls a harness, as `ree record` names it)
+    run(&lua, &engine, "rur.record", &spin("drive", 3000));
+    profiler::phase("after");
+    run(&lua, &engine, "ReplicatedStorage.Scene.Idle", &spin("idle", 5000));
+    profiler::collect(&lua);
+    let summary = session.finish(profiler::Run { command: "test".into(), status: "ok".into(), frames: 1, seconds: 1.0 / 60.0, fps: 60.0, ..Default::default() }).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(config.out.join("profile.json")).unwrap()).unwrap();
+    let _ = std::fs::remove_dir_all(&config.out);
+    (summary, json)
+}
+
+/// The text between a summary's `title` line and the next blank line
+fn section<'a>(summary: &'a str, title: &str) -> &'a str {
+    let start = summary.find(title).unwrap_or_else(|| panic!("no {title:?} in\n{summary}"));
+    let rest = &summary[start..];
+    &rest[..rest.find("\n\n").unwrap_or(rest.len())]
+}
+
+/// The summary reports the steady phase the run marked, and the harness's own code (under ReplicatedStorage.RURFixtures)
+/// apart from the game's: its work moves with what it watches, not with the game
+#[test]
+fn the_summary_reports_the_steady_phase_with_the_harnesss_code_apart() {
+    let _lock = lock();
+    let (summary, json) = harness_profile("harness", 30000, None);
+    assert!(summary.contains("reported below: phase steady: the game's code"), "{summary}");
+    let game = section(&summary, "top functions by self work: the game's code, phase steady");
+    assert!(game.contains("attack") && !game.contains("watch") && !game.contains("mount") && !game.contains("idle"), "{summary}");
+    let harness = section(&summary, "the harness's code, phase steady");
+    assert!(harness.contains("watch") && harness.contains("drive") && !harness.contains("attack"), "{summary}");
+    assert!(!game.contains("drive"), "{summary}");
+    // profile.json: the harness's functions are marked, every function has its phases, the scope has each side's work
+    let function = |name: &str| {
+        let suffix = format!(".{name}");
+        json["functions"].as_array().unwrap().iter().find(|f| f["name"].as_str().is_some_and(|n| n == name || n.ends_with(&suffix))).unwrap_or_else(|| panic!("no {name} in\n{summary}"))
+    };
+    assert_eq!(function("watch")["harness"], true);
+    assert_eq!(function("attack")["harness"], false);
+    assert!(function("attack")["phases"]["steady"]["self_work_ms"].as_f64().unwrap() > 0.0);
+    assert!(function("attack")["phases"].get("startup").is_none() && function("mount")["phases"]["startup"]["self_work_ms"].as_f64().unwrap() > 0.0);
+    assert_eq!(function("watch")["phases"]["steady"]["harness_self_work_ms"], function("watch")["phases"]["steady"]["self_work_ms"]);
+    assert_eq!(json["scope"]["phases"], serde_json::json!(["steady"]));
+    let (game_ms, harness_ms) = (json["scope"]["game_self_ms"].as_f64().unwrap(), json["scope"]["harness_self_ms"].as_f64().unwrap());
+    let steady = |name: &str| function(name)["phases"]["steady"]["self_work_ms"].as_f64().unwrap();
+    assert!(game_ms >= steady("attack") && harness_ms >= steady("watch") && harness_ms < steady("watch") + game_ms, "game {game_ms}, harness {harness_ms}");
+    // --profile-phase all: every phase's game code, and still not the harness's
+    let (all, _) = harness_profile("harness-all", 30000, Some("all"));
+    let game = section(&all, "top functions by self work: the game's code, every phase");
+    assert!(game.contains("mount") && game.contains("attack") && game.contains("idle") && !game.contains("watch"), "{all}");
+}
+
+/// A diff of two runs leads with the game's code in the phase both report; the harness's moved work stays apart
+#[test]
+fn a_diff_leads_with_the_games_code_and_keeps_the_harnesss_apart() {
+    let _lock = lock();
+    let ((_, before), (_, after)) = (harness_profile("diff-before", 20000, None), harness_profile("diff-after", 60000, None));
+    let (text, json) = profiler::diff::compare(&before, &after, 10);
+    let figure = |name: &str| json["figures"].as_array().unwrap().iter().find(|f| f["name"] == name).unwrap_or_else(|| panic!("no {name} in\n{text}")).clone();
+    let first = &json["figures"][0];
+    assert_eq!(first["name"], "the game's code, phase steady", "{text}");
+    let game = figure("the game's code, phase steady");
+    let (game_before, game_after) = (game["before"].as_f64().unwrap(), game["after"].as_f64().unwrap());
+    assert!((game_after - game_before).abs() <= 0.05 * game_before, "the game's code did the same work: {game_before} -> {game_after}\n{text}");
+    let harness = figure("the harness's code, phase steady");
+    assert!(harness["after"].as_f64().unwrap() > 2.0 * harness["before"].as_f64().unwrap(), "{text}");
+    assert_eq!(json["scope"], serde_json::json!(["steady"]));
+    let rows = json["functions"].as_array().unwrap();
+    assert!(rows.iter().any(|row| row["function"].as_str().unwrap().contains("watch") && row["harness"] == true), "{text}");
+    // (the game's code did the same work, so its table may be empty and left out)
+    let game_title = "functions that moved most: the game's code, phase steady";
+    assert!(!text.contains(game_title) || !section(&text, game_title).contains("watch"), "{text}");
+    assert!(section(&text, "the harness's functions that moved most, phase steady").contains("watch"), "{text}");
+}
+
 /// The memory module's own figures: a stack is interned once, a type name once.
 #[test]
 fn stacks_and_types_intern_once() {
@@ -841,4 +1022,184 @@ fn hardware_counter_options_parse() {
     assert_eq!(config.counters, ["instructions", "cycles", "DcacheMisses"]);
     assert_eq!(Config::from_args(&args(&["--profile", "hw"]), none).unwrap().unwrap().counters, profiler::hw::protocol::DEFAULT_COUNTERS);
     assert!(Config::from_args(&args(&["--profile", "hw", "--profile-counters", "cycles,cycles"]), none).unwrap_err().contains("twice"));
+}
+
+/// One heap profile of `source` (chunk `=shapes`): its profile.json
+fn shape_profile(name: &str, source: &str) -> serde_json::Value {
+    let (lua, engine) = start();
+    let config = Config { print: false, ..Config::new(Kinds::HEAP.with(Kinds::ALLOC), temp_dir(name)) };
+    let session = profiler::Session::begin(config.clone());
+    crate::luau_profile::install(&lua);
+    run(&lua, &engine, "shapes", source);
+    profiler::collect(&lua);
+    session.finish(profiler::Run { command: "test".into(), status: "ok".into(), ..Default::default() }).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(config.out.join("profile.json")).unwrap()).unwrap();
+    let _ = std::fs::remove_dir_all(&config.out);
+    json
+}
+
+/// The site of a snapshot's tables whose stack's innermost Luau frame is `line` of the `shapes` chunk
+fn site_at<'a>(json: &serde_json::Value, snapshot: &'a serde_json::Value, line: i64) -> &'a serde_json::Value {
+    let functions = json["functions"].as_array().unwrap();
+    let in_chunk = |id: i64| functions.iter().any(|f| f["id"].as_i64() == Some(id) && f["module"] == "shapes");
+    snapshot["tables"]["sites"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|site| {
+            let innermost = site["frames"].as_array().and_then(|frames| frames.iter().find(|frame| frame[0].as_i64().is_some_and(|id| id >= 0)).cloned());
+            innermost.is_some_and(|frame| in_chunk(frame[0].as_i64().unwrap()) && frame[1].as_i64() == Some(line))
+        })
+        .unwrap_or_else(|| panic!("no table site at shapes:{line}: {:#}", snapshot["tables"]))
+}
+
+/// A part's (or the levels') distribution: (total, used, min, median, max, histogram)
+fn distribution(part: &serde_json::Value) -> (f64, f64, f64, f64, f64, Vec<(u64, u64)>) {
+    let hist = part["hist"].as_array().unwrap().iter().map(|pair| (pair[0].as_u64().unwrap(), pair[1].as_u64().unwrap())).collect();
+    (part["slots"].as_f64().unwrap_or(0.0), part["used"].as_f64().unwrap_or(0.0), part["min"].as_f64().unwrap(), part["median"].as_f64().unwrap(), part["max"].as_f64().unwrap(), hist)
+}
+
+/// A heap snapshot's tables, exactly: how many each line made, their array and hash parts (slots, and those holding a
+/// value), their bytes as the VM counts them, how many levels of tables each is (a cycle shares one), and the rehashes
+/// that grew them, by the line that made them and the line that grew them
+#[test]
+fn table_shapes_are_counted_exactly_by_the_line_that_made_them() {
+    let _lock = lock();
+    let source = [
+        "local function records()",                                        // 1
+        "\tlocal list = table.create(100)",                                // 2
+        "\tfor i = 1, 100 do",                                             // 3
+        "\t\tlist[i] = { a = i, b = i, c = i }",                           // 4
+        "\tend",                                                           // 5
+        "\treturn list",                                                   // 6
+        "end",                                                             // 7
+        "local function grown()",                                          // 8
+        "\tlocal t = {}",                                                  // 9
+        "\tfor _, key in { \"k1\", \"k2\", \"k3\", \"k4\", \"k5\" } do",   // 10
+        "\t\tt[key] = true",                                               // 11
+        "\tend",                                                           // 12
+        "\treturn t",                                                      // 13
+        "end",                                                             // 14
+        "local a, b = {}, {}",                                             // 15
+        "a.other, b.other = b, a",                                         // 16
+        "_G.Held = { records = records(), grown = grown(), cycle = a }",   // 17
+    ]
+    .join("\n");
+    let json = shape_profile("shapes", &source);
+    let snapshot = json["heap"]["snapshots"].as_array().unwrap().last().unwrap();
+    assert_eq!(snapshot["label"], "end");
+    let sizes = &snapshot["tables"]["sizes"];
+    let (header, slot, node) = (sizes["table"].as_f64().unwrap(), sizes["slot"].as_f64().unwrap(), sizes["node"].as_f64().unwrap());
+    assert_eq!((slot, node), (16.0, 32.0), "a TValue and a LuaNode");
+    // 100 records of three fields: a hash part of 4 nodes, 3 used, each; tables that hold no table
+    let records = site_at(&json, snapshot, 4);
+    assert_eq!(records["count"], 100.0);
+    assert_eq!(records["bytes"], 100.0 * (header + 4.0 * node));
+    assert_eq!((records["hash_bytes"].as_f64(), records["array_bytes"].as_f64(), records["header_bytes"].as_f64()), (Some(100.0 * 4.0 * node), Some(0.0), Some(100.0 * header)));
+    assert_eq!(distribution(&records["hash"]), (400.0, 300.0, 4.0, 4.0, 4.0, vec![(4, 100)]));
+    assert_eq!(distribution(&records["array"]), (0.0, 0.0, 0.0, 0.0, 0.0, vec![(0, 100)]));
+    assert_eq!(distribution(&records["levels"]).5, vec![(1, 100)]);
+    assert_eq!((records["rehashes"].as_u64(), records["rehash_keys"].as_u64()), (Some(0), Some(0)), "made whole from a template");
+    // their list: an array of 100 slots, all used, holding tables: two levels
+    let list = site_at(&json, snapshot, 2);
+    assert_eq!(list["count"], 1.0);
+    assert_eq!(list["bytes"], header + 100.0 * slot);
+    assert_eq!(distribution(&list["array"]), (100.0, 100.0, 100.0, 100.0, 100.0, vec![(128, 1)]));
+    assert_eq!(distribution(&list["levels"]).5, vec![(2, 1)]);
+    // a table grown key by key to five keys: 1, 2, 4 and 8 nodes, four rehashes moving 1 + 2 + 3 + 5 keys
+    let grown = site_at(&json, snapshot, 9);
+    assert_eq!(distribution(&grown["hash"]), (8.0, 5.0, 8.0, 8.0, 8.0, vec![(8, 1)]));
+    assert_eq!((grown["rehashes"].as_u64(), grown["rehash_keys"].as_u64()), (Some(4), Some(11)));
+    // two tables that hold each other: one level, one node each, each grew once
+    let cycle = site_at(&json, snapshot, 15);
+    assert_eq!(cycle["count"], 2.0);
+    assert_eq!(distribution(&cycle["hash"]), (2.0, 2.0, 1.0, 1.0, 1.0, vec![(1, 2)]));
+    assert_eq!(distribution(&cycle["levels"]).5, vec![(1, 2)]);
+    assert_eq!((cycle["rehashes"].as_u64(), cycle["rehash_keys"].as_u64()), (Some(2), Some(2)));
+    // what holds them all: three levels above the records' (it, the list, a record)
+    let holder = site_at(&json, snapshot, 17);
+    assert_eq!(distribution(&holder["levels"]).5, vec![(3, 1)]);
+    assert_eq!(distribution(&holder["hash"]), (4.0, 3.0, 4.0, 4.0, 4.0, vec![(4, 1)]));
+    // the snapshot's totals cover every reachable table, the engine's own among them
+    let tables = &snapshot["tables"];
+    assert!(tables["count"].as_u64().unwrap() >= 105);
+    assert_eq!(tables["bytes"].as_u64().unwrap(), tables["header_bytes"].as_u64().unwrap() + tables["array_bytes"].as_u64().unwrap() + tables["hash_bytes"].as_u64().unwrap());
+    // the rehashes by the line that made them grow and the line that made the table: the grown table's four, exactly
+    let rehash = &json["alloc"]["rehash"];
+    let functions = json["functions"].as_array().unwrap();
+    let grown_id = functions.iter().find(|f| f["name"] == "grown").and_then(|f| f["id"].as_i64()).unwrap();
+    let grown_site = rehash["sites"].as_array().unwrap().iter().find(|site| site["frames"][0][0].as_i64() == Some(grown_id) && site["frames"][0][1] == 11).unwrap_or_else(|| panic!("{rehash:#}"));
+    assert_eq!(grown_site["table_frames"][0][1], 9, "the table made at line 9");
+    let counts = |site: &serde_json::Value| ["events", "keys", "script_events", "script_keys", "grew"].map(|key| site[key].as_u64().unwrap());
+    assert_eq!(counts(grown_site), [4, 11, 4, 11, 4]);
+    assert_eq!((grown_site["bytes_before"].as_f64(), grown_site["bytes_after"].as_f64()), (Some((1.0 + 2.0 + 4.0) * node), Some((1.0 + 2.0 + 4.0 + 8.0) * node)));
+    assert!(rehash["keys"].as_u64().unwrap() >= rehash["script_keys"].as_u64().unwrap() && rehash["script_keys"].as_u64().unwrap() >= 13, "{rehash}");
+}
+
+/// Each phase mark carries the counts so far, so that a phase's figures are the difference of two marks': the objects a
+/// script's own instructions allocated, the keys its tables' growth moved (the VM's counter and the rehash hook agree),
+/// the inline caches
+#[test]
+fn a_phase_is_the_difference_of_its_marks_counts() {
+    let _lock = lock();
+    let (lua, engine) = start();
+    let config = Config { print: false, ..Config::new(Kinds::ALL, temp_dir("marks")) };
+    let session = profiler::Session::begin(config.clone());
+    crate::luau_profile::install(&lua);
+    crate::luau_profile::set_phase("before");
+    run(&lua, &engine, "warm", "_G.Warm = {}\n");
+    crate::luau_profile::set_phase("grow");
+    // (a bound the compiler cannot see: with a constant one it sizes the table ahead and nothing rehashes)
+    run(&lua, &engine, "grow", "local n = tonumber(\"10\")\nlocal t = {}\nfor i = 1, n do\n\tt[i] = {}\nend\n");
+    crate::luau_profile::set_phase("after");
+    profiler::collect(&lua);
+    session.finish(profiler::Run { command: "test".into(), status: "ok".into(), ..Default::default() }).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(config.out.join("profile.json")).unwrap()).unwrap();
+    let _ = std::fs::remove_dir_all(&config.out);
+    let marks = json["marks"].as_array().unwrap();
+    let mark = |phase: &str| marks.iter().find(|mark| mark["phase"] == phase).unwrap_or_else(|| panic!("{marks:#?}"));
+    let (grow, after) = (mark("grow"), mark("after"));
+    let delta = |path: &[&str]| -> f64 {
+        let read = |mark: &serde_json::Value| path.iter().fold(mark, |value, key| &value[*key]).as_f64().unwrap_or_else(|| panic!("{path:?} in {mark}"));
+        read(after) - read(grow)
+    };
+    // 11 tables: the list and its ten; the list grew to 1, 2, 4, 8 and 16 slots, moving 1 + 2 + 3 + 5 + 9 keys
+    assert_eq!(delta(&["vm", "objects"]), 11.0);
+    assert_eq!(delta(&["vm", "rehashed"]), 20.0);
+    assert_eq!(delta(&["script_rehash_keys"]), 20.0, "the rehash hook sees the keys the VM counts");
+    assert_eq!(delta(&["script_rehashes"]), 5.0);
+    assert!(delta(&["rehash_keys"]) >= 20.0 && delta(&["rehashes"]) >= 5.0);
+    assert!(delta(&["allocs"]) >= 11.0 && delta(&["alloc_bytes"]) > 0.0);
+    // (three instructions a step of the loop: NEWTABLE, SETTABLE, FORNLOOP)
+    assert!(delta(&["insns"]) >= 30.0 && delta(&["work_ms"]) > 0.0, "{} instructions, {} ms of work", delta(&["insns"]), delta(&["work_ms"]));
+    assert!(after["host_ms"].as_f64().unwrap() >= grow["host_ms"].as_f64().unwrap());
+    assert!(after["caches"]["table key slot"].is_array(), "{after}");
+    let end = &json["end"];
+    assert_eq!(end["phase"], "end");
+    assert!(end["insns"].as_f64().unwrap() >= after["insns"].as_f64().unwrap());
+    // what the what-if runner reads of them
+    let figures = profiler::whatif::phase_figures(&json, "grow", "after", 1.0);
+    assert!(figures["allocs"] >= 11.0);
+    assert_eq!((figures["rehash_keys"], figures["rehashes"]), (20.0, 5.0));
+}
+
+/// A level is one more than the deepest table a table holds; the tables of a cycle share theirs
+#[test]
+fn nesting_levels_follow_what_a_table_holds() {
+    // 0 holds 1 and 2; 1 holds 3; 3 and 4 hold each other (a cycle) and 4 holds 5; 6 holds nothing
+    let edges: [(u32, u32); 6] = [(0, 1), (0, 2), (1, 3), (3, 4), (4, 3), (4, 5)];
+    let n = 7;
+    let mut offsets = vec![0u32; n + 1];
+    for &(from, _) in &edges {
+        offsets[from as usize + 1] += 1;
+    }
+    for at in 0..n {
+        offsets[at + 1] += offsets[at];
+    }
+    let targets: Vec<u32> = edges.iter().map(|&(_, to)| to).collect();
+    assert_eq!(memory::table_levels(n, &offsets, &targets), vec![4, 3, 1, 2, 2, 1, 1]);
+    let mut sizes = vec![(3, 3), (0, 0), (16, 9), (4, 1)];
+    let distribution = memory::Distribution::of(&mut sizes, true);
+    assert_eq!((distribution.total, distribution.used, distribution.min, distribution.median, distribution.max), (23, 13, 0, 3, 16));
+    assert_eq!(distribution.hist, vec![(0, 1), (4, 2), (16, 1)]);
 }

@@ -565,6 +565,7 @@ impl Engine {
 
     pub(crate) fn set_world(&self, world: World) {
         self.world.set(Some(world));
+        self.state.borrow().sched.touched.borrow_mut().workspace = Some(world.workspace);
     }
 
     /// Output.Add with the virtual clock.
@@ -585,11 +586,12 @@ impl Engine {
         if !self.options.edit_mode() && !state.sched.delivering_log {
             // LogService.MessageOut gets the line later in the frame, on a playing client and on a server alike
             // (scheduler::deliver_log; measured in a server game script, Studio 0.744: print, LogService:Info, :Warn and :Error's
-            // lines of one step arrive after that frame's Heartbeat handlers and the deferred work beside them). A client's error,
-            // and an engine warning that carries the script's stack, has its stack lines in the text; a server's keeps the
-            // message alone, as before (not measured).
+            // lines of one step arrive after that frame's Heartbeat handlers and the deferred work beside them). An error, and
+            // an engine warning that carries the script's stack, has its stack lines in the text, on a client and on a server
+            // alike (measured in a server's game script too: tools/parity/probes/logservice.luau and logservice_text.luau run
+            // with run.mjs --server).
             let text = match &trace {
-                Some(trace) if !server && (kind == "error" || kind == "warn") => client_error_text(&message, trace),
+                Some(trace) if kind == "error" || kind == "warn" => client_error_text(&message, trace),
                 _ => message.clone(),
             };
             state.sched.log_queue.push(LogLine { kind, text, context });

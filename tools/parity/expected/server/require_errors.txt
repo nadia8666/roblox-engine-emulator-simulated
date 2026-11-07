@@ -1,0 +1,24 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (loadstring in the server's bridge, script identity 4; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+pcall-broken error Requested module experienced an error while loading
+pcall-broken-log MessageError:ReplicatedStorage.ParityRequireLog.Broken:2: parity-req failed
+pcall-broken-again error Requested module experienced an error while loading
+pcall-broken-again-log 
+pcall-table error Requested module experienced an error while loading
+pcall-table-log 
+pcall-index error Requested module experienced an error while loading
+pcall-index-log MessageError:ReplicatedStorage.ParityRequireLog.Indexer:2: attempt to index nil with 'parity-req index'
+pcall-nothing error Module code did not return exactly one value
+pcall-nothing-log 
+pcall-cycle error Requested module experienced an error while loading
+pcall-cycle-log MessageError:Requested module was required recursively
+spawned-log MessageError:ReplicatedStorage.ParityRequireLog.Spawned:1: parity-req spawned | MessageError:Requested module experienced an error while loading
+pcall-outer error Requested module experienced an error while loading
+pcall-outer-log MessageError:Requested module experienced an error while loading
+shared-before ReplicatedStorage.ParityRequireLog.Second | error ReplicatedStorage.ParityRequireLog.Second:1: parity-req shared
+shared-after ReplicatedStorage.ParityRequireLog.Second | ReplicatedStorage.ParityRequireLog.Second
+shared-renamed ReplicatedStorage.ParityRequireLog.Second
+shared-destroyed ReplicatedStorage.ParityRequireLog.Second
+shared-other-text ReplicatedStorage.ParityRequireLog.Spaced
+shared-clone ReplicatedStorage.ParityRequireLog.Second
+shared-log 

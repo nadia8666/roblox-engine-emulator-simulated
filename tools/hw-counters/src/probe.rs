@@ -79,6 +79,25 @@ struct Kernel<'a> {
     checks: Vec<(&'static str, f64, f64)>,
 }
 
+/// What the L3 chase's misses must read, from where its steps were served: its own speed beside the memory chase's. At
+/// L3 speed few steps miss the last-level cache; at memory speed nearly every one does (on a busy machine other
+/// programs' data pushes the buffer out of the shared L3); in between nothing is checked. `attempts` are (cycles,
+/// llc-misses) a step, and the fastest decides: Some(passed) or None, and what to print.
+fn l3_verdict(attempts: &[(f64, f64)], memory_cycles: f64) -> (Option<bool>, String) {
+    let Some(&(cycles, misses)) = attempts.iter().min_by(|a, b| a.0.total_cmp(&b.0)) else { return (None, "not run".into()) };
+    let share = cycles / memory_cycles.max(1.0);
+    let speed = format!("{cycles:.0} cycles a step, memory {memory_cycles:.0}");
+    if share <= 0.3 {
+        let passed = misses <= 0.15;
+        (Some(passed), format!("{}: L3 speed ({speed}), expected 0..0.15", if passed { "ok" } else { "FAILED" }))
+    } else if share >= 0.6 {
+        let passed = misses >= 0.6;
+        (Some(passed), format!("{}: memory speed ({speed}: the L3 was busy), expected 0.6..1.1", if passed { "ok" } else { "FAILED" }))
+    } else {
+        (None, format!("not checked: between L3 and memory speed ({speed})"))
+    }
+}
+
 /// Counts `kernels` with `counters`: each kernel's counts
 fn measure(endpoint: client::Endpoint, counters: &[&str], kernels: &[Kernel]) -> Result<Vec<readings::Counts>, String> {
     let reader = client::Reader::new()?;
@@ -101,14 +120,18 @@ fn measure(endpoint: client::Endpoint, counters: &[&str], kernels: &[Kernel]) ->
     for note in &results.notes {
         println!("  note: {note}");
     }
-    if results.lost_events > 0 || results.without_counters > 0 {
-        println!("  warning: the session lost {} events; {} switches came without counter values", results.lost_events, results.without_counters);
+    if results.lost_events > 0 || results.lost_buffers > 0 {
+        println!("  warning: the session lost {} events and {} buffers", results.lost_events, results.lost_buffers);
     }
     let thread = results.threads.iter().find(|thread| thread.registered).ok_or("the service sent no slices of the probe's thread")?;
     let frequency = started.qpc_frequency.max(1) as i64;
     let split = readings::split(&at, &thread.slices, frequency / 1000);
     if split.matched < at.len() {
         println!("  warning: {} of {} readings found no switch of their own", at.len() - split.matched, at.len());
+    }
+    // (switches without values matter only where they cost a reading its switch, which the line above says)
+    if results.without_counters > 0 {
+        println!("  note: {} context switches came without counter values", results.without_counters);
     }
     Ok((0..kernels.len()).map(|index| split.windows[2 * index + 1]).collect())
 }
@@ -159,8 +182,11 @@ pub fn run(endpoint: client::Endpoint) -> i32 {
             vec![
                 chase_kernel("chase 16 KB (fits L1)", &small, 4_000_000, vec![("l1d-misses", 0.0, 0.05)]),
                 chase_kernel("chase 512 KB (fits L2)", &l2, 4_000_000, vec![("l1d-misses", 0.7, 1.1), ("l2-misses", 0.0, 0.1)]),
-                chase_kernel("chase 8 MB (fits L3)", &l3, 2_000_000, vec![("l2-misses", 0.7, 1.1), ("llc-misses", 0.0, 0.15)]),
-                chase_kernel("chase 256 MB (memory)", &memory, 2_000_000, vec![("llc-misses", 0.6, 1.1)]),
+                // (three tries: the last-level misses are checked on the fastest, against its speed: see l3_verdict)
+                chase_kernel(L3_ATTEMPT, &l3, 2_000_000, vec![("l2-misses", 0.7, 1.1)]),
+                chase_kernel(L3_ATTEMPT, &l3, 2_000_000, vec![("l2-misses", 0.7, 1.1)]),
+                chase_kernel(L3_ATTEMPT, &l3, 2_000_000, vec![("l2-misses", 0.7, 1.1)]),
+                chase_kernel(MEMORY_CHASE, &memory, 2_000_000, vec![("llc-misses", 0.6, 1.1)]),
             ],
         ));
     }
@@ -199,7 +225,48 @@ pub fn run(endpoint: client::Endpoint) -> i32 {
                 println!("    {counter:<14} {:>16} total {value:>10.4} a {}  {verdict}", counts[index], kernel.unit);
             }
         }
+        // the L3 chase's last-level misses, against its own speed
+        let at = |name: &str| counters.iter().position(|counter| *counter == name);
+        if let (Some(cycles), Some(misses)) = (at("cycles"), at("llc-misses")) {
+            let per = |kernel: &Kernel, counts: &readings::Counts, index: usize| counts[index] as f64 / kernel.units as f64;
+            let attempts: Vec<(f64, f64)> = kernels.iter().zip(&counts).filter(|(kernel, _)| kernel.name == L3_ATTEMPT).map(|(kernel, counts)| (per(kernel, counts, cycles), per(kernel, counts, misses))).collect();
+            let memory = kernels.iter().zip(&counts).find(|(kernel, _)| kernel.name == MEMORY_CHASE).map(|(kernel, counts)| per(kernel, counts, cycles));
+            if let (false, Some(memory)) = (attempts.is_empty(), memory) {
+                let (passed, text) = l3_verdict(&attempts, memory);
+                let fastest = attempts.iter().min_by(|a, b| a.0.total_cmp(&b.0)).map_or(0.0, |attempt| attempt.1);
+                println!("  {L3_ATTEMPT}, the fastest of {}: llc-misses {fastest:.4} a step  {text}", attempts.len());
+                if let Some(passed) = passed {
+                    checked += 1;
+                    failed += usize::from(!passed);
+                }
+            }
+        }
     }
     println!("\n{} of {checked} checks passed", checked - failed);
     if failed > 0 { 1 } else { 0 }
+}
+
+const L3_ATTEMPT: &str = "chase 8 MB (fits L3)";
+const MEMORY_CHASE: &str = "chase 256 MB (memory)";
+
+#[cfg(test)]
+mod tests {
+    use super::l3_verdict;
+
+    /// The L3 check reads the misses against the chase's own speed: on a busy machine (8 MB at 549 cycles a step, memory
+    /// 741: the buffer was pushed out of the L3) nearly every step must miss, as they did; on a quiet one few may; a count
+    /// that disagrees with the speed fails; in between, and with no attempt, nothing is checked; the fastest try decides
+    #[test]
+    fn the_l3_check_reads_the_misses_against_the_chases_speed() {
+        assert_eq!(l3_verdict(&[(549.0, 0.94)], 741.0).0, Some(true));
+        assert_eq!(l3_verdict(&[(549.0, 0.88)], 741.0).0, Some(true));
+        assert_eq!(l3_verdict(&[(55.0, 0.02)], 741.0).0, Some(true));
+        assert_eq!(l3_verdict(&[(55.0, 0.9)], 741.0).0, Some(false), "L3 speed with misses: the counter is wrong");
+        assert_eq!(l3_verdict(&[(600.0, 0.05)], 741.0).0, Some(false), "memory speed without misses: the counter is wrong");
+        assert_eq!(l3_verdict(&[(300.0, 0.5)], 741.0).0, None);
+        assert_eq!(l3_verdict(&[], 741.0).0, None);
+        let (passed, text) = l3_verdict(&[(549.0, 0.94), (60.0, 0.03), (300.0, 0.4)], 741.0);
+        assert_eq!(passed, Some(true));
+        assert!(text.contains("L3 speed") && text.contains("60 cycles"), "{text}");
+    }
 }

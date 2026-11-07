@@ -14,9 +14,6 @@
 
 #include <utility>
 
-
-LUAU_DYNAMIC_FASTFLAGVARIABLE(AddReturnExectargetCheck, false);
-
 namespace Luau
 {
 namespace CodeGen
@@ -24,7 +21,7 @@ namespace CodeGen
 namespace X64
 {
 
-void jumpOnNumberCmp(AssemblyBuilderX64& build, RegisterX64 tmp, OperandX64 lhs, OperandX64 rhs, IrCondition cond, Label& label)
+void jumpOnNumberCmp(AssemblyBuilderX64& build, RegisterX64 tmp, OperandX64 lhs, OperandX64 rhs, IrCondition cond, Label& label, bool floatPrecision)
 {
     // Refresher on comi/ucomi EFLAGS:
     // all zero: greater
@@ -36,14 +33,29 @@ void jumpOnNumberCmp(AssemblyBuilderX64& build, RegisterX64 tmp, OperandX64 lhs,
     if (cond == IrCondition::Greater || cond == IrCondition::GreaterEqual || cond == IrCondition::NotGreater || cond == IrCondition::NotGreaterEqual)
         std::swap(lhs, rhs);
 
-    if (rhs.cat == CategoryX64::reg)
+    if (floatPrecision)
     {
-        build.vucomisd(rhs, lhs);
+        if (rhs.cat == CategoryX64::reg)
+        {
+            build.vucomiss(rhs, lhs);
+        }
+        else
+        {
+            build.vmovss(tmp, rhs);
+            build.vucomiss(tmp, lhs);
+        }
     }
     else
     {
-        build.vmovsd(tmp, rhs);
-        build.vucomisd(tmp, lhs);
+        if (rhs.cat == CategoryX64::reg)
+        {
+            build.vucomisd(rhs, lhs);
+        }
+        else
+        {
+            build.vmovsd(tmp, rhs);
+            build.vucomisd(tmp, lhs);
+        }
     }
 
     // Keep in mind that 'Not' conditions want 'true' for comparisons with NaN
@@ -228,14 +240,23 @@ void callSetTable(IrRegAllocX64& regs, AssemblyBuilderX64& build, int rb, Operan
     emitUpdateBase(build);
 }
 
-void checkObjectBarrierConditions(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 object, IrOp ra, int ratag, Label& skip)
+void checkObjectBarrierConditions(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 object, RegisterX64 ra, IrOp raOp, int ratag, Label& skip)
 {
     // Barrier should've been optimized away if we know that it's not collectable, checking for correctness
     if (ratag == -1 || !isGCO(ratag))
     {
         // iscollectable(ra)
-        OperandX64 tag = (ra.kind == IrOpKind::VmReg) ? luauRegTag(vmRegOp(ra)) : luauConstantTag(vmConstOp(ra));
-        build.cmp(tag, LUA_TSTRING);
+        if (raOp.kind == IrOpKind::Inst)
+        {
+            build.vpextrd(dwordReg(tmp), ra, 3);
+            build.cmp(dwordReg(tmp), LUA_TSTRING);
+        }
+        else
+        {
+            OperandX64 tag = (raOp.kind == IrOpKind::VmReg) ? luauRegTag(vmRegOp(raOp)) : luauConstantTag(vmConstOp(raOp));
+            build.cmp(tag, LUA_TSTRING);
+        }
+
         build.jcc(ConditionX64::Less, skip);
     }
 
@@ -244,19 +265,25 @@ void checkObjectBarrierConditions(AssemblyBuilderX64& build, RegisterX64 tmp, Re
     build.jcc(ConditionX64::Zero, skip);
 
     // iswhite(gcvalue(ra))
-    OperandX64 value = (ra.kind == IrOpKind::VmReg) ? luauRegValue(vmRegOp(ra)) : luauConstantValue(vmConstOp(ra));
-    build.mov(tmp, value);
+    if (raOp.kind == IrOpKind::Inst)
+    {
+        build.vmovq(tmp, ra);
+    }
+    else
+    {
+        OperandX64 value = (raOp.kind == IrOpKind::VmReg) ? luauRegValue(vmRegOp(raOp)) : luauConstantValue(vmConstOp(raOp));
+        build.mov(tmp, value);
+    }
     build.test(byte[tmp + offsetof(GCheader, marked)], bit2mask(WHITE0BIT, WHITE1BIT));
     build.jcc(ConditionX64::Zero, skip);
 }
 
-
-void callBarrierObject(IrRegAllocX64& regs, AssemblyBuilderX64& build, RegisterX64 object, IrOp objectOp, IrOp ra, int ratag)
+void callBarrierObject(IrRegAllocX64& regs, AssemblyBuilderX64& build, RegisterX64 object, IrOp objectOp, RegisterX64 ra, IrOp raOp, int ratag)
 {
     Label skip;
 
     ScopedRegX64 tmp{regs, SizeX64::qword};
-    checkObjectBarrierConditions(build, tmp.reg, object, ra, ratag, skip);
+    checkObjectBarrierConditions(build, tmp.reg, object, ra, raOp, ratag, skip);
 
     {
         ScopedSpills spillGuard(regs);
@@ -347,8 +374,8 @@ void emitInterrupt(AssemblyBuilderX64& build)
 
     // note: rbx is non-volatile so it will be saved across interrupt call automatically
 
-    RegisterX64 rArg1 = (build.abi == ABIX64::Windows) ? rcx : rdi;
-    RegisterX64 rArg2 = (build.abi == ABIX64::Windows) ? rdx : rsi;
+    RegisterX64 rArg1 = IrCallWrapperX64::suggestArgumentRegister<0>(SizeX64::qword, build);
+    RegisterX64 rArg2 = IrCallWrapperX64::suggestArgumentRegister<1>(SizeX64::qword, build);
 
     Label skip;
 
@@ -461,26 +488,18 @@ void emitReturn(AssemblyBuilderX64& build, ModuleHelpers& helpers)
     // Registers alive: r9 (cip)
     RegisterX64 proto = rcx;
     RegisterX64 execdata = rbx;
-    RegisterX64 exectarget = r10;
 
     // Change closure
     build.mov(rax, qword[cip + offsetof(CallInfo, func)]);
     build.mov(rax, qword[rax + offsetof(TValue, value.gc)]);
     build.mov(sClosure, rax);
 
-    build.mov(proto, qword[rax + offsetof(Closure, l.p)]);
+    build.mov(proto, qword[cip + offsetof(CallInfo, p)]);
 
     build.mov(execdata, qword[proto + offsetof(Proto, execdata)]);
 
     build.test(byte[cip + offsetof(CallInfo, flags)], LUA_CALLINFO_NATIVE);
     build.jcc(ConditionX64::Zero, helpers.exitContinueVm); // Continue in interpreter if function has no native data
-
-    if (DFFlag::AddReturnExectargetCheck)
-    {
-        build.mov(exectarget, qword[proto + offsetof(Proto, exectarget)]);
-        build.test(exectarget, exectarget);
-        build.jcc(ConditionX64::Zero, helpers.exitContinueVmClearNativeFlag);
-    }
 
     // Change constants
     build.mov(rConstants, qword[proto + offsetof(Proto, k)]);
@@ -498,17 +517,41 @@ void emitReturn(AssemblyBuilderX64& build, ModuleHelpers& helpers)
     // Get new instruction location and jump to it
     build.mov(edx, dword[execdata + rax]);
 
-    if (DFFlag::AddReturnExectargetCheck)
-    {
-        build.add(rdx, exectarget);
-    }
-    else
-    {
-        build.add(rdx, qword[proto + offsetof(Proto, exectarget)]);
-    }
+    build.add(rdx, qword[proto + offsetof(Proto, exectarget)]);
     build.jmp(rdx);
 }
 
+void emitDispatchLuauCall(AssemblyBuilderX64& build, ModuleHelpers& helpers)
+{
+    RegisterX64 proto = rcx; // Sync with emitContinueCallInVm
+    RegisterX64 ci = rdx;
+
+    build.mov(ci, qword[rState + offsetof(lua_State, ci)]);
+
+    // Switch current Closure (sClosure = ci->func->value.gc)
+    build.mov(rax, qword[ci + offsetof(CallInfo, func)]);
+    build.mov(rax, qword[rax + offsetof(TValue, value.gc)]);
+    build.mov(sClosure, rax);
+
+    build.mov(proto, qword[ci + offsetof(CallInfo, p)]);
+
+    // Switch current code
+    build.mov(rax, qword[proto + offsetof(Proto, code)]);
+    build.mov(sCode, rax);
+
+    // Switch current constants
+    build.mov(rConstants, qword[proto + offsetof(Proto, k)]);
+
+    // Get native function entry
+    build.mov(rax, qword[proto + offsetof(Proto, exectarget)]);
+    build.test(rax, rax);
+    build.jcc(ConditionX64::Zero, helpers.exitContinueVm);
+
+    // Mark call frame as native
+    build.or_(dword[ci + offsetof(CallInfo, flags)], LUA_CALLINFO_NATIVE);
+
+    build.jmp(rax);
+}
 
 } // namespace X64
 } // namespace CodeGen

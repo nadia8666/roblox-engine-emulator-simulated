@@ -6,6 +6,8 @@
 //   node tools/parity/run.mjs [probe ...] [--ree <exe>] [--diff] [--json <file>] [--write-known]
 //   node tools/parity/run.mjs --capture [probe ...]          # run the probes in the real engine (REE_PARITY_CAPTURE)
 //   node tools/parity/run.mjs ui_signals --rur <checkout>    # through rur, a host that adds a GUI layout
+//   node tools/parity/run.mjs --server [...]                 # the probes as a server's script: expected/server and
+//                                                            # known-server.json, ree with --run-context server
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -17,6 +19,9 @@ const REPO = path.resolve(HERE, "..", "..");
 const PROBES = path.join(HERE, "probes");
 const EXPECTED = path.join(HERE, "expected");
 const KNOWN = path.join(HERE, "known.json");
+// The server's set: each probe run as a server Script (capture_sim.py), and ree with --run-context server
+const EXPECTED_SERVER = path.join(EXPECTED, "server");
+const KNOWN_SERVER = path.join(HERE, "known-server.json");
 
 export function probeNames() {
 	return fs.readdirSync(PROBES).filter(name => name.endsWith(".luau")).map(name => name.slice(0, -5)).sort();
@@ -33,8 +38,8 @@ export function body(name) {
 }
 
 // Header lines of an expected file start with "# ".
-export function readExpected(name) {
-	const file = path.join(EXPECTED, `${name}.txt`);
+export function readExpected(name, server = false) {
+	const file = path.join(server ? EXPECTED_SERVER : EXPECTED, `${name}.txt`);
 	if (!fs.existsSync(file)) return null;
 	const text = fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
 	const lines = text.split("\n");
@@ -54,9 +59,16 @@ export function probeOptions(name) {
 	return options;
 }
 
-export function readKnown() {
-	if (!fs.existsSync(KNOWN)) return {};
-	return JSON.parse(fs.readFileSync(KNOWN, "utf8"));
+export function readKnown(server = false) {
+	const file = server ? KNOWN_SERVER : KNOWN;
+	if (!fs.existsSync(file)) return {};
+	return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+// Whether a probe runs on a server too: not one that needs a client's screen (a device or a renderer)
+export function serverProbe(name) {
+	const options = probeOptions(name);
+	return !options.device && !options.rendered;
 }
 
 function defaultRee() {
@@ -82,12 +94,13 @@ __ParityRealPrint("@done")`;
 
 // One probe through `ree run`: its printed lines (the run's own `@done` dropped), the errors and warnings scripts and the
 // engine reported (output, not failures: a real engine reports them too), and why the run failed if it did.
-export function runInRee(name, ree, scratch) {
+export function runInRee(name, ree, scratch, server = false) {
 	const harness = path.join(scratch, `${name}.luau`);
 	fs.writeFileSync(harness, `return function(Context)\n${HARNESS_PRINT}\n${body(name)}\n${HARNESS_FLUSH}\nend\n`);
 	const empty = path.join(scratch, "empty");
 	fs.mkdirSync(empty, { recursive: true });
-	const result = spawnSync(ree, ["run", "--harness", harness, "--roots", empty, "--seconds", "120"], {
+	const context = server ? ["--run-context", "server"] : [];
+	const result = spawnSync(ree, ["run", "--harness", harness, "--roots", empty, "--seconds", "120", ...context], {
 		encoding: "utf8", maxBuffer: 256 * 1024 * 1024, windowsHide: true,
 	});
 	let summary;
@@ -181,7 +194,7 @@ function pad(text, width) {
 	return text.length >= width ? text : text + " ".repeat(width - text.length);
 }
 
-function capture(names) {
+function capture(names, server = false) {
 	const command = process.env.REE_PARITY_CAPTURE;
 	if (!command) {
 		console.error("parity: --capture runs the probes in the real engine through the command REE_PARITY_CAPTURE names; README.md says what it is given and must write");
@@ -190,14 +203,15 @@ function capture(names) {
 	const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ree-parity-"));
 	const input = path.join(scratch, "bodies.json");
 	const output = path.join(scratch, "outputs.json");
-	fs.writeFileSync(input, JSON.stringify(names.map(name => ({ name, body: body(name) }))));
+	fs.writeFileSync(input, JSON.stringify(names.map(name => (server ? { name, body: body(name), server: true } : { name, body: body(name) }))));
 	const result = spawnSync(`${command} "${input}" "${output}"`, { stdio: "inherit", shell: true, windowsHide: true, cwd: REPO });
 	if (result.status !== 0 || !fs.existsSync(output)) {
 		console.error(`parity: the capture command failed (exit ${result.status})`);
 		process.exit(1);
 	}
 	const captured = JSON.parse(fs.readFileSync(output, "utf8"));
-	fs.mkdirSync(EXPECTED, { recursive: true });
+	const folder = server ? EXPECTED_SERVER : EXPECTED;
+	fs.mkdirSync(folder, { recursive: true });
 	for (const name of names) {
 		const entry = captured.probes?.[name];
 		if (!entry || !entry.ok) {
@@ -205,7 +219,7 @@ function capture(names) {
 			continue;
 		}
 		const header = [`# engine: ${entry.engine || captured.engine || "unknown"}`, `# captured: ${captured.date || new Date().toISOString().slice(0, 10)}`];
-		fs.writeFileSync(path.join(EXPECTED, `${name}.txt`), [...header, ...entry.lines].join("\n") + "\n");
+		fs.writeFileSync(path.join(folder, `${name}.txt`), [...header, ...entry.lines].join("\n") + "\n");
 		console.log(`parity: ${name}: ${entry.lines.length} lines`);
 	}
 	fs.rmSync(scratch, { recursive: true, force: true });
@@ -213,7 +227,7 @@ function capture(names) {
 
 function main() {
 	const args = process.argv.slice(2);
-	const options = { ree: defaultRee(), rur: null, diff: false, json: null, capture: false, writeKnown: false, names: [] };
+	const options = { ree: defaultRee(), rur: null, diff: false, json: null, capture: false, writeKnown: false, server: false, names: [] };
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
 		if (arg === "--ree") options.ree = args[++index];
@@ -222,22 +236,24 @@ function main() {
 		else if (arg === "--json") options.json = args[++index];
 		else if (arg === "--capture") options.capture = true;
 		else if (arg === "--write-known") options.writeKnown = true;
+		else if (arg === "--server") options.server = true;
 		else if (arg.startsWith("-")) throw new Error(`unknown option ${arg}`);
 		else options.names.push(arg);
 	}
-	const names = options.names.length ? options.names : probeNames();
-	if (options.capture) return capture(names);
+	const names = options.names.length ? options.names : probeNames().filter(name => !options.server || serverProbe(name));
+	if (options.capture) return capture(names, options.server);
 	if (!options.ree && !options.rur) throw new Error("no ree: build it (cargo build --release) or pass --ree <exe>");
 	if (options.rur && options.writeKnown) throw new Error("--write-known records ree's differences, not rur's");
+	if (options.rur && options.server) throw new Error("--server runs ree as a server; rur hosts a client");
 	// (known.json lists ree's differences: through rur every line must match)
-	const known = options.rur ? {} : readKnown();
+	const known = options.rur ? {} : readKnown(options.server);
 	const host = options.rur ? "rur" : "ree";
 	const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ree-parity-"));
 	const rows = [];
 	let failed = 0;
 	for (const name of names) {
-		const expected = readExpected(name);
-		const ran = options.rur ? runInRur(name, options.rur, scratch) : runInRee(name, options.ree, scratch);
+		const expected = readExpected(name, options.server);
+		const ran = options.rur ? runInRur(name, options.rur, scratch) : runInRee(name, options.ree, scratch, options.server);
 		if (!expected) {
 			rows.push({ name, status: "no expected output", ran });
 			continue;
@@ -270,7 +286,7 @@ function main() {
 			if (!row.result || (!row.result.unknown.length && !row.result.known.length)) continue;
 			console.log(`\n--- ${row.name} (expected: real engine, -; ${host}, +)`);
 			const { diff } = row.result;
-			const expected = readExpected(row.name).lines;
+			const expected = readExpected(row.name, options.server).lines;
 			for (const [kind, i, j] of diff) {
 				if (kind === "-") console.log(`- ${expected[i]}`);
 				else if (kind === "+") console.log(`+ ${row.ran.lines[j]}`);
@@ -290,8 +306,8 @@ function main() {
 			});
 		}
 		const sorted = Object.fromEntries(Object.keys(next).sort().map(name => [name, next[name]]));
-		fs.writeFileSync(KNOWN, JSON.stringify(sorted, null, "\t") + "\n");
-		console.log(`parity: wrote ${Object.values(next).reduce((sum, list) => sum + list.length, 0)} known differences to known.json`);
+		fs.writeFileSync(options.server ? KNOWN_SERVER : KNOWN, JSON.stringify(sorted, null, "\t") + "\n");
+		console.log(`parity: wrote ${Object.values(next).reduce((sum, list) => sum + list.length, 0)} known differences to ${options.server ? "known-server.json" : "known.json"}`);
 	}
 	if (options.json) {
 		fs.writeFileSync(options.json, JSON.stringify(rows.map(row => ({ name: row.name, status: row.status, errors: row.ran.errors, total: row.result?.total, same: row.result?.same, known: row.result?.known, unknown: row.result?.unknown, extra: row.result?.extra })), null, "\t"));

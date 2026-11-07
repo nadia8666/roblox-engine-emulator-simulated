@@ -443,7 +443,7 @@ impl Api {
 static ATOM_REFLECTION: OnceLock<Arc<Reflection>> = OnceLock::new();
 
 /// `useratom`: a string's atom is its member NameId (-1: not a member name, -2: look it up).
-unsafe extern "C-unwind" fn user_atom(s: *const c_char, len: usize) -> i16 {
+unsafe extern "C-unwind" fn user_atom(_state: *mut ffi::lua_State, s: *const c_char, len: usize) -> i16 {
     let Some(reflection) = ATOM_REFLECTION.get() else { return -2 };
     let bytes = unsafe { std::slice::from_raw_parts(s as *const u8, len) };
     match reflection.name_id_bytes(bytes) {
@@ -971,7 +971,7 @@ unsafe extern "C-unwind" fn instance_new(state: *mut ffi::lua_State) -> c_int {
                     if crate::boundary::active() && api.muted.get() == 0 {
                         crate::boundary::record_named(crate::boundary::Kind::Create, "Instance", &format!("new({})", engine.reflection.class(class).name), cost);
                     }
-                    api.touched.borrow_mut().touch(id.index, class); // (an instance made this frame is hot)
+                    api.touched.borrow_mut().mark(id.index); // (an instance made this frame is hot)
                     push_instance(state, api, Some(&dom_state), id);
                 }
                 sync_if_moved(state, api);
@@ -1108,12 +1108,12 @@ unsafe fn index_fast(state: *mut ffi::lua_State) -> Out {
     unsafe {
         let Some((api, id)) = this(state) else { return Out::Slow };
         let engine = api.engine();
-        let (mut class, placeholder) = {
+        let (mut class, placeholder, serial) = {
             let dom_state = engine.state.borrow();
             let instance = dom_state.dom.at(id);
-            (instance.class, instance.has(flags::BUNDLE_ROOT))
+            (instance.class, instance.has(flags::BUNDLE_ROOT), instance.serial)
         };
-        let cost = crate::cost::READ + api.touched.borrow_mut().touch(id.index, class);
+        let cost = crate::cost::READ + api.touched.borrow_mut().touch(id.index, class, serial);
         api.charge(cost);
         let mut atom: c_int = 0;
         let key = ffi::lua_tostringatom(state, 2, &mut atom);
@@ -1179,7 +1179,10 @@ unsafe fn index_fast(state: *mut ffi::lua_State) -> Out {
                 match instance.stored(K::Name as NameId) {
                     Some(Value::String(name)) => push_bytes(state, name.as_bytes()),
                     Some(_) => push_bytes(state, b""),
-                    None => push_bytes(state, engine.reflection.class(instance.class).name.as_bytes()),
+                    // the class's default name, which is not always the class's own (a BoolValue is "Value", a
+                    // BindableEvent "Event", a WedgePart "Wedge": Studio's defaults in data/reflection.json; measured in a
+                    // playing client for BindableEvent, tools/parity/probes/instances.luau)
+                    None => push_bytes(state, instance.name.as_bytes()),
                 }
                 Out::Ret(1)
             }
@@ -1555,11 +1558,15 @@ unsafe fn namecall_fast(state: *mut ffi::lua_State) -> Out {
         }
         let Some((name, member, lower_first)) = method_member(api, class, key, exact) else { return Out::NotMethod };
         crate::cost::tally_member("call", &engine.reflection.class(class).name, || engine.reflection.name(name).to_string());
+        let serial = engine.state.borrow().dom.at(id).serial;
         let cost = {
             let mut touched = api.touched.borrow_mut();
             // (the method's code, cold at its first call in the frame: cost.rs FIRST_CALL)
-            member.cost as f64 + touched.touch(id.index, class) + touched.first_use(crate::cost::MemberUse::Call, name) + lower_first
+            member.cost as f64 + touched.touch(id.index, class, serial) + touched.first_use(crate::cost::MemberUse::Call, name) + lower_first
         };
+        // (PivotTo: the frame's first one, and the parts it carries and what hangs on them that the frame had not touched: cost.rs
+        // Path::Pivot, priced here so the engine's Luau body is unchanged)
+        let cost = if api.touched.borrow().pivot_to == Some(name) { cost + linstance::pivot_cold(engine, id) } else { cost };
         api.charge(cost);
         api.cross(crate::boundary::Kind::Method, class, Some(name), id, cost, true);
         match member.call {
@@ -1662,6 +1669,12 @@ unsafe fn base_call(state: *mut ffi::lua_State, api: &Api, engine: &Engine, id: 
                 crate::project::materialize_deep(engine, id);
                 let dom_state = engine.state.borrow();
                 let descendants = dom_state.dom.descendants(id);
+                // (the frame's first GetDescendants runs its code cold: cost.rs Path::Descendants)
+                let first = api.touched.borrow_mut().first_path(crate::cost::Path::Descendants);
+                if first > 0.0 {
+                    api.charge(first);
+                    crate::boundary::add_cost(first);
+                }
                 push_instance_list(state, api, &dom_state, &descendants)
             }
             Base::FindFirstChildOfClass => {
@@ -1897,6 +1910,11 @@ const UTAG_PROXY: c_int = ffi::LUA_UTAG_LIMIT + 1;
 /// "Instance".
 unsafe extern "C-unwind" fn typeof_c(state: *mut ffi::lua_State) -> c_int {
     unsafe {
+        // `typeof()` raises "missing argument #1", as type() does, without a position (measured in a playing client, Studio
+        // 0.744: tools/parity/probes/values.luau)
+        if ffi::lua_gettop(state) == 0 {
+            raise(state, "missing argument #1".into(), 0);
+        }
         ffi::lua_settop(state, 1);
         let kind = ffi::lua_type(state, 1);
         if kind == ffi::LUA_TUSERDATA && ffi::lua_userdatatag(state, 1) == INSTANCE_TAG {
@@ -2270,6 +2288,10 @@ fn find_garbage(engine: &Engine, api: &Api, state: &State, dead: &[u32], orphans
         for (_, value) in state.dom.at(id).props.iter() {
             value.visit_instances(&mut |target| targets.push(target));
         }
+        // (an attribute holding an Instance keeps it too)
+        for (_, value) in state.dom.at(id).attributes.iter() {
+            value.visit_instances(&mut |target| targets.push(target));
+        }
         for target in targets {
             keep(target, &mut candidate_root, &mut pending);
         }
@@ -2277,6 +2299,9 @@ fn find_garbage(engine: &Engine, api: &Api, state: &State, dead: &[u32], orphans
     while let Some(id) = pending.pop() {
         let mut targets = Vec::new();
         for (_, value) in state.dom.at(id).props.iter() {
+            value.visit_instances(&mut |target| targets.push(target));
+        }
+        for (_, value) in state.dom.at(id).attributes.iter() {
             value.visit_instances(&mut |target| targets.push(target));
         }
         for target in targets {

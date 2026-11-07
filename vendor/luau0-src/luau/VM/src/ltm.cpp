@@ -2,11 +2,14 @@
 // This code is based on Lua 5.x implementation licensed under MIT License; see lua_LICENSE.txt for details
 #include "ltm.h"
 
+#include "lfunc.h"
 #include "lstate.h"
 #include "lstring.h"
+#include "lua.h"
 #include "ludata.h"
 #include "ltable.h"
 #include "lgc.h"
+#include "lclass.h"
 
 #include <string.h>
 
@@ -18,7 +21,11 @@ const char* const luaT_typenames[] = {
 
     "userdata",
     "number",
+    "integer",
+
+#if LUA_VECTOR_DOUBLE == 0
     "vector",
+#endif
 
     "string",
 
@@ -27,11 +34,16 @@ const char* const luaT_typenames[] = {
     "userdata",
     "thread",
     "buffer",
+    "class",
+    "object",
+
+#if LUA_VECTOR_DOUBLE == 1
+    "vector",
+#endif
 };
 
 const char* const luaT_eventname[] = {
     // ORDER TM
-    
     "__index",
     "__newindex",
     "__mode",
@@ -42,7 +54,6 @@ const char* const luaT_eventname[] = {
 
     "__eq",
 
-    
     "__add",
     "__sub",
     "__mul",
@@ -52,7 +63,6 @@ const char* const luaT_eventname[] = {
     "__pow",
     "__unm",
 
-    
     "__lt",
     "__le",
     "__concat",
@@ -112,9 +122,23 @@ const TValue* luaT_gettmbyobj(lua_State* L, const TValue* o, TMS event)
     case LUA_TUSERDATA:
         mt = uvalue(o)->metatable;
         break;
+    case LUA_TCLASS:
+    {
+        // We store a metatable for class objects on the
+        // class object itself, use that.
+        mt = classvalue(o)->metatable;
+        break;
+    }
+    case LUA_TOBJECT:
+        mt = objectvalue(o)->lclass->instancemetatable;
+        break;
     default:
         mt = L->global->mt[ttype(o)];
     }
+
+    if (mt && hasmetacache(mt))
+        return getmetacache(mt, event);
+
     return (mt ? luaH_getstr(mt, L->global->tmname[event]) : luaO_nilobject);
 }
 

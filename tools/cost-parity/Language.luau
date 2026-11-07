@@ -44,6 +44,37 @@ add("arith.trig", 400000, function(N)
 	return s
 end)
 
+-- the number classifiers (Luau 0.701) on a value that changes every step
+add("arith.isnan", 1000000, function(N)
+	local s = 0
+	for i = 1, N do
+		if math.isnan(i * 0.5) then
+			s += 1
+		end
+	end
+	return s
+end)
+
+add("arith.isinf", 1000000, function(N)
+	local s = 0
+	for i = 1, N do
+		if math.isinf(i * 0.5) then
+			s += 1
+		end
+	end
+	return s
+end)
+
+add("arith.isfinite", 1000000, function(N)
+	local s = 0
+	for i = 1, N do
+		if math.isfinite(i * 0.5) then
+			s += 1
+		end
+	end
+	return s
+end)
+
 add("table.array_rw", 1000000, function(N)
 	local t = table.create(256, 0)
 	local s = 0
@@ -390,7 +421,7 @@ add("env.type", 1000000, function(N)
 	end
 	return s
 end)
-M.Unsafe = { "env.import", "env.typeof", "env.type", "arith.mathlib", "call.local", "call.method" }
+M.Unsafe = { "env.import", "env.typeof", "env.type", "arith.mathlib", "arith.isnan", "arith.isinf", "arith.isfinite", "call.local", "call.method" }
 
 local function inner()
 	return debug.info(1, "n")

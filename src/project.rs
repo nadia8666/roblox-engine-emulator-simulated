@@ -58,6 +58,9 @@ pub struct ProjectState {
     pub studio_only_used: Vec<String>,
     pub studio_only_gui: Vec<String>,
     pub hierarchy_path: Option<String>,
+    /// The Folders the mount made for directories that name no class of their own (no init script, no init.meta.json
+    /// className): [`use_studio_hierarchy`] gives each the class the place's hierarchy has at its path
+    implicit_dirs: Vec<InstanceId>,
     /// Mounted files' stamps from the project's listing ([`ScanNode::stamps`])
     pub stamps: FxHashMap<String, crate::files::Stamp>,
     /// Plans imported lazily ([`ModelPlan::instantiate_lazy`])
@@ -768,8 +771,9 @@ fn mount_directory_as(engine: &Engine, node: &ScanNode, parent: InstanceId, name
         .as_ref()
         .map(|(_, c)| c.to_string())
         .or(meta_class)
-        .or(known.map(str::to_string))
-        .unwrap_or_else(|| "Folder".into());
+        .or(known.map(str::to_string));
+    let implicit = class_name.is_none();
+    let class_name = class_name.unwrap_or_else(|| "Folder".into());
     let child = {
         let mut state = engine.state.borrow_mut();
         let child = ensure_child(&mut state, reflection, parent, name, &class_name, mount);
@@ -778,6 +782,10 @@ fn mount_directory_as(engine: &Engine, node: &ScanNode, parent: InstanceId, name
             instance.set_source_path(Some(Rc::from(path.as_str())));
             instance.set_source(None);
             mount.scripts += 1;
+        }
+        // (a directory that says no class of its own takes the place's, once its hierarchy is known: use_studio_hierarchy)
+        if implicit {
+            state.project.implicit_dirs.push(child);
         }
         child
     };
@@ -1286,9 +1294,28 @@ pub fn use_studio_hierarchy(engine: &Engine, roots: &[String]) -> Option<String>
         }
     }
     let mut state = engine.state.borrow_mut();
-    state.project.studio = Some(Studio { game: engine.world().game, index });
+    state.project.studio = Some(Studio { game: engine.world().game, index: index.clone() });
     state.project.stand_in_sources = sources;
     state.project.hierarchy_path = Some(path.clone());
+    // A directory that holds only scripts stands for an instance the place keeps (a Part a script sits in, as a script
+    // sync tool lays a place's scripts out: a published place holds those Parts while the source tree has only their
+    // scripts): it takes the class the hierarchy gives its path, and is Studio-only otherwise (its properties are the
+    // class's defaults; the place's own values are place content's: mount_place_content). A Folder, a script class or a
+    // service there leaves it a Folder.
+    let reflection = &engine.reflection;
+    let folder = reflection.class_id("Folder");
+    for id in std::mem::take(&mut state.project.implicit_dirs) {
+        if state.dom.get(id).is_none() || Some(state.dom.at(id).class) != folder {
+            continue;
+        }
+        let Some(node) = studio_node_of(&mut state, id) else { continue };
+        let Some(class) = reflection.class_id(&index.classes[node as usize - 1]) else { continue };
+        if Some(class) == folder || reflection.class(class).service || is_a(reflection, class, "LuaSourceContainer") {
+            continue;
+        }
+        state.dom.set_class(reflection, id, class);
+        state.dom.at_mut(id).set_flag(flags::STUDIO_ONLY, true);
+    }
     Some(path)
 }
 
@@ -1357,6 +1384,18 @@ pub fn mount_place_content(engine: &Engine, hierarchy: &str) -> usize {
             let state = engine.state.borrow();
             state.dom.at(parent).children.iter().copied().filter(|&child| state.dom.at(child).has(flags::STUDIO_ONLY) && names.contains(state.dom.at(child).name.as_bytes())).collect()
         };
+        // (a directory the hierarchy gave its class keeps what the source tree mounted in it: it moves into the stored
+        // instance, a stored script of the same name giving way to the source tree's)
+        let carried: Vec<(Str, Vec<InstanceId>)> = {
+            let state = engine.state.borrow();
+            obsolete
+                .iter()
+                .map(|&child| {
+                    let kept = state.dom.at(child).children.iter().copied().filter(|&kid| !state.dom.at(kid).has(flags::STUDIO_ONLY)).collect();
+                    (state.dom.at(child).name.clone(), kept)
+                })
+                .collect()
+        };
         for child in obsolete {
             crate::lua::instance::set_parent(engine, child, None).ok();
         }
@@ -1365,6 +1404,27 @@ pub fn mount_place_content(engine: &Engine, hierarchy: &str) -> usize {
         }
         // (and the file is the whole subtree: the snapshot, which can be older than the place, adds nothing below it)
         let roots = plan.instantiate(engine, Some(parent));
+        for (name, kids) in carried {
+            let Some(root) = roots.iter().copied().find(|&root| engine.state.borrow().dom.at(root).name == name) else { continue };
+            for kid in kids {
+                let stored = {
+                    let state = engine.state.borrow();
+                    let kid_name = state.dom.at(kid).name.clone();
+                    find_child(&state, root, &kid_name.to_str_lossy()).map(|stored| {
+                        let script = |id: InstanceId| is_a(&engine.reflection, state.dom.at(id).class, "LuaSourceContainer");
+                        (stored, script(stored) && script(kid))
+                    })
+                };
+                match stored {
+                    Some((stored, true)) => {
+                        crate::lua::instance::set_parent(engine, stored, None).ok();
+                    }
+                    Some((_, false)) => continue,
+                    None => {}
+                }
+                crate::lua::instance::set_parent(engine, kid, Some(root)).ok();
+            }
+        }
         let mut state = engine.state.borrow_mut();
         for &root in &roots {
             state.dom.at_mut(root).studio_node = StudioNode::None;

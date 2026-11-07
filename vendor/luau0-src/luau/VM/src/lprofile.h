@@ -32,6 +32,9 @@ LUAI_FUNC void luaP_leave(lua_State* L);
 LUAI_FUNC void luaP_threadgone(lua_State* L, lua_State* L1);
 // an object marked with lua_profilemark is being freed
 LUAI_FUNC void luaP_freed(lua_State* L, GCObject* o);
+// a table rehashed to fit a new key (ltable.cpp rehash, once resized): its array and hash sizes before, and the keys it
+// moved with the new one (what the work counters' `rehashed` counts); the profile's rehash hook (lua_setprofilerehash)
+LUAI_FUNC void luaP_rehash(lua_State* L, LuaTable* t, int oldarray, int oldnodes, int keys);
 
 // luau_execute<true> holds one while it runs (its destructor also runs when an error unwinds it)
 struct luaP_Execute

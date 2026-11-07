@@ -5,15 +5,14 @@
 #include "lstate.h"
 #include "lapi.h"
 #include "ldo.h"
+#include "lgc.h"
 #include "ludata.h"
 
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-LUAU_DYNAMIC_FASTFLAGVARIABLE(LuauXpcallContNoYield, false)
-LUAU_DYNAMIC_FASTFLAGVARIABLE(LuauXpcallContErrorHandling, false)
-LUAU_FASTFLAG(LuauStacklessPcall)
+LUAU_FASTFLAGVARIABLE(LuauFastpcall)
 
 static void writestring(const char* s, size_t l)
 {
@@ -282,69 +281,41 @@ static int luaB_select(lua_State* L)
     }
 }
 
-static void luaB_pcallrun(lua_State* L, void* ud)
-{
-    StkId func = (StkId)ud;
-
-    if (FFlag::LuauStacklessPcall)
-    {
-        // if we can yield, schedule a call setup with postponed reentry
-        luaD_callint(L, func, LUA_MULTRET, lua_isyieldable(L) != 0);
-    }
-    else
-    {
-        luaD_call(L, func, LUA_MULTRET);
-    }
-}
-
 static int luaB_pcally(lua_State* L)
 {
     luaL_checkany(L, 1);
 
-    StkId func = L->base;
-
-    // any errors from this point on are handled by continuation
-    L->ci->flags |= LUA_CALLINFO_HANDLE;
-
-    int status = luaD_pcall(L, luaB_pcallrun, func, savestack(L, func), 0);
-
-    // necessary to accommodate functions that return lots of values
-    expandstacklimit(L, L->top);
-
-    if (FFlag::LuauStacklessPcall)
-    {
-        // yielding means we need to propagate yield; resume will call continuation function later
-        if (status == 0 && isyielded(L))
-            return C_CALL_YIELD;
-    }
-    else
-    {
-        // yielding means we need to propagate yield; resume will call continuation function later
-        if (status == 0 && (L->status == LUA_YIELD || L->status == LUA_BREAK))
-            return -1; // -1 is a marker for yielding from C
-    }
-
-    // immediate return (error or success)
-    lua_rawcheckstack(L, 1);
-    lua_pushboolean(L, status == 0);
-    lua_insert(L, 1);
-    return lua_gettop(L); // return status + all results
+    return lua_pcallyieldable(L, lua_gettop(L) - 1, LUA_MULTRET, 0);
 }
 
 static int luaB_pcallcont(lua_State* L, int status)
 {
+    luaD_checkstack(L, 1);
+
     if (status == 0)
     {
-        lua_rawcheckstack(L, 1);
-        lua_pushboolean(L, true);
-        lua_insert(L, 1); // insert status before all results
-        return lua_gettop(L);
+        StkId base = L->base;
+        StkId top = L->top;
+
+        // Move results 1 right to make space for the 'true' status
+        for (StkId q = top; q > base; q--)
+            setobj2s(L, q, q - 1);
+
+        setbvalue(base, 1);
+        L->top = top + 1;
+
+        return cast_int(L->top - base);
     }
     else
     {
-        lua_rawcheckstack(L, 1);
-        lua_pushboolean(L, false);
-        lua_insert(L, -2); // insert status before error object
+        StkId top = L->top;
+
+        // Move error 1 right to make space for the 'false' status
+        setobj2s(L, top, top - 1);
+
+        setbvalue(top - 1, 0);
+        L->top = top + 1;
+
         return 2;
     }
 }
@@ -360,93 +331,31 @@ static int luaB_xpcally(lua_State* L)
     lua_replace(L, 2);
     // at this point the stack looks like err, f, args
 
-    // any errors from this point on are handled by continuation
-    L->ci->flags |= LUA_CALLINFO_HANDLE;
-
-    StkId errf = L->base;
-    StkId func = L->base + 1;
-
-    int status = luaD_pcall(L, luaB_pcallrun, func, savestack(L, func), savestack(L, errf));
-
-    // necessary to accommodate functions that return lots of values
-    expandstacklimit(L, L->top);
-
-    if (FFlag::LuauStacklessPcall)
-    {
-        // yielding means we need to propagate yield; resume will call continuation function later
-        if (status == 0 && isyielded(L))
-            return C_CALL_YIELD;
-    }
-    else
-    {
-        // yielding means we need to propagate yield; resume will call continuation function later
-        if (status == 0 && (L->status == LUA_YIELD || L->status == LUA_BREAK))
-            return -1; // -1 is a marker for yielding from C
-    }
-
-    // immediate return (error or success)
-    lua_rawcheckstack(L, 1);
-    lua_pushboolean(L, status == 0);
-    lua_replace(L, 1);    // replace error function with status
-    return lua_gettop(L); // return status + all results
-}
-
-static void luaB_xpcallerr(lua_State* L, void* ud)
-{
-    StkId func = (StkId)ud;
-
-    if (DFFlag::LuauXpcallContNoYield)
-        luaD_callny(L, func, 1);
-    else
-        luaD_call(L, func, 1);
+    return lua_pcallyieldable(L, lua_gettop(L) - 2, LUA_MULTRET, 1);
 }
 
 static int luaB_xpcallcont(lua_State* L, int status)
 {
     if (status == 0)
     {
-        lua_rawcheckstack(L, 1);
-        lua_pushboolean(L, true);
-        lua_replace(L, 1);    // replace error function with status
-        return lua_gettop(L); // return status + all results
+        StkId base = L->base;
+
+        // xpcall had an 'errfunc' before the results, so we just replace it with 'true' status
+        setbvalue(base, 1);
+
+        return cast_int(L->top - base);
     }
     else
     {
-        lua_rawcheckstack(L, 3);
-        lua_pushboolean(L, false);
-        lua_pushvalue(L, 1);  // push error function on top of the stack
-        lua_pushvalue(L, -3); // push error object (that was on top of the stack before)
+        luaD_checkstack(L, 1);
 
-        if (DFFlag::LuauXpcallContErrorHandling)
-        {
-            StkId errf = L->top - 2;
-            ptrdiff_t oldtopoffset = savestack(L, errf);
+        StkId top = L->top;
 
-            int err = luaD_pcall(L, luaB_xpcallerr, errf, oldtopoffset, 0);
+        // Move error 1 right to make space for the 'false' status
+        setobj2s(L, top, top - 1);
 
-            if (err != 0)
-            {
-                int errstatus = status;
-
-                // in general we preserve the status, except for cases when the error handler fails
-                // out of memory is treated specially because it's common for it to be cascading, in which case we preserve the code
-                if (status == LUA_ERRMEM && err == LUA_ERRMEM)
-                    errstatus = LUA_ERRMEM;
-                else
-                    errstatus = LUA_ERRERR;
-
-                StkId oldtop = restorestack(L, oldtopoffset);
-                luaD_seterrorobj(L, errstatus, oldtop);
-            }
-        }
-        else
-        {
-            StkId res = L->top - 3;
-            StkId errf = L->top - 2;
-
-            // note: we pass res as errfunc as a short cut; if errf generates an error, we'll try to execute res (boolean) and fail
-            luaD_pcall(L, luaB_xpcallerr, errf, savestack(L, errf), savestack(L, res));
-        }
+        setbvalue(top - 1, 0);
+        L->top = top + 1;
 
         return 2;
     }
@@ -523,9 +432,17 @@ int luaopen_base(lua_State* L)
     auxopen(L, "pairs", luaB_pairs, luaB_next);
 
     lua_pushcclosurek(L, luaB_pcally, "pcall", 0, luaB_pcallcont);
+
+    if (FFlag::LuauFastpcall)
+        L->global->builtinPcall = clvalue(luaA_toobject(L, -1));
+
     lua_setfield(L, -2, "pcall");
 
     lua_pushcclosurek(L, luaB_xpcally, "xpcall", 0, luaB_xpcallcont);
+
+    if (FFlag::LuauFastpcall)
+        L->global->builtinXpcall = clvalue(luaA_toobject(L, -1));
+
     lua_setfield(L, -2, "xpcall");
 
     return 1;

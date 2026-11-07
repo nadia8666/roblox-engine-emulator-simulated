@@ -1,0 +1,40 @@
+ ◆ ree profile   ✓ run ok · Fixture.luau · 120 frames · 2.00 s                                     Studio work 13.20 ms
+  1 Overview  2 Flame  3 Calls  4 Source  5 Alloc  6 Heap  7 Timeline  8 Caches  9 Issues  d Diff  c Compare
+╭ Issues  12 ──────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   severity   kind               issue                                                                                │
+│ ▌ ■ critical sort every frame   Sorted every frame: rank  Main:20                                                    │
+│   ▲ serious  repeat reads       Part.Size read again in the frame: 200 a frame at Main:31                            │
+│   ▲ serious  scaling            sortAll in t[v][k] grows as n^1.90                                                   │
+│   ● warning  heap growth        Reachable heap grows: +2.50 MB from steady to end                                    │
+│   ● warning  steady allocation  21.9 KB a frame on average: rank  Main:21                                            │
+│   ● warning  cache misses       GETTABLEKS at Main:31 misses 83.3% of its lookups                                    │
+│   ● warning  unchanged writes   Part.Position set to its own value: 30 a frame at Main:33                            │
+│   ● warning  table growth       Tables regrown: layout  Main:32                                                      │
+│   ● warning  steady allocation  512 B a frame on average: layout  Main:32                                            │
+│   ● warning  gc spike           Collector spikes: 1 frame, worst 400 steps (frame 90)                                │
+│   ● warning  frame spike        Frame spikes: 1 frame, worst 2.000 ms (frame 60)                                     │
+│   ● warning  growth             Connections keep growing: +99 over the 100 frames of the steady phase                │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ ■ critical  Sorted every frame: rank  Main:20 ───────────────────────────────────────────────────────────────────────╮
+│ • table.sort ran 100 times in the 100 frames of the steady phase, 1.0 a frame                                        │
+│ • 42.0 µs a frame in the sorts, 39.6% of the phase's work                                                            │
+│ → Keep the sorted list and sort again only when an item changes                                                      │
+│ ⏎ Calls: rank  Main:20                                                                                               │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓ issue  enter open   │   m metric  f scripts  / find  y copy  t theme  ? help  q quit

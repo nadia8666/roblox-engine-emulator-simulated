@@ -1,0 +1,120 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+error error-string | @14: plain
+error error-level0 | plain
+error error-level2 | @16: up
+error error-table | (table) 7
+error error-number | @18: 42
+error error-nil | (nil) nil
+error error-noarg | (nil) nil
+error error-instance | (Instance) Part
+error call-nil | @22: attempt to call a nil value
+error call-field | @23: attempt to call a nil value
+error call-method | @24: attempt to call missing method 'Missing' of table
+error call-number | @25: attempt to call a number value
+error index-nil | @26: attempt to index nil with 'Field'
+error index-nil-local | @27: attempt to index nil with 'Field'
+error index-number | @28: attempt to index number with 'Field'
+error index-global | @29: attempt to index nil with 'Field'
+error newindex-nil | @30: attempt to index nil with 'Field'
+error arith-nil | @31: attempt to perform arithmetic (add) on nil and number
+error arith-table | @32: attempt to perform arithmetic (add) on table and number
+error arith-string | @33: attempt to perform arithmetic (mul) on string and number
+error arith-bool | @34: attempt to perform arithmetic (sub) on boolean and number
+error concat-nil | @35: attempt to concatenate string with nil
+error concat-table | @36: attempt to concatenate string with table
+error compare-mixed | @37: attempt to compare number < string
+error compare-tables | @38: attempt to compare table < table
+error compare-nil | @39: attempt to compare nil < number
+error len-number | @40: attempt to get length of a number value
+error len-nil | @41: attempt to get length of a nil value
+error unm-table | @42: attempt to perform arithmetic (unm) on table
+error for-step0 | no error
+error for-string | @44: invalid 'for' initial value (number expected, got string)
+error iterate-number | @45: attempt to iterate over a number value
+error iterate-nil | @46: attempt to iterate over a nil value
+error stack-overflow | @47: stack overflow
+error assert-false | @48: assertion failed!
+error assert-message | @49: custom message
+error assert-table | @50: invalid argument #2 to 'assert' (string expected, got table)
+error tostring-none | @51: missing argument #1
+error setmetatable-bad | @52: invalid argument #1 to 'setmetatable' (table expected, got number)
+error select-negative | @53: invalid argument #1 to 'select' (index out of range)
+error select-zero | @54: invalid argument #1 to 'select' (index out of range)
+error string-method-nil | @55: invalid argument #1 to 'upper' (string expected, got nil)
+error math-floor-string | @56: invalid argument #1 to 'floor' (number expected, got string)
+error rawset-nil-key | table index is nil
+error table-nan-key | @58: table index is NaN
+error table-nil-key | @59: table index is nil
+error ipairs-nil | @60: invalid argument #1 to 'ipairs' (table expected, got nil)
+error pairs-nil | @61: invalid argument #1 to 'pairs' (table expected, got nil)
+error next-bad-key | invalid key to 'next'
+error coroutine-resume-dead | cannot resume dead coroutine
+error wrap-dead | @64: cannot resume dead coroutine
+error wrap-error | @65: @65: inner
+error string-rep-too-large | @66: resulting string too large
+error invalid-member | NotAMember is not a valid member of Part "Part"
+error invalid-member-write | NotAMember is not a valid member of Part "Part"
+error wrong-type-write | Unable to assign property Size. Vector3 expected, got number
+error wrong-type-write-string | no error
+error readonly-write | Unable to assign property ClassName. Property is read only
+error readonly-write-abs | Unable to assign property AbsoluteSize. Property is read only
+error enum-wrong | Unable to assign property Material. Invalid value "NotAMaterial" for enum Material
+error enum-wrong-type | Unable to assign property Material. EnumItem of type Material expected, got an EnumItem of type SortOrder
+error enum-number-wrong | Unable to assign property Material. Invalid value 999999 for enum Material
+error method-on-wrong-class | GetPlayers is not a valid member of Part "Part"
+error method-with-dot | Expected ':' not '.' calling member function FindFirstChild
+error method-bad-self | Expected ':' not '.' calling member function FindFirstChild
+error method-missing-arg | Argument 1 missing or nil
+error method-wrong-arg | no error
+error instance-new-bad | Unable to create an Instance of type "NotAClass"
+error instance-new-service | Unable to create an Instance of type "Workspace"
+error instance-new-abstract | Unable to create an Instance of type "BasePart"
+error instance-new-number | Unable to create an Instance of type "5"
+error getservice-bad | 'NotAService' is not a valid Service name
+error vector3-bad-arg | no error
+error vector3-arith-bad | @88: attempt to perform arithmetic (add) on Vector3 and number
+error vector3-index | W is not a valid member of Vector3
+error vector3-newindex | X cannot be assigned to
+error cframe-bad-arg | @91: invalid argument #1 to 'new' (Vector3 expected, got string)
+error cframe-mul-bad | @92: invalid argument #2 (Vector3 expected, got number)
+error udim2-bad | no error
+error color3-index | A is not a valid member of Color3
+error enum-index | NotThere is not a valid member of "Enum.Material"
+error enums-index | NotAnEnum is not a valid member of "Enum"
+error enumitem-newindex | Value is not a valid member of EnumItem
+error clone-locked-parent | The Parent property of Part is locked, current parent: NULL, new parent Workspace
+error tween-bad-property | TweenService:Create no property named 'NotAProperty' for object 'Part'
+error tween-bad-type | TweenService:Create property named 'Size' cannot be tweened due to type mismatch (property is a 'Vector3', but given type is 'double')
+error tween-untweenable | TweenService:Create property named 'Name' on object 'Part' is not a data type that can be tweened
+error require-nonmodule | Attempted to call require with invalid argument(s).
+error require-number | Downloading asset failed for asset id 5.  Is the asset id correct and is the asset type "Model"?
+error require-nil | Attempted to call require with invalid argument(s).
+error fire-nonbindable | Fire is not a valid member of RBXScriptSignal
+error connect-dot | @106: invalid argument #1 to 'Connect' (RBXScriptSignal expected, got function)
+error signal-wait-dot | @107: missing argument #1 to 'Wait' (RBXScriptSignal expected)
+error attribute-bad | Array is not a supported attribute type
+error getattribute-dot | Expected ':' not '.' calling member function GetAttribute
+xpcall-traceback @119: deep error / @123 / @119 function Deep / @121 / @117 / @0
+traceback-plain msg / @126 / @0
+traceback-level msg / @0
+traceback-nonstring error @129: invalid argument #1 to 'traceback' (string expected, got table) ok string
+traceback-thread ok @135
+xpcall-args ok true 5
+xpcall-handler-error ok false error in error handling
+pcall-nonfunction ok false attempt to call a number value
+pcall-yield ok true yielded
+error-rethrow-position @164: inner
+error-in-tostring @168: tostring failed
+debug-info ok Named 0 false true | ok [C] tostring -1 | error @178: missing argument #1
+debug-other nil nil function function function function
+getfenv ok table table script true
+loadstring ok function ok function: ADDR
+newproxy ok userdata proxy!
+globals shared=table _G=table _VERSION=string workspace=userdata Workspace=userdata game=userdata Game=userdata script=userdata plugin=nil settings=function UserSettings=function tick=function time=function elapsedTime=function wait=function delay=function spawn=function ypcall=function printidentity=function stats=function version=function PluginManager=function LoadLibrary=nil collectgarbage=function gcinfo=function require=function unpack=function Stats=function warn=function DebuggerManager=nil utf8=table buffer=table vector=table task=table bit32=table
+_VERSION Luau
+collectgarbage ok number | error missing argument #1 to 'collectgarbage' (string expected) | error collectgarbage must be called with 'count'; use gcinfo() instead | error collectgarbage must be called with 'count'; use gcinfo() instead
+gcinfo-type number
+time-funcs number number number time-positive true
+ypcall ok true 1
+settings error The current thread cannot call 'settings' (lacking capability Plugin) | ok Instance

@@ -1,0 +1,40 @@
+ ◆ ree profile   ✓ run ok · Fixture.luau · 120 frames · 2.00 s                                     Studio work 13.20 ms
+  1 Overview  2 Flame  3 Calls  4 Source  5 Alloc  6 Heap  7 Timeline  8 Caches  9 Issues  d Diff  c Compare
+╭ Main  <tmp>/run/Main.luau ───────────────────────────────────────────── 1-29 of 40 ╮
+│    line       work with calls            insns     alloc  misses   code                                              │
+│       1                                                            local Items = {}                                  │
+│       2                                                            -- line 2                                         │
+│       3                                                            -- line 3                                         │
+│       4                                                            -- line 4                                         │
+│       5   0.500 ms            ▊            400     640 B           local cache = { size = 0 }                        │
+│       6                                                            -- line 6                                         │
+│       7                                                            -- line 7                                         │
+│       8                                                            -- line 8                                         │
+│       9                                                            -- line 9                                         │
+│      10                                                            local function update()                           │
+│      11   0.900 ms            █▎          4000                         local records = rank(Items)                   │
+│      12   0.300 ms            ▍           2000                         layout(records)                               │
+│      13                                                            end                                               │
+│      14                                                            -- line 14                                        │
+│      15                                                            -- line 15                                        │
+│      16                                                            -- line 16                                        │
+│      17                                                            -- line 17                                        │
+│      18                                                            -- line 18                                        │
+│      19                                                            -- line 19                                        │
+│      20                                                            local function rank(items)                        │
+│      21   2.880 ms            ████▏      20.0K   2.56 MB               for _, item in items do records[#records + 1] │
+│ ▌    22   5.520 ms            ████████  364.0K                         table.sort(records, function(a, b) return a.s │
+│      23                                                                return records                                │
+│      24                                                            -- line 24                                        │
+│      25                                                            -- line 25                                        │
+│      26                                                            -- line 26                                        │
+│      27                                                            -- line 27                                        │
+│      28                                                            -- line 28                                        │
+│      29                                                            -- line 29                                        │
+╰ share of Studio work ■ <0.1%  0.1% ███████ 1% ███████ 3% ███████ 10% ███████ 30%+ ───────────────────────────────────╯
+╭ Line 22  anonymous  Main:22 ─────────────────────────────────────────────────────────────────────────────────────────╮
+│ work 5.520 ms    instructions 364,000                                                                                │
+│ opcodes GETTABLEKS 30,000 · JUMPIFLT 15,000 · CALL 120 · DUPCLOSURE 120                                              │
+│ code table.sort(records, function(a, b) return a.score > b.score end)                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓ line  ←→ hot line  s by heat  enter calls   │   m metric  f scripts  / find  y copy  t theme  ? help  q quit

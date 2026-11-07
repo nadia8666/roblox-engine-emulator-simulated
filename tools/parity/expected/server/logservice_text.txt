@@ -1,0 +1,11 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+nested-functions out MessageError[@41: parity-text named /     Stack Begin /     Script '<probe>', Line @41 - function Named /     Script '<probe>', Line @44 - function Outer /     Stack End] trace [ServerScriptService.ParityProbe, line 241 - function Named / ServerScriptService.ParityProbe, line 244 - function Outer / ]
+direct out MessageError[parity-text direct /     Stack Begin /     Stack End] trace []
+level0 out MessageError[parity-text level0 /     Stack Begin /     Script '<probe>', Line @51 /     Stack End] trace [ServerScriptService.ParityProbe, line 251 / ]
+level2 out MessageError[@58: parity-text level2 /     Stack Begin /     Script '<probe>', Line @56 - function Inner /     Script '<probe>', Line @58 /     Stack End] trace [ServerScriptService.ParityProbe, line 256 - function Inner / ServerScriptService.ParityProbe, line 258 / ]
+index out MessageError[@63: attempt to index nil with 'parity-text field' /     Stack Begin /     Script '<probe>', Line @63 /     Stack End] trace [ServerScriptService.ParityProbe, line 263 / ]
+handler out MessageError[@68: parity-text handler /     Stack Begin /     Script '<probe>', Line @68 /     Stack End] trace [ServerScriptService.ParityProbe, line 268 / ]
+deferred out MessageError[@73: parity-text deferred /     Stack Begin /     Script '<probe>', Line @73 /     Stack End] trace [ServerScriptService.ParityProbe, line 273 / ]
+coroutine-wrap out MessageError[@77: parity-text wrapped /     Stack Begin /     Stack End] trace []
+warn-print out MessageWarning[parity-text warn 1 nil] MessageOutput[parity-text print	with tab] trace 

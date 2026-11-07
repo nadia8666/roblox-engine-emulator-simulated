@@ -162,7 +162,65 @@ pub fn register(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
     register_tween_info(lua, engine)?;
     register_random(lua, engine)?;
     register_date_time(lua, engine)?;
+    register_instance_handle(lua, engine)?;
     Ok(())
+}
+
+// InstanceHandle
+
+/// An attribute's Instance as GetAttribute and GetAttributes hand it back (Studio 0.744, measured in a playing client:
+/// tools/parity/probes/instance_attributes.luau): a userdata of type InstanceHandle, a new one at every read (never
+/// rawequal to another, so a table key of one is not found by the next), that prints the instance's current Name (after
+/// a rename, an unparenting and a Destroy alike), has no members (`Name is not a valid member of InstanceHandle`, for
+/// methods too) and equals a handle of the same instance but never the instance. It keeps its instance's userdata as its
+/// user value, so the instance lives while a script keeps the handle.
+pub struct LInstanceHandle(pub crate::InstanceId);
+
+pub fn instance_handle(lua: &Lua, engine: &Engine, id: crate::InstanceId) -> LuaResult<LuaValue> {
+    if engine.state.borrow().dom.get(id).is_none() {
+        return Ok(LuaValue::Nil);
+    }
+    let handle = lua.create_any_userdata(LInstanceHandle(id))?;
+    handle.set_user_value(super::instance_value(lua, engine, id)?)?;
+    Ok(LuaValue::UserData(handle))
+}
+
+/// The instance an InstanceHandle refers to
+pub fn instance_handle_of(value: &LuaValue) -> Option<crate::InstanceId> {
+    match value {
+        LuaValue::UserData(ud) => ud.borrow::<LInstanceHandle>().ok().map(|handle| handle.0),
+        _ => None,
+    }
+}
+
+fn register_instance_handle(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
+    // (an assignment raises the same text: not measured)
+    let no_member = |lua: &Lua, engine: &Rc<Engine>| {
+        wrapped(lua, engine, |_, args| {
+            let args = Args::new(args);
+            raise(format!("{} is not a valid member of InstanceHandle", key_text(args.get(1))))
+        })
+    };
+    let index = no_member(lua, engine)?;
+    let newindex = no_member(lua, engine)?;
+    let e = engine.clone();
+    let tostring = lua.create_function(move |_, this: LuaValue| {
+        let state = e.state.borrow();
+        let name = instance_handle_of(&this).and_then(|id| state.dom.get(id)).map(|instance| instance.name.to_str_lossy().into_owned());
+        Ok(name.unwrap_or_default())
+    })?;
+    let eq = lua.create_function(|_, (a, b): (LuaValue, LuaValue)| {
+        Ok(matches!((instance_handle_of(&a), instance_handle_of(&b)), (Some(a), Some(b)) if a == b))
+    })?;
+    lua.register_userdata_type::<LInstanceHandle>(|registry| {
+        registry.add_meta_field("__type", "InstanceHandle");
+        registry.add_meta_field("__index", index);
+        registry.add_meta_field("__newindex", newindex);
+        registry.add_meta_field("__tostring", tostring);
+        registry.add_meta_field("__eq", eq);
+    })?;
+    let sample = lua.create_any_userdata(LInstanceHandle(crate::InstanceId { index: u32::MAX, generation: u32::MAX }))?;
+    lock_metatable(lua, &sample)
 }
 
 // Enums
@@ -348,6 +406,15 @@ fn signal_of(engine: &Engine, value: &LuaValue) -> Option<Option<SignalId>> {
     }
 }
 
+/// `Signal.Wait()`: "missing argument #1 to 'Wait' (RBXScriptSignal expected)" at the caller (measured,
+/// tools/parity/probes/errors.luau); with a value that is no signal, the invalid-argument text Connect gives (not measured)
+fn wait_misuse<T>(engine: &Engine, value: &LuaValue) -> Result<T, Flow> {
+    if value.is_nil() {
+        return super::raise_at_caller("missing argument #1 to 'Wait' (RBXScriptSignal expected)");
+    }
+    super::raise_at_caller(format!("invalid argument #1 to 'Wait' (RBXScriptSignal expected, got {})", typeof_value(engine, value)))
+}
+
 fn connect(lua: &Lua, engine: &Rc<Engine>, args: LuaMultiValue, once: bool) -> Ret {
     connect_as(lua, engine, args, once, false)
 }
@@ -356,8 +423,22 @@ fn connect(lua: &Lua, engine: &Rc<Engine>, args: LuaMultiValue, once: bool) -> R
 fn connect_as(lua: &Lua, engine: &Rc<Engine>, args: LuaMultiValue, once: bool, parallel: bool) -> Ret {
     let args = Args::new(args);
     let Some(signal) = signal_of(engine, args.get(0)) else {
-        return raise("Expected ':' not '.' calling member function Connect");
+        // `Signal.Connect(f)`: "invalid argument #1 to 'Connect' (RBXScriptSignal expected, got function)" at the caller
+        // (measured, tools/parity/probes/errors.luau)
+        let verb = if parallel { "ConnectParallel" } else if once { "Once" } else { "Connect" };
+        return super::raise_at_caller(format!(
+            "invalid argument #1 to '{verb}' (RBXScriptSignal expected, got {})",
+            typeof_value(engine, args.get(0))
+        ));
     };
+    // A server's scripts may read RunService.RenderStepped but not connect to it (Connect and Once measured, a Studio 0.744
+    // server's game script: tools/parity/probes/run_service_sides.luau; ConnectParallel takes the same path, Wait is not
+    // measured and waits). PreRender and BindToRenderStep are taken there and never run, as here.
+    if let Some(id) = signal {
+        if engine.options.server() && engine.state.borrow().signals.get(id).label.as_bytes() == b"RunService.RenderStepped" {
+            return raise("RenderStepped event can only be used from local scripts");
+        }
+    }
     let LuaValue::Function(callback) = args.get(1).clone() else {
         // Roblox raises nothing: it logs the message and returns a connection that is not connected, which firing the
         // signal skips (measured in a playing client, Studio 0.744: tools/parity/probes/signals.luau)
@@ -399,7 +480,7 @@ fn register_signals(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
     let wait_fn = wrapped(lua, engine, move |lua, args| {
         let args = Args::new(args);
         let Some(signal) = signal_of(&e, args.get(0)) else {
-            return raise("Expected ':' not '.' calling member function Wait");
+            return wait_misuse(&e, args.get(0));
         };
         if let Some(signal) = signal {
             refs::admit(&e, Hold::Wait, "Wait")?;
@@ -507,7 +588,7 @@ fn register_signals(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
                 Err(Flow::Yield)
             }),
             Some(None) => Err(Flow::Yield),
-            None => raise("Expected ':' not '.' calling member function Wait"),
+            None => wait_misuse(&e, args.get(0)),
         };
         super::encode(lua, outcome)
     })?;

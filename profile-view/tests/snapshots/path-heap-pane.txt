@@ -1,0 +1,40 @@
+ ◆ ree profile   ✓ run ok · Fixture.luau · 120 frames · 2.00 s                                     Studio work 13.20 ms
+  1 Overview  2 Flame  3 Calls  4 Source  5 Alloc  6 Heap  7 Timeline  8 Caches  9 Issues  d Diff  c Compare
+╭ Heap  3 snapshots · ←→ ──────────────────────────────────────────────────────────────────────────────────────────────╮
+│  start · frame 0 · 500.0 KB  →  steady · frame 20 · 1.00 MB +524.0 KB  →  end · frame 120 · 3.50 MB +2.50 MB         │
+│                                                                                                                      │
+│ reachable 1.00 MB 4000 objects · unswept 50.0 KB  ━━━━━━  the run's own 60.0 KB 5.9% of reachable  ━━━━━━━━━━━━━━━━━ │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Biggest holders  what each keeps alive ──────────────────────────────╮ ╭ By type  1.00 MB reachable ─────────────────╮
+│        keeps       own object             held by                    │ │   type              bytes   count           │
+│      1.72 MB    4.0 KB table              registry > Items           │ │ ▌ table           1.91 MB    3000 █████████ │
+│     214.8 KB    6.6 KB thread             (engine reference)         │ │   function pro…  585.9 KB     200 ██▊       │
+│                                                                      │ │   string         293.0 KB     800 █▍        │
+│                                                                      │ │                                             │
+│                                                                      │ │                                             │
+│                                                                      │ │                                             │
+│                                                                      │ │                                             │
+│                                                                      │ │                                             │
+│                                                                      │ │                                             │
+│                                                                      │ │                                             │
+╰──────────────────────────────────────────────────────────────────────╯ ╰─────────────────────────────────────────────╯
+╭ Allocated by the run, still reachable  60.0 KB, 600 objects, by stack ───────────────────────────────────────────────╮
+│        bytes   objects type               stack, innermost first                                                     │
+│      60.0 KB       120 table              Main:32 ‹ Main:10                                                          │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Collector  3 cycles · 640 steps · 2.29 MB freed · 9.500 ms of host time ─────────────────────────────────────────────╮
+│ propagate 6.000 ms (400 steps)  ·  sweep 3.500 ms (240 steps)                                                        │
+│                                                                                                                      │
+│ steps a frame                                                              ▇                     max 400 steps       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ←→ snapshot  tab pane  ↑↓ row  enter source   │   m metric  f scripts  / find  y copy  t theme  ? help  q quit

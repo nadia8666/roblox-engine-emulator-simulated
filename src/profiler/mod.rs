@@ -37,6 +37,7 @@ pub mod hw;
 pub mod memory;
 pub mod report;
 pub mod vm;
+pub mod whatif;
 
 use std::{
     cell::{Cell, RefCell},
@@ -233,12 +234,46 @@ pub struct Source {
 }
 
 /// A `Context.ProfilePhase` mark (and the first frame's `frames`)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Mark {
     pub phase: String,
     pub frame: u64,
     pub seconds: f64,
     pub work: f64,
+    /// Host time since the profile began, in seconds, and the run thread's CPU cycles so far (QueryThreadCycleTime: reference
+    /// cycles), read first thing at the mark
+    pub host: f64,
+    pub cycles: u64,
+    /// What the VM and the profilers had counted so far, once the VM is installed: a phase's figures are the difference
+    /// between its mark's and the next one's (the last phase's: the profile's end, [`State::end`])
+    pub totals: Option<Totals>,
+}
+
+/// Running counts at a mark ([`Mark::totals`])
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Totals {
+    /// Instructions dispatched (scripts', a native module's counted as interpreted)
+    pub insns: u64,
+    /// The VM's work counters (cost::VmCounters): collectable objects and their bytes a script's own instructions allocated,
+    /// table storage bytes, keys rehashed, and the frame's cold first touches (tables, closures, functions, their code)
+    pub objects: u64,
+    pub allocated: u64,
+    pub stored: u64,
+    pub rehashed: u64,
+    pub cold_tables: u64,
+    pub cold_closures: u64,
+    pub cold_protos: u64,
+    pub cold_code: u64,
+    /// The allocation profile's: every allocation's bytes and the objects, and the rehash hook's rehashes and their keys, all
+    /// and those a script's own instruction made: (events, keys, script events, script keys)
+    /// (`alloc` or `heap`)
+    pub alloc_bytes: Option<u64>,
+    pub allocs: Option<u64>,
+    pub rehashes: Option<(u64, u64, u64, u64)>,
+    /// The collector's steps, cycles, bytes freed and host seconds (`heap` or `timeline`)
+    pub gc: (u64, u64, u64, f64),
+    /// The inline caches' outcomes by kind (vm::CACHE_KINDS; `work` or `caches`)
+    pub caches: Option<[[u64; vm::CACHE_OUTCOMES]; 5]>,
 }
 
 /// One frame of the timeline
@@ -321,6 +356,40 @@ struct State {
     collected: bool,
     /// The work clock when the profile was collected
     end_work: f64,
+    /// The profile's end as a mark (phase `end`): its counts when the profile was collected
+    end: Option<Mark>,
+}
+
+impl State {
+    /// The running counts now ([`Totals`]; None before the VM is installed)
+    fn totals(&self) -> Option<Totals> {
+        let installed = self.installed.as_ref()?;
+        let kinds = self.config.kinds;
+        let mut totals = Totals::default();
+        if let Some(counters) = installed.counters.map(|counters| unsafe { &*counters }) {
+            totals.insns = instructions(counters);
+            totals.objects = counters.objects;
+            totals.allocated = counters.allocated;
+            totals.stored = counters.stored;
+            totals.rehashed = counters.rehashed;
+            totals.cold_tables = counters.coldtables;
+            totals.cold_closures = counters.coldclosures;
+            totals.cold_protos = counters.coldprotos;
+            totals.cold_code = counters.coldcode;
+        }
+        if kinds.has(Kinds::ALLOC) || kinds.has(Kinds::HEAP) {
+            if let Some((bytes, objects, rehashes)) = memory::with(|allocations| (allocations.bytes, allocations.objects, (allocations.rehashes.events, allocations.rehashes.keys, allocations.rehashes.script_events, allocations.rehashes.script_keys))) {
+                totals.alloc_bytes = Some(bytes);
+                totals.allocs = Some(objects);
+                totals.rehashes = Some(rehashes);
+            }
+        }
+        totals.gc = (self.collector.steps, self.collector.cycles, self.collector.freed, self.collector.seconds);
+        if kinds.has(Kinds::CACHES) {
+            totals.caches = Some(vm::cache_totals(installed.state));
+        }
+        Some(totals)
+    }
 }
 
 thread_local! {
@@ -401,6 +470,7 @@ impl Session {
             warnings,
             collected: false,
             end_work: 0.0,
+            end: None,
         };
         STATE.with(|cell| *cell.borrow_mut() = Some(Box::new(state)));
         ON.with(|on| on.set(true));
@@ -438,6 +508,7 @@ impl Session {
             hw: hw.as_ref(),
             sources: &state.sources,
             end_work: state.end_work,
+            end: state.end.as_ref(),
             boundary: boundary_text.as_deref(),
             phase_timing: phases_text.as_deref(),
             warnings: &state.warnings,
@@ -498,7 +569,9 @@ pub fn install(lua: &Lua) {
     };
     with_state(|s| {
         s.installed = Some(Installed { state, engine: Rc::downgrade(&engine), _work: work, _drained: drained, counters, frame_started: None, last: totals });
-        s.marks.push(Mark { phase: s.phases[0].clone(), frame, seconds, work: totals.work });
+        let (host, cycles) = (s.started.elapsed().as_secs_f64(), cpu::thread_cycles());
+        let counts = s.totals();
+        s.marks.push(Mark { phase: s.phases[0].clone(), frame, seconds, work: totals.work, host, cycles, totals: counts });
     });
     if kinds.has(Kinds::HEAP) {
         snapshot("start");
@@ -531,10 +604,23 @@ pub fn collect(lua: &Lua) {
         return;
     }
     let _ = lua;
+    // (the run's end, before the last snapshot's walk)
+    let (ended, end_cycles) = (Instant::now(), cpu::thread_cycles());
     if kinds.has(Kinds::HEAP) {
         snapshot("end");
     }
     vm::stop(state);
+    with_state(|s| {
+        let (frame, seconds, work) = match s.installed.as_ref().and_then(|installed| installed.engine.upgrade()) {
+            Some(engine) => {
+                let engine_state = engine.state.borrow();
+                (engine_state.sched.frame, engine_state.sched.now, engine_state.sched.work_total())
+            }
+            None => (0, 0.0, 0.0),
+        };
+        let host = ended.duration_since(s.started).as_secs_f64();
+        s.end = Some(Mark { phase: "end".into(), frame, seconds, work, host, cycles: end_cycles, totals: s.totals() });
+    });
     let results = vm::results(state);
     vm::free(state);
     let allocations = if kinds.has(Kinds::ALLOC) || kinds.has(Kinds::HEAP) { memory::stop(state) } else { None };
@@ -575,6 +661,11 @@ fn snapshot(label: &str) {
 /// `Context.ProfilePhase(name)` (and the first frame's `frames`): the phase of what follows; a heap snapshot when the
 /// profile takes them
 pub fn phase(name: &str) {
+    if !active() {
+        return;
+    }
+    // (the mark's clocks first: what the mark itself does is not the phase before's)
+    let (now, cycles) = (Instant::now(), cpu::thread_cycles());
     let Some((stepping, snapshots, state)) = with_state(|s| {
         let id = match s.phases.iter().position(|phase| phase == name) {
             Some(id) => id as u32,
@@ -594,7 +685,9 @@ pub fn phase(name: &str) {
             }
             None => (0, 0.0, 0.0),
         };
-        s.marks.push(Mark { phase: name.to_string(), frame, seconds, work });
+        let host = now.duration_since(s.started).as_secs_f64();
+        let totals = s.totals();
+        s.marks.push(Mark { phase: name.to_string(), frame, seconds, work, host, cycles, totals });
         (s.config.kinds.steps(), s.config.kinds.has(Kinds::HEAP) && s.config.snapshots_at_marks && name != "frames", s.installed.as_ref().map(|installed| (installed.state, id)))
     }) else {
         return;

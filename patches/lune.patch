@@ -4071,3 +4071,224 @@
          };
          methods.add_method("Lerp", lerp);
          methods.add_method("lerp", lerp);
+--- a/crates/lune-roblox/src/datatypes/types/cframe.rs
++++ b/crates/lune-roblox/src/datatypes/types/cframe.rs
+@@ -18,7 +18,7 @@ use super::{super::*, Vector3, VectorArg, charge_host_nanos, float32 as f32m, na
+     Roblox datatype, backed by [`glam::Mat4`].
+ 
+     This implements most documented properties, methods & constructors of the `CFrame` class as of October 2025,
+-    notably missing `CFrame.fromRotationBetweenVectors`, `CFrame:FuzzyEq()`, and `CFrame:AngleBetween()`.
++    notably missing `CFrame.fromRotationBetweenVectors` and `CFrame:AngleBetween()`.
+ */
+ #[derive(Debug, Clone, Copy, PartialEq)]
+ pub struct CFrame(pub Mat4);
+@@ -92,6 +92,168 @@ pub mod price {
+     pub const ANGLES: i32 = 18;
+     pub const FROM_AXIS_ANGLE: i32 = 48;
+     pub const LOOK_AT: i32 = 55;
++    /// `:FuzzyEq` comparing both parts, and answering from the position alone (a client stops at a position that differs). The
++    /// parity bench's rows (a rendered client of a game's match place, six sessions of the whole corpus on a busy machine, each
++    /// row scaled by its session's median ree / client over the datatype family's fit rows, 0.55-0.69, to the reference sessions'
++    /// speed): a pair a micro-stud apart 26.5 ns whole (25.0-28.5), a pair a stud apart 15.5 (12.3-17.5), where the call counts
++    /// 15.9 here; held out, two CFrames apart in both with an eps given 17.7 (ree 16.4).
++    pub const FUZZY_EQ: i32 = 11;
++    pub const FUZZY_EQ_MOVED: i32 = 0;
++}
++
++/// `CFrame:FuzzyEq(other, eps = 1e-5)` as a client answers it (measured in a playing client, Studio 0.744: 16,784 pairs at the
++/// rotation threshold and 8,000 at the position one, every one decided alike; tools/parity/probes/cframe_fuzzyeq.luau keeps the
++/// rules). Everything is single precision: eps is taken as a float and its absolute value is used (a negative eps behaves as its
++/// size, NaN fails every comparison). Position, component by component: self's `a` and the other's `b` are equal, or
++/// `|a - b| <= |eps| * (|a| + 1)`, the tolerance growing with self's component alone (`|eps|` once `|a| + 1` is infinite).
++/// Rotation: the relative rotation `C = Ra^T Rb` (column dot products, as `:ToObjectSpace` makes them, summed in order without a
++/// fused multiply-add), then `sqrt(sum of (C - I)^2, row by row) / sqrt(2) <= |eps|`: the angle between the two for small ones,
++/// and the matrices' plain distance for ones that are not rotations (a stretched axis passes up to `sqrt(2) * eps`).
++fn fuzzy_eq_position(a: &CFrame, b: &CFrame, eps: f32) -> bool {
++    let eps = eps.abs();
++    let (pa, pb) = (a.position(), b.position());
++    for axis in 0..3 {
++        let (x, y) = (pa[axis], pb[axis]);
++        if x == y {
++            continue;
++        }
++        let scale = x.abs() + 1.0;
++        let tolerance = if scale.is_infinite() { eps } else { eps * scale };
++        if !((x - y).abs() <= tolerance) {
++            return false;
++        }
++    }
++    true
++}
++
++/// The rotation half of [`fuzzy_eq_position`]'s rule
++fn fuzzy_eq_rotation(a: &CFrame, b: &CFrame, eps: f32) -> bool {
++    let eps = eps.abs();
++    let (ra, rb) = (a.orientation(), b.orientation());
++    let mut sum = 0.0f32;
++    for i in 0..3 {
++        let u = ra.col(i);
++        for j in 0..3 {
++            let v = rb.col(j);
++            // (written out: the order of the sum and the absence of a fused multiply-add are the client's)
++            let dot = u.x * v.x + u.y * v.y + u.z * v.z;
++            let residual = dot - if i == j { 1.0 } else { 0.0 };
++            sum += residual * residual;
++        }
++    }
++    sum.sqrt() / std::f32::consts::SQRT_2 <= eps
++}
++
++/// The script-facing `FuzzyEq`: a C function, so that its errors are the client's plain strings raised from the calling line
++/// (an mlua callback raises its error as a userdata with a traceback). Its upvalue is [`fuzzy_eq_checked`], which checks the
++/// arguments as the client does and answers `(0, result)` or `(n, nil)`: argument `n` is not what it should be (1-3), or the
++/// eps is out of range (4).
++struct FuzzyEqMethod;
++
++impl IntoLua for FuzzyEqMethod {
++    fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
++        let checked = lua.create_function(fuzzy_eq_checked)?;
++        let method = unsafe {
++            lua.exec_raw::<LuaFunction>(checked, |state| {
++                mlua::ffi::lua_pushcclosurek(state, fuzzy_eq_c, c"FuzzyEq".as_ptr(), 1, None);
++            })?
++        };
++        Ok(LuaValue::Function(method))
++    }
++}
++
++fn fuzzy_eq_checked(lua: &Lua, args: LuaMultiValue) -> LuaResult<(i64, LuaValue)> {
++    let cframe = |value: Option<&LuaValue>| match value {
++        Some(LuaValue::UserData(ud)) => ud.borrow::<CFrame>().ok().map(|cf| *cf),
++        _ => None,
++    };
++    let Some(this) = cframe(args.front()) else { return Ok((1, LuaValue::Nil)) };
++    let Some(other) = cframe(args.get(1)) else { return Ok((2, LuaValue::Nil)) };
++    let eps = match args.get(2) {
++        None => 1e-5f32,
++        Some(value) => match lua.coerce_number(value.clone())? {
++            Some(number) => number as f32,
++            None => return Ok((3, LuaValue::Nil)),
++        },
++    };
++    // (Roblox's message for an eps whose size, as a float, is over 0.1; NaN passes it)
++    if eps.abs() > 0.1 {
++        return Ok((4, LuaValue::Nil));
++    }
++    let close = if fuzzy_eq_position(&this, &other, eps) {
++        charge_host_nanos(lua, price::FUZZY_EQ);
++        fuzzy_eq_rotation(&this, &other, eps)
++    } else {
++        charge_host_nanos(lua, price::FUZZY_EQ_MOVED);
++        false
++    };
++    Ok((0, LuaValue::Boolean(close)))
++}
++
++/// A script's `typeof` of the argument at `index`, for an error message: a userdata's `__type` (not a newproxy's), Vector3
++/// for a vector, else the basic type's name.
++unsafe fn fuzzy_eq_type_name(state: *mut mlua::ffi::lua_State, index: std::ffi::c_int) -> String {
++    use mlua::ffi;
++    unsafe {
++        let kind = ffi::lua_type(state, index);
++        if kind == ffi::LUA_TVECTOR {
++            return "Vector3".to_string();
++        }
++        if kind == ffi::LUA_TUSERDATA
++            && ffi::lua_userdatatag(state, index) != ffi::LUA_UTAG_LIMIT + 1
++            && ffi::luaL_getmetafield(state, index, c"__type".as_ptr()) != 0
++        {
++            let name = if ffi::lua_type(state, -1) == ffi::LUA_TSTRING {
++                let mut length = 0;
++                let text = ffi::lua_tolstring(state, -1, &mut length);
++                Some(String::from_utf8_lossy(std::slice::from_raw_parts(text.cast::<u8>(), length)).into_owned())
++            } else {
++                None
++            };
++            ffi::lua_pop(state, 1);
++            if let Some(name) = name {
++                return name;
++            }
++        }
++        std::ffi::CStr::from_ptr(ffi::lua_typename(state, kind)).to_string_lossy().into_owned()
++    }
++}
++
++unsafe extern "C-unwind" fn fuzzy_eq_c(state: *mut mlua::ffi::lua_State) -> std::ffi::c_int {
++    use mlua::ffi;
++    unsafe {
++        let count = ffi::lua_gettop(state);
++        if count < 2 {
++            let message = format!("Invalid number of arguments: {count}, CFrame.FuzzyEq expects 2 or 3.");
++            ffi::lua_pushlstring(state, message.as_ptr().cast(), message.len());
++            drop(message);
++            ffi::lua_error(state);
++        }
++        let given = count.min(3);
++        ffi::lua_pushvalue(state, ffi::lua_upvalueindex(1));
++        for index in 1..=given {
++            ffi::lua_pushvalue(state, index);
++        }
++        ffi::lua_call(state, given, 2);
++        let status = ffi::lua_tointeger(state, -2);
++        if status == 0 {
++            return 1;
++        }
++        let message = match status {
++            1 => format!("invalid argument #1 to 'FuzzyEq' (CFrame expected, got {})", fuzzy_eq_type_name(state, 1)),
++            2 => format!("invalid argument #2 (CFrame expected, got {})", fuzzy_eq_type_name(state, 2)),
++            3 => format!("invalid argument #3 (number expected, got {})", fuzzy_eq_type_name(state, 3)),
++            _ => String::from("The eps value provided to FuzzyEq should be a small positive value <= 0.1"),
++        };
++        ffi::lua_pushlstring(state, message.as_ptr().cast(), message.len());
++        drop(message);
++        if status != 4 {
++            ffi::luaL_where(state, 1);
++            ffi::lua_insert(state, -2);
++            ffi::lua_concat(state, 2);
++        }
++        ffi::lua_error(state)
++    }
+ }
+ 
+ /// A method under each of its names, charged `price` nanoseconds
+@@ -432,6 +594,8 @@ impl LuaUserData for CFrame {
+                 Ok(native_vector(-this.orientation().z_axis))
+             });
+         }
++        // (a C function in the methods table: see FuzzyEqMethod)
++        fields.add_field("FuzzyEq", FuzzyEqMethod);
+     }
+ 
+     #[allow(clippy::too_many_lines)]
+--- a/crates/lune-roblox/src/datatypes/types/font.rs
++++ b/crates/lune-roblox/src/datatypes/types/font.rs
+@@ -314,11 +314,9 @@
+     fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
+         match EnumItem::from_enum_name_and_name("FontWeight", self.to_string()) {
+             Some(enum_item) => Ok(LuaValue::UserData(lua.create_userdata(enum_item)?)),
+-            None => Err(LuaError::ToLuaConversionError {
+-                from: "FontWeight".to_string(),
+-                to: "EnumItem",
+-                message: Some(format!("Found unknown Enum.FontWeight value '{self}'")),
+-            }),
++            None => Err(LuaError::RuntimeError(format!(
++                "Found unknown Enum.FontWeight value '{self}'"
++            ))),
+         }
+     }
+ }
+@@ -408,11 +406,9 @@
+     fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
+         match EnumItem::from_enum_name_and_name("FontStyle", self.to_string()) {
+             Some(enum_item) => Ok(LuaValue::UserData(lua.create_userdata(enum_item)?)),
+-            None => Err(LuaError::ToLuaConversionError {
+-                from: "FontStyle".to_string(),
+-                to: "EnumItem",
+-                message: Some(format!("Found unknown Enum.FontStyle value '{self}'")),
+-            }),
++            None => Err(LuaError::RuntimeError(format!(
++                "Found unknown Enum.FontStyle value '{self}'"
++            ))),
+         }
+     }
+ }

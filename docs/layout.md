@@ -33,6 +33,11 @@ data/                  reflection.json (Studio's dump; tools/dump-reflection.lua
 vendor/ patches/ tools/vendor.mjs   the patched Luau VM and Lune datatypes
 tools/luau-cost/       the work clock's Luau calibration (run in ree and in Studio, fitted by fit.py)
 tools/hw-counters/     the counter service `--profile hw` reads through (a crate of its own) and setup.ps1, its install
+profile-view/          the profile viewer, `ree profile view|render` (a crate and binary of its own, reading profile
+                       folders): the terminal UI, its views and issue detectors, and the PNG, SVG and text renderer;
+                       fonts/ the bundled JetBrains Mono
+tools/what-if/         variant files for `ree profile try`, with what each shows
+tools/profile-demo/    a harness written slowly on purpose, to try the profiler and its viewer on (README "Profiling")
 tests/                 the patched VM's tests and the process guards
 docs/engine.md         the contract: architecture, rules and formats
 ```

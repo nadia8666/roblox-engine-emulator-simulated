@@ -1,0 +1,47 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+loose size a:Size,a:AssemblyMass,a:Mass
+loose size-same-mass a:Size,a:AssemblyMass,a:Mass
+loose position a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation
+loose position-rotated a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation
+loose cframe-translate a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation
+loose cframe-rotate a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation
+loose orientation a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation
+loose rotation a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation
+loose pivotto a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation
+loose color a:BrickColor,a:Color
+loose color-same-brick a:BrickColor,a:Color
+loose brickcolor a:BrickColor,a:Color
+loose brickcolor-same 
+loose material a:Material,a:CurrentPhysicalProperties
+loose material-same-density a:Material,a:CurrentPhysicalProperties
+loose physical a:CurrentPhysicalProperties,a:CustomPhysicalProperties,a:AssemblyMass,a:AssemblyCenterOfMass
+loose massless a:Massless,a:AssemblyMass
+loose anchor-off a:Anchored,a:AssemblyMass,a:AssemblyCenterOfMass
+loose anchor-on a:Anchored,a:AssemblyMass,a:AssemblyCenterOfMass
+loose transparency a:Transparency
+world size a:Size,a:AssemblyMass,a:Mass
+world size-same-mass a:Size,a:AssemblyMass,a:Mass
+world position a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation
+world position-rotated a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation
+world cframe-translate a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation
+world cframe-rotate a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation
+world orientation a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation
+world rotation a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation
+world pivotto a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation
+world color a:BrickColor,a:Color
+world color-same-brick a:BrickColor,a:Color
+world brickcolor a:BrickColor,a:Color
+world brickcolor-same 
+world material a:Material,a:CurrentPhysicalProperties
+world material-same-density a:Material,a:CurrentPhysicalProperties
+world physical a:CurrentPhysicalProperties,a:CustomPhysicalProperties,a:AssemblyMass,a:AssemblyCenterOfMass
+world massless a:Massless,a:AssemblyMass
+world anchor-off a:Anchored,a:AssemblyMass,a:AssemblyCenterOfMass
+world anchor-on a:Anchored,a:AssemblyMass,a:AssemblyCenterOfMass
+world transparency a:Transparency
+welded size a:Size,a:AssemblyMass,a:Mass
+welded position a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation
+welded massless a:Massless,a:AssemblyMass
+meshpart size a:Size,a:AssemblyMass,a:Mass
+wedge size a:Size,a:AssemblyMass,a:Mass

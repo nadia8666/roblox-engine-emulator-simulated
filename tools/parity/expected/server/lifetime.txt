@@ -1,0 +1,9 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+weak-values-left Closure,DelayedThread,EnumItem,HeldByHandler,HeldByOther,InWorld,String,Vector3
+weak-keys-left in-world
+in-world-still-there true
+identity-cache-hit true
+debris 0->0,0.02->2,0.04->3,0.06->4,-1->0,default-after-1-frame true
+debris-errors error Unable to cast value to Object | ok  | error Unable to cast string to double
+debris-maxitems ok 1000

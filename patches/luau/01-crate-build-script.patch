@@ -1,0 +1,33 @@
+# Topic: luau0-src fingerprints its C++ sources
+#
+# What it does: gives the luau0-src crate a build script that reruns when luau/ changes.
+#
+# Why upstream lacks it: the published crate never changes after it is built, so Cargo fingerprinting only its Rust
+# files is enough there. A vendored, patched copy does change, and without this every existing build kept linking the
+# old VM (mlua-sys compiles these sources in its own build script, which reruns only when this crate rebuilds).
+
+diff --git a/Cargo.toml b/Cargo.toml
+index 2b2c797..e99503b 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -14,7 +14,7 @@ edition = "2024"
+ name = "luau0-src"
+ version = "0.22.0+luau746"
+ authors = ["Aleksandr Orlenko <zxteam@protonmail.com>"]
+-build = false
++build = "build.rs"
+ autolib = false
+ autobins = false
+ autoexamples = false
+diff --git a/build.rs b/build.rs
+new file mode 100644
+index 0000000..d7fe900
+--- /dev/null
++++ b/build.rs
+@@ -0,0 +1,6 @@
++// Makes the crate's fingerprint follow its C++ sources: without a build script Cargo fingerprints only the Rust files,
++// so a patched VM (luau/) left every existing build linking the old one (mlua-sys compiles these sources in its own
++// build script, which reruns only when this crate rebuilds)
++fn main() {
++	println!("cargo:rerun-if-changed=luau");
++}

@@ -42,7 +42,7 @@ inline constexpr RegisterX64 rNativeContext = r13; // NativeContext* context
 inline constexpr RegisterX64 rConstants = r12;     // TValue* k
 
 inline constexpr unsigned kExtraLocals = 3; // Number of 8 byte slots available for specialized local variables specified below
-inline constexpr unsigned kSpillSlots = 13; // Number of 8 byte slots available for register allocator to spill data into
+inline constexpr unsigned kSpillSlots = 23; // Number of 8 byte slots available for register allocator to spill data into
 static_assert((kExtraLocals + kSpillSlots) * 8 % 16 == 0, "locals have to preserve 16 byte alignment");
 
 inline constexpr uint8_t kWindowsFirstNonVolXmmReg = 6;
@@ -121,6 +121,11 @@ inline OperandX64 luauRegValueInt(int ri)
     return dword[rBase + ri * sizeof(TValue) + offsetof(TValue, value)];
 }
 
+inline OperandX64 luauRegValueInt64(int ri)
+{
+    return qword[rBase + ri * sizeof(TValue) + offsetof(TValue, value.l)];
+}
+
 inline OperandX64 luauRegValueVector(int ri, int index)
 {
     return dword[rBase + ri * sizeof(TValue) + offsetof(TValue, value) + (sizeof(float) * index)];
@@ -197,7 +202,7 @@ inline void jumpIfTruthy(AssemblyBuilderX64& build, int ri, Label& target, Label
     build.jcc(ConditionX64::NotEqual, target); // true if boolean value is 'true'
 }
 
-void jumpOnNumberCmp(AssemblyBuilderX64& build, RegisterX64 tmp, OperandX64 lhs, OperandX64 rhs, IrCondition cond, Label& label);
+void jumpOnNumberCmp(AssemblyBuilderX64& build, RegisterX64 tmp, OperandX64 lhs, OperandX64 rhs, IrCondition cond, Label& label, bool floatPrecision);
 
 ConditionX64 getConditionInt(IrCondition cond);
 
@@ -208,8 +213,10 @@ void callArithHelper(IrRegAllocX64& regs, AssemblyBuilderX64& build, int ra, Ope
 void callLengthHelper(IrRegAllocX64& regs, AssemblyBuilderX64& build, int ra, int rb);
 void callGetTable(IrRegAllocX64& regs, AssemblyBuilderX64& build, int rb, OperandX64 c, int ra);
 void callSetTable(IrRegAllocX64& regs, AssemblyBuilderX64& build, int rb, OperandX64 c, int ra);
-void checkObjectBarrierConditions(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 object, IrOp ra, int ratag, Label& skip);
-void callBarrierObject(IrRegAllocX64& regs, AssemblyBuilderX64& build, RegisterX64 object, IrOp objectOp, IrOp ra, int ratag);
+void checkObjectBarrierConditions(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 object, RegisterX64 ra, IrOp raOp, int ratag, Label& skip);
+void checkObjectBarrierConditions_DEPRECATED(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 object, IrOp ra, int ratag, Label& skip);
+void callBarrierObject(IrRegAllocX64& regs, AssemblyBuilderX64& build, RegisterX64 object, IrOp objectOp, RegisterX64 ra, IrOp raOp, int ratag);
+void callBarrierObject_DEPRECATED(IrRegAllocX64& regs, AssemblyBuilderX64& build, RegisterX64 object, IrOp objectOp, IrOp ra, int ratag);
 void callBarrierTableFast(IrRegAllocX64& regs, AssemblyBuilderX64& build, RegisterX64 table, IrOp tableOp);
 void callStepGc(IrRegAllocX64& regs, AssemblyBuilderX64& build);
 
@@ -222,6 +229,7 @@ void emitFallback(IrRegAllocX64& regs, AssemblyBuilderX64& build, int offset, in
 void emitUpdatePcForExit(AssemblyBuilderX64& build);
 
 void emitReturn(AssemblyBuilderX64& build, ModuleHelpers& helpers);
+void emitDispatchLuauCall(AssemblyBuilderX64& build, ModuleHelpers& helpers);
 
 } // namespace X64
 } // namespace CodeGen

@@ -1,4 +1,4 @@
-//! The VM's own profile (patches/luau.patch, lprofile.cpp): while it steps, every instruction the interpreter dispatches
+//! The VM's own profile (patches/luau/12-profiling.patch, lprofile.cpp): while it steps, every instruction the interpreter dispatches
 //! is counted, what the work clock charged since the previous instruction is booked to that instruction (the VM's work
 //! counters priced by [`crate::cost::luau`], and the engine's own charges), a calling-context tree is kept, and the
 //! instructions with an inline cache record what it did. Without stepping it only names functions for [`stack`].
@@ -27,6 +27,20 @@ pub const ALLOC_THREAD: i32 = 3;
 pub const ALLOC_STRINGS: i32 = 4;
 pub const ALLOC_PROTO: i32 = 5;
 
+/// lua.h `LUA_T*`: the type tags of the objects a heap walk or an allocation names. The value types are mlua-sys's (they
+/// bind the same lua.h); Luau 0.746 put LUA_TCLASS and LUA_TOBJECT after LUA_TBUFFER and LUA_TDEADKEY before the
+/// collector's own objects (profiler_tests.rs checks these against the vendored lua.h)
+pub const T_STRING: i32 = mlua::ffi::LUA_TSTRING;
+pub const T_TABLE: i32 = mlua::ffi::LUA_TTABLE;
+pub const T_FUNCTION: i32 = mlua::ffi::LUA_TFUNCTION;
+pub const T_USERDATA: i32 = mlua::ffi::LUA_TUSERDATA;
+pub const T_THREAD: i32 = mlua::ffi::LUA_TTHREAD;
+pub const T_BUFFER: i32 = mlua::ffi::LUA_TBUFFER;
+pub const T_CLASS: i32 = 12;
+pub const T_OBJECT: i32 = 13;
+pub const T_PROTO: i32 = 15;
+pub const T_UPVAL: i32 = 16;
+
 #[repr(C)]
 struct RawFunction {
     source: *const c_char,
@@ -41,6 +55,18 @@ struct RawFunction {
     caches: *const u64,
     nativeentries: u64,
     nativework: f64,
+    ninlines: c_int,
+    inlines: *const RawInline,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RawInline {
+    function: c_int,
+    firstpc: c_int,
+    lastpc: c_int,
+    parent: c_int,
+    entries: u64,
 }
 
 #[repr(C)]
@@ -53,6 +79,9 @@ struct RawNode {
     work: f64,
 }
 
+/// lua.h `lua_setprofilerehash`'s hook: (ud, the thread, the table, array slots and hash nodes before, after, the keys it holds
+/// with the new one, whether a script's own instruction made it)
+pub type RehashHook = unsafe extern "C-unwind" fn(*mut c_void, *mut lua_State, *mut c_void, c_int, c_int, c_int, c_int, c_int, c_int);
 type HeapNode = unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, u8, u8, usize, *const c_char);
 type HeapEdge = unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, *mut c_void, *const c_char);
 type HeapDead = unsafe extern "C-unwind" fn(*mut c_void, u8, usize);
@@ -72,6 +101,10 @@ unsafe extern "C-unwind" {
     fn lua_profilemark(block: *mut c_void);
     fn lua_profileudataoffset() -> usize;
     fn lua_setprofilefreed(state: *mut lua_State, freed: Option<unsafe extern "C-unwind" fn(*mut c_void, *mut c_void)>, ud: *mut c_void);
+    fn lua_setprofilerehash(state: *mut lua_State, rehash: Option<RehashHook>, ud: *mut c_void);
+    fn lua_profiletable(ptr: *mut c_void, arrayslots: *mut c_int, arrayused: *mut c_int, nodes: *mut c_int, nodesused: *mut c_int) -> c_int;
+    fn lua_profiletablebytes(header: *mut usize, slot: *mut usize, node: *mut usize);
+    fn lua_profilecachetotals(state: *mut lua_State, out: *mut u64) -> c_int;
     fn lua_enumheap(state: *mut lua_State, context: *mut c_void, node: HeapNode, edge: HeapEdge, dead: Option<HeapDead>);
     fn lua_gcstate(state: *mut lua_State) -> c_int;
     fn lua_totalbytes(state: *mut lua_State, category: c_int) -> usize;
@@ -141,6 +174,21 @@ pub struct Function {
     pub caches: Vec<u64>,
     pub native_entries: u64,
     pub native_work: f64,
+    /// Copies of other functions Luau's compiler inlined into this one (`-O2`), outermost before the ones inside them
+    pub inlines: Vec<Inline>,
+}
+
+/// A copy of a function inlined into another: its instructions there and the calls it stood for
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Inline {
+    /// The inlined function (an index into [`Results::functions`])
+    pub function: i32,
+    pub first_pc: i32,
+    pub last_pc: i32,
+    /// The copy this one sits in (an index into the same `inlines`), when the copied function had it inlined too
+    pub parent: i32,
+    /// Times its frame stepped into it from outside it
+    pub entries: u64,
 }
 
 impl Function {
@@ -201,6 +249,10 @@ unsafe extern "C-unwind" fn each_function(ud: *mut c_void, _id: c_int, raw: *con
             caches: slice(raw.caches, len * CACHE_OUTCOMES),
             native_entries: raw.nativeentries,
             native_work: raw.nativework,
+            inlines: slice(raw.inlines, raw.ninlines.max(0) as usize)
+                .into_iter()
+                .map(|raw| Inline { function: raw.function, first_pc: raw.firstpc, last_pc: raw.lastpc, parent: raw.parent, entries: raw.entries })
+                .collect(),
         }
     });
 }
@@ -276,6 +328,48 @@ pub fn set_freed(state: *mut lua_State, freed: Option<unsafe extern "C-unwind" f
     unsafe { lua_setprofilefreed(state, freed, ud) }
 }
 
+/// The hook told of each table that rehashed to fit a new key (the profile's own thread's VM), or none
+pub fn set_rehash(state: *mut lua_State, rehash: Option<RehashHook>, ud: *mut c_void) {
+    unsafe { lua_setprofilerehash(state, rehash, ud) }
+}
+
+/// A table's shape: its array part's slots and those holding a value, its hash part's nodes (0: none) and those holding one
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TableShape {
+    pub array: u32,
+    pub array_used: u32,
+    pub nodes: u32,
+    pub nodes_used: u32,
+}
+
+/// The shape of the table at `ptr` (a heap walk's pointer for a table), None when it is not a table
+///
+/// # Safety
+/// `ptr` is a live collectable object: a heap walk's node, read during the walk or before the VM runs again.
+pub unsafe fn table_shape(ptr: *mut c_void) -> Option<TableShape> {
+    let (mut array, mut array_used, mut nodes, mut nodes_used): (c_int, c_int, c_int, c_int) = (0, 0, 0, 0);
+    let table = unsafe { lua_profiletable(ptr, &mut array, &mut array_used, &mut nodes, &mut nodes_used) } != 0;
+    table.then(|| TableShape { array: array.max(0) as u32, array_used: array_used.max(0) as u32, nodes: nodes.max(0) as u32, nodes_used: nodes_used.max(0) as u32 })
+}
+
+/// The bytes of a table itself, of an array slot and of a hash node (a table's size is the first plus its parts)
+pub fn table_bytes() -> (u64, u64, u64) {
+    let (mut header, mut slot, mut node) = (0usize, 0usize, 0usize);
+    unsafe { lua_profiletablebytes(&mut header, &mut slot, &mut node) };
+    (header as u64, slot as u64, node as u64)
+}
+
+/// The inline caches' kinds, in [`cache_totals`]' order (the names [`cache_kind`] gives)
+pub const CACHE_KINDS: [&str; 5] = ["builtin fast path", "global slot", "import", "method slot", "table key slot"];
+
+/// What the instructions with an inline cache did so far, summed over the profile's functions (the engine's own Luau aside),
+/// by kind ([`CACHE_KINDS`]): hit, miss, slow, other each
+pub fn cache_totals(state: *mut lua_State) -> [[u64; CACHE_OUTCOMES]; 5] {
+    let mut out = [0u64; 5 * CACHE_OUTCOMES];
+    unsafe { lua_profilecachetotals(state, out.as_mut_ptr()) };
+    std::array::from_fn(|kind| std::array::from_fn(|outcome| out[kind * CACHE_OUTCOMES + outcome]))
+}
+
 /// Walks the heap as the collector sees it: `node(ptr, tt, size, name)` for every collectable object (a userdata's ptr
 /// is its data), `edge(from, to, name)` for every reference the collector follows, the collector's roots as edges from
 /// 0 (the main thread, the registry, the basic types' metatables, the fixed objects), and `dead(tt, size)` for each
@@ -318,15 +412,17 @@ pub fn main_thread(state: *mut lua_State) -> *mut lua_State {
     unsafe { lua_mainthread(state) }
 }
 
-/// Luau's opcode names, in Bytecode.h's order (LOP_NOP = 0 ...)
-pub const OPCODES: [&str; 83] = [
+/// Luau's opcode names, in Bytecode.h's order (LOP_NOP = 0 ...; profiler_tests.rs checks them against the vendored header)
+pub const OPCODES: [&str; 95] = [
     "NOP", "BREAK", "LOADNIL", "LOADB", "LOADN", "LOADK", "MOVE", "GETGLOBAL", "SETGLOBAL", "GETUPVAL", "SETUPVAL", "CLOSEUPVALS", "GETIMPORT",
     "GETTABLE", "SETTABLE", "GETTABLEKS", "SETTABLEKS", "GETTABLEN", "SETTABLEN", "NEWCLOSURE", "NAMECALL", "CALL", "RETURN", "JUMP", "JUMPBACK",
     "JUMPIF", "JUMPIFNOT", "JUMPIFEQ", "JUMPIFLE", "JUMPIFLT", "JUMPIFNOTEQ", "JUMPIFNOTLE", "JUMPIFNOTLT", "ADD", "SUB", "MUL", "DIV", "MOD",
     "POW", "ADDK", "SUBK", "MULK", "DIVK", "MODK", "POWK", "AND", "OR", "ANDK", "ORK", "CONCAT", "NOT", "MINUS", "LENGTH", "NEWTABLE",
     "DUPTABLE", "SETLIST", "FORNPREP", "FORNLOOP", "FORGLOOP", "FORGPREP_INEXT", "FASTCALL3", "FORGPREP_NEXT", "NATIVECALL", "GETVARARGS",
     "DUPCLOSURE", "PREPVARARGS", "LOADKX", "JUMPX", "FASTCALL", "COVERAGE", "CAPTURE", "SUBRK", "DIVRK", "FASTCALL1", "FASTCALL2",
-    "FASTCALL2K", "FORGPREP", "JUMPXEQKNIL", "JUMPXEQKB", "JUMPXEQKN", "JUMPXEQKS", "IDIV", "IDIVK",
+    "FASTCALL2K", "FORGPREP", "JUMPXEQKNIL", "JUMPXEQKB", "JUMPXEQKN", "JUMPXEQKS", "IDIV", "IDIVK", "GETUDATAKS", "SETUDATAKS",
+    "NAMECALLUDATA", "NEWCLASSMEMBER", "CALLFB", "CMPPROTO", "FASTPCALL", "NEWCLASS", "CONSTRUCT", "FINCONSTRUCT", "GETPRIVATEFIELD",
+    "SETPRIVATEFIELD",
 ];
 
 pub fn opcode_name(op: u8) -> &'static str {

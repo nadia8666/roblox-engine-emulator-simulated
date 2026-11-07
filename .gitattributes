@@ -1,4 +1,5 @@
 # Blank patch context lines retain their required leading space.
 patches/*.patch whitespace=-blank-at-eol
+patches/luau/*.patch whitespace=-blank-at-eol
 # Vendored sources stay byte for byte as the archives and patches make them (tools/vendor.mjs --check)
 vendor/** -text

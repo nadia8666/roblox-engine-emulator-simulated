@@ -1,0 +1,48 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+list true true true true true Accessory
+count 656 633
+class Part Display,Name,Permits,Serialized,Subclasses,Superclass FormFactorPart true FlagStand,Platform,Seat,SkateboardPlatform,SpawnLocation true Category General nil true
+class Accessory Display,Name,Permits,Serialized,Superclass Accoutrement true - Category General nil true
+class BasePlayerGui Display,Name,Permits,Serialized,Subclasses,Superclass Instance true CoreGui,PlayerGui,StarterGui true Category General nil true
+class Glue Display,Name,Permits,Serialized,Superclass JointInstance true - Category,DeprecationMessage General Use `WeldConstraint` instead. true
+class BodyMover Display,Name,Permits,Serialized,Subclasses,Superclass Instance true BodyAngularVelocity,BodyForce,BodyGyro,BodyPosition,BodyThrust,BodyVelocity,RocketPropulsion true Category,DeprecationMessage General  true
+class LogService Display,Name,Permits,Superclass Instance nil - Category General nil true
+class ReflectionService Display,Name,Permits,Superclass Instance nil - Category General nil true
+class Frame Display,Name,Permits,Serialized,Superclass GuiObject true - Category General nil true
+class ModuleScript Display,Name,Permits,Serialized,Superclass LuaSourceContainer true - Category General nil true
+class Workspace Display,Name,Permits,Serialized,Superclass WorldRoot true - Category General nil true
+class EditableImage Display,Name,Permits,Superclass Object nil - Category General nil true
+class Player nil
+class CoreGui nil
+class UserGameSettings nil
+class PluginGui nil
+class part nil
+class Nope nil
+class  nil
+class Part Display,Name,Permits,Serialized,Subclasses,Superclass FormFactorPart true FlagStand,Platform,Seat,SkateboardPlatform,SpawnLocation true Category General nil true
+class Part nil
+class Part Name,Permits,Serialized,Subclasses,Superclass FormFactorPart true FlagStand,Platform,Seat,SkateboardPlatform,SpawnLocation true -
+class Part Display,Name,Permits,Serialized,Subclasses,Superclass FormFactorPart true FlagStand,Platform,Seat,SkateboardPlatform,SpawnLocation true Category General nil true
+IsA BasePart BasePart,CornerWedgePart,FlagStand,FormFactorPart,IntersectOperation,MeshPart,NegateOperation,Part,PartOperation,Platform,Seat,SkateboardPlatform,SpawnLocation,Terrain,TriangleMeshPart,TrussPart,UnionOperation,VehicleSeat,WedgePart
+IsA GuiObject CanvasGroup,Frame,GuiButton,GuiLabel,GuiObject,ImageButton,ImageLabel,InputActionLabel,ScrollingFrame,TextBox,TextButton,TextChannelWindow,TextLabel,VideoDisplay,VideoFrame,ViewportFrame
+IsA BasePlayerGui BasePlayerGui,PlayerGui,StarterGui
+IsA none 0 0 0 0 0
+ExcludeDisplay true nil Name,Permits,Serialized,Superclass true
+err error Unable to cast double to Dictionary
+err error Unable to cast bool to Dictionary
+err error Unable to cast string to Dictionary
+err error Unable to cast Array to Dictionary
+err error Unable to cast Array to Dictionary
+err error ReflectionClassFilter's IsA field is expected to be type string
+err error ReflectionClassFilter's ExcludeDisplay field is expected to be type bool
+err error ReflectionClassFilter's Security field is expected to be type SecurityCapabilities
+err error Argument 2 missing or nil
+err error Argument 2 missing or nil
+err ok nil
+err error Unable to cast double to Dictionary
+err error Expected ':' not '.' calling member function GetClasses
+err error @78: attempt to modify a readonly table
+err error @81: attempt to modify a readonly table
+Permits table true
+Permits held true true nil

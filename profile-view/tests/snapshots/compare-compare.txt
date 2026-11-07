@@ -1,0 +1,40 @@
+ ◆ ree profile   ✓ run ok · Fixture.luau · 120 frames · 2.00 s                                     Studio work 13.20 ms
+  1 Overview  2 Flame  3 Calls  4 Source  5 Alloc  6 Heap  7 Timeline  8 Caches  9 Issues  d Diff  c Compare
+╭ t[k][v] or t[v][k]  two keys, many values each ────────────────────────────────────────────────── work clock · exact ╮
+│ baseline t[k][v]   n 10 · 100 · 1,000   one call each   ✓ every result holds against the baseline's                  │
+│ ◇ work clock: the work clock a call took: the same every run                                                         │
+│   variant                            n=10        n=100         n=1K  scaling   n=1K vs baseline                      │
+│ ▌ ■ t[k][v]  baseline            2.0 µs      20.0 µs     0.200 ms ≈   n^1.00                                         │
+│   ■ t[v][k]                      1.0 µs ◆    10.0 µs ◆   0.200 ms     n^1.15 1.00x = same                            │
+╰ ◆ best · ≈ best within noise, or too small to matter · underlined: the run below ────────────────────────────────────╯
+╭ work clock by n  log-log · a line a variant ───────────────────╮ ╭ work clock at n = 1,000  ←→ size ─────────────────╮
+│ 1 ms  │┌─────────────────┐                                   ⢸ │ │ t[k][v]  0.200 ms ███████████████████████████████ │
+│       ││■ t[k][v]  n^1.00│                                   ⢸ │ │                                                   │
+│       ││■ t[v][k]  n^1.15│                                   ⢸ │ │ t[v][k]  0.200 ms ███████████████████████████████ │
+│       │└─────────────────┘                                ⣀⣀⠤• │ │                                                   │
+│       │                                             ⣀⡠⢀⡠⠔⠒⠉  ⢸ │ ╰───────────────────────────────────────────────────╯
+│ 100 µs│                                       ⣀⡠⠤⠒⣀⠤⠒⠊⠁      ⢸ │ ╭ t[v][k] vs t[k][v]  each figure at n = 1,000 ─────╮
+│       │                                 ⣀⡠⠤⠒⠊⢀⡠⠔⠒⠉           ⢸ │ │   figure                                          │
+│       │                           •⡠⠤⠒⠊⠉ ⣀⠤⠒⠊⠁               ⢸ │ │   allocated      3.00x ▼ better ████████│         │
+│       │                     ⣀⡠⠤⠒⠊⠉  ⢀⡠⠔⠒⠉                    ⢸ │ │   heap kept      3.00x ▼ better ████████│         │
+│ 10 µs │               ⣀⡠⠤⠒⠊⠉   ⣀⡠⠤•⠊⠁                        ⢸ │ │   host time      1.22x ▼ better        █│         │
+│       │        ⢀⣀⠤⠔⠒⠉⠉   ⣀⡠⠤⠒⠊⠉                              ⢸ │ │   cache hit r…   1.04x ▼ better        █│         │
+│       │  ⢀⣀⠤⠔⠒⠉⠁  ⢀⣀⠤⠤⠒⠊⠉                                    ⢸ │ │   instructions     1.00x = same         │         │
+│       │•⠉⠁  ⢀⣀⠤⠔⠒⠉⠁                                          ⢸ │ │   rehashes         1.00x = same         │         │
+│ 1 µs  │•⠤⠔⠒⠉⠁                                                n │ │   work clock       1.00x = same         │         │
+│       └─────────────────────────────────────────────────────── │ │   collector h…       1.22x less                   │
+│      10                          100                        1K │ ╰───────────────────────────────────────────────────╯
+╰────────────────────────────────────────────────────────────────╯ ╭ Tables kept · t[k][v]  its own: 1,001 · 117.2 KB ─╮
+╭ over t[k][v]  by n · above 1 is worse ─────────────────────────╮ │   1,000 × {hash 2} slots  112 B each  tkv:14 < tk │
+│ 1.07x│┌─────────────┐                                        ⢸ │ │           the setup's input (all variants'): 1 ta │
+│      ││■ t[k][v] = 1│⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⢀⣀⠤⠒• │ │                                                   │
+│      ││■ t[v][k]    │                                ⣀⠤⠒⠊⠁   ⢸ │ │                                                   │
+│      │└─────────────┘                           ⣀⠤⠔⠊⠉        ⢸ │ │                                                   │
+│ 0.75x│                                     ⣀⡠⠔⠒⠉             ⢸ │ ╰───────────────────────────────────────────────────╯
+│      │                                ⢀⡠⠤⠒⠉                  ⢸ │ ╭ Notes ────────────────────────────────────────────╮
+│      │•⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀•⠤⠒⠉⠁                      ⢸ │ │ ◇ a fixture: the numbers are made up              │
+│ 0.42x│                                                       n │ │                                                   │
+│      └──────────────────────────────────────────────────────── │ │                                                   │
+│     10                          100                         1K │ │                                                   │
+╰────────────────────────────────────────────────────────────────╯ ╰───────────────────────────────────────────────────╯
+ ↑↓ variant  ←→ size  enter open  D diff   │   m metric  f scripts  / find  y copy  t theme  ? help  q quit

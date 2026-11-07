@@ -1,0 +1,166 @@
+# Topic: tables hash objects by identity, not address
+#
+# What it does: a table key that is an object hashes by an id handed out the first time it is a key (an Instance
+# userdata, tag 73, by its creation serial), so `pairs` visits a table keyed by objects in the same order in every run.
+# REE_HASH_SEED=<n> deals a different order, the same in every run; REE_HASH_ADDRESS=1 hashes by address as upstream
+# does.
+#
+# Why upstream lacks it: hashing by address is cheaper, and a game never depends on the order being reproducible.
+
+diff --git a/luau/VM/src/lgc.cpp b/luau/VM/src/lgc.cpp
+index 16b1fdd..bc04f29 100644
+--- a/luau/VM/src/lgc.cpp
++++ b/luau/VM/src/lgc.cpp
+@@ -780,6 +780,8 @@ static size_t cleartable(lua_State* L, GCObject* l)
+ 
+ static void freeobj(lua_State* L, GCObject* o, lua_Page* page)
+ {
++    if (o->gch.marked & bitmask(HASHIDBIT))
++        luaH_forgetid(o);
+     switch (o->gch.tt)
+     {
+     case LUA_TPROTO:
+@@ -827,6 +829,8 @@ static void freeobjtagged(lua_State* L, GCObject* o, lua_Page* page);
+ template<>
+ void freeobjtagged<LUA_TBUFFER>(lua_State* L, GCObject* o, lua_Page* page)
+ {
++    if (o->gch.marked & bitmask(HASHIDBIT))
++        luaH_forgetid(o);
+     luaB_freebuffer(L, gco2buf(o), page);
+ }
+ 
+diff --git a/luau/VM/src/lgc.h b/luau/VM/src/lgc.h
+index 9b60859..4699f47 100644
+--- a/luau/VM/src/lgc.h
++++ b/luau/VM/src/lgc.h
+@@ -57,6 +57,8 @@
+ #define WHITE1BIT 1
+ #define BLACKBIT 2
+ #define FIXEDBIT 3
++// the object has an id in ltable.cpp's hash map (luaH_forgetid when it is freed)
++#define HASHIDBIT 4
+ #define WHITEBITS bit2mask(WHITE0BIT, WHITE1BIT)
+ 
+ #define iswhite(x) test2bits((x)->gch.marked, WHITE0BIT, WHITE1BIT)
+diff --git a/luau/VM/src/ltable.cpp b/luau/VM/src/ltable.cpp
+index ad272ab..4ff877c 100644
+--- a/luau/VM/src/ltable.cpp
++++ b/luau/VM/src/ltable.cpp
+@@ -25,7 +25,10 @@
+ 
+ #include "ltable.h"
+ 
++#include <unordered_map>
++#include <stdlib.h>
+ #include "lobject.h"
++#include "lstate.h"
+ #include "ldebug.h"
+ #include "lgc.h"
+ #include "lmem.h"
+@@ -84,6 +87,72 @@ static LuaNode* hashpointer(const LuaTable* t, const void* p)
+     return hashpow2(t, h);
+ }
+ 
++// A key hashes by what it is, not where it lives: an object's address differs between runs, and with it the order `pairs` visits
++// a table keyed by objects (so the order handlers run in, and where each one's work lands in a frame). An Instance (userdata tag 73,
++// lua/raw.rs: slot index, generation, creation serial) hashes by its serial. Any other object (table, function, thread, buffer, userdata) hashes by an
++// id handed out the first time it is a key, from a per-thread counter; the map forgets it when the object is freed (lgc.cpp freeobj,
++// HASHIDBIT marks the objects that have one). REE_HASH_ADDRESS=1 hashes by address, as stock Luau does.
++static unsigned int mixid(unsigned int h)
++{
++    // REE_HASH_SEED=<n> deals every id a different table order, the same in every run: what a code change that only reorders
++    // handlers writes is measured against (a trace differ's noise floor)
++    static const unsigned int seed = getenv("REE_HASH_SEED") ? unsigned(atoi(getenv("REE_HASH_SEED"))) * 0x2545f491u : 0u;
++    h += seed;
++    h ^= h >> 16;
++    h *= 0xc2b2ae35u;
++    h ^= h >> 13;
++    return h;
++}
++
++struct HashIds
++{
++    std::unordered_map<const void*, unsigned int> ids;
++    unsigned int next = 1;
++};
++
++static thread_local HashIds hashids;
++
++void luaH_forgetid(const void* object)
++{
++    hashids.ids.erase(object);
++}
++
++static LuaNode* hashgcobject(const LuaTable* t, GCObject* o)
++{
++    static const bool byaddress = getenv("REE_HASH_ADDRESS") != nullptr;
++    if (byaddress)
++        return hashpointer(t, o);
++
++    unsigned int id;
++    auto found = hashids.ids.find(o);
++    if (found != hashids.ids.end())
++    {
++        id = found->second;
++    }
++    else
++    {
++        // (a thread whose states are all closed starts from 1 again: a second run in one process orders as the first did)
++        if (hashids.ids.empty())
++            hashids.next = 1;
++        id = hashids.next++;
++        hashids.ids.emplace(o, id);
++        o->gch.marked |= cast_byte(bitmask(HASHIDBIT));
++    }
++    return hashpow2(t, mixid(id * 0x9e3779b1u));
++}
++
++static LuaNode* hashuserdata(const LuaTable* t, Udata* u)
++{
++    if (u->tag != 73 || u->len < 12)
++        return hashgcobject(t, obj2gco(u));
++
++    // (slot index, generation, creation serial): the serial only. A slot is reused when the collector frees an instance, which
++    // depends on the heap, so two runs of one scene give a new instance different slots and a slot hash orders `pairs` differently.
++    unsigned int ids[3];
++    memcpy(ids, u->data, sizeof(ids));
++    return hashpow2(t, mixid(ids[2] * 0x9e3779b1u));
++}
++
+ static LuaNode* hashnum(const LuaTable* t, double n)
+ {
+     static_assert(sizeof(double) == sizeof(unsigned int) * 2, "expected a 8-byte double");
+@@ -221,8 +290,10 @@ static LuaNode* mainposition(const LuaTable* t, const TValue* key)
+         return hashboolean(t, bvalue(key));
+     case LUA_TLIGHTUSERDATA:
+         return hashpointer(t, pvalue(key));
++    case LUA_TUSERDATA:
++        return hashuserdata(t, uvalue(key));
+     default:
+-        return hashpointer(t, gcvalue(key));
++        return hashgcobject(t, gcvalue(key));
+     }
+ }
+ 
+@@ -271,7 +342,8 @@ LUAU_FORCEINLINE LuaNode* mainpositiontagged<LUA_TSTRING>(const LuaTable* t, TSt
+ template<>
+ LUAU_FORCEINLINE LuaNode* mainpositiontagged<LUA_TGCO>(const LuaTable* t, GCObject* key)
+ {
+-    return hashpointer(t, key);
++    // (by identity, as mainposition hashes an object: a key must find the slot it was given whichever path set it)
++    return key->gch.tt == LUA_TUSERDATA ? hashuserdata(t, gco2u(key)) : hashgcobject(t, key);
+ }
+ 
+ // TODO: remove with FFlagLuauTableFindImprovement
+diff --git a/luau/VM/src/ltable.h b/luau/VM/src/ltable.h
+index 1b1dd36..c2e1497 100644
+--- a/luau/VM/src/ltable.h
++++ b/luau/VM/src/ltable.h
+@@ -34,6 +34,7 @@ LUAI_FUNC LuaTable* luaH_clone(lua_State* L, LuaTable* tt);
+ LUAI_FUNC void luaH_clear(LuaTable* tt);
+ LUAI_FUNC void luaH_setreadonly(lua_State* L, LuaTable* t, bool readonly);
+ LUAI_FUNC int luaH_getreadonly(LuaTable* t);
++LUAI_FUNC void luaH_forgetid(const void* object);
+ 
+ #define luaH_setslot(L, t, slot, key) (invalidateTMcache(t), (slot == luaO_nilobject ? luaH_newkey(L, t, key) : cast_to(TValue*, slot)))
+ 

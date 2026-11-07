@@ -1,0 +1,92 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+templates 19
+  MessageInfo[L01 a=1 b=two] n=3 ctx={a:string=1,b:string="two"}
+  MessageInfo[L02 Value = {result}: 42] n=3 ctx={val:string=42}
+  MessageInfo[L03 x={missing}] n=3 ctx={a:string=1}
+  MessageInfo[L04 x={a} {{a}} }}] n=3 ctx={}
+  MessageInfo[L05 {a} {a}] n=3 ctx={}
+  MessageInfo[L06 1.5 100000000000000000000 0.1 -2.5 0.3333333333333333] n=3 ctx={m:string=1e+20,n:string=1.5,o:string=0.10000000000000001,p:string=-2.5,q:string=0.33333333333333331}
+  MessageInfo[L07 true false Thing Part] n=3 ctx={f:string=boolean:false,i:string="Workspace.LogProbe.Thing",t:string=boolean:true,u:string="Part"}
+  MessageInfo[L08 1, 2, 3 1, 0.5, 0 Enum.Material.Plastic {1, 2}, {3, 4} Bright red] n=3 ctx={b:string=BrickColor:Bright red,c:string=Color3:1, 0.5, 0,e:string=EnumItem:Enum.Material.Plastic,u2:string=UDim2:{1, 2}, {3, 4},v:string=Vector3:1, 2, 3}
+  MessageInfo[L09 {a{b}} {a {} a}b] n=3 ctx={a:string=1,b:string=2}
+  MessageInfo[L10 1 3 {1}] n=3 ctx={ a :string=1,1:string="x",a.b:string=3,a:string="table: ADDR"}
+  MessageInfo[L11 string] n=3 ctx={1:string="string"}
+  MessageInfo[L12 xx {x} x}] n=3 ctx={a:string="x"}
+  MessageInfo[L13 {a}] n=3 ctx={a:string=2,b:string="{a}"}
+  MessageInfo[L14 meta] n=3 ctx={}
+  MessageInfo[L15 custom] n=3 ctx={a:string={}}
+  MessageInfo[L16 {a}] n=3 ctx={}
+  MessageInfo[L17 {a}] n=3 ctx={}
+  MessageInfo[L18 {Name}] n=3 ctx={}
+  MessageInfo[L19 plain] n=3 ctx={a:string=1}
+types 7
+  MessageOutput[L20 1] n=3 ctx={a:string=1}
+  MessageWarning[L21 1] n=3 ctx={a:string=1}
+  MessageInfo[L22 1] n=3 ctx={a:string=1}
+  MessageOutput[L23] n=3 ctx={}
+  MessageWarning[L24] n=3 ctx={}
+  MessageInfo[L25] n=3 ctx={}
+  MessageInfo[L26] n=3 ctx={}
+err error Argument 2 missing or nil
+err error Argument 2 missing or nil
+err error Argument 2 missing or nil
+err error Argument 2 missing or nil
+err error Argument 2 missing or nil
+err error Argument 3 missing or nil
+err error Argument 3 missing or nil
+err error Unable to cast Material to MessageType
+err error Unable to cast double to MessageType
+err error Unable to cast string to MessageType
+err error Expected ':' not '.' calling member function Info
+err error Expected ':' not '.' calling member function Error
+argument-errors 0
+context 3
+  MessageInfo[L32 context] n=3 ctx={-1:string="negative",-2147483648:string="big",2:string="frac",3:string="string three",c:string="table: ADDR",en:string="Material",f:string="function: ADDR",i:string="Thing",item:string="Enum.Material.Plastic",n:string=2,s:string="str",t:string="table: ADDR",th:string="thread: ADDR",v:string="1, 2, 3"}
+  MessageInfo[L33 frozen] n=3 ctx={a:string=1}
+  MessageInfo[L34 meta] n=3 ctx={real:string=1}
+thrown false table message,stack,template,context false
+thrown fields L35 fail str {missing} L35 fail {s} {missing} Stack Begin / Script '<probe>', Line @143 / Script '<probe>', Line @142 / Stack End
+thrown context {-1:string="negative",-2147483648:string="big",2:string="frac",3:string="string three",c:string="table: ADDR",en:string="Material",f:string="function: ADDR",i:string="Thing",item:string="Enum.Material.Plastic",n:string=2,s:string="str",t:string="table: ADDR",th:string="thread: ADDR",v:string="1, 2, 3"} false
+thrown meta __tostring:function false L35 fail str {missing}
+thrown each true {} L36 other
+thrown tostring number 5
+thrown tostring string 
+thrown tostring boolean Error occurred
+thrown tostring table Error occurred
+thrown tostring nil Error occurred
+thrown concat error @167: attempt to concatenate string with table
+thrown log table L37 log 1 L37 log {a} {a:string=1}
+thrown bare L38 {a} {}
+thrown 4
+  MessageError[L35 fail str {missing}] n=3 ctx={-1:string="negative",-2147483648:string="big",2:string="frac",3:string="string three",c:string="table: ADDR",en:string="Material",f:string="function: ADDR",i:string="Thing",item:string="Enum.Material.Plastic",n:string=2,s:string="str",t:string="table: ADDR",th:string="thread: ADDR",v:string="1, 2, 3"}
+  MessageError[L36 other] n=3 ctx={}
+  MessageError[L37 log 1] n=3 ctx={a:string=1}
+  MessageError[L38 {a}] n=3 ctx={}
+uncaught 4
+  MessageError[L39 uncaught 1] n=3 ctx={a:string=1}
+  MessageInfo[Stack Begin] n=3 ctx={}
+  MessageInfo[Script '<probe>', Line @178] n=3 ctx={}
+  MessageInfo[Stack End] n=3 ctx={}
+rethrown 4
+  MessageError[L40 caught then thrown] n=3 ctx={}
+  MessageInfo[Stack Begin] n=3 ctx={}
+  MessageInfo[Script '<probe>', Line @183] n=3 ctx={}
+  MessageInfo[Stack End] n=3 ctx={}
+non-strings 16
+  MessageInfo[5] n=3 ctx={}
+  MessageOutput[12.5] n=3 ctx={}
+  MessageWarning[argument #1 expects a string, but boolean was passed /     Stack Begin /     Script '<probe>', Line @192 /     Stack End] n=3 ctx={}
+  MessageInfo[true] n=3 ctx={}
+  MessageWarning[argument #1 expects a string, but table was passed /     Stack Begin /     Script '<probe>', Line @193 /     Stack End] n=3 ctx={}
+  MessageInfo[{}] n=3 ctx={}
+  MessageWarning[argument #1 expects a string, but Instance was passed /     Stack Begin /     Script '<probe>', Line @194 /     Stack End] n=3 ctx={}
+  MessageInfo[Instance] n=3 ctx={}
+  MessageWarning[argument #1 expects a string, but function was passed /     Stack Begin /     Script '<probe>', Line @195 /     Stack End] n=3 ctx={}
+  MessageInfo[function] n=3 ctx={}
+  MessageWarning[argument #1 expects a string, but Enum was passed /     Stack Begin /     Script '<probe>', Line @196 /     Stack End] n=3 ctx={}
+  MessageInfo[nil] n=3 ctx={}
+  MessageWarning[argument #1 expects a string, but Vector3 was passed /     Stack Begin /     Script '<probe>', Line @197 /     Stack End] n=3 ctx={}
+  MessageInfo[1, 2, 3] n=3 ctx={}
+  MessageWarning[argument #1 expects a string, but boolean was passed /     Stack Begin /     Script '<probe>', Line @198 /     Stack End] n=3 ctx={}
+  MessageInfo[false] n=3 ctx={a:string=1}

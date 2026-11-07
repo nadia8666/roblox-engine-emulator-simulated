@@ -1,0 +1,40 @@
+ ◆ ree profile   ✓ run ok · Fixture.luau · 120 frames · 2.00 s                                     Studio work 13.20 ms
+  1 Overview  2 Flame  3 Calls  4 Source  5 Alloc  6 Heap  7 Timeline  8 Caches  9 Issues  d Diff  c Compare
+╭ Flame ╭ ? Help ──────────────────────────────────────────────────────────────────────────────────────────────╮───────╮
+│ run   │                                                                                                      │       │
+│ s…  fr│  Keys                                                                                                │       │
+│ a…  up│  1-9 views  d Diff (two profiles)  c Compare (a what-if folder)                                      │       │
+│     ra│  arrows, hjkl move  enter in  esc, backspace out                                                     │       │
+│     so│  m metric  s sort  f scripts only  / search  n N next                                                │       │
+│     an│  y copy  x before/after  t theme  q quit                                                             │       │
+│       │  here: ←→↑↓ move  enter zoom  esc out  s order                                                       │       │
+│       │                                                                                                      │       │
+│       │  Colour                                                                                              │       │
+│       │  heat: a figure's share of the run, from purple (0.1%) through red and orange to gold (30% and more  │       │
+│       │  diff: red ▲ more, blue ▼ less · issues: ■ critical ▲ serious ● warning ○ info · variants and phase  │       │
+│       │                                                                                                      │       │
+│       │  Metrics                                                                                             │       │
+│       │  ▸ Studio work: each instruction priced at what a Studio client spends on it; the same every         │       │
+│       │      run                                                                                             │       │
+│       │  instructions: instructions the Luau VM ran                                                          │       │
+│       │  allocated bytes: bytes the VM allocated                                                             │       │
+│       │  allocations: objects the VM allocated                                                               │       │
+│       │  Luau cache misses: inline-cache lookups that missed or took the slow path (no stacks: the           │       │
+│       │      flame shows work)                                                                               │       │
+│       │                                                                                                      │       │
+│       │  The work clock beside a client                                                                      │       │
+│       │  a fixture's numbers, chosen for the tests                                                           │       │
+│       │                                                                                                      │       │
+│       │                                                                                                      │       │
+│       │                                                                                                      │       │
+│       │                                                                                                      │       │
+│       │                                                                                                      │       │
+│       │                                                                                                      │       │
+│       │                                                                                                      │       │
+╰ share │                                                                                                      │───────╯
+╭ ■ stea│                                                                                                      │───────╮
+│ own 0 │                                                                                                      │       │
+│ run › │                                                                                                      │       │
+│       ╰────────────────────────────────────────────────────────────────────────────────────── any key closes ╯       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ←→↑↓ move  enter zoom  esc out  s order   │   m metric  f scripts  / find  y copy  t theme  ? help  q quit

@@ -366,7 +366,7 @@ assert(DateTime.fromIsoDate("2023-02-30T00:00:00Z") == nil and DateTime.fromIsoD
     );
 }
 
-/// Vector3 Magnitude and Unit are answered by the VM (patches/luau.patch, luaV_vectormember) and are what the single
+/// Vector3 Magnitude and Unit are answered by the VM (patches/luau/05-vector-members.patch, luaV_vectormember) and are what the single
 /// precision sums of squares give: Magnitude is `sqrtf(x*x + y*y + z*z)` widened to a double and Unit scales each component
 /// by `1.0f / sqrtf(...)`, bit for bit, as the `vector` library computes them.
 #[test]
@@ -620,7 +620,7 @@ fn cframe_operations_run_natively_and_keep_their_work_clock_charge() {
     let counters = || {
         let pointer = engine.state.borrow().sched.vm_counters.expect("VM counters");
         let counters = unsafe { &*pointer };
-        (counters.hostnanos, counters.hostops.iter().sum::<u64>())
+        (counters.hostnanos, crate::cost::host_instructions(counters))
     };
     let run = |loops: u32| {
         let script = {
@@ -731,6 +731,78 @@ fn datatypes_print_as_a_playing_client_does() {
             assert(not Ok and string.find(tostring(Message), `attempt to perform arithmetic %({Case[1]}%) on Color3$`), tostring(Message))
         end
         assert(not pcall(function() return -Color3.new() end) and not pcall(function() return Color3.new() * 2 end))
+        "##,
+    );
+}
+
+/// `CFrame:FuzzyEq(other, eps = 1e-5)` answers as a client does (measured in a playing client, Studio 0.744; the parity probe
+/// cframe_fuzzyeq keeps the rules): position component by component within `|eps| * (|a| + 1)` of self's component `a`, rotation
+/// by `sqrt(sum of (Ra^T Rb - I)^2) / sqrt(2) <= |eps|` in single precision, eps checked to be at most 0.1 in size, and the
+/// client's argument errors. The near pairs are ones the client decided where the same formula in double precision, or on
+/// the plain difference of the matrices, decides the other way.
+#[test]
+fn cframe_fuzzy_eq_answers_as_a_client_does() {
+    assert_script(
+        r##"
+        local I = CFrame.identity
+        -- position: the default eps is 1e-5 as a float, and the tolerance grows with self's component only
+        assert(CFrame.new(1e-5, 0, 0):FuzzyEq(I) and I:FuzzyEq(CFrame.new(0, 1e-5, 0)))
+        assert(CFrame.new(1.0000001e-5, 0, 0):FuzzyEq(I), "self's 1e-5 widens its own tolerance")
+        assert(not I:FuzzyEq(CFrame.new(0, 1.0000001e-5, 0)), "the other's does not")
+        assert(CFrame.new(1, 0, 0):FuzzyEq(CFrame.new(1.125, 0, 0), 0.0625) and not CFrame.new(1, 0, 0):FuzzyEq(CFrame.new(1.125 + 2 ^ -23, 0, 0), 0.0625))
+        assert(CFrame.new(1e10, 0, 0):FuzzyEq(CFrame.new(1e10 + 1000, 0, 0), 0.1), "relative to the component's size")
+        assert(CFrame.new(math.huge, 0, 0):FuzzyEq(CFrame.new(math.huge, 0, 0)) and not CFrame.new(math.huge, 0, 0):FuzzyEq(I, 0.1))
+        assert(CFrame.new(0.0099, 0.0099, 0.0099):FuzzyEq(I, 0.01), "component by component, not a distance")
+        assert(not CFrame.new(0 / 0, 0, 0):FuzzyEq(CFrame.new(0 / 0, 0, 0)))
+        -- eps: a float, its size, NaN fails, 0 still takes equal CFrames
+        assert(CFrame.new(0.01, 0, 0):FuzzyEq(I, 0.0099999997), "0.0099999997 is 0.01 as a float")
+        assert(CFrame.new(1e-6, 0, 0):FuzzyEq(I, -0.0001) and I:FuzzyEq(I, 0) and not CFrame.new(1e-6, 0, 0):FuzzyEq(I, 0))
+        assert(not I:FuzzyEq(I, 0 / 0) and I:FuzzyEq(I, 0.1000000001) and I:FuzzyEq(I, -0.1))
+        -- rotation: the angle between them (2 asin(eps / 2) exactly), and a plain distance for matrices that are not rotations
+        local W = 10 ^ 7
+        local function Turn(X, Y, Z)
+            local N = W * W + X * X + Y * Y + Z * Z
+            return CFrame.new(0, 0, 0, (W * W + X * X - Y * Y - Z * Z) / N, 2 * (X * Y - W * Z) / N, 2 * (X * Z + W * Y) / N,
+                2 * (X * Y + W * Z) / N, (W * W - X * X + Y * Y - Z * Z) / N, 2 * (Y * Z - W * X) / N,
+                2 * (X * Z - W * Y) / N, 2 * (Y * Z + W * X) / N, (W * W - X * X - Y * Y + Z * Z) / N)
+        end
+        assert(Turn(500623, 0, 0):FuzzyEq(I, 0.1) and not Turn(500628, 0, 0):FuzzyEq(I, 0.1), "0.1 turns at 1.00042 eps")
+        assert(I:FuzzyEq(Turn(0, 500623, 0), 0.1) and not I:FuzzyEq(Turn(0, 0, 500628), 0.1), "either way round, any axis")
+        assert(CFrame.new(0, 0, 0, 1.141421, 0, 0, 0, 1, 0, 0, 0, 1):FuzzyEq(I, 0.1) and not CFrame.new(0, 0, 0, 1.141422, 0, 0, 0, 1, 0, 0, 0, 1):FuzzyEq(I, 0.1))
+        assert(CFrame.new(0, 0, 0, 1, 0.14142, 0, 0, 1, 0, 0, 0, 1):FuzzyEq(I, 0.1) and not CFrame.new(0, 0, 0, 1, 0.141422, 0, 0, 1, 0, 0, 0, 1):FuzzyEq(I, 0.1))
+        for _, Case in {
+            { false, 0.05, { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, { 0.999878824, -0.00312961265, -0.0152577423, 0.0038508235, 0.998865187, 0.0474706739, 0.0150918644, -0.0475236662, 0.998756111 } },
+            { false, 0.05, { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, { 0.999878705, -0.00312961289, -0.0152577423, 0.00385082304, 0.998865187, 0.0474706739, 0.0150918607, -0.0475236699, 0.998756111 } },
+            { true, 0.05, { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, { 0.999878526, -0.00312961242, -0.0152577441, 0.0038508235, 0.998865366, 0.0474706739, 0.0150918635, -0.0475236699, 0.998755991 } },
+            { true, 0.05, { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, { 0.999878705, -0.00312961242, -0.0152577423, 0.0038508235, 0.998865187, 0.0474706739, 0.0150918635, -0.0475236662, 0.998755991 } },
+            { true, 0.05, { -0.0691823885, 0.0880503133, -0.993710697, 0.968553483, -0.232704401, -0.0880503133, -0.238993704, -0.968553483, -0.0691823885 }, { -0.0645823926, 0.137504831, -0.988393366, 0.96857965, -0.229741171, -0.0952492356, -0.240171924, -0.963489175, -0.118347161 } },
+            { true, 0.05, { -0.0691823885, 0.0880503133, -0.993710697, 0.968553483, -0.232704401, -0.0880503133, -0.238993704, -0.968553483, -0.0691823885 }, { -0.0645823926, 0.137504846, -0.988393426, 0.968579531, -0.229741171, -0.0952492133, -0.24017188, -0.963489175, -0.118347161 } },
+            { false, 0.05, { -0.360000014, -0.864000022, -0.351999998, 0.479999989, 0.151999995, -0.864000022, 0.800000012, -0.479999989, 0.360000014 }, { -0.32706365, -0.871845067, -0.364575863, 0.516429842, 0.158191398, -0.841591179, 0.79140985, -0.463531762, 0.398508191 } },
+            { false, 0.05, { -0.360000014, -0.864000022, -0.351999998, 0.479999989, 0.151999995, -0.864000022, 0.800000012, -0.479999989, 0.360000014 }, { -0.32706365, -0.871845067, -0.364575893, 0.516429842, 0.158191383, -0.841591179, 0.79140985, -0.463531703, 0.398508161 } },
+        } do
+            local A, B = CFrame.new(0, 0, 0, table.unpack(Case[3])), CFrame.new(0, 0, 0, table.unpack(Case[4]))
+            -- (as self:FuzzyEq(other): this close, the sum of squares runs over the matrix the other way round from the other side, and can
+            -- land a float step apart)
+            assert(A:FuzzyEq(B, Case[2]) == Case[1], "a near pair the client decided " .. tostring(Case[1]))
+        end
+        -- the client's errors: argument errors from the calling line, the count and range ones without it
+        local function Fails(Pattern, Function)
+            local Ok, Message = pcall(Function)
+            assert(not Ok and type(Message) == "string" and string.find(Message, Pattern), tostring(Message))
+        end
+        Fails("^Invalid number of arguments: 1, CFrame%.FuzzyEq expects 2 or 3%.$", function() return I:FuzzyEq() end)
+        Fails("^Invalid number of arguments: 0, CFrame%.FuzzyEq expects 2 or 3%.$", function() return I.FuzzyEq() end)
+        Fails("^Test:%d+: invalid argument #1 to 'FuzzyEq' %(CFrame expected, got number%)$", function() return I.FuzzyEq(5, I, "x") end)
+        Fails("^Test:%d+: invalid argument #2 %(CFrame expected, got nil%)$", function() return I:FuzzyEq(nil, 5) end)
+        Fails("^Test:%d+: invalid argument #2 %(CFrame expected, got Vector3%)$", function() return I:FuzzyEq(Vector3.zero) end)
+        Fails("^Test:%d+: invalid argument #2 %(CFrame expected, got Instance%)$", function() return I:FuzzyEq(Instance.new("Folder")) end)
+        Fails("^Test:%d+: invalid argument #3 %(number expected, got nil%)$", function() return I:FuzzyEq(I, nil) end)
+        Fails("^Test:%d+: invalid argument #3 %(number expected, got string%)$", function() return I:FuzzyEq(I, "abc") end)
+        Fails("^The eps value provided to FuzzyEq should be a small positive value <= 0%.1$", function() return I:FuzzyEq(I, "5") end)
+        Fails("^The eps value provided to FuzzyEq should be a small positive value <= 0%.1$", function() return I:FuzzyEq(I, -0.10000001) end)
+        Fails("^The eps value provided to FuzzyEq should be a small positive value <= 0%.1$", function() return I:FuzzyEq(I, math.huge) end)
+        assert(CFrame.new(1e-6, 0, 0):FuzzyEq(I, "0.01") and I:FuzzyEq(I, 0.01, "extra") and select("#", I:FuzzyEq(I)) == 1)
+        assert(CFrame.FuzzyEq == nil and type(I.FuzzyEq) == "function")
         "##,
     );
 }

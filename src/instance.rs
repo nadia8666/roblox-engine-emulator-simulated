@@ -442,7 +442,15 @@ pub fn set_parent(
     id: InstanceId,
     new_parent: Option<InstanceId>,
 ) -> ScriptResult<()> {
-    if state.dom.at(id).has(flags::PARENT_LOCKED) {
+    // Measured in a playing client (Studio 0.744, tools/parity/probes/hierarchy.luau): a service refuses with "Cannot change
+    // Parent of type Lighting"; the DataModel and a destroyed instance with "The Parent property of X is locked, current
+    // parent: NULL, new parent Y"; an instance made its own parent with "Attempt to set X as its own parent", and its
+    // descendant with the circular-reference text.
+    let is_data_model = Some(state.dom.at(id).class) == reflection.class_id("DataModel");
+    if state.dom.at(id).has(flags::PARENT_LOCKED) || is_data_model {
+        if is_service(state, reflection, id) {
+            return Err(ScriptError::plain(format!("Cannot change Parent of type {}", reflection.class(state.dom.at(id).class).name)));
+        }
         let new_name = match new_parent {
             Some(parent) => state.dom.at(parent).name.to_string(),
             None => "NULL".into(),
@@ -457,7 +465,10 @@ pub fn set_parent(
         return Ok(());
     }
     if let Some(parent) = new_parent {
-        if parent == id || state.dom.is_descendant_of(parent, id) {
+        if parent == id {
+            return Err(ScriptError::plain(format!("Attempt to set {} as its own parent", state.dom.full_name(reflection, id))));
+        }
+        if state.dom.is_descendant_of(parent, id) {
             return Err(ScriptError::plain(format!(
                 "Attempt to set parent of {} to {} would result in circular reference",
                 state.dom.full_name(reflection, id),
@@ -496,6 +507,33 @@ pub fn set_parent(
         let loose = if inside(state, new_parent) { crate::cost::REPARENTED } else { crate::cost::REPARENTED_LOOSE };
         state.sched.charge(loose);
         crate::boundary::add_cost(loose);
+    }
+    // (entering the Workspace: the frame's first entry runs the engine's code for it cold, the first part's more (cost.rs Path::Enter,
+    // EnterPart); each instance's entry is noted, so a destroy knows the engine took it into its frame work: destroy_live)
+    let workspace = state.sched.touched.borrow().workspace;
+    if let Some(workspace) = workspace {
+        let placed = |state: &State, parent: Option<InstanceId>| parent.is_some_and(|parent| parent == workspace || state.dom.is_descendant_of(parent, workspace));
+        let (was_placed, now_placed) = (placed(state, old_parent), placed(state, new_parent));
+        if was_placed != now_placed {
+            let mut touched = state.sched.touched.borrow_mut();
+            let mut first = 0.0;
+            let mut part = false;
+            for node in std::iter::once(id).chain(state.dom.descendants(id)) {
+                touched.set_entered(node.index, now_placed);
+                part = part || touched.kind(state.dom.at(node).class) == crate::cost::ColdKind::Part;
+            }
+            if now_placed {
+                first += touched.first_path(crate::cost::Path::Enter);
+                if part {
+                    first += touched.first_path(crate::cost::Path::EnterPart);
+                }
+            }
+            drop(touched);
+            if first > 0.0 {
+                state.sched.charge(first);
+                crate::boundary::add_cost(first);
+            }
+        }
     }
     // (an ancestor the subtree keeps is told nothing: Root.DescendantAdded / DescendantRemoving stay quiet when a model moves
     // from Root.Units to Root.Other)
@@ -640,6 +678,10 @@ fn copy_tree(
 /// attribute's own signal when the value changed.
 pub fn set_attribute(state: &mut State, reflection: &Reflection, id: InstanceId, name: Str, value: Value) {
     let instance = state.dom.at_mut(id);
+    // (an Instance attribute keeps its instance as an instance property does: lua::raw's collector walks both)
+    if value.references_instance() {
+        instance.flags |= flags::HOLDS_REFS;
+    }
     let index = instance.attributes.iter().position(|(n, _)| *n == name);
     match (index, value.is_nil()) {
         (Some(index), _) if instance.attributes.as_slice()[index].1.same(&value) => return,
@@ -679,6 +721,14 @@ pub fn remove_tag(state: &mut State, id: InstanceId, tag: &Str) {
     super::services::tag_removed(state, id, tag);
 }
 
+/// A service: a parent-locked instance of a service class under the DataModel.
+fn is_service(state: &State, reflection: &Reflection, id: InstanceId) -> bool {
+    let instance = state.dom.at(id);
+    instance.has(flags::PARENT_LOCKED)
+        && reflection.class(instance.class).service
+        && instance.parent.is_some_and(|parent| Some(state.dom.at(parent).class) == reflection.class_id("DataModel"))
+}
+
 /// The first half of Destroy (after its Destroying handlers were queued): marks the instance destroyed,
 /// unparents it and locks its parent. Returns the children to destroy next.
 pub fn begin_destroy(
@@ -687,6 +737,10 @@ pub fn begin_destroy(
     hooks: &Hooks,
     id: InstanceId,
 ) -> ScriptResult<Vec<InstanceId>> {
+    // a service stays as it was: "The Parent property of Lighting is locked" (measured, tools/parity/probes/hierarchy.luau)
+    if is_service(state, reflection, id) {
+        return Err(ScriptError::plain(format!("The Parent property of {} is locked", state.dom.at(id).name)));
+    }
     state.dom.at_mut(id).set_flag(flags::DESTROYED, true);
     if state.dom.at(id).parent.is_some() {
         set_parent(state, reflection, hooks, id, None)?;

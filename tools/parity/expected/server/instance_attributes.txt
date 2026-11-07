@@ -1,0 +1,25 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+set ok 
+read typeof=InstanceHandle type=userdata tostring=ParityTarget equal=false rawequal=false
+member Name error Name is not a valid member of InstanceHandle
+member Parent error Parent is not a valid member of InstanceHandle
+member ClassName error ClassName is not a valid member of InstanceHandle
+member Instance error Instance is not a valid member of InstanceHandle
+member Value error Value is not a valid member of InstanceHandle
+member Target error Target is not a valid member of InstanceHandle
+member IsA error IsA is not a valid member of InstanceHandle
+method error IsA is not a valid member of InstanceHandle | error GetFullName is not a valid member of InstanceHandle
+same-read true false
+listed typeof=InstanceHandle tostring=ParityTarget
+as-key ok nil nil
+changed Ref
+same-again 
+after-rename Renamed
+after-unparent Renamed InstanceHandle
+after-destroy Renamed InstanceHandle
+loose ok  Folder
+self ok  Folder
+service ok  Lighting
+clone Folder false Lighting
+handle-attribute ok  InstanceHandle

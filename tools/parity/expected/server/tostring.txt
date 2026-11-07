@@ -1,0 +1,59 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+udim 0.333333343, 7
+udim-neg -0.100000001, -3
+udim-huge 1.00000002e+20, -2147483648
+udim2 {0.333333343, 7}, {-2.5, -9}
+udim2-tiny {1.00000001e-07, 0}, {-0, 1}
+vector2 0.333333343, -2.5
+vector2-edges 1.00000001e-07, 1.00000002e+20
+vector2-negzero -0, 0.100000001
+vector3 0.3333333432674408, -2.5, 1.0000000116860974e-07
+vector2int16 -5, 32767
+vector2int16-wrap -32768, 32767
+vector3int16 -5, 32767, 7
+vector3int16-wrap -32768, 32767, 1
+vector3int16-frac 1, -1, 2
+cframe 0.333333343, -2.5, 1.00000002e+20, 1, 0, 0, 0, 1, 0, 0, 0, 1
+cframe-rot 0.100000001, 0, 1.00000001e-07, 0.936293423, -0.289629489, 0.198669329, 0.312991828, 0.944702566, -0.0978434011, -0.159345075, 0.153791994, 0.975170374
+color3 0.333333, 0.1, 0.666667
+color3-range -1, 2.5, 1e+20
+color3-tiny 1e-07, 0.123457, 1e-20
+rect 0.100000001, -2.5, 0.333333343, 1.00000002e+20
+rect-vectors 1.00000001e-07, -0, 5, 6
+numberrange 0.333333 2.5 
+numberrange-one -0.1 -0.1 
+numberrange-huge 1e-07 1e+20 
+numbersequence 0 0.333333 0.1 0.5 1e-07 1e+20 1 -2.5 0 
+numbersequence-one 0 0.333333 0 1 0.333333 0 
+numbersequencekeypoint 0.25 0.333333 0.5 
+colorsequence 0 0.333333 0.1 0.666667 0 0.333333 1e-07 1 0.5 0 1 1 0 0.25 0 
+colorsequencekeypoint 0.25 0.333333 0.1 0.666667 0 
+ray {0.333333343, -2.5, 0.100000001}, {1.00000002e+20, -0, 1.00000001e-07}
+region3 0.333333313, -0.125, 0.0500000007, 1, 0, 0, 0, 1, 0, 0, 0, 1; 1.33333337, 4.75, 0.100000001
+region3int16 -1, 2, 3; 4, 5, 6
+tweeninfo Time:0.1 DelayTime:0.333333 RepeatCount:-1 Reverses:True EasingDirection:In EasingStyle:Sine
+tweeninfo-default Time:1 DelayTime:0 RepeatCount:0 Reverses:False EasingDirection:Out EasingStyle:Quad
+axes-normals X, Y
+axes-all X, Y, Z
+axes-none 
+faces Top, Back, Left
+faces-none 
+physicalproperties-material 0.349999994, 0.479999989, 0.200000003, 1, 1, 0.25
+physicalproperties-five 0.333333343, 0.100000001, 0.25, 2, 3, 1
+datetime-millis 1700000000123
+datetime-seconds 1700000000000
+datetime-negative -1500
+pathwaypoint {0.333333343, 2, 3}, Jump, label
+font Font { Family = rbxasset://fonts/families/Arial.json, Weight = Bold, Style = Italic }
+raycastparams-set RaycastParams{IgnoreWater=true, Margin=0, SizeGradient=0, BruteForceAllSlow=false, RespectCanCollide=true, CollisionGroup=Default, FilterDescendantsInstances={Workspace}}
+overlapparams-set OverlapParams{MaxParts=5, Tolerance=0, BruteForceAllSlow=false, RespectCanCollide=false, CollisionGroup=Default, FilterDescendantsInstances={2 instances...}}
+random Random
+brickcolor Institutional white
+enum Material
+tohex 808080 55aaff 0001fe 00ff80 0dfeb1 010203
+fromrgb 1.17647064 -0.0196078438 0.5 | 1 0.501960814 0.00392156886 | 0.00549019594 0.00627450971 0.998039186
+fromhex ok 0.666666687 0.733333349 0.800000012 | ok 0.670588255 0.80392158 0.937254906 | error Unable to convert characters to hex value | error Unable to convert characters to hex value | error Unable to convert characters to hex value | error Unable to convert characters to hex value | error Unable to convert characters to hex value | error Unable to convert characters to hex value | error Unable to convert characters to hex value
+color3-ops error @94: attempt to perform arithmetic (add) on Color3 | error @94: attempt to perform arithmetic (sub) on Color3 | error @94: attempt to perform arithmetic (mul) on Color3 | error @95: attempt to perform arithmetic (mul) on Color3 and number | error @95: attempt to perform arithmetic (div) on Color3 and number | error @95: attempt to perform arithmetic (unm) on Color3 | true false
+color3-lerp 0.416666657 0.333333343 0.666666627 | 0 0.75 -1 | error Argument 3 missing or nil
+color3-new 0 0 0 | 0.5 0 0 | ok 0.5, 1, 1 | ok 0, 1, 1

@@ -2,6 +2,8 @@
 #pragma once
 
 #include <memory>
+
+#include <stddef.h>
 #include <stdint.h>
 
 namespace Luau
@@ -32,6 +34,9 @@ struct NativeProtoExecDataHeader
     // elements in the instruction offsets array following this header.
     uint32_t bytecodeInstructionCount = 0;
 
+    // The number of extra uin32_t elements of custom data after the bytecode offsets
+    uint32_t extraDataCount = 0;
+
     // The size of the native code for this NativeProto, in bytes.
     size_t nativeCodeSize = 0;
 };
@@ -47,7 +52,7 @@ struct NativeProtoExecDataDeleter
 
 using NativeProtoExecDataPtr = std::unique_ptr<uint32_t[], NativeProtoExecDataDeleter>;
 
-[[nodiscard]] NativeProtoExecDataPtr createNativeProtoExecData(uint32_t bytecodeInstructionCount);
+[[nodiscard]] NativeProtoExecDataPtr createNativeProtoExecData(uint32_t bytecodeInstructionCount, uint32_t extraDataCount);
 void destroyNativeProtoExecData(const uint32_t* instructionOffsets) noexcept;
 
 [[nodiscard]] NativeProtoExecDataHeader& getNativeProtoExecDataHeader(uint32_t* instructionOffsets) noexcept;

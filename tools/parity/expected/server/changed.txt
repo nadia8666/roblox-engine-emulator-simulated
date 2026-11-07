@@ -1,0 +1,36 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+same-value 
+new-value part.Changed(Transparency),part.Transparency#0
+nan-first part.Changed(Transparency),part.Transparency#0
+nan-again part.Changed(Transparency),part.Transparency#0
+nan-reads nan
+same-size 
+size-rounding 
+size-min 0.00100000005 0.00100000005 0.00100000005
+size-clamped part.Changed(Size),part.Size#0,part.Changed(AssemblyMass),part.Changed(Mass)
+same-name 
+two-properties part.Changed(Name),part.Name#0,part.Changed(Anchored),part.Anchored#0,part.Changed(AssemblyMass),part.Changed(AssemblyCenterOfMass)
+batched-writes part.Changed(Transparency),part.Transparency#0,part.Changed(Transparency),part.Transparency#0,part.Changed(Transparency),part.Transparency#0,part.Changed(Transparency),part.Transparency#0,part.Changed(Transparency),part.Transparency#0
+batched-values-seen 0.5,0.5
+write-and-back part.Changed(Transparency),part.Transparency#0,part.Changed(Transparency),part.Transparency#0
+write-position d.Changed(CFrame),d.CFrame#0,d.Changed(Position),d.Position#0,d.Changed(AssemblyCenterOfMass),d.Changed(Orientation),d.Orientation#0,d.Changed(Rotation),d.Rotation#0
+write-same-cframe 
+write-cframe-rotation d.Changed(CFrame),d.CFrame#0,d.Changed(Position),d.Position#0,d.Changed(AssemblyCenterOfMass),d.Changed(Orientation),d.Orientation#0,d.Changed(Rotation),d.Rotation#0
+write-color d.Changed(BrickColor),d.BrickColor#0,d.Changed(Color),d.Color#0
+write-brickcolor d.Changed(BrickColor),d.BrickColor#0,d.Changed(Color),d.Color#0
+numbervalue value.signal,value.Changed 1 3
+numbervalue-nan value.signal,value.Changed 1 nan,value.signal,value.Changed 1 nan
+objectvalue object.Changed Renamed
+stringvalue string.Changed x
+intvalue-rounding int 3,int -3,int 9007199254740992
+intvalue-reads 9007199254740992
+bool-assign-number ok 
+int-assign-string ok  -> 5
+int-assign-badstring ok 
+attribute-new int 5,int 0,AttributeChanged A,A-signal
+attribute-same 
+attribute-removed AttributeChanged A,A-signal
+attribute-remove-missing 
+attribute-nan AttributeChanged A,A-signal,AttributeChanged A,A-signal
+parent-tag-archivable child.Changed Parent,child.Changed Archivable

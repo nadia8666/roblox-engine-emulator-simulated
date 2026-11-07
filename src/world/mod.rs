@@ -390,6 +390,16 @@ pub fn install(engine: &Rc<Engine>) {
                 LuaValue::Nil => 16.0,
                 _ => args.number(1).unwrap_or(16.0),
             };
+            // (the frame's first Emit runs the engine's code for it cold, and an emitter the frame had not touched (the namecall's
+            // touch said) is read cold: cost.rs Path::Emit, EMIT_COLD)
+            {
+                let state = engine.state.borrow();
+                let mut touched = state.sched.touched.borrow_mut();
+                let cold = touched.first_path(crate::cost::Path::Emit) + if touched.take_last_cold() { crate::cost::EMIT_COLD } else { 0.0 };
+                drop(touched);
+                state.sched.charge(cold);
+                crate::boundary::add_cost(cold);
+            }
             let from = if observed(engine) { emission(&engine.state.borrow(), engine, id) } else { None };
             report(engine, WorldEvent::Emit { emitter: id, count, from });
             Ok(none())
@@ -447,13 +457,34 @@ pub fn install(engine: &Rc<Engine>) {
                 Value::EnumItem(item) if &*engine.reflection.enum_item_info(item).name == "FireCFrameChanged" => crate::cost::BULK_MOVED,
                 _ => crate::cost::BULK_MOVED_ALL_EVENTS,
             };
+            // (the frame's first BulkMoveTo runs the engine's code for it cold, and a part the frame had not touched is read cold with
+            // the emitters it carries: cost.rs Path::BulkMove, BULK_COLD_PART, BULK_COLD_EMITTER)
+            let mut cold = engine.state.borrow().sched.touched.borrow_mut().first_path(crate::cost::Path::BulkMove);
             for (index, part) in parts.sequence_values::<LuaValue>().enumerate() {
                 let Some(id) = part.ok().as_ref().and_then(super::lua::instance_id) else { continue };
                 let target = cframes.raw_get::<LuaValue>(index + 1).ok().as_ref().and_then(cframe_arg);
                 if let Some(target) = target {
+                    {
+                        let state = engine.state.borrow();
+                        let mut touched = state.sched.touched.borrow_mut();
+                        if touched.mark_moved(id.index) {
+                            cold += crate::cost::BULK_COLD_PART;
+                            for node in state.dom.descendants(id) {
+                                if touched.is_emitter(state.dom.at(node).class) {
+                                    cold += crate::cost::BULK_COLD_EMITTER;
+                                }
+                            }
+                        }
+                    }
                     set_cframe(engine, id, &target);
                     engine.state.borrow().sched.charge(each);
+                    // (booked to the call, so a boundary profile shows what BulkMoveTo's parts cost)
+                    crate::boundary::add_cost(each);
                 }
+            }
+            if cold > 0.0 {
+                engine.state.borrow().sched.charge(cold);
+                crate::boundary::add_cost(cold);
             }
             Ok(none())
         }));

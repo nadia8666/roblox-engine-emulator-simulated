@@ -33,6 +33,8 @@ pub struct Input<'a> {
     pub sources: &'a FxHashMap<String, Source>,
     /// The work clock's reading when the profile was collected (the last phase's end)
     pub end_work: f64,
+    /// The profile's end as a mark: the last phase's end, with the counts then
+    pub end: Option<&'a Mark>,
     pub boundary: Option<&'a str>,
     pub phase_timing: Option<&'a str>,
     pub warnings: &'a [String],
@@ -85,6 +87,29 @@ pub fn short_module(module: &str) -> &str {
     module.rsplit(['.', '/', '\\']).next().unwrap_or(module)
 }
 
+/// Where a run's `--harness` module and what it brings along are mounted (record/run.rs): code there is the harness's,
+/// not the code it measures
+pub const HARNESS_FOLDER: &str = "ReplicatedStorage.RURFixtures";
+
+/// Whether a module is the harness's own code: under [`HARNESS_FOLDER`], or the engine's chunks that drive it
+/// (`rur.record`, which calls the harness, compiled as script code; the engine's own Luau is apart, `exempt`)
+pub fn harness_module(module: &str) -> bool {
+    module.strip_prefix(HARNESS_FOLDER).is_some_and(|rest| rest.is_empty() || rest.starts_with('.')) || module.starts_with("rur.") || module.starts_with("ree.")
+}
+
+/// The phases the summary reports, as indices into the run's phases: `--profile-phase a,b`, or `all`; by default
+/// `steady` when the run marked one, else every phase. Names the run never marked are skipped; when none is left, every
+/// phase.
+fn reported_phases(chosen: Option<&str>, phases: &[String]) -> Vec<u32> {
+    let every: Vec<u32> = (0..phases.len().max(1) as u32).collect();
+    let picked: Vec<u32> = match chosen.map(str::trim) {
+        Some("all") => return every,
+        Some(names) => names.split(',').filter_map(|name| phases.iter().position(|phase| phase == name.trim())).map(|index| index as u32).collect(),
+        None => phases.iter().position(|phase| phase == "steady").map(|index| vec![index as u32]).unwrap_or_default(),
+    };
+    if picked.is_empty() { every } else { picked }
+}
+
 /// Names of functions by id: Luau functions, C functions and the engine's steps
 struct Names<'a> {
     vm: Option<&'a vm::Results>,
@@ -126,6 +151,11 @@ impl Names<'_> {
     fn engine(&self, id: i32) -> bool {
         self.function(id).is_some_and(vm::Function::exempt)
     }
+
+    /// A Luau function of the harness's own code ([`harness_module`])
+    fn harness(&self, id: i32) -> bool {
+        self.function(id).is_some_and(|f| !f.exempt() && harness_module(module_name(&f.source)))
+    }
 }
 
 /// Per-function figures
@@ -142,6 +172,21 @@ struct Figures {
     total_alloc: f64,
     self_allocs: f64,
     total_allocs: f64,
+    /// As a function Luau's `-O2` inlined into others: the times a copy was entered, and the instructions and work on its
+    /// own lines there (the callers' figures, as the VM ran them)
+    inlined_calls: u64,
+    inlined_insns: u64,
+    inlined_work: f64,
+}
+
+/// A function's copies inlined into one caller (the caller, or the function whose copy holds them)
+#[derive(Clone, Copy, Debug, Default)]
+struct Inlined {
+    copies: u64,
+    calls: u64,
+    /// Instructions and work in the copies, the copies inside them included
+    insns: u64,
+    work: f64,
 }
 
 /// Per-line figures (a function's line)
@@ -158,21 +203,31 @@ struct LineFigures {
     ops: BTreeMap<u8, u64>,
 }
 
+#[derive(Default)]
 struct Model {
     functions: FxHashMap<i32, Figures>,
     lines: FxHashMap<(i32, i32), LineFigures>,
     /// (caller, callee) -> (calls, total work, total instructions)
     edges: FxHashMap<(i32, i32), (u64, f64, u64)>,
+    /// (caller, inlined function) -> its copies there
+    inlined: FxHashMap<(i32, i32), Inlined>,
+    /// (function, line) -> the function whose inlined copy the line's instructions are
+    line_inlined: FxHashMap<(i32, i32), i32>,
     /// Per-node subtree totals (work, instructions)
     subtree: Vec<(f64, u64)>,
     /// The phase each node is under
     node_phase: Vec<u32>,
+    /// (function, phase, the harness's side) -> self work, calls and self instructions there. A node is on the side of
+    /// its nearest Luau function that is not the engine's own: a C function or the engine's Luau is its caller's.
+    phase_self: FxHashMap<(i32, u32, bool), (f64, u64, u64)>,
+    /// (function, phase, the harness's side) -> total work there (a function's outermost node on its path)
+    phase_total: FxHashMap<(i32, u32, bool), f64>,
 }
 
 /// The call tree's per-function and per-line figures, and its edges
 fn tree_model(vm: &vm::Results) -> Model {
     let nodes = &vm.nodes;
-    let mut model = Model { functions: FxHashMap::default(), lines: FxHashMap::default(), edges: FxHashMap::default(), subtree: vec![(0.0, 0); nodes.len()], node_phase: vec![0; nodes.len()] };
+    let mut model = Model { subtree: vec![(0.0, 0); nodes.len()], node_phase: vec![0; nodes.len()], ..Model::default() };
     // phases: a node under the root with function -1 is a phase's
     for (index, node) in nodes.iter().enumerate() {
         model.node_phase[index] = if node.function == -1 && node.parent == 0 && index != 0 {
@@ -181,6 +236,19 @@ fn tree_model(vm: &vm::Results) -> Model {
             model.node_phase[node.parent as usize]
         } else {
             0
+        };
+    }
+    // the harness's side: a node's own Luau function's module, else its parent's (a parent comes before its children).
+    // The engine's own Luau and mlua's (`__mlua_index`, which runs when a script indexes userdata) work for their caller.
+    let mut harness_side = vec![false; nodes.len()];
+    for (index, node) in nodes.iter().enumerate() {
+        let own = (node.function >= 0)
+            .then(|| vm.functions.get(node.function as usize))
+            .flatten()
+            .filter(|f| !f.exempt() && !module_name(&f.source).starts_with("__mlua"));
+        harness_side[index] = match own {
+            Some(function) => harness_module(module_name(&function.source)),
+            None => node.parent >= 0 && harness_side[node.parent as usize],
         };
     }
     for index in (0..nodes.len()).rev() {
@@ -198,6 +266,11 @@ fn tree_model(vm: &vm::Results) -> Model {
         if !real(node.function) {
             continue;
         }
+        let scoped = (node.function, model.node_phase[index], harness_side[index]);
+        let in_phase = model.phase_self.entry(scoped).or_default();
+        in_phase.0 += node.work;
+        in_phase.1 += node.calls;
+        in_phase.2 += node.insns;
         let figures = model.functions.entry(node.function).or_default();
         figures.calls += node.calls;
         figures.self_insns += node.insns;
@@ -215,6 +288,7 @@ fn tree_model(vm: &vm::Results) -> Model {
         if !nested {
             figures.total_work += model.subtree[index].0;
             figures.total_insns += model.subtree[index].1;
+            *model.phase_total.entry(scoped).or_default() += model.subtree[index].0;
         }
         if node.parent >= 0 {
             let parent = &nodes[node.parent as usize];
@@ -251,7 +325,57 @@ fn tree_model(vm: &vm::Results) -> Model {
             }
         }
     }
+    inlined_model(vm, &mut model);
     model
+}
+
+/// The copies of functions `-O2` inlined into others: each inlined function's calls (entries into its copies), and the
+/// instructions and work on its own lines in them; per caller, the same with the copies inside included
+fn inlined_model(vm: &vm::Results, model: &mut Model) {
+    for (id, function) in vm.functions.iter().enumerate() {
+        if function.inlines.is_empty() {
+            continue;
+        }
+        let caller_of = |copy: &vm::Inline| if copy.parent >= 0 { function.inlines.get(copy.parent as usize).map_or(id as i32, |holder| holder.function) } else { id as i32 };
+        let mut innermost = vec![-1i32; function.code.len()];
+        for (index, copy) in function.inlines.iter().enumerate() {
+            model.functions.entry(copy.function).or_default().inlined_calls += copy.entries;
+            let edge = model.inlined.entry((caller_of(copy), copy.function)).or_default();
+            edge.copies += 1;
+            edge.calls += copy.entries;
+            // (a copy comes after the one it sits in: the innermost is written last)
+            for pc in copy.first_pc.max(0)..=copy.last_pc {
+                if let Some(slot) = innermost.get_mut(pc as usize) {
+                    *slot = index as i32;
+                }
+            }
+        }
+        for (pc, &copy) in innermost.iter().enumerate() {
+            if copy < 0 {
+                continue;
+            }
+            let inline = function.inlines[copy as usize];
+            if let Some(&line) = function.lines.get(pc) {
+                model.line_inlined.insert((id as i32, line), inline.function);
+            }
+            let count = function.counts.get(pc).copied().unwrap_or(0);
+            let work = function.work.get(pc).copied().unwrap_or(0.0);
+            if count == 0 && work == 0.0 {
+                continue;
+            }
+            let figures = model.functions.entry(inline.function).or_default();
+            figures.inlined_insns += count;
+            figures.inlined_work += work;
+            let mut at = copy;
+            while at >= 0 {
+                let holder = function.inlines[at as usize];
+                let edge = model.inlined.entry((caller_of(&holder), holder.function)).or_default();
+                edge.insns += count;
+                edge.work += work;
+                at = holder.parent;
+            }
+        }
+    }
 }
 
 /// Stack samples (innermost first) folded into per-function and per-line self and total figures
@@ -331,7 +455,7 @@ pub fn write(input: &Input) -> Result<String, String> {
     let out = &input.config.out;
     std::fs::create_dir_all(out).map_err(|error| format!("--profile-out {}: {error}", out.display()))?;
     let names = Names { vm: input.vm, steps: ENGINE_STEPS.with(|steps| steps.borrow().clone()), outside: OUTSIDE.with(|outside| outside.borrow().clone()) };
-    let mut model = input.vm.map(tree_model).unwrap_or(Model { functions: FxHashMap::default(), lines: FxHashMap::default(), edges: FxHashMap::default(), subtree: Vec::new(), node_phase: Vec::new() });
+    let mut model = input.vm.map(tree_model).unwrap_or_default();
 
     // host time samples (ms: a tick is a millisecond) and allocations (bytes) into the same model
     let mut time_total = 0.0;
@@ -362,13 +486,44 @@ pub fn write(input: &Input) -> Result<String, String> {
             "seconds": input.run.seconds, "fps": input.run.fps, "elapsed": input.elapsed,
         },
         "phases": input.phases,
-        "marks": input.marks.iter().map(|mark| json!({"phase": mark.phase, "frame": mark.frame, "seconds": mark.seconds, "work_ms": ms(mark.work)})).collect::<Vec<_>>(),
+        "marks": input.marks.iter().map(mark_json).collect::<Vec<_>>(),
+        "end": input.end.map(mark_json),
         "warnings": input.warnings,
     });
 
     // functions: every one with figures, keyed so a diff finds it again
     let mut function_rows: Vec<(i32, Figures)> = model.functions.iter().map(|(&id, figures)| (id, *figures)).collect();
     function_rows.sort_by(|a, b| b.1.self_work.total_cmp(&a.1.self_work).then(b.1.total_time.total_cmp(&a.1.total_time)).then(b.1.total_alloc.total_cmp(&a.1.total_alloc)).then(a.0.cmp(&b.0)));
+    // each inlined function's callers, most work first
+    let mut inlined_into: FxHashMap<i32, Vec<(i32, Inlined)>> = FxHashMap::default();
+    for (&(caller, callee), inlined) in &model.inlined {
+        inlined_into.entry(callee).or_default().push((caller, *inlined));
+    }
+    for callers in inlined_into.values_mut() {
+        callers.sort_by(|a, b| b.1.work.total_cmp(&a.1.work).then(b.1.calls.cmp(&a.1.calls)).then(a.0.cmp(&b.0)));
+    }
+    // each function's figures per phase: [self work, total work, calls, self instructions, self work on the harness's side]
+    let phase_name = |phase: u32| input.phases.get(phase as usize).cloned().unwrap_or_else(|| "startup".to_string());
+    let mut by_phase: FxHashMap<i32, BTreeMap<u32, [f64; 5]>> = FxHashMap::default();
+    for (&(id, phase, harness), &(work, calls, insns)) in &model.phase_self {
+        let figures = by_phase.entry(id).or_default().entry(phase).or_default();
+        figures[0] += work;
+        figures[2] += calls as f64;
+        figures[3] += insns as f64;
+        if harness {
+            figures[4] += work;
+        }
+    }
+    for (&(id, phase, _), &total) in &model.phase_total {
+        by_phase.entry(id).or_default().entry(phase).or_default()[1] += total;
+    }
+    // the phases the summary reports, and their self work on each side
+    let scope = reported_phases(input.config.phases.as_deref(), input.phases);
+    let (game_self, harness_self) = model
+        .phase_self
+        .iter()
+        .filter(|((_, phase, _), _)| scope.contains(phase))
+        .fold((0.0, 0.0), |(game, harness), ((_, _, side), figures)| if *side { (game, harness + figures.0) } else { (game + figures.0, harness) });
     let function_json = |id: i32, figures: &Figures| -> Json {
         let function = names.function(id);
         json!({
@@ -380,14 +535,33 @@ pub fn write(input: &Input) -> Result<String, String> {
             "last_line": function.and_then(|f| f.lines.iter().copied().max()),
             "kind": match function { Some(f) if f.exempt() => "engine Luau", Some(_) => "Luau", None if id <= ENGINE_STEP_BASE => "engine step", None => "C" },
             "native": function.is_some_and(vm::Function::native),
+            // (the harness's own code, under HARNESS_FOLDER)
+            "harness": names.harness(id),
+            // (per phase; harness_self_work_ms is the part done for the harness's code: all of a harness function's, a C
+            // function's or the engine's Luau when the harness called it)
+            "phases": by_phase.get(&id).map(|phases| phases.iter().map(|(phase, f)| (phase_name(*phase), json!({
+                "self_work_ms": ms(f[0]), "total_work_ms": ms(f[1]), "calls": f[2] as u64, "insns": f[3] as u64, "harness_self_work_ms": ms(f[4]),
+            }))).collect::<serde_json::Map<_, _>>()),
             "native_entries": function.map_or(0, |f| f.native_entries),
             "native_work_ms": function.map_or(0.0, |f| ms(f.native_work)),
             "calls": figures.calls,
             "self": {"insns": figures.self_insns, "work_ms": ms(figures.self_work), "time_ms": figures.self_time, "alloc_bytes": figures.self_alloc.round(), "allocs": figures.self_allocs.round()},
             "total": {"insns": figures.total_insns, "work_ms": ms(figures.total_work), "time_ms": figures.total_time, "alloc_bytes": figures.total_alloc.round(), "allocs": figures.total_allocs.round()},
+            // (inlined by -O2 into the functions in `into`: its calls through those copies, and the instructions and work on
+            // its own lines there, which are also theirs)
+            "inlined": inlined_into.get(&id).map(|callers| json!({
+                "calls": figures.inlined_calls, "insns": figures.inlined_insns, "work_ms": ms(figures.inlined_work),
+                "into": callers.iter().map(|(caller, inlined)| json!({"function": caller, "copies": inlined.copies, "calls": inlined.calls, "insns": inlined.insns, "work_ms": ms(inlined.work)})).collect::<Vec<_>>(),
+            })),
         })
     };
     json["functions"] = Json::Array(function_rows.iter().map(|(id, figures)| function_json(*id, figures)).collect());
+    json["scope"] = json!({
+        "phases": scope.iter().map(|phase| phase_name(*phase)).collect::<Vec<_>>(),
+        "game_self_ms": ms(game_self),
+        "harness_self_ms": ms(harness_self),
+        "harness_folder": HARNESS_FOLDER,
+    });
 
     // lines (with their opcodes)
     let mut line_rows: Vec<(&(i32, i32), &LineFigures)> = model.lines.iter().collect();
@@ -400,6 +574,7 @@ pub fn write(input: &Input) -> Result<String, String> {
                     "function": function, "line": line, "insns": figures.insns, "work_ms": ms(figures.work), "total_work_ms": ms(figures.total_work),
                     "total_insns": figures.total_insns, "time_ms": figures.time, "total_time_ms": figures.total_time, "alloc_bytes": figures.alloc.round(), "allocs": figures.allocs.round(),
                     "ops": figures.ops.iter().map(|(op, count)| (vm::opcode_name(*op).to_string(), json!(count))).collect::<serde_json::Map<_, _>>(),
+                    "inlined": model.line_inlined.get(&(*function, *line)),
                 })
             })
             .collect(),
@@ -407,7 +582,12 @@ pub fn write(input: &Input) -> Result<String, String> {
     json["edges"] = Json::Array({
         let mut edges: Vec<_> = model.edges.iter().collect();
         edges.sort_by(|a, b| b.1.1.total_cmp(&a.1.1).then(a.0.cmp(b.0)));
-        edges.iter().map(|((caller, callee), (calls, work, insns))| json!({"caller": caller, "callee": callee, "calls": calls, "work_ms": ms(*work), "insns": insns})).collect()
+        let mut rows: Vec<Json> = edges.iter().map(|((caller, callee), (calls, work, insns))| json!({"caller": caller, "callee": callee, "calls": calls, "work_ms": ms(*work), "insns": insns})).collect();
+        // (calls -O2 compiled into the caller: entries into the callee's copies there)
+        let mut inlined: Vec<_> = model.inlined.iter().collect();
+        inlined.sort_by(|a, b| b.1.work.total_cmp(&a.1.work).then(a.0.cmp(b.0)));
+        rows.extend(inlined.iter().map(|((caller, callee), inlined)| json!({"caller": caller, "callee": callee, "calls": inlined.calls, "work_ms": ms(inlined.work), "insns": inlined.insns, "inlined": true, "copies": inlined.copies})));
+        rows
     });
 
     // the call tree for the flame graph: [parent, function, calls, self work in us, self instructions, label]
@@ -454,7 +634,14 @@ pub fn write(input: &Input) -> Result<String, String> {
         let total_work: f64 = vm_results.nodes.iter().map(|node| node.work).sum::<f64>() + vm_results.engine_work;
         let script_insns: u64 = vm_results.functions.iter().filter(|f| !f.exempt()).flat_map(|f| f.counts.iter()).sum();
         let engine_insns: u64 = vm_results.functions.iter().filter(|f| f.exempt()).flat_map(|f| f.counts.iter()).sum();
-        let natives: Vec<&vm::Function> = vm_results.functions.iter().filter(|f| f.native() && !f.exempt()).collect();
+        // (the ones seen running: entered, booked to, or in a frame; the profile also registers a chunk's functions unrun)
+        let natives: Vec<&vm::Function> = vm_results
+            .functions
+            .iter()
+            .enumerate()
+            .filter(|(id, f)| f.native() && !f.exempt() && (f.native_entries > 0 || f.native_work != 0.0 || model.functions.contains_key(&(*id as i32))))
+            .map(|(_, f)| f)
+            .collect();
         let mut opcodes: BTreeMap<u8, (u64, f64)> = BTreeMap::new();
         for function in vm_results.functions.iter().filter(|f| !f.exempt()) {
             for (pc, &count) in function.counts.iter().enumerate() {
@@ -515,23 +702,95 @@ pub fn write(input: &Input) -> Result<String, String> {
             }
             let _ = writeln!(summary, "phases' work: {}", parts.join("; "));
         }
+        // the tables below cover the reported phases (--profile-phase) and the game's code; the harness's comes apart
+        let every_phase = scope.len() >= input.phases.len().max(1);
+        let scope_label = if every_phase {
+            "every phase".to_string()
+        } else {
+            format!("{} {}", if scope.len() == 1 { "phase" } else { "phases" }, scope.iter().map(|phase| phase_name(*phase)).collect::<Vec<_>>().join(", "))
+        };
+        let _ = writeln!(
+            summary,
+            "reported below: {scope_label}: the game's code {:.2} ms, the harness's code {:.2} ms of self work (the harness's is its code under {HARNESS_FOLDER} and what that called; --profile-phase picks phases, or all)",
+            ms(game_self),
+            ms(harness_self)
+        );
+        // one side's functions in the reported phases: (id, self work, total work, calls, self instructions)
+        let side_rows = |harness: bool| -> Vec<(i32, f64, f64, u64, u64)> {
+            let mut rows: FxHashMap<i32, (f64, f64, u64, u64)> = FxHashMap::default();
+            for (&(id, phase, side), &(work, calls, insns)) in &model.phase_self {
+                if side == harness && scope.contains(&phase) && !names.engine(id) {
+                    let row = rows.entry(id).or_default();
+                    row.0 += work;
+                    row.2 += calls;
+                    row.3 += insns;
+                }
+            }
+            for (&(id, phase, side), &total) in &model.phase_total {
+                if side == harness && scope.contains(&phase) && !names.engine(id) {
+                    rows.entry(id).or_default().1 += total;
+                }
+            }
+            let mut rows: Vec<(i32, f64, f64, u64, u64)> = rows.into_iter().map(|(id, (work, total, calls, insns))| (id, work, total, calls, insns)).collect();
+            rows.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+            rows
+        };
+        let (game_rows, harness_rows) = (side_rows(false), side_rows(true));
         let top = input.config.top;
-        let _ = writeln!(summary, "\ntop functions by self work (ms of Studio time; total includes callees)");
+        let _ = writeln!(summary, "\ntop functions by self work: the game's code, {scope_label} (ms of Studio time; total includes callees)");
         let _ = writeln!(summary, "{:>9} {:>9} {:>10} {:>12}  function", "self ms", "total ms", "calls", "insns");
         // (rows that print as zero are left out)
-        for (id, figures) in function_rows.iter().filter(|(id, figures)| figures.self_work >= 5e-7 && !names.engine(*id)).take(top) {
-            let _ = writeln!(summary, "{:>9.3} {:>9.3} {:>10} {:>12}  {}", ms(figures.self_work), ms(figures.total_work), group_digits(figures.calls), group_digits(figures.self_insns), names.label(*id));
+        for (id, work, total, calls, insns) in game_rows.iter().filter(|row| row.1 >= 5e-7).take(top) {
+            let _ = writeln!(summary, "{:>9.3} {:>9.3} {:>10} {:>12}  {}", ms(*work), ms(*total), group_digits(*calls), group_digits(*insns), names.label(*id));
         }
-        let mut by_total: Vec<&(i32, Figures)> = function_rows.iter().filter(|(id, _)| *id >= 0 && !names.engine(*id)).collect();
-        by_total.sort_by(|a, b| b.1.total_work.total_cmp(&a.1.total_work));
-        let _ = writeln!(summary, "\ntop functions by total work");
+        let mut by_total: Vec<&(i32, f64, f64, u64, u64)> = game_rows.iter().filter(|row| row.0 >= 0).collect();
+        by_total.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
+        let _ = writeln!(summary, "\ntop functions by total work: the game's code, {scope_label}");
         let _ = writeln!(summary, "{:>9} {:>9} {:>10}  function", "total ms", "self ms", "calls");
-        for (id, figures) in by_total.iter().filter(|(_, figures)| figures.total_work >= 5e-7).take(top.min(12)) {
-            let _ = writeln!(summary, "{:>9.3} {:>9.3} {:>10}  {}", ms(figures.total_work), ms(figures.self_work), group_digits(figures.calls), names.label(*id));
+        for (id, work, total, calls, _) in by_total.iter().filter(|row| row.2 >= 5e-7).take(top.min(12)) {
+            let _ = writeln!(summary, "{:>9.3} {:>9.3} {:>10}  {}", ms(*total), ms(*work), group_digits(*calls), names.label(*id));
         }
-        let _ = writeln!(summary, "\ntop lines by self work");
+        let harness_rows: Vec<&(i32, f64, f64, u64, u64)> = harness_rows.iter().filter(|row| row.1 >= 5e-7).collect();
+        if !harness_rows.is_empty() {
+            let _ = writeln!(summary, "\nthe harness's code, {scope_label}: {:.3} ms of self work, left out of the tables above", ms(harness_self));
+            let _ = writeln!(summary, "{:>9} {:>9} {:>10}  function", "self ms", "total ms", "calls");
+            for (id, work, total, calls, _) in harness_rows.iter().take(top.min(8)) {
+                let _ = writeln!(summary, "{:>9.3} {:>9.3} {:>10}  {}", ms(*work), ms(*total), group_digits(*calls), names.label(*id));
+            }
+        }
+        // functions -O2 inlined: no frame of theirs runs there, so the tables above count only their other calls
+        let mut inlined: Vec<&(i32, Figures)> = function_rows.iter().filter(|(id, _)| inlined_into.contains_key(id) && !names.engine(*id) && !names.harness(*id)).collect();
+        if !inlined.is_empty() {
+            inlined.sort_by(|a, b| b.1.inlined_work.total_cmp(&a.1.inlined_work).then(b.1.inlined_calls.cmp(&a.1.inlined_calls)).then(a.0.cmp(&b.0)));
+            let _ = writeln!(
+                summary,
+                "\ninlined functions (Luau's -O2 compiled their bodies into their callers: a call is counted where a copy was entered; the instructions and work are on their own lines in the callers, counted there too)"
+            );
+            let _ = writeln!(summary, "{:>10} {:>10} {:>12} {:>9}  function  (inlined into)", "inlined", "called", "insns", "work ms");
+            for (id, figures) in inlined.iter().take(top) {
+                let into: Vec<String> = inlined_into[id]
+                    .iter()
+                    .take(3)
+                    .map(|(caller, copies)| format!("{} ({} {})", names.label(*caller).replace("  ", " "), copies.copies, if copies.copies == 1 { "copy" } else { "copies" }))
+                    .collect();
+                let more = inlined_into[id].len().saturating_sub(into.len());
+                let _ = writeln!(
+                    summary,
+                    "{:>10} {:>10} {:>12} {:>9.3}  {}  ({}{})",
+                    group_digits(figures.inlined_calls),
+                    group_digits(figures.calls),
+                    group_digits(figures.inlined_insns),
+                    ms(figures.inlined_work),
+                    names.label(*id),
+                    into.join(", "),
+                    if more > 0 { format!(", {more} more") } else { String::new() }
+                );
+            }
+        }
+        // (a line's figures are counted per instruction for the whole run, not per phase)
+        let _ = writeln!(summary, "\ntop lines by self work: the game's code, {}", if every_phase { "every phase" } else { "every phase (lines are not counted per phase)" });
         let _ = writeln!(summary, "{:>9} {:>11} {:>12}  line  (opcodes)", "self ms", "total ms", "insns");
-        for ((function, line), figures) in line_rows.iter().filter(|(key, figures)| figures.work >= 5e-7 && !names.engine(key.0)).take(top) {
+        for ((function, line), figures) in line_rows.iter().filter(|(key, figures)| figures.work >= 5e-7 && !names.engine(key.0) && !names.harness(key.0)).take(top) {
             let ops: Vec<String> = {
                 let mut ops: Vec<_> = figures.ops.iter().collect();
                 ops.sort_by(|a, b| b.1.cmp(a.1));
@@ -653,9 +912,52 @@ pub fn write(input: &Input) -> Result<String, String> {
                 "type": allocations.types.names[*ty as usize], "bytes": amount.bytes.round(), "count": amount.count.round(),
             })).collect::<Vec<_>>(),
         });
+        // tables that rehashed to grow: by the line that made them rehash and the site that made the table
+        let total = &allocations.rehashes;
+        if total.events > 0 {
+            let _ = writeln!(
+                summary,
+                "table rehashes: {} ({} grew the table), {} keys moved; by scripts' own instructions {} rehashes, {} keys",
+                group_digits(total.events),
+                group_digits(total.grew),
+                group_digits(total.keys),
+                group_digits(total.script_events),
+                group_digits(total.script_keys)
+            );
+            let mut rows: Vec<(&(u32, u32, u32), &memory::Rehash)> = allocations.rehash.iter().collect();
+            rows.sort_by(|a, b| b.1.keys.cmp(&a.1.keys).then(b.1.events.cmp(&a.1.events)).then(a.0.cmp(b.0)));
+            let _ = writeln!(summary, "{:>10} {:>12}  rehashed at  (the table made at)", "rehashes", "keys moved");
+            for ((_, stack, made), rehash) in rows.iter().filter(|(key, _)| key.1 != memory::NO_STACK).take(input.config.top.min(10)) {
+                let made = if *made == memory::NO_STACK { "not followed".to_string() } else { describe(*made) };
+                let _ = writeln!(summary, "{:>10} {:>12}  {}  ({made})", group_digits(rehash.events), group_digits(rehash.keys), describe(*stack));
+            }
+            let frames = |stack: u32| -> Json {
+                if stack == memory::NO_STACK { Json::Null } else { Json::Array(allocations.stacks.stacks[stack as usize].iter().map(|&(f, l)| json!([f, l])).collect()) }
+            };
+            json["alloc"]["rehash"] = json!({
+                "events": total.events, "keys": total.keys, "script_events": total.script_events, "script_keys": total.script_keys, "grew": total.grew,
+                "bytes_before": total.bytes_before, "bytes_after": total.bytes_after,
+                "sites": rows.iter().take(500).map(|((phase, stack, made), rehash)| json!({
+                    "phase": input.phases.get(*phase as usize), "frames": frames(*stack), "table_frames": frames(*made),
+                    "events": rehash.events, "keys": rehash.keys, "script_events": rehash.script_events, "script_keys": rehash.script_keys,
+                    "grew": rehash.grew, "bytes_before": rehash.bytes_before, "bytes_after": rehash.bytes_after,
+                })).collect::<Vec<_>>(),
+            });
+        }
     }
 
     // heap snapshots and the collector
+    // (each table site's rehashes over the run: (rehashes, keys moved) by the stack that made the tables)
+    let mut rehash_by_site: FxHashMap<u32, (u64, u64)> = FxHashMap::default();
+    if let Some(allocations) = input.allocations {
+        for (&(_, _, made), rehash) in &allocations.rehash {
+            if made != memory::NO_STACK {
+                let entry = rehash_by_site.entry(made).or_default();
+                entry.0 += rehash.events;
+                entry.1 += rehash.keys;
+            }
+        }
+    }
     if !input.snapshots.is_empty() {
         let last = input.snapshots.last().unwrap();
         let _ = writeln!(
@@ -684,6 +986,52 @@ pub fn write(input: &Input) -> Result<String, String> {
                 input.snapshots.iter().map(|s| format!("{} {} (+{})", s.label, bytes(s.reachable.1 as f64), bytes(s.unswept.1 as f64))).collect::<Vec<_>>().join(" -> ")
             );
         }
+        // the reachable tables' shapes by the site that made them
+        let tables = &last.tables;
+        if tables.count > 0 {
+            let whole = tables.bytes.max(1) as f64;
+            let _ = writeln!(
+                summary,
+                "  tables at {}: {} reachable, {} (the tables {}, array parts {}, hash parts {}); the run's own by the site that made them:",
+                last.label,
+                group_digits(tables.count),
+                bytes(tables.bytes as f64),
+                percent(tables.header_bytes as f64, whole),
+                percent(tables.array_bytes as f64, whole),
+                percent(tables.hash_bytes as f64, whole)
+            );
+            let _ = writeln!(summary, "  {:>9} {:>10} {:>8} {:>16} {:>16} {:>6}  site", "tables", "bytes", "each", "array slots", "hash nodes", "levels");
+            let site_of = |stack: u32| -> String {
+                let Some(allocations) = input.allocations else { return String::new() };
+                let frames = &allocations.stacks.stacks[stack as usize];
+                let luau: Vec<String> = frames.iter().filter(|frame| frame.0 >= 0 && !names.engine(frame.0)).take(3).map(|&(function, line)| {
+                    let module = names.function(function).map_or(String::new(), |f| short_module(module_name(&f.source)).to_string());
+                    format!("{module}:{line}")
+                }).collect();
+                if luau.is_empty() { "(engine)".into() } else { luau.join(" < ") }
+            };
+            let shape = |distribution: &memory::Distribution| -> String {
+                if distribution.min == distribution.max {
+                    format!("{} ({})", group_digits(distribution.min as u64), group_digits(distribution.used))
+                } else {
+                    format!("{}-{} ({})", group_digits(distribution.min as u64), group_digits(distribution.max as u64), group_digits(distribution.used))
+                }
+            };
+            for site in tables.sites.iter().take(input.config.top.min(8)) {
+                let levels = if site.levels.min == site.levels.max { site.levels.min.to_string() } else { format!("{}-{}", site.levels.min, site.levels.max) };
+                let _ = writeln!(
+                    summary,
+                    "  {:>9} {:>10} {:>8} {:>16} {:>16} {:>6}  {}",
+                    group_digits(site.count.round() as u64),
+                    bytes(site.bytes),
+                    bytes(site.bytes / site.count.max(1e-9)),
+                    shape(&site.array),
+                    shape(&site.hash),
+                    levels,
+                    site_of(site.stack)
+                );
+            }
+        }
         let collector = input.collector;
         let _ = writeln!(
             summary,
@@ -707,6 +1055,22 @@ pub fn write(input: &Input) -> Result<String, String> {
                 "by_stack": snapshot.by_stack.iter().take(300).map(|(stack, ty, count, size)| json!({
                     "frames": input.allocations.map(|allocations| allocations.stacks.stacks[*stack as usize].iter().map(|&(f, l)| json!([f, l])).collect::<Vec<_>>()),
                     "type": ty, "count": count.round(), "bytes": size.round()})).collect::<Vec<_>>(),
+                "tables": {
+                    "count": snapshot.tables.count, "bytes": snapshot.tables.bytes, "header_bytes": snapshot.tables.header_bytes,
+                    "array_bytes": snapshot.tables.array_bytes, "hash_bytes": snapshot.tables.hash_bytes,
+                    "sizes": {"table": snapshot.tables.sizes.0, "slot": snapshot.tables.sizes.1, "node": snapshot.tables.sizes.2},
+                    "sites": snapshot.tables.sites.iter().take(300).map(|site| {
+                        let (events, keys) = rehash_by_site.get(&site.stack).copied().unwrap_or((0, 0));
+                        json!({
+                            "phase": input.phases.get(site.phase as usize),
+                            "frames": input.allocations.map(|allocations| allocations.stacks.stacks[site.stack as usize].iter().map(|&(f, l)| json!([f, l])).collect::<Vec<_>>()),
+                            "count": site.count.round(), "bytes": site.bytes.round(), "header_bytes": site.header_bytes.round(),
+                            "array_bytes": site.array_bytes.round(), "hash_bytes": site.hash_bytes.round(),
+                            "array": distribution_json(&site.array), "hash": distribution_json(&site.hash), "levels": levels_json(&site.levels),
+                            "rehashes": events, "rehash_keys": keys,
+                        })
+                    }).collect::<Vec<_>>(),
+                },
             })).collect::<Vec<_>>(),
             "gc": {"cycles": collector.cycles, "steps": collector.steps, "freed": collector.freed, "ms": ms(collector.seconds),
                 "by_state": memory::GC_STATES.iter().zip(collector.by_state.iter()).map(|(state, (steps, seconds))| json!({"state": state, "steps": steps, "ms": ms(*seconds)})).collect::<Vec<_>>()},
@@ -805,6 +1169,10 @@ pub fn write(input: &Input) -> Result<String, String> {
             listed.push(*id);
         }
     }
+    // (and the inlined functions with the most work in their copies: the page shows it on their own lines)
+    let mut inlined_hot: Vec<&(i32, Figures)> = function_rows.iter().filter(|(id, figures)| *id >= 0 && figures.inlined_work > 0.0 && !listed.contains(id) && !names.engine(*id)).collect();
+    inlined_hot.sort_by(|a, b| b.1.inlined_work.total_cmp(&a.1.inlined_work).then(a.0.cmp(&b.0)));
+    listed.extend(inlined_hot.iter().take(6).map(|(id, _)| *id));
     let mut listings = serde_json::Map::new();
     for id in &listed {
         if let Some(function) = names.function(*id) {
@@ -878,6 +1246,44 @@ pub fn write(input: &Input) -> Result<String, String> {
     Ok(summary)
 }
 
+/// A mark with its running counts (a phase's figures are the difference between two marks')
+fn mark_json(mark: &Mark) -> Json {
+    let mut json = json!({"phase": mark.phase, "frame": mark.frame, "seconds": mark.seconds, "work_ms": ms(mark.work), "host_ms": mark.host * 1e3, "cycles": mark.cycles});
+    if let Some(totals) = &mark.totals {
+        json["insns"] = json!(totals.insns);
+        json["vm"] = json!({
+            "objects": totals.objects, "allocated": totals.allocated, "stored": totals.stored, "rehashed": totals.rehashed,
+            "cold_tables": totals.cold_tables, "cold_closures": totals.cold_closures, "cold_protos": totals.cold_protos, "cold_code": totals.cold_code,
+        });
+        if let (Some(bytes), Some(count)) = (totals.alloc_bytes, totals.allocs) {
+            json["alloc_bytes"] = json!(bytes);
+            json["allocs"] = json!(count);
+        }
+        if let Some((events, keys, script_events, script_keys)) = totals.rehashes {
+            json["rehashes"] = json!(events);
+            json["rehash_keys"] = json!(keys);
+            json["script_rehashes"] = json!(script_events);
+            json["script_rehash_keys"] = json!(script_keys);
+        }
+        json["gc"] = json!({"steps": totals.gc.0, "cycles": totals.gc.1, "freed": totals.gc.2, "ms": ms(totals.gc.3)});
+        if let Some(caches) = &totals.caches {
+            json["caches"] = Json::Object(vm::CACHE_KINDS.iter().zip(caches.iter()).map(|(kind, outcomes)| (kind.to_string(), json!(outcomes))).collect());
+        }
+    }
+    json
+}
+
+/// A distribution of a table part's size: its slots, those holding a value, the least, median and greatest part, and how
+/// many tables fall in each power-of-two bucket
+fn distribution_json(distribution: &memory::Distribution) -> Json {
+    json!({"slots": distribution.total, "used": distribution.used, "min": distribution.min, "median": distribution.median, "max": distribution.max, "hist": distribution.hist})
+}
+
+/// A distribution of nesting levels
+fn levels_json(distribution: &memory::Distribution) -> Json {
+    json!({"min": distribution.min, "median": distribution.median, "max": distribution.max, "hist": distribution.hist})
+}
+
 /// `1.23G`, `45.6M`, `789K` (whole numbers below ten thousand)
 fn compact(value: u64) -> String {
     let value = value as f64;
@@ -940,8 +1346,13 @@ fn counters(input: &Input, hw: &hw::Report, names: &Names, summary: &mut String,
     if hw.matched + 2 < hw.readings {
         let _ = writeln!(summary, "  warning: {} of {} readings found no switch of their own: their windows were merged into the next ones", hw.readings - hw.matched, hw.readings);
     }
-    if hw.lost_events > 0 || hw.lost_buffers > 0 || hw.without_counters > 0 {
-        let _ = writeln!(summary, "  warning: the trace session lost {} events and {} buffers; {} switches came without counter values: some counts are missing", group_digits(hw.lost_events as u64), group_digits(hw.lost_buffers as u64), group_digits(hw.without_counters));
+    if hw.lost_events > 0 || hw.lost_buffers > 0 {
+        let _ = writeln!(summary, "  warning: the trace session lost {} events and {} buffers: some of the threads' stretches are missing", group_digits(hw.lost_events as u64), group_digits(hw.lost_buffers as u64));
+    }
+    // (a switch without values matters where it cost a reading its switch, which the readings' warning says; a service
+    // before this one also counted every CPU's switches from before its counters were set)
+    if hw.without_counters > 0 {
+        let _ = writeln!(summary, "  note: {} context switches came without counter values", group_digits(hw.without_counters));
     }
     for note in &hw.notes {
         let _ = writeln!(summary, "  note: {note}");

@@ -1,0 +1,15 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+encode-depth 300
+encode-dict-depth 300
+encode-depth-from-deeper 300
+decode-convert-depth 401
+decode-parse-depth 1024
+decode-dict-convert-depth 400
+decode-table true table same=false #0
+decode-dict true table same=false
+decode-instance false string Can't parse JSON
+decode-vector3 false string Can't parse JSON
+decode-function false string Can't parse JSON
+decode-false true boolean false
+decode-string-number true number 5

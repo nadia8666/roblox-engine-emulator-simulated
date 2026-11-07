@@ -578,6 +578,11 @@ fn compute_default(reflection: &Reflection, class: ClassId, name: NameId) -> Opt
             ancestor = ancestor_info.superclass;
         }
     }
+    // (a class whose defaults record no Name is named after itself, not the empty string a string property's zero is:
+    // Player, the services and the abstract classes)
+    if value.is_none() && name == K::Name as NameId {
+        return Some(Value::String(Str::from(&*info.name)));
+    }
     if value.is_none() {
         if let Some(property) = reflection.class_property(class, name) {
             value = super::value::zero_value(
@@ -1031,6 +1036,11 @@ impl Dom {
     /// GetFullName: names from below the DataModel down to `id`, dot separated.
     pub fn full_name(&self, reflection: &Reflection, id: InstanceId) -> String {
         let data_model = reflection.class_id("DataModel");
+        // the DataModel's own full name is its Name (`game:GetFullName() == game.Name` in a playing client, Studio 0.744:
+        // tools/parity/probes/instances.luau); below it, paths start at the service
+        if Some(self.at(id).class) == data_model {
+            return self.at(id).name.to_str_lossy().into_owned();
+        }
         let mut parts: Vec<&Str> = Vec::new();
         let mut current = Some(id);
         while let Some(node) = current {

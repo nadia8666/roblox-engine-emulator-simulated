@@ -2019,3 +2019,86 @@ fn a_harness_reseeds_its_run_and_a_server_mount_takes_studio_names() {
     }
     assert!(!printed.iter().any(|line| line.starts_with("server error:") || line.starts_with("client error:")), "{printed:?}");
 }
+
+/// A Studio-only placeholder (the place's hierarchy snapshot gives it a class and a name and no values) is built when a script
+/// first lists its parent, so a run that looks at more of the place built more of them, and recorded them appearing then: a cast
+/// that walked every service had its recording carry the place's seven Lighting effects (drawn at their default values) and two of
+/// the Workspace's own, 8 actions and 10 scene instances that another version of the same code, which walked nothing, did not. They
+/// are the place's own now: one that draws is never drawn, and a folder or model only once something the run made is under it
+/// (an effect parented into the place's Visuals folder keeps its path), so the recording is the same whether they were built
+/// before the run or during it.
+#[test]
+fn studio_only_placeholders_are_not_drawn_whenever_they_are_built() {
+    let source = r#"
+        local Entities = Instance.new("Folder")
+        Entities.Name = "Entities"
+        Entities.Parent = workspace
+        task.delay(0.1, function()
+            local Circle = Instance.new("Part")
+            Circle.Name = "Circle"
+            Circle.Anchored = true
+            Circle.Parent = Entities:WaitForChild("Circles")
+            Circle.Position = Vector3.new(4, 0, 0)
+        end)
+    "#;
+    let run = |built_at: u32| -> (Json, Vec<u8>) {
+        let engine = Engine::new(Options { mode: "play".into(), ..Options::default() }).expect("engine");
+        let lua = Lua::new();
+        engine_lua::start(&lua, &engine).expect("start");
+        let recorder = Recorder::install(&engine, 60.0);
+        let script = {
+            let mut state = engine.state.borrow_mut();
+            let class = engine.reflection.class_id("ModuleScript").unwrap();
+            crate::instance::create_named(&mut state, &engine.reflection, class, "Harness")
+        };
+        let env = engine_lua::modules::environment(&lua, &engine, script).expect("environment");
+        let function = lua.load(source).set_name("=Harness").set_environment(env).into_function().expect("compile");
+        let call = engine_lua::globals::call(&lua, &engine, function, LuaMultiValue::new()).expect("call");
+        assert!(!matches!(call.outcome().unwrap(), CallOutcome::Failed(..)), "the harness runs");
+        // the place's own: a folder and a highlight in the Workspace's Entities, a blur in Lighting (what project::materialize builds)
+        let build = |engine: &Engine| {
+            let lighting = crate::services::find_service(engine, engine.world().game, "Lighting").expect("Lighting");
+            let entities = engine.state.borrow().dom.find_child(engine.world().workspace, b"Entities").expect("Entities");
+            let mut state = engine.state.borrow_mut();
+            for (class, name, parent) in
+                [("Folder", "Circles", entities), ("Folder", "Empty", entities), ("Highlight", "Highlight", entities), ("BlurEffect", "Blur", lighting)]
+            {
+                let class = engine.reflection.class_id(class).unwrap();
+                let id = crate::instance::create_named(&mut state, &engine.reflection, class, name);
+                state.dom.at_mut(id).set_flag(crate::dom::flags::STUDIO_ONLY, true);
+                // (as project::materialize attaches a placeholder: silently)
+                state.dom.attach(id, parent);
+            }
+        };
+        if built_at == 0 {
+            build(&engine);
+        }
+        recorder.sample(&engine, 0);
+        for frame in 1..=12 {
+            if frame == built_at {
+                build(&engine);
+            }
+            scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("frame");
+            recorder.sample(&engine, frame);
+        }
+        let out = std::env::temp_dir().join(format!("rur-record-test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        recorder.write(&engine, &out, Map::new()).expect("write");
+        let playback: Json = serde_json::from_str(&std::fs::read_to_string(out.join("playback.json")).unwrap()).unwrap();
+        let scene = std::fs::read(out.join("scene.rbxm")).unwrap();
+        let _ = std::fs::remove_dir_all(&out);
+        drop(lua);
+        engine.teardown();
+        (playback, scene)
+    };
+    let (before, before_scene) = run(0);
+    let (during, during_scene) = run(4);
+    assert_eq!(before, during, "the same playback whenever the placeholders were built");
+    assert_eq!(before_scene, during_scene, "the same scene whenever the placeholders were built");
+    let scene = rbx_binary::from_reader(during_scene.as_slice()).expect("scene.rbxm");
+    let names: Vec<String> = scene.descendants().map(|instance| instance.name.clone()).collect();
+    for placeholder in ["Empty", "Highlight", "Blur"] {
+        assert!(!names.iter().any(|name| name == placeholder), "{placeholder} is not drawn: {names:?}");
+    }
+    instance(&scene, &["Entities", "Circles", "Circle"]);
+    assert!(find(&during["actions"], |a| a["target"].as_str().is_some_and(|t| t.contains("Blur") || t.contains("Highlight"))).is_empty(), "no action for a placeholder");
+}

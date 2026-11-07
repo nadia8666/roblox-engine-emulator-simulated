@@ -1,0 +1,132 @@
+# Topic: the garbage collector paces itself by a host's clock
+#
+# What it does: lua_setgcclock, the clock the collector measures the allocation rate and the mark phase with to set the
+# next cycle's trigger. The engine gives it the scripts' own work, so the collector steps at the same points in every
+# run.
+#
+# Why upstream lacks it: upstream paces by the wall clock (lua_clock), right for a game, where collecting on time
+# matters and collecting at the same instruction does not. An emulator whose runs must replay byte for byte needs the
+# reverse.
+
+diff --git a/luau/VM/include/lua.h b/luau/VM/include/lua.h
+index 898fa65..7ecf17e 100644
+--- a/luau/VM/include/lua.h
++++ b/luau/VM/include/lua.h
+@@ -390,6 +390,11 @@ LUA_API void lua_workhostcalls(lua_State* L, int calls);
+ LUA_API void lua_workhostnanos(lua_State* L, int nanos);
+ // on: one more level of muting; off: one less (the engine's Luau prices a whole call itself, as Scheduler.muted does for the host's charges)
+ LUA_API void lua_workmute(lua_State* L, int on);
++// the clock the garbage collector paces itself by, in seconds (it measures the allocation rate and the mark phase's length with it to
++// set the next cycle's trigger): the wall clock (lua_clock) by default, so where it steps depends on how fast the host ran; a host
++// that must collect at the same points in every run gives it a clock of the work done instead. NULL restores the wall clock.
++LUA_API void lua_setgcclock(lua_State* L, double (*clock)(void* ud), void* ud);
++
+ ** memory statistics
+ ** all allocated bytes are attributed to the memory category of the running thread (0..LUA_MEMORY_CATEGORIES-1)
+ */
+diff --git a/luau/VM/src/lapi.cpp b/luau/VM/src/lapi.cpp
+index 132d6fa..d591190 100644
+--- a/luau/VM/src/lapi.cpp
++++ b/luau/VM/src/lapi.cpp
+@@ -1466,6 +1466,12 @@ void lua_workmute(lua_State* L, int on)
+         --muted;
+ }
+ 
++void lua_setgcclock(lua_State* L, double (*clock)(void* ud), void* ud)
++{
++    L->global->gcclock = clock;
++    L->global->gcclockud = ud;
++}
++
+ int lua_gc(lua_State* L, int what, int data)
+ {
+     int res = 0;
+diff --git a/luau/VM/src/lgc.cpp b/luau/VM/src/lgc.cpp
+index d480625..16b1fdd 100644
+--- a/luau/VM/src/lgc.cpp
++++ b/luau/VM/src/lgc.cpp
+@@ -1211,6 +1211,12 @@ static size_t sweeppageset(lua_State* L, lua_Page*& pageset, size_t cost, size_t
+     return cost;
+ }
+ 
++// the collector's clock: the host's (lua_setgcclock) when it gave one, else the wall clock
++static double gcclock(global_State* g)
++{
++    return g->gcclock ? g->gcclock(g->gcclockud) : lua_clock();
++}
++
+ static size_t gcstep(lua_State* L, size_t limit)
+ {
+     size_t cost = 0;
+@@ -1269,7 +1275,7 @@ static size_t gcstep(lua_State* L, size_t limit)
+         g->gcmetrics.currcycle.atomicstarttotalsizebytes = g->totalbytes;
+ #endif
+ 
+-        g->gcstats.atomicstarttimestamp = lua_clock();
++        g->gcstats.atomicstarttimestamp = gcclock(g);
+         g->gcstats.atomicstarttotalsizebytes = g->totalbytes;
+ 
+         cost = atomic(L); // finish mark phase
+@@ -1436,7 +1442,7 @@ size_t luaC_step(lua_State* L, bool assist)
+ 
+     // at the start of the new cycle
+     if (g->gcstate == GCSpause)
+-        g->gcstats.starttimestamp = lua_clock();
++        g->gcstats.starttimestamp = gcclock(g);
+ 
+ #ifdef LUAI_GCMETRICS
+     if (g->gcstate == GCSpause)
+@@ -1474,7 +1480,7 @@ size_t luaC_step(lua_State* L, bool assist)
+         g->GCthreshold = heaptrigger;
+ 
+         g->gcstats.heapgoalsizebytes = heapgoal;
+-        g->gcstats.endtimestamp = lua_clock();
++        g->gcstats.endtimestamp = gcclock(g);
+         g->gcstats.endtotalsizebytes = g->totalbytes;
+ 
+ #ifdef LUAI_GCMETRICS
+@@ -1571,7 +1577,7 @@ void luaC_fullgc(lua_State* L)
+     if (DFFlag::LuauGcHeapShrinkFix)
+     {
+         // full collection ends a cycle, so the heap growth is measured from this point
+-        g->gcstats.endtimestamp = lua_clock();
++        g->gcstats.endtimestamp = gcclock(g);
+         g->gcstats.endtotalsizebytes = g->totalbytes;
+     }
+ 
+@@ -1654,7 +1660,7 @@ int64_t luaC_allocationrate(lua_State* L)
+ 
+     if (g->gcstate <= GCSatomic)
+     {
+-        double duration = lua_clock() - g->gcstats.endtimestamp;
++        double duration = gcclock(g) - g->gcstats.endtimestamp;
+ 
+         if (duration < durationthreshold)
+             return -1;
+diff --git a/luau/VM/src/lstate.cpp b/luau/VM/src/lstate.cpp
+index ba899b3..21e3f1e 100644
+--- a/luau/VM/src/lstate.cpp
++++ b/luau/VM/src/lstate.cpp
+@@ -228,6 +228,8 @@ lua_State* lua_newstate(lua_Alloc allocator, void* ud)
+     g->ecb = lua_ExecutionCallbacks();
+     g->gcstats = GCStats();
+     g->work = lua_WorkCounters();
++    g->gcclock = NULL;
++    g->gcclockud = NULL;
+ 
+     g->lastprotoid = 1;
+     g->lastclassid = 1;
+diff --git a/luau/VM/src/lstate.h b/luau/VM/src/lstate.h
+index 9965c70..dc61540 100644
+--- a/luau/VM/src/lstate.h
++++ b/luau/VM/src/lstate.h
+@@ -301,6 +301,9 @@ typedef struct global_State
+ 
+     lua_WorkCounters work; // what the interpreter did, for a host that charges its cost (lua_workcounters)
+ 
++    double (*gcclock)(void* ud); // the clock the collector paces itself by (lua_setgcclock; NULL: lua_clock)
++    void* gcclockud;
++
+ } global_State;
+ // clang-format on
+ 

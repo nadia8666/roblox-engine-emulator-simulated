@@ -1,0 +1,75 @@
+# Topic: native code stays native in an unsafe environment
+#
+# What it does: where native code checks for a safe environment (a builtin's fast call, pairs / ipairs loops, imports),
+# an unsafe one takes the ordinary path in native code instead of leaving native code for the rest of the function.
+#
+# Why upstream lacks it: Roblox runs native code in safe environments, where the check never fails.
+
+diff --git a/luau/CodeGen/src/IrTranslation.cpp b/luau/CodeGen/src/IrTranslation.cpp
+index 1385200..27950e5 100644
+--- a/luau/CodeGen/src/IrTranslation.cpp
++++ b/luau/CodeGen/src/IrTranslation.cpp
+@@ -1433,8 +1433,10 @@ IrOp translateFastCallN(IrBuilder& build, const Instruction* pc, int pcpos, bool
+ 
+     IrOp fallback = build.fallbackBlock(pcpos);
+ 
+-    // In unsafe environment, instead of retrying fastcall at 'pcpos' we side-exit directly to fallback sequence
+-    build.checkSafeEnv(pcpos + getOpLength(opcode));
++    // In unsafe environment, instead of retrying fastcall at 'pcpos' we take the fallback sequence (the
++    // ordinary call the interpreter makes there) in native code, rather than leaving native code for
++    // the rest of the function (a host whose script environments are not 'safe')
++    build.inst(IrCmd::CHECK_SAFE_ENV, fallback);
+ 
+     BuiltinImplResult br = translateBuiltin(
+         build, LuauBuiltinFunction(bfid), ra, arg, builtinArgs, builtinArg3, nparams, nresults, fallback, pcpos + getOpLength(opcode)
+@@ -1449,13 +1451,7 @@ IrOp translateFastCallN(IrBuilder& build, const Instruction* pc, int pcpos, bool
+         else
+             build.inst(IrCmd::MARK_DEAD, build.vmReg(ra + br.actualResultCount), build.constInt(-1));
+ 
+-        if (br.type != BuiltinImplType::UsesFallback)
+-        {
+-            // We ended up not using the fallback block, kill it
+-            build.function.blockOp(fallback).kind = IrBlockKind::Dead;
+-
+-            return build.undef();
+-        }
++        // (the fallback block stays: an unsafe environment takes it)
+     }
+     else
+     {
+@@ -1693,8 +1689,8 @@ void translateInstForGPrepNext(IrBuilder& build, const Instruction* pc, int pcpo
+     IrOp target = build.blockAtInst(pcpos + 1 + LUAU_INSN_D(*pc));
+     IrOp fallback = build.fallbackBlock(pcpos);
+ 
+-    // fast-path: pairs/next
+-    build.checkSafeEnv(pcpos);
++    // fast-path: pairs/next (an unsafe environment keeps the iterator function, in native code)
++    build.inst(IrCmd::CHECK_SAFE_ENV, fallback);
+ 
+     IrOp tagB = build.inst(IrCmd::LOAD_TAG, build.vmReg(ra + 1));
+     build.inst(IrCmd::CHECK_TAG, tagB, build.constTag(LUA_TTABLE), fallback);
+@@ -1722,8 +1718,8 @@ void translateInstForGPrepInext(IrBuilder& build, const Instruction* pc, int pcp
+     IrOp fallback = build.fallbackBlock(pcpos);
+     IrOp finish = build.block(IrBlockKind::Internal);
+ 
+-    // fast-path: ipairs/inext
+-    build.checkSafeEnv(pcpos);
++    // fast-path: ipairs/inext (an unsafe environment keeps the iterator function, in native code)
++    build.inst(IrCmd::CHECK_SAFE_ENV, fallback);
+ 
+     IrOp tagB = build.inst(IrCmd::LOAD_TAG, build.vmReg(ra + 1));
+     build.inst(IrCmd::CHECK_TAG, tagB, build.constTag(LUA_TTABLE), fallback);
+@@ -1985,7 +1981,12 @@ void translateInstGetImport(IrBuilder& build, const Instruction* pc, int pcpos)
+     int k = LUAU_INSN_D(*pc);
+     uint32_t aux = pc[1];
+ 
+-    build.checkSafeEnv(pcpos);
++    // An import resolved at load is only used in a safe environment; one that was not (luau_load resolves
++    // none unless the environment it loads into is safe) is looked up in the closure's environment by
++    // GET_CACHED_IMPORT, as the interpreter does, safe or not: native code no longer has to leave
++    CODEGEN_ASSERT(build.function.proto);
++    if (!ttisnil(&build.function.proto->k[k]))
++        build.checkSafeEnv(pcpos);
+ 
+     build.inst(IrCmd::GET_CACHED_IMPORT, build.vmReg(ra), build.vmConst(k), build.constImport(aux), build.constUint(pcpos + 1));
+ }

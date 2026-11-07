@@ -1,0 +1,189 @@
+# Topic: canonical builtins fast-called from native code through their closure
+#
+# What it does: the closures of math.floor, string.byte and table.insert carry their builtin id (in Closure's padding),
+# and native code's call of such a closure runs the builtin's fast path, whatever name reached it.
+#
+# Why upstream lacks it: in a safe environment the compiler's FASTCALL already covers these calls.
+
+diff --git a/luau/CodeGen/src/CodeGenUtils.cpp b/luau/CodeGen/src/CodeGenUtils.cpp
+index c5b20e0..1353aa7 100644
+--- a/luau/CodeGen/src/CodeGenUtils.cpp
++++ b/luau/CodeGen/src/CodeGenUtils.cpp
+@@ -208,6 +208,20 @@ Closure* callProlog(lua_State* L, TValue* ra, StkId argtop, int nresults)
+ 
+     Closure* ccl = clvalue(ra);
+ 
++    // The actual callee owns this tag, so inherited globals, aliases and argument
++    // side effects retain ordinary CALL semantics without trusting safeenv.
++    if (ccl->builtin != 0)
++    {
++        LUAU_ASSERT(ccl->isC && ccl->nupvalues == 0);
++        int nparams = int(argtop - ra - 1);
++        int n = luauF_table[ccl->builtin](L, ra, ra + 1, nresults, ra + 2, nparams);
++        if (n >= 0)
++        {
++            L->top = nresults == LUA_MULTRET ? ra + n : L->ci->top;
++            return nullptr;
++        }
++    }
++
+     CallInfo* ci = incr_ci(L);
+     ci->p = getproto(ccl);
+     ci->func = ra;
+diff --git a/luau/CodeGen/src/CodeGenUtils.h b/luau/CodeGen/src/CodeGenUtils.h
+index 9fa3090..d770297 100644
+--- a/luau/CodeGen/src/CodeGenUtils.h
++++ b/luau/CodeGen/src/CodeGenUtils.h
+@@ -15,6 +15,7 @@ bool forgLoopNonTableFallback_DEPRECATED(lua_State* L, int insnA, int aux);
+ 
+ void forgPrepXnextFallback(lua_State* L, TValue* ra, int pc);
+ 
++// Returns null when a tagged canonical C function completed without a call frame.
+ Closure* callProlog(lua_State* L, TValue* ra, StkId argtop, int nresults);
+ void callEpilogC(lua_State* L, int nresults, int n);
+ 
+diff --git a/luau/CodeGen/src/EmitInstructionX64.cpp b/luau/CodeGen/src/EmitInstructionX64.cpp
+index da18130..19cec9c 100644
+--- a/luau/CodeGen/src/EmitInstructionX64.cpp
++++ b/luau/CodeGen/src/EmitInstructionX64.cpp
+@@ -34,6 +34,10 @@ void emitInstCall(IrRegAllocX64& regs, AssemblyBuilderX64& build, ModuleHelpers&
+     callWrapper.call(qword[rNativeContext + offsetof(NativeContext, callProlog)]);
+     RegisterX64 ccl = rax; // Returned from callProlog
+ 
++    Label builtinDone;
++    build.test(ccl, ccl);
++    build.jcc(ConditionX64::Zero, builtinDone);
++
+     emitUpdateBase(build);
+ 
+     Label cFuncCall;
+@@ -132,6 +136,7 @@ void emitInstCall(IrRegAllocX64& regs, AssemblyBuilderX64& build, ModuleHelpers&
+             callWrapper.addArgument(SizeX64::dword, results);
+             callWrapper.call(qword[rNativeContext + offsetof(NativeContext, callEpilogC)]);
+             emitUpdateBase(build);
++            build.setLabel(builtinDone);
+             return;
+         }
+ 
+@@ -171,6 +176,7 @@ void emitInstCall(IrRegAllocX64& regs, AssemblyBuilderX64& build, ModuleHelpers&
+         build.mov(rax, qword[cip + offsetof(CallInfo, top)]);
+         build.mov(qword[rState + offsetof(lua_State, top)], rax);
+     }
++    build.setLabel(builtinDone);
+ }
+ 
+ void emitInstReturn(AssemblyBuilderX64& build, ModuleHelpers& helpers, int ra, int actualResults, bool functionVariadic)
+diff --git a/luau/VM/src/lfunc.cpp b/luau/VM/src/lfunc.cpp
+index 0bcf0f0..0379f8a 100644
+--- a/luau/VM/src/lfunc.cpp
++++ b/luau/VM/src/lfunc.cpp
+@@ -151,6 +151,7 @@ Closure* luaF_newLclosure(lua_State* L, int nelems, LuaTable* e, Proto* p)
+     c->nupvalues = cast_byte(nelems);
+     c->stacksize = p->maxstacksize;
+     c->preload = 0;
++    c->builtin = 0;
+     c->l.p = p;
+     for (int i = 0; i < nelems; ++i)
+         setnilvalue(&c->l.uprefs[i]);
+@@ -166,6 +167,7 @@ Closure* luaF_newCclosure(lua_State* L, int nelems, LuaTable* e)
+     c->nupvalues = cast_byte(nelems);
+     c->stacksize = LUA_MINSTACK;
+     c->preload = 0;
++    c->builtin = 0;
+     c->c.f = NULL;
+     c->c.cont = NULL;
+     c->c.debugname = NULL;
+diff --git a/luau/VM/src/lmathlib.cpp b/luau/VM/src/lmathlib.cpp
+index aa9b00e..6b0d414 100644
+--- a/luau/VM/src/lmathlib.cpp
++++ b/luau/VM/src/lmathlib.cpp
+@@ -1,6 +1,7 @@
+ // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
+ // This code is based on Lua 5.x implementation licensed under MIT License; see lua_LICENSE.txt for details
+ #include "lualib.h"
++#include "lbytecode.h"
+ 
+ #include "lstate.h"
+ 
+@@ -524,6 +525,10 @@ int luaopen_math(lua_State* L)
+ 
+     luaL_register(L, LUA_MATHLIBNAME, mathlib);
+ 
++    lua_getfield(L, -1, "floor");
++    if (iscfunction(L->top - 1) && clvalue(L->top - 1)->c.f == math_floor)
++        clvalue(L->top - 1)->builtin = LBF_MATH_FLOOR;
++    lua_pop(L, 1);
+     lua_pushnumber(L, LUAU_PI);
+     lua_setfield(L, -2, "pi");
+     lua_pushnumber(L, HUGE_VAL);
+diff --git a/luau/VM/src/lobject.h b/luau/VM/src/lobject.h
+index 7fe12bd..de9d176 100644
+--- a/luau/VM/src/lobject.h
++++ b/luau/VM/src/lobject.h
+@@ -494,6 +494,7 @@ typedef struct Closure
+     uint8_t nupvalues;
+     uint8_t stacksize;
+     uint8_t preload;
++    uint8_t builtin; // Canonical C closure fastcall ID; zero for all other closures.
+ 
+     GCObject* gclist;
+     struct LuaTable* env;
+@@ -516,6 +517,9 @@ typedef struct Closure
+     };
+ } Closure;
+ 
++static_assert(offsetof(Closure, builtin) == 7, "builtin tag must use existing closure padding");
++static_assert(offsetof(Closure, gclist) == 8, "closure pointer layout must remain unchanged");
++
+ #define iscfunction(o) (ttype(o) == LUA_TFUNCTION && clvalue(o)->isC)
+ #define isLfunction(o) (ttype(o) == LUA_TFUNCTION && !clvalue(o)->isC)
+ 
+diff --git a/luau/VM/src/lstrlib.cpp b/luau/VM/src/lstrlib.cpp
+index 7e0df60..e618e4a 100644
+--- a/luau/VM/src/lstrlib.cpp
++++ b/luau/VM/src/lstrlib.cpp
+@@ -1,6 +1,8 @@
+ // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
+ // This code is based on Lua 5.x implementation licensed under MIT License; see lua_LICENSE.txt for details
+ #include "lualib.h"
++#include "lbytecode.h"
++#include "lstate.h"
+ 
+ #include "lstring.h"
+ 
+@@ -1873,6 +1875,11 @@ static void createmetatable(lua_State* L)
+ int luaopen_string(lua_State* L)
+ {
+     luaL_register(L, LUA_STRLIBNAME, strlib);
++
++    lua_getfield(L, -1, "byte");
++    if (iscfunction(L->top - 1) && clvalue(L->top - 1)->c.f == str_byte)
++        clvalue(L->top - 1)->builtin = LBF_STRING_BYTE;
++    lua_pop(L, 1);
+     createmetatable(L);
+ 
+     return 1;
+diff --git a/luau/VM/src/ltablib.cpp b/luau/VM/src/ltablib.cpp
+index b5492c2..f303e8f 100644
+--- a/luau/VM/src/ltablib.cpp
++++ b/luau/VM/src/ltablib.cpp
+@@ -1,6 +1,7 @@
+ // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
+ // This code is based on Lua 5.x implementation licensed under MIT License; see lua_LICENSE.txt for details
+ #include "lualib.h"
++#include "lbytecode.h"
+ 
+ #include "lapi.h"
+ #include "lnumutils.h"
+@@ -751,6 +752,11 @@ int luaopen_table(lua_State* L)
+ {
+     luaL_register(L, LUA_TABLIBNAME, tab_funcs);
+ 
++    lua_getfield(L, -1, "insert");
++    if (iscfunction(L->top - 1) && clvalue(L->top - 1)->c.f == tinsert)
++        clvalue(L->top - 1)->builtin = LBF_TABLE_INSERT;
++    lua_pop(L, 1);
++
+     // Lua 5.1 compat
+     lua_pushcfunction(L, tunpack, "unpack");
+     lua_setglobal(L, "unpack");

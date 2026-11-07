@@ -75,7 +75,22 @@ struct FunctionFigures {
     time: f64,
 }
 
-fn functions(profile: &Json) -> BTreeMap<String, (String, FunctionFigures)> {
+/// The phases both profiles report the same way (report.rs's `scope`), else `steady` when both marked one; None for
+/// profiles from a ree that kept no per-phase figures, or runs with no phase in common: they are compared whole
+fn shared_scope(before: &Json, after: &Json) -> Option<Vec<String>> {
+    let names = |value: &Json| -> Option<Vec<String>> { value.as_array().map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_string)).collect()) };
+    let (b, a) = (names(&before["scope"]["phases"])?, names(&after["scope"]["phases"])?);
+    if b == a && !b.is_empty() {
+        return Some(b);
+    }
+    let marked = |profile: &Json| names(&profile["phases"]).is_some_and(|phases| phases.iter().any(|phase| phase == "steady"));
+    (marked(before) && marked(after)).then(|| vec!["steady".to_string()])
+}
+
+/// A function's figures in a diff, and whether it is the harness's own code (report.rs `harness_module`). With a scope,
+/// the work, calls and instructions are those phases' and only the game's side of the work (a C function's part done for
+/// the harness's code goes with the harness); allocations and host time stay the whole run's.
+fn functions(profile: &Json, scope: Option<&[String]>) -> BTreeMap<String, (String, bool, FunctionFigures)> {
     let mut out = BTreeMap::new();
     for f in profile["functions"].as_array().into_iter().flatten() {
         if f["kind"] == "engine Luau" {
@@ -86,15 +101,45 @@ fn functions(profile: &Json) -> BTreeMap<String, (String, FunctionFigures)> {
             Some(module) => format!("{}  {}:{}", f["name"].as_str().filter(|n| !n.is_empty()).unwrap_or("anonymous"), module.rsplit(['.', '/', '\\']).next().unwrap_or(module), f["line"]),
             None => f["name"].as_str().unwrap_or("?").to_string(),
         };
-        let entry: &mut (String, FunctionFigures) = out.entry(key).or_insert_with(|| (label, FunctionFigures::default()));
-        entry.1.self_work += num(&f["self"]["work_ms"]);
-        entry.1.total_work += num(&f["total"]["work_ms"]);
-        entry.1.calls += num(&f["calls"]);
-        entry.1.insns += num(&f["self"]["insns"]);
-        entry.1.alloc += num(&f["self"]["alloc_bytes"]);
-        entry.1.time += num(&f["self"]["time_ms"]);
+        let harness = f["harness"].as_bool().unwrap_or(false);
+        let entry: &mut (String, bool, FunctionFigures) = out.entry(key).or_insert_with(|| (label, harness, FunctionFigures::default()));
+        match scope {
+            Some(phases) => {
+                for phase in phases {
+                    let figures = &f["phases"][phase.as_str()];
+                    let harness_part = if harness { 0.0 } else { num(&figures["harness_self_work_ms"]) };
+                    entry.2.self_work += num(&figures["self_work_ms"]) - harness_part;
+                    entry.2.total_work += num(&figures["total_work_ms"]);
+                    entry.2.calls += num(&figures["calls"]);
+                    entry.2.insns += num(&figures["insns"]);
+                }
+            }
+            None => {
+                entry.2.self_work += num(&f["self"]["work_ms"]);
+                entry.2.total_work += num(&f["total"]["work_ms"]);
+                // (calls through copies -O2 inlined count too: a change that inlines a function or stops inlining it keeps its calls)
+                entry.2.calls += num(&f["calls"]) + num(&f["inlined"]["calls"]);
+                entry.2.insns += num(&f["self"]["insns"]);
+            }
+        }
+        entry.2.alloc += num(&f["self"]["alloc_bytes"]);
+        entry.2.time += num(&f["self"]["time_ms"]);
     }
     out
+}
+
+/// The self work of the game's code and of the harness's in the scope's phases: (game, harness), in ms
+fn side_totals(profile: &Json, scope: &[String]) -> (f64, f64) {
+    let mut sides = (0.0, 0.0);
+    for f in profile["functions"].as_array().into_iter().flatten() {
+        for phase in scope {
+            let figures = &f["phases"][phase.as_str()];
+            let harness = num(&figures["harness_self_work_ms"]);
+            sides.0 += num(&figures["self_work_ms"]) - harness;
+            sides.1 += harness;
+        }
+    }
+    sides
 }
 
 /// Lines of modules whose source is unchanged: (module, line) -> (self work, insns, alloc)
@@ -154,6 +199,15 @@ fn timeline_stats(profile: &Json) -> Option<(f64, f64, f64, f64)> {
 pub fn compare(before: &Json, after: &Json, top: usize) -> (String, Json) {
     let mut figures: Vec<Figure> = Vec::new();
     let mut add = |name: &str, b: f64, a: f64, unit: &'static str| figures.push(Figure { name: name.into(), before: b, after: a, unit });
+    // the headline: the game's code in the phases both report, apart from the harness's (whose work moves with what it
+    // scans, not with the game)
+    let scope = shared_scope(before, after);
+    let scope_label = scope.as_ref().map(|phases| format!("{} {}", if phases.len() == 1 { "phase" } else { "phases" }, phases.join(", ")));
+    if let (Some(phases), Some(label)) = (&scope, &scope_label) {
+        let (b, a) = (side_totals(before, phases), side_totals(after, phases));
+        add(&format!("the game's code, {label}"), b.0, a.0, "ms");
+        add(&format!("the harness's code, {label}"), b.1, a.1, "ms");
+    }
     if before["work"].is_object() || after["work"].is_object() {
         add("work clock", num(&before["work"]["total_ms"]), num(&after["work"]["total_ms"]), "ms");
         add("work clock a frame", num(&before["work"]["per_frame_ms"]), num(&after["work"]["per_frame_ms"]), "ms");
@@ -164,6 +218,9 @@ pub fn compare(before: &Json, after: &Json, top: usize) -> (String, Json) {
         add("allocations", num(&before["alloc"]["objects"]), num(&after["alloc"]["objects"]), "");
     }
     let mut notes: Vec<String> = Vec::new();
+    if let Some(label) = &scope_label {
+        notes.push(format!("the first two figures and the function tables cover {label} (work, calls, instructions); allocations, host time and lines cover the whole run"));
+    }
     if let (Some(b), Some(a)) = (last_snapshot(before), last_snapshot(after)) {
         let (b_heap, a_heap) = (heap_split(b), heap_split(a));
         for (side, split) in [("before", &b_heap), ("after", &a_heap)] {
@@ -216,26 +273,34 @@ pub fn compare(before: &Json, after: &Json, top: usize) -> (String, Json) {
         let _ = writeln!(text, "{:<width$} {:>14} {:>14} {:>10}", figure.name, figure.show(figure.before), figure.show(figure.after), change(figure.before, figure.after));
     }
 
-    // functions
-    let (fb, fa) = (functions(before), functions(after));
+    // functions: the game's first, the harness's apart
+    let (fb, fa) = (functions(before, scope.as_deref()), functions(after, scope.as_deref()));
     let keys: BTreeSet<&String> = fb.keys().chain(fa.keys()).collect();
-    let mut rows: Vec<(String, FunctionFigures, FunctionFigures)> = keys
+    let mut rows: Vec<(String, bool, FunctionFigures, FunctionFigures)> = keys
         .into_iter()
         .map(|key| {
-            let b = fb.get(key).map(|entry| entry.1).unwrap_or_default();
-            let a = fa.get(key).map(|entry| entry.1).unwrap_or_default();
-            let label = fa.get(key).or_else(|| fb.get(key)).map(|entry| entry.0.clone()).unwrap_or_else(|| key.clone());
-            (label, b, a)
+            let b = fb.get(key).map(|entry| entry.2).unwrap_or_default();
+            let a = fa.get(key).map(|entry| entry.2).unwrap_or_default();
+            let (label, harness) = fa.get(key).or_else(|| fb.get(key)).map(|entry| (entry.0.clone(), entry.1)).unwrap_or_else(|| (key.clone(), false));
+            (label, harness, b, a)
         })
         .collect();
-    let weight = |row: &(String, FunctionFigures, FunctionFigures)| -> f64 {
-        (row.2.self_work - row.1.self_work).abs() * 1000.0 + (row.2.alloc - row.1.alloc).abs() / 1024.0 + (row.2.insns - row.1.insns).abs() / 1000.0 + (row.2.time - row.1.time).abs() * 0.01
+    let weight = |row: &(String, bool, FunctionFigures, FunctionFigures)| -> f64 {
+        (row.3.self_work - row.2.self_work).abs() * 1000.0 + (row.3.alloc - row.2.alloc).abs() / 1024.0 + (row.3.insns - row.2.insns).abs() / 1000.0 + (row.3.time - row.2.time).abs() * 0.01
     };
     rows.retain(|row| weight(row) > 0.0);
     rows.sort_by(|a, b| weight(b).total_cmp(&weight(a)).then_with(|| a.0.cmp(&b.0)));
-    if !rows.is_empty() {
-        let _ = writeln!(text, "\nfunctions that moved most (self work ms, calls, self instructions, self allocated: before -> after)");
-        for (label, b, a) in rows.iter().take(top) {
+    let scope_part = scope_label.as_ref().map_or(String::new(), |label| format!(", {label}"));
+    for (harness, title, count) in [
+        (false, format!("functions that moved most: the game's code{scope_part} (self work ms, calls, self instructions, self allocated: before -> after)"), top),
+        (true, format!("the harness's functions that moved most{scope_part} (its own code, left out above)"), top.min(8)),
+    ] {
+        let side: Vec<&(String, bool, FunctionFigures, FunctionFigures)> = rows.iter().filter(|row| row.1 == harness).collect();
+        if side.is_empty() {
+            continue;
+        }
+        let _ = writeln!(text, "\n{title}");
+        for (label, _, b, a) in side.iter().take(count) {
             let _ = writeln!(
                 text,
                 "{:>9.3} -> {:<9.3} {:>9} -> {:<9} {:>10} -> {:<10} {:>9} -> {:<9}  {}",
@@ -336,7 +401,8 @@ pub fn compare(before: &Json, after: &Json, top: usize) -> (String, Json) {
     let json = json!({
         "version": 1,
         "figures": figures.iter().map(|f| json!({"name": f.name, "before": f.before, "after": f.after, "unit": f.unit})).collect::<Vec<_>>(),
-        "functions": rows.iter().take(500).map(|(label, b, a)| json!({"function": label,
+        "scope": scope,
+        "functions": rows.iter().take(500).map(|(label, harness, b, a)| json!({"function": label, "harness": harness,
             "before": {"self_work_ms": b.self_work, "total_work_ms": b.total_work, "calls": b.calls, "insns": b.insns, "alloc_bytes": b.alloc, "time_ms": b.time},
             "after": {"self_work_ms": a.self_work, "total_work_ms": a.total_work, "calls": a.calls, "insns": a.insns, "alloc_bytes": a.alloc, "time_ms": a.time}})).collect::<Vec<_>>(),
         "lines": line_rows.iter().take(500).map(|((module, line), b, a)| json!({"module": module, "line": line, "before": {"work_ms": b.0, "insns": b.1, "alloc_bytes": b.2}, "after": {"work_ms": a.0, "insns": a.1, "alloc_bytes": a.2}})).collect::<Vec<_>>(),
@@ -374,20 +440,13 @@ pub fn cli(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let (text, json) = compare(&before, &after, top);
     let out = value("--out").map(PathBuf::from).unwrap_or_else(|| {
         let after = Path::new(after_dir);
         if after.is_file() { after.parent().map(Path::to_path_buf).unwrap_or_default() } else { after.to_path_buf() }
     });
-    let write = || -> Result<(), String> {
-        std::fs::create_dir_all(&out).map_err(|error| format!("{}: {error}", out.display()))?;
-        std::fs::write(out.join("diff.txt"), &text).map_err(|error| error.to_string())?;
-        let data = serde_json::to_string(&json).map_err(|error| error.to_string())?;
-        std::fs::write(out.join("diff.json"), &data).map_err(|error| error.to_string())?;
-        std::fs::write(out.join("diff.html"), html(&data)).map_err(|error| error.to_string())
-    };
+    let (text, written) = write(&before, &after, top, &out);
     print!("{text}");
-    match write() {
+    match written {
         Ok(()) => {
             println!("\nfiles in {}: diff.txt, diff.json, diff.html", out.display());
             0
@@ -397,6 +456,25 @@ pub fn cli(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// Two profiles compared ([`compare`]) into `out`: diff.txt, diff.json and diff.html; the text, and whether the files were
+/// written
+pub fn write(before: &Json, after: &Json, top: usize, out: &Path) -> (String, Result<(), String>) {
+    let (text, json) = compare(before, after, top);
+    let written = (|| -> Result<(), String> {
+        std::fs::create_dir_all(out).map_err(|error| format!("{}: {error}", out.display()))?;
+        std::fs::write(out.join("diff.txt"), &text).map_err(|error| error.to_string())?;
+        let data = serde_json::to_string(&json).map_err(|error| error.to_string())?;
+        std::fs::write(out.join("diff.json"), &data).map_err(|error| error.to_string())?;
+        std::fs::write(out.join("diff.html"), html(&data)).map_err(|error| error.to_string())
+    })();
+    (text, written)
+}
+
+/// A profile directory's profile.json (or the file itself)
+pub fn load_profile(dir: &Path) -> Result<Json, String> {
+    load(dir)
 }
 
 /// `ree profile report <dir>`: the summary of a profile directory printed again, and its report page rewritten from its

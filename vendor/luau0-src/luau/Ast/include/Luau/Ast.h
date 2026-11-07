@@ -1,7 +1,9 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #pragma once
 
+#include "Luau/Common.h"
 #include "Luau/Location.h"
+#include "Luau/Variant.h"
 
 #include <iterator>
 #include <optional>
@@ -10,6 +12,8 @@
 
 #include <string.h>
 #include <stdint.h>
+
+LUAU_FASTFLAG(DebugLuauUserDefinedClasses)
 
 namespace Luau
 {
@@ -70,15 +74,27 @@ struct AstLocal
     AstLocal* shadow;
     size_t functionDepth;
     size_t loopDepth;
+    bool isConst;
+    // exported is only a property set after construction
+    bool isExported = false;
 
     AstType* annotation;
 
-    AstLocal(const AstName& name, const Location& location, AstLocal* shadow, size_t functionDepth, size_t loopDepth, AstType* annotation)
+    AstLocal(
+        const AstName& name,
+        const Location& location,
+        AstLocal* shadow,
+        size_t functionDepth,
+        size_t loopDepth,
+        AstType* annotation,
+        bool isConst = false
+    )
         : name(name)
         , location(location)
         , shadow(shadow)
         , functionDepth(functionDepth)
         , loopDepth(loopDepth)
+        , isConst(isConst)
         , annotation(annotation)
     {
     }
@@ -116,6 +132,13 @@ struct AstTypeList
     AstArray<AstType*> types;
     // Null indicates no tail, not an untyped tail.
     AstTypePack* tailType = nullptr;
+};
+
+// Don't have Luau::Variant available, it's a bit of an overhead, but a plain struct is nice to use
+struct AstTypeOrPack
+{
+    AstType* type = nullptr;
+    AstTypePack* typePack = nullptr;
 };
 
 using AstArgumentName = std::pair<AstName, Location>; // TODO: remove and replace when we get a common struct for this pair instead of AstName
@@ -190,11 +213,12 @@ class AstAttr : public AstNode
 public:
     LUAU_RTTI(AstAttr)
 
-    enum Type
+    enum class Type
     {
         Checked,
         Native,
         Deprecated,
+        DebugNoinline,
         Unknown
     };
 
@@ -320,6 +344,7 @@ enum class ConstantNumberParseResult
     Malformed,
     BinOverflow,
     HexOverflow,
+    IntOverflow,
 };
 
 class AstExprConstantNumber : public AstExpr
@@ -335,12 +360,24 @@ public:
     ConstantNumberParseResult parseResult;
 };
 
+class AstExprConstantInteger : public AstExpr
+{
+public:
+    LUAU_RTTI(AstExprConstantInteger)
+
+    AstExprConstantInteger(const Location& location, int64_t value, ConstantNumberParseResult parseResult = ConstantNumberParseResult::Ok);
+
+    void visit(AstVisitor* visitor) override;
+
+    int64_t value;
+    ConstantNumberParseResult parseResult;
+};
 class AstExprConstantString : public AstExpr
 {
 public:
     LUAU_RTTI(AstExprConstantString)
 
-    enum QuoteStyle
+    enum class QuoteStyle
     {
         // A string created using double quotes or an interpolated string,
         // as in:
@@ -415,13 +452,26 @@ class AstExprCall : public AstExpr
 public:
     LUAU_RTTI(AstExprCall)
 
-    AstExprCall(const Location& location, AstExpr* func, const AstArray<AstExpr*>& args, bool self, const Location& argLocation);
+    AstExprCall(
+        const Location& location,
+        AstExpr* func,
+        const AstArray<AstExpr*>& args,
+        bool self,
+        bool tableCall,
+        const AstArray<AstTypeOrPack>& explicitTypes,
+        const Location& argLocation
+    );
 
     void visit(AstVisitor* visitor) override;
 
     AstExpr* func;
+    // These will only be filled in specifically `t:f<<A, B>>()`.
+    // In `f<<A, B>>()`, this is parsed as `f<<A, B>>` as an expression,
+    // which is then called.
+    AstArray<AstTypeOrPack> typeArguments;
     AstArray<AstExpr*> args;
     bool self;
+    bool tableCall;
     Location argLocation;
 };
 
@@ -436,7 +486,8 @@ public:
         const AstName& index,
         const Location& indexLocation,
         const Position& opPosition,
-        char op
+        char op,
+        bool privateAccess = false
     );
 
     void visit(AstVisitor* visitor) override;
@@ -446,6 +497,8 @@ public:
     Location indexLocation;
     Position opPosition;
     char op = '.';
+    // Indicates a private field/method access made within a class method body
+    bool privateAccess = false;
 };
 
 class AstExprIndexExpr : public AstExpr
@@ -515,7 +568,7 @@ public:
 
     struct Item
     {
-        enum Kind
+        enum class Kind
         {
             List,    // foo, in which case key is a nullptr
             Record,  // foo=bar, in which case key is a AstExprConstantString
@@ -542,7 +595,7 @@ class AstExprUnary : public AstExpr
 public:
     LUAU_RTTI(AstExprUnary)
 
-    enum Op
+    enum class Op
     {
         Not,
         Minus,
@@ -617,6 +670,19 @@ public:
 
     AstExprIfElse(const Location& location, AstExpr* condition, bool hasThen, AstExpr* trueExpr, bool hasElse, AstExpr* falseExpr);
 
+    AstExprIfElse(
+        const Location& location,
+        AstExpr* condition,
+        bool hasThen,
+        AstExpr* trueExpr,
+        bool hasElse,
+        AstExpr* falseExpr,
+        AstLocal* conditionLocal,
+        bool conditionIsConst,
+        const std::optional<Location>& conditionKeywordLocation,
+        const std::optional<Location>& conditionEqualsLocation
+    );
+
     void visit(AstVisitor* visitor) override;
 
     AstExpr* condition;
@@ -624,6 +690,14 @@ public:
     AstExpr* trueExpr;
     bool hasElse;
     AstExpr* falseExpr;
+
+    // Active for 'if local' and 'if const' expressions; conditionLocal is bound to `condition` and in scope for trueExpr only
+    AstLocal* conditionLocal = nullptr;
+    bool conditionIsConst = false;
+    std::optional<Location> conditionKeywordLocation;
+
+    // Location of the `=` in an `if local`/`if const` binding
+    std::optional<Location> conditionEqualsLocation;
 };
 
 class AstExprInterpString : public AstExpr
@@ -640,6 +714,20 @@ public:
     /// `strings` will always have one more element than `expressions`.
     AstArray<AstArray<char>> strings;
     AstArray<AstExpr*> expressions;
+};
+
+// f<<T>>
+class AstExprInstantiate : public AstExpr
+{
+public:
+    LUAU_RTTI(AstExprInstantiate)
+
+    AstExprInstantiate(const Location& location, AstExpr* expr, AstArray<AstTypeOrPack> types);
+
+    void visit(AstVisitor* visitor) override;
+
+    AstExpr* expr;
+    AstArray<AstTypeOrPack> typeArguments;
 };
 
 class AstStatBlock : public AstStat
@@ -680,6 +768,19 @@ public:
         const std::optional<Location>& elseLocation
     );
 
+    AstStatIf(
+        const Location& location,
+        AstExpr* condition,
+        AstStatBlock* thenbody,
+        AstStat* elsebody,
+        const std::optional<Location>& thenLocation,
+        const std::optional<Location>& elseLocation,
+        AstLocal* conditionLocal,
+        bool conditionIsConst,
+        const std::optional<Location>& conditionKeywordLocation,
+        const std::optional<Location>& conditionEqualsLocation
+    );
+
     void visit(AstVisitor* visitor) override;
 
     AstExpr* condition;
@@ -690,6 +791,14 @@ public:
 
     // Active for 'elseif' as well
     std::optional<Location> elseLocation;
+
+    // Active for 'if local' and 'if const' statements
+    AstLocal* conditionLocal = nullptr;
+    bool conditionIsConst = false;
+    std::optional<Location> conditionKeywordLocation;
+
+    // Location of the `=` in an `if local`/`if const` binding
+    std::optional<Location> conditionEqualsLocation;
 };
 
 class AstStatWhile : public AstStat
@@ -699,6 +808,18 @@ public:
 
     AstStatWhile(const Location& location, AstExpr* condition, AstStatBlock* body, bool hasDo, const Location& doLocation);
 
+    AstStatWhile(
+        const Location& location,
+        AstExpr* condition,
+        AstStatBlock* body,
+        bool hasDo,
+        const Location& doLocation,
+        AstLocal* conditionLocal,
+        bool conditionIsConst,
+        const std::optional<Location>& conditionKeywordLocation,
+        const std::optional<Location>& conditionEqualsLocation
+    );
+
     void visit(AstVisitor* visitor) override;
 
     AstExpr* condition;
@@ -706,6 +827,14 @@ public:
 
     bool hasDo = false;
     Location doLocation;
+
+    // Active for `while local` and `while const`; conditionLocal is bound to `condition` and re-evaluated each iteration in scope for `body` only
+    AstLocal* conditionLocal = nullptr;
+    bool conditionIsConst = false;
+    std::optional<Location> conditionKeywordLocation;
+
+    // Location of the `=` in a `while local`/`while const` binding
+    std::optional<Location> conditionEqualsLocation;
 };
 
 class AstStatRepeat : public AstStat
@@ -776,7 +905,8 @@ public:
         const Location& location,
         const AstArray<AstLocal*>& vars,
         const AstArray<AstExpr*>& values,
-        const std::optional<Location>& equalsSignLocation
+        const std::optional<Location>& equalsSignLocation,
+        bool isConst = false
     );
 
     void visit(AstVisitor* visitor) override;
@@ -784,6 +914,11 @@ public:
     AstArray<AstLocal*> vars;
     AstArray<AstExpr*> values;
 
+    bool isConst = false;
+    bool isExported = false;
+
+    // if the StatLocal is being exported, this is the location of `const` or `local`
+    std::optional<Location> keywordLocation;
     std::optional<Location> equalsSignLocation;
 };
 
@@ -889,12 +1024,15 @@ class AstStatLocalFunction : public AstStat
 public:
     LUAU_RTTI(AstStatLocalFunction)
 
-    AstStatLocalFunction(const Location& location, AstLocal* name, AstExprFunction* func);
+    AstStatLocalFunction(const Location& location, AstLocal* name, AstExprFunction* func, bool isConst, Position constKeywordBegin);
 
     void visit(AstVisitor* visitor) override;
 
     AstLocal* name;
     AstExprFunction* func;
+    bool isConst;
+    // Position of the `const` keyword; Position::missing() when isConst is false.
+    Position constKeywordBegin;
 };
 
 class AstStatTypeAlias : public AstStat
@@ -1009,6 +1147,13 @@ public:
     AstTypePack* retTypes;
 };
 
+enum class AstTableAccess
+{
+    Read = 0b01,
+    Write = 0b10,
+    ReadWrite = 0b11,
+};
+
 struct AstDeclaredExternTypeProperty
 {
     AstName name;
@@ -1016,13 +1161,52 @@ struct AstDeclaredExternTypeProperty
     AstType* ty = nullptr;
     bool isMethod = false;
     Location location;
+    AstTableAccess access = AstTableAccess::ReadWrite;
 };
 
-enum class AstTableAccess
+enum class AstClassAccess
 {
-    Read = 0b01,
-    Write = 0b10,
-    ReadWrite = 0b11,
+    Public,
+    Private,
+};
+
+struct AstClassProperty
+{
+    Location qualifierLocation;
+    AstName name;
+    Location nameLocation;
+    std::optional<Location> typeColonLocation = std::nullopt;
+    AstType* ty = nullptr;
+    AstClassAccess access = AstClassAccess::Public;
+};
+
+struct AstClassMethod
+{
+    // Methods with no access modifiers are public by default.
+    std::optional<Location> qualifierLocation;
+    Location keywordLocation;
+    AstName functionName;
+    Location nameLocation;
+    AstExprFunction* function = nullptr;
+    AstClassAccess access = AstClassAccess::Public;
+};
+
+using AstClassMember = Variant<AstClassProperty, AstClassMethod>;
+
+class AstStatClass : public AstStat
+{
+public:
+    LUAU_RTTI(AstStatClass)
+
+    AstLocal* name;
+    AstExpr* super;
+    AstArray<AstClassMember> members;
+    bool exported;
+    bool open;
+
+    AstStatClass(const Location& location, AstLocal* name, AstExpr* super, AstArray<AstClassMember> members, bool exported, bool open);
+
+    void visit(AstVisitor* visitor) override;
 };
 
 struct AstTableIndexer
@@ -1071,13 +1255,6 @@ public:
     }
 };
 
-// Don't have Luau::Variant available, it's a bit of an overhead, but a plain struct is nice to use
-struct AstTypeOrPack
-{
-    AstType* type = nullptr;
-    AstTypePack* typePack = nullptr;
-};
-
 class AstTypeReference : public AstType
 {
 public:
@@ -1090,7 +1267,8 @@ public:
         std::optional<Location> prefixLocation,
         const Location& nameLocation,
         bool hasParameterList = false,
-        const AstArray<AstTypeOrPack>& parameters = {}
+        const AstArray<AstTypeOrPack>& parameters = {},
+        AstLocal* prefixLocal = nullptr
     );
 
     void visit(AstVisitor* visitor) override;
@@ -1098,6 +1276,7 @@ public:
     bool hasParameterList;
     std::optional<AstName> prefix;
     std::optional<Location> prefixLocation;
+    AstLocal* prefixLocal = nullptr;
     AstName name;
     Location nameLocation;
     AstArray<AstTypeOrPack> parameters;
@@ -1117,12 +1296,13 @@ class AstTypeTable : public AstType
 public:
     LUAU_RTTI(AstTypeTable)
 
-    AstTypeTable(const Location& location, const AstArray<AstTableProp>& props, AstTableIndexer* indexer = nullptr);
+    AstTypeTable(const Location& location, const AstArray<AstTableProp>& props, AstTableIndexer* indexer = nullptr, bool isExact = false);
 
     void visit(AstVisitor* visitor) override;
 
     AstArray<AstTableProp> props;
     AstTableIndexer* indexer;
+    bool isExact = false;
 };
 
 class AstTypeFunction : public AstType
@@ -1377,6 +1557,10 @@ public:
     {
         return visit(static_cast<AstExpr*>(node));
     }
+    virtual bool visit(class AstExprConstantInteger* node)
+    {
+        return visit(static_cast<AstExpr*>(node));
+    }
     virtual bool visit(class AstExprConstantString* node)
     {
         return visit(static_cast<AstExpr*>(node));
@@ -1430,6 +1614,10 @@ public:
         return visit(static_cast<AstExpr*>(node));
     }
     virtual bool visit(class AstExprInterpString* node)
+    {
+        return visit(static_cast<AstExpr*>(node));
+    }
+    virtual bool visit(class AstExprInstantiate* node)
     {
         return visit(static_cast<AstExpr*>(node));
     }
@@ -1517,6 +1705,11 @@ public:
     }
     virtual bool visit(class AstStatDeclareGlobal* node)
     {
+        return visit(static_cast<AstStat*>(node));
+    }
+    virtual bool visit(class AstStatClass* node)
+    {
+        LUAU_ASSERT(FFlag::DebugLuauUserDefinedClasses);
         return visit(static_cast<AstStat*>(node));
     }
     virtual bool visit(class AstStatDeclareExternType* node)

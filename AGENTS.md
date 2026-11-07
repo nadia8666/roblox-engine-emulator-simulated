@@ -23,8 +23,10 @@ cargo test --release                  # every test: the engine's, the patched VM
 cargo test --release <name>           # one test, by (part of) its name
 cargo clippy --release --all-targets  # lints (no project-wide clippy config)
 cargo test --release --manifest-path tools/hw-counters/Cargo.toml   # the counter service --profile hw reads through
-node tools/vendor.mjs                 # rebuild vendor/ after changing a file in patches/ (downloads two pinned archives)
+node tools/vendor.mjs                 # rebuild vendor/ after changing a file in patches/ (downloads the pinned archives)
 node tools/vendor.mjs --check         # vendor/ is exactly the pinned archives plus patches/
+node tools/vendor.mjs bump client     # move the VM to the Luau release a live client runs (docs/building.md "Updating Luau")
+node tools/luau-flags.mjs             # the live client's Luau flag values (data/luau-flags.json), then vendor/ again
 node tools/parity/run.mjs [--diff]    # differential probes: ree against the real engine's captured output
 ```
 
@@ -41,7 +43,8 @@ nearly every file.
   stubs in services.luau / server.luau / prelude.luau), `src/project*` (Rojo mounting, models, bundles, model plans).
 - `src/world/` and `src/record/` (the 3D world and the recorder), `src/animation/`, `src/meshes.rs`, `src/images.rs`.
 - `src/serve/` (`ree serve`), `src/watchdog.rs` (script timeout and process guards), the profilers (`src/profiler/`, `src/luau_profile.rs`,
-  `src/boundary.rs`; the hardware counters' Windows service in `tools/hw-counters/`, a crate of its own).
+  `src/boundary.rs`; the hardware counters' Windows service in `tools/hw-counters/`, a crate of its own); the profile
+  viewer in `profile-view/`, a crate of its own in the workspace (the engine's crate has no terminal UI).
 - Tests: `src/tests.rs` (script API), `src/scheduler_tests.rs`, `src/lua/datatype_tests.rs`, `src/world/tests.rs`,
   `src/record/tests.rs`, `src/emulator.rs`, tests beside their modules, `tests/luau_vm.rs` (the patched VM),
   `tests/process_guards.rs` (the built `ree`).
@@ -71,7 +74,8 @@ nearly every file.
 - **The GUI stays out of the core.** No layout, text measurement, input or scene export here. A host adds them as a
   `Layer` with an `Extension` (docs/engine.md "Layers and extensions"); the core keeps the static answers Roblox gives
   without them.
-- **The VM is vendored.** The Luau VM and Lune's datatypes come from pinned archives plus patches/: change a patch, run
+- **The VM is vendored.** The Luau VM, mlua-sys and Lune's datatypes come from pinned archives plus patches/ (the VM's are a topic
+  series, patches/luau/NN-<topic>.patch): change a patch (`node tools/vendor.mjs edit` for a topic in the middle), run
   `node tools/vendor.mjs`, commit both; never edit vendor/ by hand (`node tools/vendor.mjs --check`).
 - **Hot paths** read properties by interned id (`K::...`, `reflection.name_id` once), never by string, and allocate
   nothing per frame; the Instance API's fast paths stay in C metamethods (lua/raw.rs).

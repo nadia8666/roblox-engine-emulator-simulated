@@ -10,9 +10,9 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2021"
+edition = "2024"
 name = "luau0-src"
-version = "0.15.9+luau694"
+version = "0.22.0+luau746"
 authors = ["Aleksandr Orlenko <zxteam@protonmail.com>"]
 build = "build.rs"
 autolib = false

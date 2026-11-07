@@ -1,0 +1,14 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+warn after-call,end-of-step,deferred,event,|Hear,out(MessageWarning:parity-log warn one)
+print-and-warns after-calls,|Hear,out(MessageOutput:parity-log print 1 nil true),out(MessageWarning:parity-log warn two),out(MessageWarning:parity-log warn three)
+from-heartbeat hb-after-call,|Hear,out(MessageWarning:parity-log from heartbeat)
+from-defer defer-after-call,|Hear,out(MessageWarning:parity-log from defer)
+spawned-error after-spawn,error(parity-log spawned error;Instance),|Hear,out(MessageError:parity-log spawned error +2 lines)
+index-error error(@103: attempt to index nil with 'parity-log field';Instance),|Hear,out(MessageError:@103: attempt to index nil with 'parity-log field' +3 lines)
+table-error |Hear,out(MessageError:Error occurred, no output from Luau. +3 lines)
+handler-error after-fire,|Hear,error(@115: parity-log handler error;Instance),out(MessageError:@115: parity-log handler error +3 lines)
+deferred-error |Hear,error(parity-log deferred error;Instance),out(MessageError:parity-log deferred error +2 lines)
+engine-message after-connect
+nested |Hear,nested-after-call,out(MessageWarning:parity-log outer)
+history got=true:table,MessageWarning:parity-log warn one:number,MessageWarning:parity-log warn two:number,MessageWarning:parity-log warn three:number

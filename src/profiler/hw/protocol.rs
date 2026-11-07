@@ -97,7 +97,8 @@ pub struct Thread {
 pub struct Results {
     pub counters: u8,
     pub threads: Vec<Thread>,
-    /// Context switches seen, and those that came without counter values
+    /// Context switches seen, and those of the process's threads that came without counter values once their CPU was
+    /// counting (each costs a stretch: the switches before the counters were set are not among them)
     pub switches: u64,
     pub without_counters: u64,
     /// What the trace session lost (its buffers were full)

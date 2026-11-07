@@ -1,0 +1,146 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+default Accessory AccessoryType=EnumItem(Enum.AccessoryType.Unknown)
+default AlignPosition MaxForce=10000 MaxVelocity=inf Responsiveness=10 Mode=EnumItem(Enum.PositionAlignmentMode.TwoAttachment) RigidityEnabled=boolean(false)
+default Animation AnimationId=string()
+default AnimationController Name=string(AnimationController)
+default Animator Name=string(Animator)
+default Atmosphere Density=0.39500001072883606 Offset=0 Color=C3(0.784300029 0.666700006 0.423500001) Decay=C3(0.360799998 0.235300004 0.0549000017) Glare=0 Haze=0
+default Attachment CFrame=CF(0 0 0 1 0 0 0 1 0 0 0 1) Visible=boolean(false) Axis=V3(1 0 0) SecondaryAxis=V3(0 1 0) WorldPosition=V3(0 0 0)
+default Beam Width0=1 Width1=1 Segments=10 TextureLength=1 TextureMode=EnumItem(Enum.TextureMode.Stretch) TextureSpeed=1 CurveSize0=0 FaceCamera=boolean(false) LightEmission=0 Brightness=1 ZOffset=0 Enabled=boolean(true)
+default BillboardGui Size=UDim2({0, 0}, {0, 0}) StudsOffset=V3(0 0 0) AlwaysOnTop=boolean(false) MaxDistance=inf LightInfluence=0 Brightness=1 ClipsDescendants=boolean(false) ZIndexBehavior=EnumItem(Enum.ZIndexBehavior.Global)
+default BindableEvent Name=string(Event) Archivable=boolean(true)
+default BloomEffect Intensity=0.40000000596046448 Size=24 Threshold=0.94999998807907104
+default BlurEffect Size=24
+default Bone CFrame=CF(0 0 0 1 0 0 0 1 0 0 0 1) Transform=CF(0 0 0 1 0 0 0 1 0 0 0 1)
+default BoolValue Value=boolean(false)
+default CFrameValue Value=CF(0 0 0 1 0 0 0 1 0 0 0 1)
+default Camera FieldOfView=70 CameraType=EnumItem(Enum.CameraType.Fixed) FieldOfViewMode=EnumItem(Enum.FieldOfViewMode.Vertical) HeadScale=1 DiagonalFieldOfView=88.876533508300781 MaxAxisFieldOfView=70
+default CanvasGroup GroupColor3=C3(1 1 1) GroupTransparency=0
+default ClickDetector MaxActivationDistance=32 CursorIcon=string()
+default Color3Value Value=C3(0 0 0)
+default ColorCorrectionEffect Brightness=0 Contrast=0 Saturation=0 TintColor=C3(1 1 1)
+default Configuration Name=string(Configuration)
+default Decal Texture=string() Face=EnumItem(Enum.NormalId.Front) Transparency=0 Color3=C3(1 1 1) ZIndex=1
+default Explosion BlastRadius=4 BlastPressure=500000 DestroyJointRadiusPercent=1 ExplosionType=EnumItem(Enum.ExplosionType.Craters) Visible=boolean(true)
+default Fire Size=5 Heat=9 Color=C3(0.92549026 0.545098066 0.274509817) SecondaryColor=C3(0.545098066 0.313725501 0.215686291) TimeScale=1
+default Folder Name=string(Folder)
+default Frame Size=UDim2({0, 0}, {0, 0}) Position=UDim2({0, 0}, {0, 0}) BackgroundColor3=C3(0.639215708 0.635294139 0.647058845) BackgroundTransparency=0 BorderColor3=C3(0.105882354 0.164705887 0.20784314) BorderSizePixel=1 BorderMode=EnumItem(Enum.BorderMode.Outline) Visible=boolean(true) ZIndex=1 AnchorPoint=V2(0 0) ClipsDescendants=boolean(false) LayoutOrder=0 Rotation=0 AutomaticSize=EnumItem(Enum.AutomaticSize.None) SizeConstraint=EnumItem(Enum.SizeConstraint.RelativeXY) Active=boolean(false) Selectable=boolean(false) Interactable=boolean(true)
+default Highlight FillColor=C3(1 0 0) FillTransparency=0.5 OutlineColor=C3(1 1 1) OutlineTransparency=0 DepthMode=EnumItem(Enum.HighlightDepthMode.AlwaysOnTop) Enabled=boolean(true)
+default Humanoid Health=100 MaxHealth=100 WalkSpeed=16 JumpPower=50 JumpHeight=7.1999998092651367 UseJumpPower=boolean(true) HipHeight=0 RigType=EnumItem(Enum.HumanoidRigType.R6) DisplayDistanceType=EnumItem(Enum.HumanoidDisplayDistanceType.Viewer) AutoRotate=boolean(true) BreakJointsOnDeath=boolean(true) RequiresNeck=boolean(true) EvaluateStateMachine=boolean(true)
+default ImageLabel Image=string() ImageColor3=C3(1 1 1) ImageTransparency=0 ScaleType=EnumItem(Enum.ScaleType.Stretch) SliceCenter=Rect(0, 0, 0, 0) SliceScale=1 TileSize=UDim2({1, 0}, {1, 0}) ResampleMode=EnumItem(Enum.ResamplerMode.Default) ImageRectOffset=V2(0 0) ImageRectSize=V2(0 0)
+default IntValue Value=0
+default LinearVelocity MaxForce=1000 VectorVelocity=V3(0 0 0) VelocityConstraintMode=EnumItem(Enum.VelocityConstraintMode.Vector) RelativeTo=EnumItem(Enum.ActuatorRelativeTo.World)
+default MeshPart Size=V3(4 1.20000005 2) CanCollide=boolean(true) RenderFidelity=EnumItem(Enum.RenderFidelity.Automatic) CollisionFidelity=EnumItem(Enum.CollisionFidelity.Box) DoubleSided=boolean(false) MeshId=string() TextureID=string() Material=EnumItem(Enum.Material.Plastic)
+default Model PrimaryPart=nil(nil) LevelOfDetail=error:The current thread cannot read 'LevelOfDetail' (lacking capability PluginOrOpenCloud) ModelStreamingMode=EnumItem(Enum.ModelStreamingMode.Default) WorldPivot=CF(0 0 0 1 0 0 0 1 0 0 0 1) Name=string(Model)
+default Motor6D C0=CF(0 0 0 1 0 0 0 1 0 0 0 1) MaxVelocity=0 DesiredAngle=0 Transform=CF(0 0 0 1 0 0 0 1 0 0 0 1)
+default NumberValue Value=0
+default ObjectValue Value=nil(nil)
+default Part Size=V3(4 1.20000005 2) Anchored=boolean(false) CanCollide=boolean(true) CanQuery=boolean(true) CanTouch=boolean(true) CastShadow=boolean(true) Color=C3(0.639215708 0.635294139 0.647058845) Material=EnumItem(Enum.Material.Plastic) Transparency=0 Reflectance=0 Shape=EnumItem(Enum.PartType.Block) TopSurface=EnumItem(Enum.SurfaceType.Studs) BottomSurface=EnumItem(Enum.SurfaceType.Inlet) Massless=boolean(false) Locked=boolean(false) CollisionGroup=string(Default) BrickColor=BrickColor(Medium stone grey) CFrame=CF(0 0 0 1 0 0 0 1 0 0 0 1) Name=string(Part) Archivable=boolean(true)
+default ParticleEmitter Rate=20 Lifetime=NumberRange(5 10 ) Speed=NumberRange(5 5 ) SpreadAngle=V2(0 0) Enabled=boolean(true) LightEmission=0 Texture=string(rbxasset://textures/particles/sparkles_main.dds) ZOffset=0 Rotation=NumberRange(0 0 ) RotSpeed=NumberRange(0 0 ) Drag=0 TimeScale=1 Orientation=EnumItem(Enum.ParticleOrientation.FacingCamera) EmissionDirection=EnumItem(Enum.NormalId.Top) Shape=EnumItem(Enum.ParticleEmitterShape.Box) Squash=NumberSequence(0 0 0 1 0 0 ) Brightness=1 LockedToPart=boolean(false) VelocityInheritance=0 WindAffectsDrag=boolean(false) FlipbookLayout=EnumItem(Enum.ParticleFlipbookLayout.None)
+default PointLight Brightness=1 Range=8 Color=C3(1 1 1) Shadows=boolean(false) Enabled=boolean(true)
+default ProximityPrompt ActionText=string(Interact) HoldDuration=0 MaxActivationDistance=10 KeyboardKeyCode=EnumItem(Enum.KeyCode.E) RequiresLineOfSight=boolean(true) Style=EnumItem(Enum.ProximityPromptStyle.Default) Exclusivity=EnumItem(Enum.ProximityPromptExclusivity.OnePerButton)
+default ScreenGui ResetOnSpawn=boolean(true) IgnoreGuiInset=boolean(false) ZIndexBehavior=EnumItem(Enum.ZIndexBehavior.Global) DisplayOrder=0 Enabled=boolean(true) ScreenInsets=EnumItem(Enum.ScreenInsets.CoreUISafeInsets) ClipToDeviceSafeArea=boolean(true) SafeAreaCompatibility=EnumItem(Enum.SafeAreaCompatibility.FullscreenExtension)
+default ScrollingFrame CanvasSize=UDim2({0, 0}, {2, 0}) CanvasPosition=V2(0 0) ScrollBarThickness=12 ScrollingDirection=EnumItem(Enum.ScrollingDirection.XY) ElasticBehavior=EnumItem(Enum.ElasticBehavior.WhenScrollable) AutomaticCanvasSize=EnumItem(Enum.AutomaticSize.None) ScrollingEnabled=boolean(true) VerticalScrollBarInset=EnumItem(Enum.ScrollBarInset.None) HorizontalScrollBarPosition=error:HorizontalScrollBarPosition is not a valid member of ScrollingFrame "ScrollingFrame" VerticalScrollBarPosition=EnumItem(Enum.VerticalScrollBarPosition.Right) ScrollBarImageColor3=C3(1 1 1) ScrollBarImageTransparency=0
+default Smoke Size=1 Opacity=0.5 RiseVelocity=1 Color=C3(1 1 1)
+default Sound Volume=0.5 PlaybackSpeed=1 Looped=boolean(false) Playing=boolean(false) TimePosition=0 RollOffMaxDistance=10000 RollOffMinDistance=10 RollOffMode=EnumItem(Enum.RollOffMode.Inverse) SoundId=string() PlayOnRemove=boolean(false)
+default Sparkles SparkleColor=C3(0.564705908 0.0980392247 1) TimeScale=1
+default SpecialMesh MeshType=EnumItem(Enum.MeshType.Head) Scale=V3(1 1 1) Offset=V3(0 0 0) VertexColor=V3(1 1 1)
+default SpotLight Angle=90 Face=EnumItem(Enum.NormalId.Front) Range=16
+default StringValue Value=string()
+default SurfaceGui Face=EnumItem(Enum.NormalId.Front) PixelsPerStud=50 SizingMode=EnumItem(Enum.SurfaceGuiSizingMode.FixedSize) CanvasSize=V2(800 600) LightInfluence=0 AlwaysOnTop=boolean(false) ZOffset=0
+default TextBox Text=string(TextBox) ClearTextOnFocus=boolean(true) MultiLine=boolean(false) PlaceholderText=string() TextEditable=boolean(true) ShowNativeInput=boolean(true)
+default TextButton Text=string(Button) AutoButtonColor=boolean(true) Modal=boolean(false) Selected=boolean(false) Style=EnumItem(Enum.ButtonStyle.Custom) TextSize=8 Size=UDim2({0, 0}, {0, 0})
+default TextLabel Text=string(Label) TextSize=8 TextColor3=C3(0.105882362 0.164705887 0.207843155) Font=EnumItem(Enum.Font.Legacy) TextScaled=boolean(false) TextWrapped=boolean(false) TextXAlignment=EnumItem(Enum.TextXAlignment.Center) TextYAlignment=EnumItem(Enum.TextYAlignment.Center) RichText=boolean(false) TextTransparency=0 TextStrokeTransparency=1 LineHeight=1 MaxVisibleGraphemes=-1 AutoLocalize=boolean(true) Size=UDim2({0, 0}, {0, 0}) BackgroundColor3=C3(0.639215708 0.635294139 0.647058845)
+default Texture StudsPerTileU=2 StudsPerTileV=2 OffsetStudsU=0
+default Tool CanBeDropped=boolean(true) Enabled=boolean(true) ManualActivationOnly=boolean(false) RequiresHandle=boolean(true) ToolTip=string() Grip=CF(0 0 0 1 0 0 0 1 0 0 0 1)
+default Trail Lifetime=2 MinLength=0.10000000149011612 MaxLength=0 WidthScale=NumberSequence(0 1 0 1 1 0 ) FaceCamera=boolean(false) Enabled=boolean(true) TextureLength=1 TextureMode=EnumItem(Enum.TextureMode.Stretch)
+default UIAspectRatioConstraint AspectRatio=1 AspectType=EnumItem(Enum.AspectType.FitWithinMaxSize) DominantAxis=EnumItem(Enum.DominantAxis.Width)
+default UICorner CornerRadius=UDim(0, 8)
+default UIGradient Rotation=0 Offset=V2(0 0) Enabled=boolean(true)
+default UIGridLayout CellSize=UDim2({0, 100}, {0, 100}) CellPadding=UDim2({0, 5}, {0, 5}) FillDirectionMaxCells=0 StartCorner=EnumItem(Enum.StartCorner.TopLeft)
+default UIListLayout Padding=UDim(0, 0) FillDirection=EnumItem(Enum.FillDirection.Vertical) SortOrder=EnumItem(Enum.SortOrder.Name) HorizontalAlignment=EnumItem(Enum.HorizontalAlignment.Left) VerticalAlignment=EnumItem(Enum.VerticalAlignment.Top) Wraps=boolean(false) HorizontalFlex=EnumItem(Enum.UIFlexAlignment.None) VerticalFlex=EnumItem(Enum.UIFlexAlignment.None) ItemLineAlignment=EnumItem(Enum.ItemLineAlignment.Automatic)
+default UIPadding PaddingTop=UDim(0, 0) PaddingLeft=UDim(0, 0)
+default UIScale Scale=1
+default UIStroke Thickness=1 Color=C3(0 0 0) ApplyStrokeMode=EnumItem(Enum.ApplyStrokeMode.Contextual) LineJoinMode=EnumItem(Enum.LineJoinMode.Round) Transparency=0 Enabled=boolean(true)
+default Vector3Value Value=V3(0 0 0)
+default VideoFrame Looped=boolean(false) Playing=boolean(false) Volume=1
+default ViewportFrame Ambient=C3(0.784313738 0.784313738 0.784313738) LightColor=C3(0.549019635 0.549019635 0.549019635) LightDirection=V3(-1 -1 -1) ImageColor3=C3(1 1 1) ImageTransparency=0
+default Weld C0=CF(0 0 0 1 0 0 0 1 0 0 0 1) C1=CF(0 0 0 1 0 0 0 1 0 0 0 1) Enabled=boolean(true)
+default WeldConstraint Enabled=boolean(true) Active=boolean(false)
+children b:1,a:2,c:3,a:4,B:5,a:6
+findfirstchild a -> 2
+children-after-readd b:1,c:3,a:4,B:5,a:6,a:2
+findfirstchild a after readd -> 4
+indexing a -> 4
+rename-keeps-order b:1,c:3,z:4,B:5,a:6,a:2
+ofclass Part -> 4 whichisa BasePart -> 4
+findfirstchild B case -> 5
+findfirstchild missing -> nil
+recursive find -> Folder.b.deep.target
+descendants 9
+descendant-order b,deep,target,c,target,z,B,a,a
+findfirstdescendant -> error FindFirstDescendant is not enabled
+findfirstancestor -> b ofclass deep whichisa deep
+isdescendantof true true self false nil ok true
+fullname Folder.b.deep.target | Workspace | game is its name true
+waitforchild-hit c
+waitforchild-timeout nil
+findfirstchild-number ok nil
+findfirstchild-nil error Argument 1 missing or nil
+clone parent nil name Source attributes Num=5,Str=string(x),Vec=V3(1 2 3) tags TagA,TagB
+clone children Kept,Pointer,Outside,Weld
+clone pointer-remapped true outside-kept true weld-part0 true
+clone-unarchivable nil
+clone-service error Lighting cannot be cloned
+clone-player-service error Players cannot be cloned
+attribute string ok  -> string(s)
+attribute number ok  -> 1.5
+attribute integer ok  -> 3
+attribute boolean ok  -> boolean(true)
+attribute UDim ok  -> UDim(1, 2)
+attribute UDim2 ok  -> UDim2({1, 2}, {3, 4})
+attribute BrickColor ok  -> BrickColor(Bright red)
+attribute Color3 ok  -> C3(1 0.5 0)
+attribute Vector2 ok  -> V2(1 2)
+attribute Vector3 ok  -> V3(1 2 3)
+attribute CFrame ok  -> CF(1 2 3 1 0 0 0 1 0 0 0 1)
+attribute NumberSequence ok  -> NumberSequence(0 1 0 1 1 0 )
+attribute ColorSequence ok  -> ColorSequence(0 1 0 0 0 1 1 0 0 0 )
+attribute NumberRange ok  -> NumberRange(1 2 )
+attribute Rect ok  -> Rect(1, 2, 3, 4)
+attribute Font ok  -> Font(Font { Family = rbxasset://fonts/families/Arial.json, Weight = Regular, Style = Normal })
+attribute EnumItem ok  -> EnumItem(Enum.Material.Plastic)
+attribute table error Array is not a supported attribute type -> nil(nil)
+attribute Instance ok  -> InstanceHandle(Workspace)
+attribute function error Function is not a supported attribute type -> nil(nil)
+attribute Vector3int16 error Vector3int16 is not a supported attribute type -> nil(nil)
+attribute Ray error Ray is not a supported attribute type -> nil(nil)
+attribute inf ok  -> inf
+attribute nan ok  -> nan
+attribute Region3 error Region3 is not a supported attribute type -> nil(nil)
+attribute buffer error buffer is not a supported attribute type -> nil(nil)
+attribute vector ok  -> V3(1 2 3)
+attribute-name "" error Attribute name cannot be empty ("")
+attribute-name "with space" error Attribute name contains illegal character ' ' ("with space")
+attribute-name "dash-name" ok 
+attribute-name "under_score" ok 
+attribute-name "dot.name" ok 
+attribute-name "RBXName" error Attempt to assign attribute RBXName. CoreScript permission required
+attribute-name "rbxname" ok 
+attribute-name "123" ok 
+attribute-name "Ünï" error Attribute name contains illegal character '\xC3' ("Ünï")
+attribute-name "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" ok 
+attribute-name "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" error Attribute name exceeds 100 character limit ("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+attribute-name "a/b" ok 
+attribute-name "$x" error Attribute name contains illegal character '$' ("$x")
+attribute-name-number ok 
+getattribute-missing nil
+getattribute-nonstring ok 1
+getattributes-count 12
+long-string-attribute ok 
+tags a,b has true false
+tags-after-remove a
+addtag-number ok 
+addtag-empty ok 
+gettagged 1 parentless 0

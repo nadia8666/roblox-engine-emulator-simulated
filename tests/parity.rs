@@ -1,7 +1,7 @@
 //! Differential tests against the real engine (tools/parity, README.md there): every probe with a captured expected
 //! output runs through the built `ree`, and every expected line it does not print must be listed in known.json as a
 //! known difference. A fix that makes a known line match passes too; `node tools/parity/run.mjs` says which entries
-//! to remove.
+//! to remove. The server's set (expected/server, known-server.json) runs the same way with `--run-context server`.
 
 use std::{
     collections::HashSet,
@@ -54,13 +54,15 @@ fn missing(expected: &[String], actual: &[String]) -> Vec<String> {
 const HARNESS_PRINT: &str = "local __ParityLines, __ParityRealPrint = {}, print\nlocal function print(...)\n\tlocal Parts = table.pack(...)\n\tfor Index = 1, Parts.n do\n\t\tParts[Index] = tostring(Parts[Index])\n\tend\n\ttable.insert(__ParityLines, table.concat(Parts, \" \", 1, Parts.n))\nend";
 const HARNESS_FLUSH: &str = "for _, Line in __ParityLines do\n\t__ParityRealPrint(Line)\nend\n__ParityRealPrint(\"@done\")";
 
-fn run_probe(scratch: &Path, name: &str, source: &str) -> Vec<String> {
+fn run_probe(scratch: &Path, name: &str, source: &str, server: bool) -> Vec<String> {
     let harness = scratch.join(format!("{name}.luau"));
     std::fs::write(&harness, format!("return function(Context)\n{HARNESS_PRINT}\n{source}\n{HARNESS_FLUSH}\nend\n")).unwrap();
     let empty = scratch.join("empty");
     std::fs::create_dir_all(&empty).unwrap();
+    let context: &[&str] = if server { &["--run-context", "server"] } else { &[] };
     let done = Command::new(env!("CARGO_BIN_EXE_ree"))
         .args(["run", "--harness", &harness.to_string_lossy(), "--roots", &empty.to_string_lossy(), "--seconds", "120"])
+        .args(context)
         .env_remove("REE_FROZEN_CLOCK")
         .output()
         .unwrap();
@@ -80,11 +82,24 @@ fn run_probe(scratch: &Path, name: &str, source: &str) -> Vec<String> {
 
 #[test]
 fn probes_print_what_the_real_engine_printed() {
+    check(false);
+}
+
+/// The probes run as a server's script (a Studio 0.744 play session's server: capture_sim.py), ree with --run-context server
+#[test]
+fn probes_print_on_a_server_what_a_real_server_printed() {
+    check(true);
+}
+
+fn check(server: bool) {
     let dir = parity_dir();
     let prelude = std::fs::read_to_string(dir.join("prelude.luau")).unwrap();
-    let known: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("known.json")).unwrap()).unwrap();
+    let known_file = if server { "known-server.json" } else { "known.json" };
+    let known: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join(known_file)).unwrap()).unwrap();
+    let expected_dir = if server { dir.join("expected").join("server") } else { dir.join("expected") };
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let scratch = std::env::temp_dir().join(format!("ree-parity-{}-{nanos}", std::process::id()));
+    let side = if server { "server" } else { "client" };
+    let scratch = std::env::temp_dir().join(format!("ree-parity-{side}-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(&scratch).unwrap();
     let mut names: Vec<String> = std::fs::read_dir(dir.join("probes"))
         .unwrap()
@@ -94,10 +109,10 @@ fn probes_print_what_the_real_engine_printed() {
     let mut failures = Vec::new();
     let mut checked = 0;
     for name in &names {
-        let Ok(expected) = std::fs::read_to_string(dir.join("expected").join(format!("{name}.txt"))) else { continue };
+        let Ok(expected) = std::fs::read_to_string(expected_dir.join(format!("{name}.txt"))) else { continue };
         let expected = expected_lines(&expected);
         let probe = std::fs::read_to_string(dir.join("probes").join(format!("{name}.luau"))).unwrap();
-        let actual = run_probe(&scratch, name, &body(&prelude, &probe));
+        let actual = run_probe(&scratch, name, &body(&prelude, &probe), server);
         let allowed: HashSet<&str> =
             known[name.as_str()].as_array().map(|list| list.iter().filter_map(|entry| entry["line"].as_str()).collect()).unwrap_or_default();
         for line in missing(&expected, &actual) {
@@ -109,5 +124,6 @@ fn probes_print_what_the_real_engine_printed() {
     }
     let _ = std::fs::remove_dir_all(&scratch);
     assert!(checked > 0, "no probe has an expected output");
-    assert!(failures.is_empty(), "{} new differences from the real engine (node tools/parity/run.mjs --diff):\n{}", failures.len(), failures.join("\n"));
+    let command = if server { "node tools/parity/run.mjs --server --diff" } else { "node tools/parity/run.mjs --diff" };
+    assert!(failures.is_empty(), "{} new differences from the real engine ({command}):\n{}", failures.len(), failures.join("\n"));
 }

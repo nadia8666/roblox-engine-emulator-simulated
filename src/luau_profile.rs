@@ -272,7 +272,7 @@ pub fn set_phase(name: &str) {
 }
 
 /// Luau's `onallocate` callback: `old` bytes became `new` (0 for a new block).
-unsafe extern "C-unwind" fn allocating(state: *mut mlua::ffi::lua_State, old: usize, new: usize) {
+unsafe extern "C-unwind" fn allocating(state: *mut mlua::ffi::lua_State, _block: *mut std::ffi::c_void, old: usize, new: usize, _memcat: u8, _tt: i32, _tag: i32) {
     if new <= old {
         return;
     }
@@ -465,11 +465,7 @@ pub fn install(lua: &mlua::Lua) {
         return;
     }
     if time || boundary || suite_interrupt {
-        unsafe {
-            let _ = lua.exec_raw::<()>((), |state| {
-                (*mlua::ffi::lua_callbacks(state)).interrupt = Some(sampling_interrupt);
-            });
-        }
+        unsafe { (*callbacks(lua)).interrupt = Some(sampling_interrupt) };
     }
     if allocations && !suite_allocations {
         hook_allocations(lua);
@@ -481,13 +477,16 @@ pub fn install(lua: &mlua::Lua) {
     }
 }
 
+/// `lua`'s VM's callbacks, read straight from its state: `exec_raw` would run a protected call, which makes a closure on
+/// the VM's heap, and those few bytes move where the collector's later cycles begin, so what a script reads of memory
+/// (collectgarbage("count")) differed at some frames with a profile that hooks the VM this way
+fn callbacks(lua: &mlua::Lua) -> *mut mlua::ffi::lua_Callbacks {
+    unsafe { mlua::ffi::lua_callbacks(lua.current_thread().state()) }
+}
+
 /// Points `lua`'s `onallocate` callback at the allocation profile of the thread it runs on.
 pub(crate) fn hook_allocations(lua: &mlua::Lua) {
-    unsafe {
-        let _ = lua.exec_raw::<()>((), |state| {
-            (*mlua::ffi::lua_callbacks(state)).onallocate = Some(allocating);
-        });
-    }
+    unsafe { (*callbacks(lua)).onallocate = Some(allocating) };
 }
 
 pub struct ProfileGuard;

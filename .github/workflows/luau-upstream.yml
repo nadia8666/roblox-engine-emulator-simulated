@@ -1,0 +1,25 @@
+# Weekly: does the Luau patch series (patches/luau/) still apply to the newest upstream release? It runs
+# `node tools/vendor.mjs try latest` (docs/building.md "Updating Luau"), which changes nothing and fails naming the topics
+# that conflict. Runs on the public repository only, as ci.yml does: the private one has no free Actions minutes to spare.
+name: Luau upstream
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  try:
+    if: ${{ !github.event.repository.private }}
+    name: The series against the newest Luau release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Apply patches/luau/ to the newest release
+        run: node tools/vendor.mjs try latest

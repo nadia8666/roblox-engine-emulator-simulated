@@ -8,6 +8,11 @@ casts, emits and sound plays) and a recorder that writes what a script does to t
 scene and a playback [ror](https://github.com/Anime-Vanguards/roblox-object-renderer) draws. The Luau
 runs in an embedded, patched Luau VM (mlua), compiled into the crate.
 
+> [!NOTE]
+> Almost all of the code here was written by AI: Claude, Anthropic's model, at its maintainers' direction. A lot of
+> work went into making it correct, usable and fast for real projects (its behaviour is measured against Roblox Studio
+> and checked by tests and benchmarks), but in the end Claude wrote nearly all of it.
+
 <a href="docs/media/cutscene-1.mp4"><img src="docs/media/cutscene-1.webp" width="100%" alt="A cutscene: a giant winged figure rises over a dark field, a burst of light, and a shockwave rolls over the ground"></a>
 
 A cutscene from a live Roblox game, run offline. The game's own cutscene Luau, unchanged, builds its scene and drives
@@ -78,11 +83,40 @@ services.
 
 <img src="docs/media/ree-run.webp" width="100%" alt="A Luau harness that creates a Part, tweens it, raycasts at it and changes an attribute, and the JSON ree run prints for it">
 
+## Profiling
+
+`ree run` and `ree record` take `--profile all`: the Luau's work by function and line, priced as a Roblox client pays
+for it, with allocations, the heap, Luau's inline caches and the run frame by frame. `ree profile view` opens a profile
+in the terminal, one key per view: a flame graph, callers and callees, each line's cost, allocation sites, the heap, the
+timeline, the caches, a before and after diff, and the issues the numbers show. To try it on a leaderboard written the
+slow way on purpose ([tools/profile-demo](tools/profile-demo/leaderboard.luau)):
+
+```sh
+ree run --harness tools/profile-demo/leaderboard.luau --seconds 2 --profile all --profile-out out/leaderboard
+ree profile view out/leaderboard
+```
+
+<img src="docs/media/profile-view-overview.webp" width="100%" alt="The profile viewer's Overview of the leaderboard: the run's totals as cards, its work frame by frame, the issues it found (a sort every frame, a site that allocates every frame, tables regrown) and the hottest functions on a heat scale">
+
+`ree profile try` runs other ways to write the same thing side by side, at growing input sizes
+([tools/what-if](tools/what-if) has examples). Here, a table keyed by kind then item against one keyed by item then
+kind:
+
+```sh
+ree profile try tools/what-if/nested-keys.luau      # writes what-if/nested-keys/
+ree profile view what-if/nested-keys
+```
+
+<img src="docs/media/profile-view-compare.webp" width="100%" alt="The profile viewer's Compare view: two table layouts' cost by input size on a log-log plot, the second over the first by size, and every measured figure of one against the other">
+
+`ree profile render <dir> --out view.png` draws any view without a terminal, as PNG, SVG or text and the same on every
+machine, for a pull request or an agent to read. Views, keys and options: [docs/cli.md](docs/cli.md#the-profile-viewer).
+
 ## Documentation
 
 - [Building](docs/building.md): requirements, the build, cargo features, the allocator.
 - [Command line](docs/cli.md): harnesses and their `Context`, engine options, limits, recordings, animation, the warm
-  service, caches, environment variables.
+  service, profiles and the profile viewer, what-if comparisons, caches, environment variables.
 - [Rust API](docs/api.md): embedding the engine, layers and extensions, using the crate from another crate.
 - [Engine contract](docs/engine.md): how the engine works inside, its rules and formats, known limitations.
 - [Verification](docs/verification.md) and [source layout](docs/layout.md).

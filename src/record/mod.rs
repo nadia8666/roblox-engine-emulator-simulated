@@ -21,6 +21,12 @@
 //!   `Lighting` while they are there (so are the post effects it parents to the CurrentCamera: Studio
 //!   draws them as it draws Lighting's). The place's own (ror's stage: `--lighting-from`'s) leave with
 //!   the run's taking its own of their class out of Lighting and come back with them.
+//! - A Studio-only placeholder (the place's hierarchy snapshot gives it a class and a name and no values;
+//!   project::materialize builds it when a script first lists its parent) is the place's own: one that
+//!   draws (an effect, a part, a highlight, a sky) is never drawn, in the world or in Lighting, since the
+//!   renderer's stage draws the place's look, and a folder or model is drawn only once something the run
+//!   made is under it, as that appears. So a run that looks at more of the place records what one that
+//!   does not records.
 //! - The ScreenGuis the local player's PlayerGui shows are kept in the scene's `PlayerGui` (ror draws
 //!   them over the finished image), hidden by Enabled off while they are not there.
 //! - Prints, warnings, errors and sound plays go to the event log with their times; the camera's
@@ -47,6 +53,7 @@ use super::{
     value::Value,
     world::{self, Emission, WorldEvent, frame},
 };
+use crate::dom::flags;
 use encode::{cframe_json, numbers, round, to_json};
 
 /// How a tracked property plays back.
@@ -1019,7 +1026,7 @@ fn parent_slot(inner: &Inner, state: &State, engine: &Engine, id: InstanceId) ->
     if inner.screens.contains_key(&id) {
         return Some((None, false));
     }
-    let parent = state.dom.parent_of(id)?;
+    let parent = placed_parent(state, engine, id)?;
     // (most instances' parent is recorded: the Workspace, the drawn camera and Lighting never are)
     if let Some(&index) = inner.by_id.get(&parent) {
         return Some((Some(index), inner.records[index].lighting_child));
@@ -1042,8 +1049,41 @@ fn parent_slot(inner: &Inner, state: &State, engine: &Engine, id: InstanceId) ->
 
 /// The instance an instance draws under: an adorned GUI's adornee, a ScreenGui's PlayerGui (whatever
 /// Folder of it holds it), else its parent.
-fn drawn_parent(inner: &Inner, state: &State, id: InstanceId) -> Option<InstanceId> {
-    inner.adorned.get(&id).or_else(|| inner.screens.get(&id)).copied().or_else(|| state.dom.parent_of(id))
+fn drawn_parent(inner: &Inner, state: &State, engine: &Engine, id: InstanceId) -> Option<InstanceId> {
+    inner.adorned.get(&id).or_else(|| inner.screens.get(&id)).copied().or_else(|| placed_parent(state, engine, id))
+}
+
+/// The nearest instance above `id` that is not a Studio-only placeholder the recording passes over (one that draws; a folder or
+/// model is drawn once something the run made is under it, [`push_holders`]).
+fn placed_parent(state: &State, engine: &Engine, id: InstanceId) -> Option<InstanceId> {
+    let mut parent = state.dom.parent_of(id)?;
+    while state.dom.at(parent).has(flags::STUDIO_ONLY) && !holds(state, engine, parent) {
+        parent = state.dom.parent_of(parent)?;
+    }
+    Some(parent)
+}
+
+/// A placeholder of a class that only holds what is under it (a folder, a model): drawn for what the run put in it.
+fn holds(state: &State, engine: &Engine, id: InstanceId) -> bool {
+    let class = state.dom.at(id).class;
+    is_a(engine, class, "Folder") || is_a(engine, class, "Model")
+}
+
+/// Before `id` (not a placeholder), the placeholder folders and models above it that hold it, outermost first, once a walk
+/// (parents first, as the walk lists everything).
+fn push_holders(state: &State, engine: &Engine, id: InstanceId, now: &mut Vec<InstanceId>, holders: &mut FxHashSet<InstanceId>) {
+    let mut chain: Vec<InstanceId> = Vec::new();
+    let mut at = state.dom.parent_of(id);
+    while let Some(parent) = at.filter(|&parent| state.dom.at(parent).has(flags::STUDIO_ONLY)) {
+        if holds(state, engine, parent) && !holders.contains(&parent) {
+            chain.push(parent);
+        }
+        at = state.dom.parent_of(parent);
+    }
+    for &holder in chain.iter().rev() {
+        holders.insert(holder);
+        now.push(holder);
+    }
 }
 
 /// A new record for `id`, appearing at the current frame.
@@ -1097,7 +1137,7 @@ fn appear(inner: &mut Inner, state: &State, engine: &Engine, id: InstanceId, par
         physics_from: None,
         physics_steered: false,
         parents: Vec::new(),
-        parent_id: drawn_parent(inner, state, id),
+        parent_id: drawn_parent(inner, state, engine, id),
         home: if screen { PLAYER_GUI.to_string() } else { parent.map(|p| inner.records[p].path.clone()).unwrap_or_default() },
         lighting_child: lighting,
         screen,
@@ -1260,7 +1300,7 @@ fn sample(inner: &mut Inner, engine: &Rc<Engine>) {
     let lighting = super::services::find_service(engine, world.game, "Lighting");
     // (no parent changed anywhere since the last walk, no Adornee was written and the same camera is
     // drawn: the world holds what it held, where it was, so nothing appears, comes back, moves or leaves)
-    stage_moves(inner, engine);
+    stage_moves(inner, &state, engine);
     let walk = inner.walk_always || inner.adornee_written || inner.walked != Some((state.dom.structure_version, world.camera));
     if walk {
         crate::timing::time("frames: sample: walk", || walk_world(inner, &state, engine, lighting));
@@ -1274,12 +1314,13 @@ fn sample(inner: &mut Inner, engine: &Rc<Engine>) {
 /// recording never showed (there before the run, or gone before a frame showed it) taken out takes
 /// the stage's of its class with it, as a cutscene that parks the map's look does;
 /// one from before the run put back brings them back (one the run made is recorded when it comes).
-fn stage_moves(inner: &mut Inner, engine: &Engine) {
+fn stage_moves(inner: &mut Inner, state: &State, engine: &Engine) {
     for (id, class, into) in std::mem::take(&mut inner.lighting_moves) {
         if !LIGHTING_CHILDREN.iter().any(|name| is_a(engine, class, name)) {
             continue;
         }
-        let own = if into { inner.ignored.contains(&id) } else { !inner.by_id.contains_key(&id) };
+        let placeholder = state.dom.get(id).is_some_and(|instance| instance.has(flags::STUDIO_ONLY));
+        let own = if into { inner.ignored.contains(&id) || placeholder } else { !inner.by_id.contains_key(&id) };
         let name = class_name(engine, class);
         let shown = inner.stage.iter().rev().find(|(_, stage, _)| stage == name).is_none_or(|(_, _, shown)| *shown);
         if own && shown != into {
@@ -1297,6 +1338,8 @@ fn walk_world(inner: &mut Inner, state: &State, engine: &Rc<Engine>, lighting: O
     let mut now: Vec<InstanceId> = std::mem::take(&mut inner.walk_buffer);
     now.clear();
     let mut stack: Vec<InstanceId> = state.dom.children_of(world.workspace).iter().rev().copied().collect();
+    // (the placeholder folders and models of this walk drawn for what is under them)
+    let mut holders: FxHashSet<InstanceId> = FxHashSet::default();
     while let Some(id) = stack.pop() {
         let class = state.dom.at(id).class;
         if skipped(inner, engine, class) {
@@ -1305,6 +1348,13 @@ fn walk_world(inner: &mut Inner, state: &State, engine: &Rc<Engine>, lighting: O
             }
             continue;
         }
+        // (a Studio-only placeholder is not drawn for itself, whenever it was built; what the run put in it is, under the
+        // placeholder folders and models above it)
+        if state.dom.at(id).has(flags::STUDIO_ONLY) {
+            stack.extend(state.dom.children_of(id).iter().rev().copied());
+            continue;
+        }
+        push_holders(state, engine, id, &mut now, &mut holders);
         now.push(id);
         stack.extend(state.dom.children_of(id).iter().rev().copied());
     }
@@ -1357,7 +1407,11 @@ fn walk_world(inner: &mut Inner, state: &State, engine: &Rc<Engine>, lighting: O
             .iter()
             .rev()
             .copied()
-            .filter(|&c| !inner.ignored.contains(&c) && LIGHTING_CHILDREN.iter().any(|name| is_a(engine, state.dom.at(c).class, name)))
+            .filter(|&c| {
+                !inner.ignored.contains(&c)
+                    && !state.dom.at(c).has(flags::STUDIO_ONLY)
+                    && LIGHTING_CHILDREN.iter().any(|name| is_a(engine, state.dom.at(c).class, name))
+            })
             .collect();
         while let Some(id) = stack.pop() {
             now.push(id);
@@ -1386,7 +1440,7 @@ fn walk_world(inner: &mut Inner, state: &State, engine: &Rc<Engine>, lighting: O
                 mark_seen(inner, &mut found, index, walk);
             }
             Some(index) => {
-                let current_parent = drawn_parent(inner, state, id);
+                let current_parent = drawn_parent(inner, state, engine, id);
                 if inner.records[index].parent_id != current_parent && !in_lighting {
                     let screen = parent.is_none() && inner.screens.contains_key(&id);
                     let path = if screen { PLAYER_GUI.to_string() } else { parent.map(|p| inner.records[p].path.clone()).unwrap_or_default() };

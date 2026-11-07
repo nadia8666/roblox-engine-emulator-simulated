@@ -1,10 +1,10 @@
-//! Patched Luau VM behaviour (tools/native-host/luau.patch, applied to luau0-src via [patch.crates-io]).
+//! Patched Luau VM behaviour (patches/luau/, applied to luau0-src via [patch.crates-io]).
 //!
 //! Ported from the Lune-hosted runtime/tests/table_find.luau and runtime/tests/native_builtins.luau.
 //! The Luau sources live in tests/luau/ and run through mlua directly, so they exercise the same VM
 //! build the engine links.
 
-use mlua::{Compiler, Function, Lua, LuaSerdeExt, Result, Table, Value};
+use mlua::{chunk::Compiler, Function, Lua, LuaSerdeExt, Result, Table, Value};
 
 const TABLE_FIND: &str = include_str!("luau/table_find.luau");
 const NATIVE_BUILTINS: &str = include_str!("luau/native_builtins.luau");
@@ -208,5 +208,56 @@ fn an_interpreted_iterator_yields_and_const_declares_a_local() -> Result<()> {
         .set_name("iterator_yield")
         .eval()?;
     assert_eq!(result, "1/0 2/2 3/4 4 2");
+    Ok(())
+}
+
+/// `math.isnan`, `math.isinf` and `math.isfinite`, Luau's number classifiers (0.701; upstream's own since the 0.746 bump): the
+/// results, the strings `luaL_checknumber` takes, the errors, one result, and a constant argument folded by the compiler, with the
+/// same answers interpreted, natively compiled and through a plain C call (a table's field, never a fast call).
+#[test]
+fn math_number_classifiers_answer_as_luau_does() -> Result<()> {
+    for jit in [false, true] {
+        let lua = Lua::new();
+        lua.enable_jit(jit && codegen_supported());
+        let result: String = lua
+            .load(
+                r##"
+                local K = { Zero = 0, One = 1, Huge = math.huge }
+                local Field = { isnan = math.isnan, isinf = math.isinf, isfinite = math.isfinite }
+                local Out = {}
+                for _, Value in { K.Zero, -K.Zero, K.One, 1e308 * K.One, 5e-324 * K.One, K.Huge, -K.Huge, K.Zero / K.Zero, -(K.Zero / K.Zero), 1e308 * 10 * K.One } do
+                    local Fast = `{math.isnan(Value)} {math.isinf(Value)} {math.isfinite(Value)}`
+                    assert(Fast == `{Field.isnan(Value)} {Field.isinf(Value)} {Field.isfinite(Value)}`, "a C call answers as the fast call")
+                    table.insert(Out, Fast)
+                end
+                for _, Text in { "1", " 1 ", "0x10", "1e400", "inf", "nan" } do
+                    table.insert(Out, `{math.isnan(Text)} {math.isinf(Text)} {math.isfinite(Text)}`)
+                end
+                assert(math.isnan(0 / 0) and not math.isnan(0) and math.isinf(math.huge) and not math.isinf(-4) and math.isfinite(42) and not math.isfinite(-math.huge))
+                assert(select("#", math.isnan(1)) == 1 and select("#", math.isfinite(1, 2, 3)) == 1)
+                local function Error(Function, ...)
+                    local Ok, Message = pcall(Function, ...)
+                    assert(not Ok)
+                    return Message
+                end
+                table.insert(Out, Error(math.isnan, nil))
+                table.insert(Out, Error(math.isinf))
+                table.insert(Out, Error(math.isfinite, "abc"))
+                table.insert(Out, Error(math.isnan, {}))
+                return table.concat(Out, "|")
+                "##,
+            )
+            .set_name("classifiers")
+            .eval()?;
+        assert_eq!(
+            result,
+            "false false true|false false true|false false true|false false true|false false true|false true false|false true false|\
+             true false false|true false false|false true false|\
+             false false true|false false true|false false true|false true false|false true false|true false false|\
+             invalid argument #1 to 'isnan' (number expected, got nil)|missing argument #1 to 'isinf' (number expected)|\
+             invalid argument #1 to 'isfinite' (number expected, got string)|invalid argument #1 to 'isnan' (number expected, got table)",
+            "jit {jit}"
+        );
+    }
     Ok(())
 }

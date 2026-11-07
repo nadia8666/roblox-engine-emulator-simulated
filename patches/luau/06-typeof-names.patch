@@ -1,0 +1,114 @@
+# Topic: the builtin typeof names a host's values
+#
+# What it does: lua_settypeofnames, a table mapping a host's tables and userdata to the names its typeof gives them,
+# and a name for every vector, so a script's typeof (a fast call) answers as the host's typeof does.
+#
+# Why upstream lacks it: the builtin reads only a value's own type name (and a userdata metatable's __type).
+
+diff --git a/luau/VM/include/lua.h b/luau/VM/include/lua.h
+index 7ecf17e..80a85ef 100644
+--- a/luau/VM/include/lua.h
++++ b/luau/VM/include/lua.h
+@@ -395,6 +395,11 @@ LUA_API void lua_workmute(lua_State* L, int on);
+ // that must collect at the same points in every run gives it a clock of the work done instead. NULL restores the wall clock.
+ LUA_API void lua_setgcclock(lua_State* L, double (*clock)(void* ud), void* ud);
+ 
++// the names a host's typeof gives its own values, for the builtin typeof (a script's fast call) to give them too: the table at
++// `idx` maps a table or a userdata to its name, looked up before the value's own type name, and `vectorname` (NULL: none) names
++// every vector. The table is held for the collector (a weak-keyed one keeps its weak keys).
++LUA_API void lua_settypeofnames(lua_State* L, int idx, const char* vectorname);
++
+ ** memory statistics
+ ** all allocated bytes are attributed to the memory category of the running thread (0..LUA_MEMORY_CATEGORIES-1)
+ */
+diff --git a/luau/VM/src/lapi.cpp b/luau/VM/src/lapi.cpp
+index d591190..a99f723 100644
+--- a/luau/VM/src/lapi.cpp
++++ b/luau/VM/src/lapi.cpp
+@@ -1472,6 +1472,14 @@ void lua_setgcclock(lua_State* L, double (*clock)(void* ud), void* ud)
+     L->global->gcclockud = ud;
+ }
+ 
++void lua_settypeofnames(lua_State* L, int idx, const char* vectorname)
++{
++    const TValue* names = index2addr(L, idx);
++    api_check(L, ttistable(names));
++    L->global->typeofnames = hvalue(names);
++    L->global->vectortypename = vectorname ? luaS_new(L, vectorname) : NULL;
++}
++
+ int lua_gc(lua_State* L, int what, int data)
+ {
+     int res = 0;
+diff --git a/luau/VM/src/lbuiltins.cpp b/luau/VM/src/lbuiltins.cpp
+index 758d8e9..d64b3c5 100644
+--- a/luau/VM/src/lbuiltins.cpp
++++ b/luau/VM/src/lbuiltins.cpp
+@@ -888,6 +888,23 @@ static int luauF_typeof(lua_State* L, StkId res, TValue* arg0, int nresults, Stk
+ {
+     if (nparams >= 1 && nresults <= 1)
+     {
++        // (a host's names for its own values come first, as its typeof gives them: lua_settypeofnames)
++        global_State* g = L->global;
++        if (g->typeofnames && (ttistable(arg0) || ttisuserdata(arg0)))
++        {
++            const TValue* name = luaH_get(g->typeofnames, arg0);
++            if (ttisstring(name))
++            {
++                setobj2s(L, res, name);
++                return 1;
++            }
++        }
++        if (g->vectortypename && ttisvector(arg0))
++        {
++            setsvalue(L, res, g->vectortypename);
++            return 1;
++        }
++
+         const TString* ttname = luaT_objtypenamestr(L, arg0);
+ 
+         setsvalue(L, res, ttname);
+diff --git a/luau/VM/src/lgc.cpp b/luau/VM/src/lgc.cpp
+index bc04f29..303b54a 100644
+--- a/luau/VM/src/lgc.cpp
++++ b/luau/VM/src/lgc.cpp
+@@ -973,6 +973,11 @@ static void markroot(lua_State* L)
+ 
+     marktaggetmt(g);
+ 
++    // (a host's typeof names: lua_settypeofnames)
++    if (g->typeofnames)
++        markobject(g, g->typeofnames);
++    if (g->vectortypename)
++        markobject(g, g->vectortypename);
+     g->gcstate = GCSpropagate;
+ }
+ 
+diff --git a/luau/VM/src/lstate.cpp b/luau/VM/src/lstate.cpp
+index 21e3f1e..6ef02d9 100644
+--- a/luau/VM/src/lstate.cpp
++++ b/luau/VM/src/lstate.cpp
+@@ -230,6 +230,10 @@ lua_State* lua_newstate(lua_Alloc allocator, void* ud)
+     g->work = lua_WorkCounters();
+     g->gcclock = NULL;
+     g->gcclockud = NULL;
++    g->typeofnames = NULL;
++    g->vectortypename = NULL;
++    g->coldon = 0;
++    g->coldslot = 0;
+ 
+     g->lastprotoid = 1;
+     g->lastclassid = 1;
+diff --git a/luau/VM/src/lstate.h b/luau/VM/src/lstate.h
+index dc61540..47a8125 100644
+--- a/luau/VM/src/lstate.h
++++ b/luau/VM/src/lstate.h
+@@ -304,6 +304,8 @@ typedef struct global_State
+     double (*gcclock)(void* ud); // the clock the collector paces itself by (lua_setgcclock; NULL: lua_clock)
+     void* gcclockud;
+ 
++    struct LuaTable* typeofnames; // a host's names for its values, for the builtin typeof (lua_settypeofnames; NULL: none)
++    TString* vectortypename; // the name typeof gives a vector (NULL: the type's own)
+ } global_State;
+ // clang-format on
+ 

@@ -1,0 +1,72 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+fuzzy-default 111111101000000111000 true
+fuzzy-position 111111111111111111111111111111
+fuzzy-position-axes 1111
+fuzzy-position-tolerance 110101011100111010
+fuzzy-eps-rounding 11111111101011
+fuzzy-rotation 0.1 11111111100000 11111111100000 11111111100000 11111111100000 11111111100000 11111111100000
+fuzzy-rotation 0.03 11111100000 11111100000 11111100000 1111110000 11111100000 11111100000
+fuzzy-rotation 0.01 11110000 11110000 11110000 1110000 11110000 11110000
+fuzzy-rotation 0.001 11100 11100 11100 11000 11000 11000
+fuzzy-matrix stretch 1111111100000000 uniform 11111111000000 shear 111111000000 two 11000000
+fuzzy-both 11100
+fuzzy-eps 0 same ok true | close ok false | turned ok false
+fuzzy-eps -0 same ok true | close ok false | turned ok false
+fuzzy-eps -0.0001 same ok true | close ok true | turned ok true
+fuzzy-eps -0.1 same ok true | close ok true | turned ok true
+fuzzy-eps -0.10000001 same error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | close error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | turned error The eps value provided to FuzzyEq should be a small positive value <= 0.1
+fuzzy-eps -1 same error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | close error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | turned error The eps value provided to FuzzyEq should be a small positive value <= 0.1
+fuzzy-eps 1e-30 same ok true | close ok false | turned ok false
+fuzzy-eps 1e-50 same ok true | close ok false | turned ok false
+fuzzy-eps 0.1 same ok true | close ok true | turned ok true
+fuzzy-eps 0.1000000001 same ok true | close ok true | turned ok true
+fuzzy-eps 0.1000000015 same ok true | close ok true | turned ok true
+fuzzy-eps 0.10000001 same error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | close error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | turned error The eps value provided to FuzzyEq should be a small positive value <= 0.1
+fuzzy-eps 0.1000001 same error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | close error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | turned error The eps value provided to FuzzyEq should be a small positive value <= 0.1
+fuzzy-eps 0.5 same error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | close error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | turned error The eps value provided to FuzzyEq should be a small positive value <= 0.1
+fuzzy-eps 1 same error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | close error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | turned error The eps value provided to FuzzyEq should be a small positive value <= 0.1
+fuzzy-eps inf same error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | close error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | turned error The eps value provided to FuzzyEq should be a small positive value <= 0.1
+fuzzy-eps -inf same error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | close error The eps value provided to FuzzyEq should be a small positive value <= 0.1 | turned error The eps value provided to FuzzyEq should be a small positive value <= 0.1
+fuzzy-eps nan same ok false | close ok false | turned ok false
+fuzzy-eps 2^-149 same ok true | close ok false | turned ok false
+fuzzy-eps 2^-150 same ok true | close ok false | turned ok false
+fuzzy-nan 0001000111
+fuzzy-call other none error Invalid number of arguments: 1, CFrame.FuzzyEq expects 2 or 3.
+fuzzy-call other nil error @198: invalid argument #2 (CFrame expected, got nil)
+fuzzy-call other number error @199: invalid argument #2 (CFrame expected, got number)
+fuzzy-call other string error @200: invalid argument #2 (CFrame expected, got string)
+fuzzy-call other table error @201: invalid argument #2 (CFrame expected, got table)
+fuzzy-call other Vector3 error @202: invalid argument #2 (CFrame expected, got Vector3)
+fuzzy-call other Instance error @203: invalid argument #2 (CFrame expected, got Instance)
+fuzzy-call eps nil error @204: invalid argument #3 (number expected, got nil)
+fuzzy-call eps nil far error @205: invalid argument #3 (number expected, got nil)
+fuzzy-call eps string error @206: invalid argument #3 (number expected, got string)
+fuzzy-call eps numeric string ok true
+fuzzy-call eps numeric string small ok false
+fuzzy-call eps boolean error @209: invalid argument #3 (number expected, got boolean)
+fuzzy-call eps false error @210: invalid argument #3 (number expected, got boolean)
+fuzzy-call eps table error @211: invalid argument #3 (number expected, got table)
+fuzzy-call eps Vector3 error @212: invalid argument #3 (number expected, got Vector3)
+fuzzy-call extra ok true
+fuzzy-call dot nil error @214: invalid argument #1 to 'FuzzyEq' (CFrame expected, got nil)
+fuzzy-call dot number error @215: invalid argument #1 to 'FuzzyEq' (CFrame expected, got number)
+fuzzy-call dot Vector3 error @216: invalid argument #1 to 'FuzzyEq' (CFrame expected, got Vector3)
+fuzzy-call dot none error Invalid number of arguments: 0, CFrame.FuzzyEq expects 2 or 3.
+fuzzy-call dot both ok true
+fuzzy-call first bad self error @219: invalid argument #1 to 'FuzzyEq' (CFrame expected, got number)
+fuzzy-call first bad self eps error @220: invalid argument #1 to 'FuzzyEq' (CFrame expected, got number)
+fuzzy-call first count error Invalid number of arguments: 1, CFrame.FuzzyEq expects 2 or 3.
+fuzzy-call first other eps error @222: invalid argument #2 (CFrame expected, got nil)
+fuzzy-call first other range error @223: invalid argument #2 (CFrame expected, got nil)
+fuzzy-call range numeric string error The eps value provided to FuzzyEq should be a small positive value <= 0.1
+fuzzy-call static ok nil
+fuzzy-call results ok 1
+fuzzy-random 0.1 turned 0101011010000011101100000000111100011111 moved 1111111111111111111111111111111111111111 both 0101011010000011101100000000111100011111
+fuzzy-random 0.05 turned 1011110010101010000010000100010001000100 moved 1111111111111111111111111111111111111111 both 1011110010101010000010000100010001000100
+fuzzy-random 0.03 turned 1000001100111010000001010110001010001011 moved 1111111111110111111111111111111111111111 both 1000001100111010000001010110001010001011
+fuzzy-random 0.01 turned 1000010100101101110010111010010111010111 moved 1111111111111111111111111111111111111111 both 1000010100101101110010111010010111010111
+fuzzy-random 0.003 turned 0001100111010000111101100011010101010101 moved 1111111111111111111111111111111111111111 both 0001100111010000111101100011010101010101
+fuzzy-random 0.001 turned 1000001110101000110011101101001001110100 moved 1111111111111111111111111111111111111111 both 1000001110101000110011101101001001110100
+fuzzy-random 0.0001 turned 0011001111011010001111010001001000111010 moved 1111111111111111111111111111111111111111 both 0011001111011010001111010001001000111010
+fuzzy-random 0.00001 turned 1100111100100110100100110101000111000100 moved 1111111111111111111111111111111111111111 both 1100111100100110100100110101000111000100

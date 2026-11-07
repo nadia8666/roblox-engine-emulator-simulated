@@ -1,0 +1,40 @@
+ ◆ ree profile   ✓ run ok · Fixture.luau · 120 frames · 2.00 s                                     Studio work 17.23 ms
+  1 Overview  2 Flame  3 Calls  4 Source  5 Alloc  6 Heap  7 Timeline  8 Caches  9 Issues  d Diff  c Compare
+╭ Studio work ────╮ ╭ the game's code ╮ ╭ a frame, mean ──╮ ╭ instructions ───╮ ╭ allocated ──────╮ ╭ reachable at end ╮
+│ 17.23 ms        │ │ 10.63 ms        │ │ 0.121 ms        │ │ 40.8K           │ │ 2.63 MB         │ │ 3.50 MB          │
+│ startup 2.9% ━━ │ │ harness 27.3% ━ │ │ max 2.000 ms    │ │ scripts 98.0% ━ │ │ 49.0K objects   │ │ unswept 1.4% ━━━ │
+╰─────────────────╯ ╰─────────────────╯ ╰─────────────────╯ ╰─────────────────╯ ╰─────────────────╯ ╰──────────────────╯
+ ◇ work clock  a fixture's numbers, chosen for the tests  ? more
+╭ Work a frame  120 frames · mean 0.121 ms · max 2.000 ms at frame 60 ─────────────────────────────────────────────────╮
+│                                                          █                                                           │
+│                                                          █                                                           │
+│                                                          █                                                           │
+│                                                          █                                                           │
+│                                                          █                                                           │
+│ ▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃█▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃ │
+│ ■ frames            ■ steady                                                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Issues  11 ──────────────────────────────────────────────╮ ╭ The game's code  phase steady · 10.63 ms ───────────────╮
+│              issue                                       │ │   function                    own  share                │
+│ ▌ ■ critical Sorted every frame: rank  Main:20           │ │   anonymous  Main:22     4.000 ms  37.6% ██████████████ │
+│   ▲ serious  Part.Size read again in the frame: 200 a f… │ │   rank  Main:20          3.030 ms  28.5% ██████████▋    │
+│   ● warning  Reachable heap grows: +2.50 MB from steady… │ │   layout  Main:30        2.000 ms  18.8% ███████        │
+│   ● warning  21.9 KB a frame on average: rank  Main:21   │ │   update  Main:10        1.000 ms   9.4% ███▌           │
+│   ● warning  GETTABLEKS at Main:31 misses 83.3% of its … │ │   __index [C]            0.300 ms   2.8% █              │
+│   ● warning  Part.Position set to its own value: 30 a f… │ │   sort [C]               0.200 ms   1.9% ▊              │
+│   ● warning  Tables regrown: layout  Main:32             │ │                                                         │
+│   ● warning  512 B a frame on average: layout  Main:32   │ │                                                         │
+│   ● warning  Collector spikes: 1 frame, worst 400 steps… │ │                                                         │
+│   ● warning  Frame spikes: 1 frame, worst 2.000 ms (fra… │ │                                                         │
+│   ● warning  Connections keep growing: +99 over the 100… │ │                                                         │
+│                                                          │ │                                                         │
+│                                                          │ │                                                         │
+│                                                          │ │                                                         │
+│                                                          │ │                                                         │
+│                                                          │ ╰─────────────────────────────────────────────────────────╯
+│                                                          │ ╭ The harness's code  phase steady · 4.000 ms ────────────╮
+│                                                          │ │   function                    own  share                │
+│                                                          │ │   GetDescendants [C]     2.500 ms  62.5% ██████████████ │
+│                                                          │ │   watch  Fixture:5       1.500 ms  37.5% ████████▍      │
+╰──────────────────────────────────────────────────────────╯ ╰ share of its side's Studio work ■ <0.1%  0.1% ███ 1% ███╯
+ ↑↓ issue  enter open   │   m metric  f scripts  / find  y copy  t theme  ? help  q quit

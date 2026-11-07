@@ -76,9 +76,11 @@ for line in emulator.output() { println!("{} {}", line.kind, line.message) }
 [dependencies]
 roblox-engine-emulator = { git = "https://github.com/Anime-Vanguards/roblox-engine-emulator", rev = "<commit>" }
 
-# The patched Luau VM: only the workspace root's [patch] applies, so the dependent crate repeats it
+# The patched Luau VM and the mlua-sys that reads its bytecode: only the workspace root's [patch] applies, so the
+# dependent crate repeats them
 [patch.crates-io]
 luau0-src = { git = "https://github.com/Anime-Vanguards/roblox-engine-emulator", rev = "<the same commit>" }
+mlua-sys = { git = "https://github.com/Anime-Vanguards/roblox-engine-emulator", rev = "<the same commit>" }
 ```
 
 Pin exact versions of the crates you share with the engine (mlua, rbx-dom, serde_json) as Cargo.toml

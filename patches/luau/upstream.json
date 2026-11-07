@@ -1,0 +1,15 @@
+{
+	"luau": "0.746",
+	"source": {
+		"ref": "91acc8decfca5281fab4a8db46c894268fc70aac",
+		"file": "luau-91acc8decfca.tar.gz",
+		"url": "https://github.com/luau-lang/luau/archive/91acc8decfca5281fab4a8db46c894268fc70aac.tar.gz",
+		"sha256": "8fdc35f51d767d95eb029db5988be6b0d8f1f65e151dd0a23f7799523677d917"
+	},
+	"crate": {
+		"file": "luau0-src-0.22.0+luau740.crate",
+		"url": "https://static.crates.io/crates/luau0-src/luau0-src-0.22.0+luau740.crate",
+		"sha256": "4ea012e8a8aaff2f7b6c788fad41a60630003b6a0932bcf045f7d14952c9bd31"
+	},
+	"version": "0.22.0+luau746"
+}

@@ -75,11 +75,18 @@ vendor/ patches/ tools/vendor.mjs   the patched Luau VM and Lune's datatypes
   (tests/luau_vm.rs), plus the process guards (tests/process_guards.rs, which run the built `ree`).
   Tests build their own scenes in temporary directories; none needs Roblox Studio, a game checkout, a
   GPU or the network.
-- `node tools/vendor.mjs --check`: vendor/ is exactly the pinned archives with patches/ applied.
+- `node tools/vendor.mjs --check`: vendor/ is exactly the pinned archives with patches/ applied (the VM's patches are a
+  topic series, patches/luau/; docs/building.md "Updating Luau").
+- The VM runs with the Luau flag values a live Roblox client serves (data/luau-flags.json, refreshed by
+  `node tools/luau-flags.mjs`; patches/luau/14-client-flags.patch sets them before the first VM starts or chunk
+  compiles). Roblox ships Luau changes behind those flags, so upstream's defaults would run another Luau.
+  `REE_LUAU_FLAGS=off` keeps upstream's defaults; `REE_LUAU_FLAGS=FFlagName=true,FIntName=3` changes some on top.
+  (mlua's `luau-jit` feature, the `jit` build's, turns LuauEmitCallFeedback and LuauPromoteProto on itself, as the
+  client has them: `off` leaves those two on.)
 - Recordings are deterministic: the same harness and project give byte-identical `scene.rbxm`,
   `playback.json`, `events.json`, `camera.json` and summary files. Two runs of one scene make the same
   writes: tables keyed by Instances, tables, functions or threads are visited in an order fixed by the
-  objects' creation, not their addresses (patches/luau.patch, `REE_HASH_SEED`).
+  objects' creation, not their addresses (patches/luau/04-deterministic-hash.patch, `REE_HASH_SEED`).
 - Downstream: roblox-ui-renderer runs its fixtures, stories and Studio comparison replays through this
   engine and compares their output with recordings made in Studio. A change to script-visible
   behaviour is checked there too; an intended change of output is re-recorded only after a comparison
@@ -130,7 +137,11 @@ there).
   and `studio-snapshots/<Place>.json` (`{"nodes": [{"name", "className", "parent"}]}`, a node's parent an
   index into the list, -1 for the DataModel) is its hierarchy as Studio holds it. Instances the snapshot
   lists that no root or model provides become Studio-only placeholders, made when a script first looks
-  up or lists children, so `WaitForChild` and `FindFirstChild` see what Studio would.
+  up or lists children, so `WaitForChild` and `FindFirstChild` see what Studio would. A root's directory
+  that names no class of its own (no init script, no `init.meta.json` className) takes the class the
+  snapshot gives its path when that is not a Folder, a script or a service: a directory that holds only
+  the scripts of a Part the place keeps is that Part (Studio-only: its properties are the class's
+  defaults unless place content stores it, and then the stored instance keeps the directory's scripts).
 - **Place content**: a snapshot lists non-script content by name and class only. Files at
   `<repo>/data/place-content/<Place>/<parent path>/*.rbxm` (Studio's own serialization of those
   instances) replace the placeholders of the same names under that parent with the stored instances,
@@ -261,6 +272,23 @@ scheduler.rs    Scheduler data and the Luau-running steps (flush_deferred, resum
   names it: error positions, tracebacks and `debug.info(f, "s")` read `ReplicatedStorage.Module:3:`
   (measured in a playing client; tools/parity/probes/chunknames.luau). Roblox keeps one compiled chunk per
   source text, so a module whose source equals an earlier one's carries that module's name; ree does not.
+- **The Luau library**: the VM is Luau 0.746 (`vendor/luau0-src`, the release a live client runs) with the topic
+  series in patches/luau/ and the client's flag values. Its `math.isnan`, `math.isinf` and `math.isfinite` (Luau's
+  since 0.701) are builtins (fast calls, a constant argument folded by the compiler) that take a number or a string Luau reads as one (`"1"`, `"inf"`,
+  `"nan"`, `"1e400"`) and raise `invalid argument #1 to 'isnan' (number expected, got nil)` for anything
+  else, as a playing client does (tools/parity/probes/math_classify.luau).
+- **CFrame:FuzzyEq(other, eps = 1e-5)** (measured in a playing client, Studio 0.744: about 25,000 pairs at its
+  thresholds; tools/parity/probes/cframe_fuzzyeq.luau): single precision, eps taken as a float and its size
+  used. Position component by component: self's `a` and the other's `b` are equal, or `|a - b| <= |eps| *
+  (|a| + 1)` (the tolerance grows with self's component only; `|eps|` once `|a| + 1` is infinite). Rotation:
+  `sqrt(sum of (Ra^T Rb - I)^2) / sqrt(2) <= |eps|`, the relative rotation's column dot products and the sum
+  taken in order without a fused multiply-add (the angle between them for small turns; for matrices that are
+  not rotations, their distance: a stretched axis passes up to `sqrt(2) * eps`). An eps over 0.1 in size raises
+  `The eps value provided to FuzzyEq should be a small positive value <= 0.1` (NaN does not, and compares
+  false); a numeric string is an eps. The argument errors are the client's: `invalid argument #1 to 'FuzzyEq'
+  (CFrame expected, got number)`, `invalid argument #2 (CFrame expected, got nil)` and `#3 (number expected,
+  ...)` at the calling line (an eps of nil given is an error), `Invalid number of arguments: 1, CFrame.FuzzyEq
+  expects 2 or 3.` without one.
 - **Lifetime**: instances a script can reach keep their userdata identity; unreachable parentless
   subtrees are freed by `lua::raw::collect` (run from the render step). Rust code that holds an
   `InstanceId` outside the tree across frames keeps it reachable with `state.dom.pin(id)` / `unpin(id)`,
@@ -336,9 +364,11 @@ table) whose metatable holds C functions: `__index`, `__newindex`, `__namecall` 
 A playing client's frame (`--mode play`, measured in a real client): wait / delay / spawn threads resume
 (then a full flush of deferred work), PreAnimation, Stepped / PreSimulation, PostSimulation, every due
 task.wait / task.delay thread in the order they were scheduled (then one pass over the deferred queue:
-what that work defers waits), Heartbeat, then the render step (BindToRenderStep callbacks, one pass,
-RenderStepped / PreRender, a full flush). Edit mode keeps Studio's edit order (a flush after each
-resumption).
+what that work defers waits), Heartbeat, then the render step (BindToRenderStep callbacks, RenderStepped /
+PreRender, the tween step, then one resumption point: the tween step's events first, then what the
+callbacks and handlers deferred, a full flush). A RenderStepped or PreRender handler reads a tween's value
+from before the frame's step, and a tween played there takes its first step that frame. Edit mode keeps
+Studio's edit order (a flush after each resumption; the tween step right after the callbacks).
 
 `scheduler::step(lua, engine, Some(dt))`, `run_until(lua, engine, t)`, `step_display_duration(d)` /
 `step_display(n)` (a display's cadence: edit-mode Heartbeats keep their own 240 Hz deadlines),
@@ -386,7 +416,7 @@ reached by its lower-case first letter 40 ns more, `LOWER_FIRST`), write and met
 Destroy, the lists methods return (per element), a find's walk (per child or node looked at), a ray's path
 and a spatial query's results (per part), signals and threads, and EditableMesh's own work are charged what
 they cost in a client, as measured with os.clock (cost.rs gives each price with its measurement). A script's
-own Luau is charged too, from the VM's work counters (patches/luau.patch `lua_workcounters`: instructions
+own Luau is charged too, from the VM's work counters (patches/luau/02-work-counters.patch `lua_workcounters`: instructions
 by opcode, a `--!native` module's apart, objects and table storage allocated, keys moved as tables grow, C
 calls and calls into the engine's own Luau, imports looked up, and the library's own loops: numbers made
 strings, new strings, sorting, table.create / clone / concat, string.split and string.format). Each
@@ -404,6 +434,29 @@ The first touch of an instance in a frame (a read, a write or a method call) cos
 member in a frame runs the engine's own code for it cold: a property's first write 1.4 us more, its first read
 0.5, a method's first call 0.8 (`FIRST_WRITE`, `FIRST_READ`, `FIRST_CALL`, `Touched::first_use`; a client's
 first GUI write of a frame 1.65 us over the same write later in it, a part's 0.9-2.35, a method's 0.6-0.95).
+Those 45 ns are what instances made together cost, touched in the order they were made: an instance touched by
+itself (not made right before or after the one touched cold before it, and not touched the frame before) costs
+0.32 us more (`COLD_TOUCH_ALONE`; a client's parts cloned a frame apart between other work, touched once each,
+0.29 us more at the median than parts made together in one loop).
+
+An effect's engine work runs each engine path's code cold at its first use in a frame (`Path`, `PATH_FIRST`):
+a clone 25 us and each class the frame has not cloned yet (`first_cloned`: a part 55 us in all), a destroy 10 and
+its classes (`first_destroyed`), entering the Workspace 13.5 (26 with a part), a PivotTo 16, a part's geometry
+write 9.5, BulkMoveTo 28, Emit 4.4, QueryDescendants 6.6, GetDescendants 3.6, an emitter's Enabled 2.4. After
+that a cold instance adds what it adds in a client: a clone of a template the frame has not touched
+(`clone_cold`, a part 1.8 us), a destroy of an instance in the Workspace since an earlier frame (`destroy_live`,
+a part 4.4), a move of a part neither moved nor touched the frame before (`PIVOT_COLD_PART`, `BULK_COLD_PART`,
+1.2-1.25 us, and each emitter or attachment under it), an emit from or a switch of an emitter the frame has not
+touched (1.45, 0.7), a query from a root it has not touched (4.6, once a call: a client walks a large static tree
+for less a node than a fresh model). A script's first call in a frame of a C function costs 2.5 us more, of a
+datatype's operation in the engine's Luau 0.9, and the first run of a function whose code did not run the frame
+before 0.7 (the VM's work counters `LUA_WORK_COLDCFUNCS`, `LUA_WORK_COLDHOSTFUNCS` and
+`LUA_WORK_RAREPROTOS`, priced at `LUAU_COLD_CFUNC` and the rest; a C function the engine's own code calls, one
+dispatched through `__namecall` and a C closure made in the frame are not counted). A render-step binding costs
+1.55 us to dispatch (`RENDER_STEP_DISPATCH`), and a thread handed to task.spawn what a function's new thread
+does. Each was measured in clients of a game's match place as a path's first use in a frame less a second use
+on another cold copy, less what the member's first use already costs (cost.rs gives each); headless clients
+read the same within 20 %.
 
 A client runs its engine work between two frames' scripts, so Luau that runs once a frame over data it made
 earlier finds that out of the caches too. The VM marks each table, Luau closure and function a script touches
@@ -431,14 +484,25 @@ the later groups' spatial queries meet three copies of their geometry. A memory 
 objects alive until the row ends and reads its median round.
 
 What the prices compose to on real per-frame code is a second question, measured on a game's own modules
-timed the same way on both sides (a GUI scroll and gradient step, an effect system's step lists, four unit
-attacks' casts; held out of every fit, a virtualized card grid on its frame scheduler and a server's enemy
-movement loop). Without the cold costs above the work clock read 0.15-0.53x a client; with them a GUI scroll
-0.82x, a gradient step 0.76x, the step lists 0.76-1.05x, the server loop 1.02-1.07x, the card grid 0.48-0.51x
-and the attacks' casts 0.32-0.67x. What is still missing is named in every profile's summary (`cost::FIDELITY`):
-where data lies, an instance touched alone (a part costs a client about 0.4 us on its first touch in a frame
-when touched by itself, 45 ns in a loop over parts made together), the engine work on an effect's instances in
-a cast, and what a layout leaves warm. Size a cut in a client.
+timed the same way on both sides: a GUI scroll and gradient step, an effect system's step lists and twelve
+attacks' casts (each after a warm-up cast, against a client's script time for the same cast: its profiler's
+self time over idle, the median of three casts). The engine paths' prices above were fitted on three of the
+attacks; nine attacks, a virtualized card grid on its frame scheduler and a server's enemy movement loop are
+held out of every fit. Without any cold costs the work clock read 0.15-0.53x a client, with the first touches
+alone the casts 0.22-0.67x. With all of them a GUI scroll reads 0.82x, a gradient step 0.78x, the step lists
+0.85-1.17x, the server loop 1.03-1.08x, the card grid 0.63-0.66x, and the casts 0.73-1.10x fitted and
+0.51-0.81x held out (most 0.6-0.75x): a held-out cast's engine calls read 0.5-0.9x a client and its own Luau
+0.3-1.0x (most 0.5-0.7x). What is still missing is named in every profile's summary (`cost::FIDELITY`): the
+rest of a cast's cold cost (code and data a client finds cold after frames unused), where data lies, what a
+layout leaves warm, and the cold of each node a large walk visits. Size a cut in a client.
+
+Within one instruction kind the clock charges an average, so it cannot tell some ways of writing the same thing
+apart where the interpreter does (`ree profile try`, tools/what-if, host time against the clock, 9 interleaved rounds):
+a lookup by a number in a table's array part and by a string in its hash part cost the same on the clock and 1.5-1.8x
+apart in host time (10,000 keys, read 40,000 times); a numeric `for i = 1, #t` over an array reads 1.04x a generalized
+loop on the clock and 1.3-1.7x in host time. Growing a list costs more on the clock than in this machine's interpreter
+(appending 10,000 values to `{}` against `table.create(n)`: 5.5-5.8x on the clock, 1.4-1.9x in host time): the clock's
+prices for the keys a rehash moves and the bytes it stores are a client's.
 
 A script's environment is safe, as Roblox makes every script's: its imports (`game`, `Vector3.new`,
 `math.floor`) are resolved when it loads and read as constants, builtins (`math.*`, `type`, `typeof`, ...)
@@ -458,7 +522,7 @@ The same script is charged the same in every run. Luau's garbage collector paces
 they took, and on the wall clock it stepped at other points in each run on a loaded machine: an allocating
 builtin's fast path gives way to its C function while a step is due, a string is found alive or made
 again, and what the VM counts moved with it, so a budgeted loop could take other frames. The collector
-paces itself by the scripts' own work on this clock instead (patches/luau.patch `lua_setgcclock`,
+paces itself by the scripts' own work on this clock instead (patches/luau/03-gc-clock.patch `lua_setgcclock`,
 cost.rs `install_gc_clock`), so a run collects at the same points however fast the host runs, one-shot
 or through `ree serve`.
 
@@ -477,9 +541,10 @@ scales the script work the clock charges by 2.77, a sim-to-phone calibration for
 ## Profiling (`src/profiler`, `src/luau_profile.rs`, `src/boundary.rs`)
 
 `--profile <kinds>` (docs/cli.md "Profiles and caches") or a host's `profiler::Session` runs the profilers a
-profile asks for; `profiler::report` writes its files and `ree profile diff` compares two. What each one measures:
+profile asks for; `profiler::report` writes its files and `ree profile diff` compares two; the profile viewer
+(profile-view/, docs/cli.md "The profile viewer") reads them and nothing else. What each one measures:
 
-- **The VM's instruction profile** (patches/luau.patch, `lprofile.cpp`, `lua_profilestart`). While a profile
+- **The VM's instruction profile** (patches/luau/12-profiling.patch, `lprofile.cpp`, `lua_profilestart`). While a profile
   steps, `luau_execute` runs its single-step variant on every thread of the VM, and the dispatch calls the
   profile before each instruction. It counts the instruction; it books to the previous instruction what moved
   since it: the VM's work counters (`lua_workcounters`), priced slot by slot with `cost::luau`'s own prices (the
@@ -495,8 +560,18 @@ profile asks for; `profiler::report` writes its files and `ree profile diff` com
   starts a phase: the frames hang from a node of the phase's. Natively compiled code keeps running natively:
   a function's entries into its native code and the work booked while it ran are its own, and its
   instructions are not counted (the summary names such functions); a call from native code into natively
-  compiled code is not seen, so the callee's work stays with its caller. Luau's `-O2` inlines small local
-  functions: their instructions count on the caller's function, on their own source lines.
+  compiled code is not seen, so the callee's work stays with its caller. Luau's `-O2` (modules compile at
+  it; `--!optimize 2` in a chunk asks for it) inlines small local functions: their bodies are compiled into
+  the callers, which run them in their own frames, so their instructions and work count on the caller's
+  function, on the inlined function's own lines. The profile finds those copies: when it first sees a chunk
+  it registers all of its functions, and a run of a caller's instructions on another function's lines (one
+  enclosing the caller aside, and the instructions creating a closure) is a copy of that function, the same
+  instructions on the same lines again right after it the next copy, and a copy of a function inlined into
+  the copied one sits inside its copy. Each time a frame steps into a copy from outside it counts a call of
+  the inlined function (a call made inside the copy returns into it; a loop inside it stays in it). The
+  summary lists inlined functions with these calls, their other calls, and the instructions and work on
+  their lines in each caller; the callers keep those figures as the VM ran them. Two copies of one function
+  in a row whose code differs (a constant argument folded differently) count as one.
 - **Allocations** (`profiler::memory`): the VM's `onallocate` callback sees every allocation; `lua_allocblock`
   gives a collectable object's block (its type is read at the next callback, once the VM set it; an Instance's
   userdata names its class) and what other memory is for (a table's array and hash parts, a thread's stack
@@ -515,6 +590,21 @@ profile asks for; `profiler::report` writes its files and `ree profile diff` com
   over those roots it finds each object's dominator (Cooper, Harvey and Kennedy's algorithm), so an object's
   retained size is what would be freed with it, and a breadth-first holder path (a path through the
   registry's array part is a reference the engine itself holds: a handler, a thread it will resume).
+  Each reachable table's shape is read during the walk (`lua_profiletable`: its array part's slots and those holding a
+  value, its hash part's nodes and those holding one; `lua_profiletablebytes` the bytes of a table, a slot and a node),
+  and its nesting level comes from the references between tables (a metatable's aside): one more than the deepest table
+  it holds, the tables of a cycle sharing theirs (strongly connected components, levelled in reverse topological order).
+  The tables the profile followed are grouped by the stack that allocated them (`memory::Tables`).
+- **Table growth**: a table grows only by rehashing (ltable.cpp `rehash`, when a new key finds no free slot), which
+  moves every key it holds into its new parts; the VM's work counters count those keys for a script's own instruction
+  (`rehashed`, which the work clock prices). With a profile, `rehash` also calls the profile's hook
+  (`lua_setprofilerehash`: the table, its parts' sizes before and after, the keys, whether a script's instruction made
+  it), behind the same thread-local check as the rest of the profile; the allocation profile books each rehash to the
+  stack that made it and to the stack that made the table.
+- **Marks**: each `Context.ProfilePhase` mark, and the run's end, take the counts so far (the work clock, host time, the
+  run thread's cycles, instructions, the VM's work counters, the allocation profile's totals and rehashes, the collector,
+  and the inline caches' outcomes summed by kind: `lua_profilecachetotals`), so a phase's figures are differences of
+  marks. `ree profile try` (docs/cli.md "What-if comparisons") reads its phases this way.
 - **The collector**: the VM's interrupt runs at each collector step's start and end (steps, cycles, bytes
   freed, host time by the state a step began in). **The timeline**: `scheduler::step` takes a row a frame.
   **ree's caches**: counters at each cache (`profiler::caches`, process-wide). **The CPU**: the run thread's
@@ -534,8 +624,10 @@ profile asks for; `profiler::report` writes its files and `ree profile diff` com
 - **Host time** (`time`, luau_profile.rs): a 1 ms ticker, sampled at the VM's calls, returns and loop edges;
   the engine's own steps (the Animator, joints, physics) get frames of their own.
 
-Off, a profiler costs a thread-local read where it hooks in (the interpreter: one per entry), a thread-local
-store where the VM allocates table storage, and a bit test where the collector frees an object. The hardware
+Off, a profiler costs a thread-local read where it hooks in (the interpreter: one per entry; a table's rehash: one), a
+thread-local store where the VM allocates table storage, and a bit test where the collector frees an object. A profile's
+hooks are written straight into the VM's callbacks, allocating nothing on its heap (a protected call to set them made a
+closure there, and the collector's later cycles then began elsewhere: what a script read of memory moved). The hardware
 counters add no hook of their own: their readings sit behind the frame hook's read, the interrupt a profile
 installs and the engine steps' check of the ticker. On, nothing a
 script sees changes: the profile allocates nothing on the VM's heap and leaves the VM's counts as they are,
@@ -612,6 +704,11 @@ record/prepare.rs runs prepared ahead by `ree serve`
   tweens for properties that change frame after frame, motion tracks, emits and clears, reparenting and
   references written later; `events.json` holds prints, warnings, errors and sounds with their times.
   Values are rounded to 1e-5, motion keys within 2e-4, and keys a straight line reproduces are dropped.
+  A Studio-only placeholder is the place's own: it has a class and a name and no values, and it is made
+  when a script first lists its parent, so drawing it drew default effects and parts, and a run that
+  looked at more of the place recorded more of it than one that did not. One that draws (an effect, a
+  part, a highlight, a sky) is never drawn, in the Workspace or in Lighting; a placeholder folder or model
+  is drawn once something the run made is under it, as that appears.
 - **EditableMesh and EditableImage** (src/meshes.rs, src/images.rs, measured in Studio): ids carry their
   kind in the high bits; AddTriangle gives each corner a new automatic normal, a white opaque colour
   and a (0, 0) uv; CreateEditableMeshAsync of a mesh asset (feature `meshes`, decoded by ror's ror-mesh)
@@ -646,12 +743,15 @@ KeyframeSequence pages); how a track behaves before its asset arrives is measure
 
 ## Server run context (`--run-context server`, `src/lua/server.luau`)
 
-A server is a Studio Play-mode server as Roblox's RunService documentation tabulates it: `IsServer`,
-`IsStudio` and `IsRunning` true; `IsClient`, `IsRunMode` and `IsEdit` false. It needs `--mode play` and
-refuses `--player`.
+A server is a Studio Play-mode server as Roblox's RunService documentation tabulates it, and as a server's game
+script measured it (`node tools/parity/run.mjs --server`): `IsServer`, `IsStudio` and `IsRunning` true; `IsClient`
+and `IsRunMode` false; `IsEdit` is refused to game scripts, as on a client. It needs `--mode play` and refuses
+`--player`.
 
 - No local player: Players starts empty and a harness adds players with `Instance.new("Player")`.
-  Nothing renders: BindToRenderStep, RenderStepped and PreRender never run.
+  Nothing renders: connecting to RenderStepped raises `RenderStepped event can only be used from local scripts`;
+  PreRender connects and BindToRenderStep binds, and neither runs. Tweens step after the task.wait resumptions and
+  before the Heartbeat handlers (a client steps them in its render step).
 - In-memory DataStoreService (GetAsync, SetAsync, UpdateAsync, IncrementAsync, RemoveAsync, versions,
   keys, OrderedDataStore pages), MemoryStoreService (sorted maps, hash maps, queues) and MessagingService
   (this server's own subscribers), all empty at the start of every run. Limits and error codes follow
@@ -670,8 +770,8 @@ A print of exactly `@done` ends `ree run` / `ree record` at the end of that fram
 Every line a run outputs has a kind: `print`, `info` (LogService:Info, and Log with MessageInfo), `warn` or
 `error`. LogService.MessageOut gets each line after the frame's Heartbeat handlers and the deferred work they
 leave, on a playing client and on a server alike, with three arguments: the text, its MessageType and a context
-table (a copy of the one a LogService method was given, else an empty table). A playing client's script error
-carries its stack lines (`Stack Begin`, `Script '<name>', Line <n> - function <f>`, `Stack End`); a line a
+table (a copy of the one a LogService method was given, else an empty table). A script error, a playing client's
+and a server's alike, carries its stack lines (`Stack Begin`, `Script '<name>', Line <n> - function <f>`, `Stack End`); a line a
 MessageOut handler logs reaches no handler. Measured in a playing client and in a server game script.
 
 LogService's Output, Info, Warn, Error and Log log a line of their MessageType with the message's `{key}`
@@ -734,5 +834,6 @@ rur, whose tools set them.
 - `REE_SCRIPT_TIMEOUT`, `REE_MAX_SCRIPT_TIMEOUTS`, `REE_MAX_WALL_SECONDS`, `REE_PARENT_WATCH`,
   `REE_SERVE_WORKERS`, `REE_FROZEN_CLOCK`, `REE_RANDOM_SEED`, `REE_WORK_COUNTERS`, `REE_HASH_SEED`,
   `REE_HASH_ADDRESS`, `REE_LOCALIZED_PLACES`, `REE_MATCH_PLACES`, `REE_ASSET_WORKER`, `REE_PROFILE`,
-  `REE_PROFILE_OUT`, `REE_PROFILE_COUNTERS`, `REE_HW_COUNTERS`.
+  `REE_PROFILE_OUT`, `REE_PROFILE_COUNTERS`, `REE_HW_COUNTERS`, `REE_LUAU_FLAGS`, `REE_VIEW_COLOR` (the profile viewer's colours:
+  `truecolor` or `256`), `REE_VIEW_BLESS` (its snapshot tests write their snapshots).
 - Others: `RAYON_NUM_THREADS`, `MIMALLOC_EAGER_COMMIT`, `MIMALLOC_PURGE_DELAY`.

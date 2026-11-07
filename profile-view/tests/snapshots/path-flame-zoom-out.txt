@@ -1,0 +1,40 @@
+ ◆ ree profile   ✓ run ok · Fixture.luau · 120 frames · 2.00 s                                     Studio work 13.20 ms
+  1 Overview  2 Flame  3 Calls  4 Source  5 Alloc  6 Heap  7 Timeline  8 Caches  9 Issues  d Diff  c Compare
+╭ Flame · Studio work  width: total · colour: own ─────────────────────────────────────────────────────────────────────╮
+│ run                                                                                                                  │
+│ s…  frames             steady                                                                                        │
+│ a…  update Main:10     update Main:10                                                                                │
+│     rank Main:…  l…    rank Main:20                                                    layout Main:30                │
+│     sort …             sort [C]                                                                                      │
+│     anony…             anonymous Main:22                                                                             │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰ share of Studio work ■ <0.1%  0.1% ███████ 1% ███████ 3% ███████ 10% ███████ 30%+ ───────────────────────────────────╯
+╭ ■ rank Main:20 ──────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ own 3.000 ms 22.8%    total 7.200 ms 54.8%    100 calls, 72.0 µs each                                                │
+│ run › steady › update › rank                                                                                         │
+│ Luau · all its calls: own 3.600 ms, total 8.640 ms                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ←→↑↓ move  enter zoom  esc out  s order   │   m metric  f scripts  / find  y copy  t theme  ? help  q quit

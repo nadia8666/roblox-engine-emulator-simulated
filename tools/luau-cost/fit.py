@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = (ROOT / "vendor/luau0-src/luau/Common/include/Luau/Bytecode.h").read_text()
 ENUM = SOURCE[SOURCE.index("enum LuauOpcode"):]
 OPS = re.findall(r"^\s*LOP_([A-Z0-9_]+),", ENUM[:ENUM.index("};")], re.M)
-CALLS = {"CALL", "NAMECALL"}
+# (a method call's NAMECALL is followed by its CALL or CALLFB, which Luau 0.746 dispatches apart: the call is counted there)
+CALLS = {"CALL", "CALLFB"}
 FASTCALLS = {"FASTCALL", "FASTCALL1", "FASTCALL2", "FASTCALL2K", "FASTCALL3"}
 FEATURES = ["op", "call", "fastcall", "object", "stored", "rehash", "ccall", "hostcall"]
 LIBRARY = {"strsub", "format", "sort", "tconcat", "concat", "strfind", "tclone"}

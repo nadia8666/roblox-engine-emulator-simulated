@@ -154,6 +154,9 @@ fn userdata_value(ud: &LuaAnyUserData) -> Option<Value> {
 
 fn type_error(info: &PropertyInfo, engine: &Engine, reflection_name: &str, expected: &str, value: &LuaValue) -> Flow {
     let _ = reflection_name;
+    // (Roblox names a CFrame property's type CoordinateFrame here: measured in a playing client, Studio 0.744,
+    // tools/parity/probes/coercion.luau)
+    let expected = if expected == "CFrame" { "CoordinateFrame" } else { expected };
     Flow::Error(ScriptError::plain(format!(
         "Unable to assign property {}. {expected} expected, got {}",
         engine.reflection.name(info.name),
@@ -258,19 +261,61 @@ pub fn coerce(lua: &Lua, engine: &Engine, info: &PropertyInfo, value: &LuaValue)
             let Some(enum_name) = &info.enum_name else {
                 return Ok(from_lua(value));
             };
-            match info.enum_type.and_then(|id| coerce_enum(lua, engine, id, value)) {
-                Some(item) => Ok(Value::EnumItem(item)),
-                None => {
-                    let got = match value {
-                        LuaValue::UserData(ud) if ud.is::<LEnumItem>() => {
-                            engine.reflection.enum_item_path(ud.borrow::<LEnumItem>()?.0)
-                        }
-                        _ => typeof_value(engine, value),
+            // Beside an item of the enum, its name and its value: a value as a numeric string or with a fraction is
+            // truncated ("512" and 512.5 are Wood's 512), and a string that is neither raises `Invalid value "wood" for enum
+            // Material` (measured in a playing client, Studio 0.744: tools/parity/probes/values.luau, coercion.luau)
+            let coerced = info.enum_type.and_then(|id| {
+                coerce_enum(lua, engine, id, value).or_else(|| {
+                    let number = match value {
+                        LuaValue::Number(n) => Some(*n),
+                        LuaValue::String(_) => lua.coerce_number(value.clone()).ok().flatten(),
+                        _ => None,
+                    }?;
+                    let info = &engine.reflection.enums[id as usize];
+                    number.is_finite().then(|| info.by_value.get(&(number.trunc() as i64)).copied()).flatten()
+                })
+            });
+            // What the rest raises, a playing client and a server alike (Studio 0.744, tools/parity/probes/enum_assignment.luau):
+            // a number, or a numeric string, no item has `Invalid value 256 for enum Font` (the value truncated: 512.5 shows
+            // 512); any other string `Invalid value "Wood" for enum Font`; an item of another enum `EnumItem of type Font
+            // expected, got an EnumItem of type SortOrder`; anything else `EnumItem, number, or string expected, got nil`.
+            if coerced.is_none() {
+                let number = match value {
+                    LuaValue::Number(n) => Some(*n),
+                    LuaValue::Integer(n) => Some(*n as f64),
+                    LuaValue::String(_) => lua.coerce_number(value.clone()).ok().flatten(),
+                    _ => None,
+                };
+                if let Some(number) = number {
+                    let shown = if number.is_finite() {
+                        format!("{}", number.trunc() as i64)
+                    } else {
+                        lua.coerce_string(LuaValue::Number(number)).ok().flatten().map(|s| s.to_string_lossy()).unwrap_or_default()
                     };
-                    Err(Flow::Error(ScriptError::plain(format!(
-                        "Unable to assign property {name}. EnumItem of type {enum_name} expected, got {got}"
-                    ))))
+                    return Err(Flow::Error(ScriptError::plain(format!(
+                        "Unable to assign property {name}. Invalid value {shown} for enum {enum_name}"
+                    ))));
                 }
+                if let LuaValue::String(text) = value {
+                    return Err(Flow::Error(ScriptError::plain(format!(
+                        "Unable to assign property {name}. Invalid value \"{}\" for enum {enum_name}",
+                        text.to_string_lossy()
+                    ))));
+                }
+            }
+            match coerced {
+                Some(item) => Ok(Value::EnumItem(item)),
+                None => Err(Flow::Error(ScriptError::plain(match value {
+                    LuaValue::UserData(ud) if ud.is::<LEnumItem>() => {
+                        let item = ud.borrow::<LEnumItem>()?.0;
+                        let enum_type = engine.reflection.enum_item_info(item).enum_type;
+                        format!(
+                            "Unable to assign property {name}. EnumItem of type {enum_name} expected, got an EnumItem of type {}",
+                            engine.reflection.enums[enum_type as usize].name
+                        )
+                    }
+                    _ => format!("Unable to assign property {name}. EnumItem, number, or string expected, got {}", typeof_value(engine, value)),
+                }))),
             }
         }
         ScriptType::Instance => match value {

@@ -1,0 +1,40 @@
+ ◆ ree profile   after  ✓ run ok · Fixture.luau · 120 frames · 2.00 s                              Studio work 6.814 ms
+  1 Overview  2 Flame  3 Calls  4 Source  5 Alloc  6 Heap  7 Timeline  8 Caches  9 Issues  d Diff  c Compare
+╭ Before → after ──────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ◇ the first figure and the functions' work cover phase steady; the rest cover the whole run                          │
+│                                                                                                                      │
+│ the game's code, phase steady        10.60 ms → 4.214 ms    ▼    -60.2%                                              │
+│ Studio work                          13.20 ms → 6.814 ms    ▼    -48.4%                                              │
+│ script instructions                     40.0K → 40.0K              same                                              │
+│ allocated                             2.63 MB → 63.6 KB     ▼    -97.6%                                              │
+│ allocations                             49.0K → 973         ▼    -98.0%                                              │
+│ reachable heap at end                 3.50 MB → 3.50 MB            same                                              │
+│ reachable objects at end                 4000 → 4000               same                                              │
+│ unswept garbage at end                50.0 KB → 50.0 KB            same                                              │
+│ the run's objects still reachable     60.0 KB → 60.0 KB            same                                              │
+│ collector cycles                            3 → 3                  same                                              │
+│ collector freed                       2.29 MB → 2.29 MB            same                                              │
+│ Studio work a frame (mean)           0.121 ms → 0.121 ms           same                                              │
+│ Studio work a frame (worst)          2.000 ms → 2.000 ms           same                                              │
+│ host time a frame (mean, noisy)      0.400 ms → 0.400 ms           same                                              │
+│ frames                                    120 → 120                same                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Moved  2 · own Studio work · by the largest change ──────────────────────────────────────────────────────────────────╮
+│  Functions   Lines   Allocation sites         where the source is the same                                           │
+│                                                                                                                      │
+│                                                 before       after        change                                     │
+│ ▌ Main:22                                     5.520 ms    1.115 ms ▼   -4.405 ms   -79.8% █████████████│             │
+│   Main:21                                     2.880 ms    1.098 ms ▼   -1.782 ms   -61.9%         █████│             │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ tab table  ↑↓ row  s sort  enter open  x side   │   m metric  f scripts  / find  y copy  t theme  ? help  q quit

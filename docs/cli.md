@@ -18,6 +18,8 @@ ree run ... --profile boundary [--profile-out f.json]  # Luau-to-engine crossing
 ree record ... --profile work,alloc,heap [--profile-out dir]  # the profiling suite: summary, JSON, flame graphs, a report page
 ree profile diff before/profile after/profile        # two profiles compared
 ree profile try tools/what-if/nested-keys.luau       # variants of the same code side by side ("What-if comparisons")
+ree profile view before/profile after/profile        # explore one in the terminal ("The profile viewer")
+ree profile render out/scene/profile --view all --out shots   # every view as a PNG, for screenshots
 ree serve --status                                   # the running services; --stop asks them to exit
 ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bundles --assets Models
                                                      # start the service and read in what a first recording reads
@@ -229,7 +231,10 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
     what the work clock charges (the instruction's own cost, the engine calls it makes, what it allocates)
     is booked to the instruction that caused it. Per function and per line, self and total: instructions,
     work in milliseconds of Studio time, calls, by opcode; callers and callees; the hottest functions'
-    source annotated. Exact, and the same every run of the same code.
+    source annotated. Exact, and the same every run of the same code. ree compiles modules at `-O2`, which
+    inlines small local functions into their callers: such a function has no frame of its own there, so its
+    calls are counted where its inlined copies run, listed under "inlined functions" (docs/engine.md
+    "Profiling").
   - `caches`: Luau's inline caches per call site (a table key's or a global's predicted slot, a method's
     slot, a resolved import, a builtin's fast path: hit, miss, slow path) and ree's own caches (member
     atoms and dispatch, datatype values, Instance userdata, require results, module bytecode, spatial
@@ -237,15 +242,21 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   - `alloc`: bytes and counts allocated, by type (table, its storage, function, string, userdata by
     Instance class or datatype, thread and its stack, buffer, function prototypes) and by the Luau stack
     that allocated them. Every allocation is counted by type; stacks are taken for every allocation unless
-    `--profile-alloc-step <bytes>` samples them (weighted by the inverse of the chance).
+    `--profile-alloc-step <bytes>` samples them (weighted by the inverse of the chance). And the tables that rehashed to
+    grow (a table grows only by rehashing, which moves every key it holds into its new parts): by the stack that made
+    them rehash and the stack that made the table, with the keys moved and the parts' bytes before and after (profile.json
+    `alloc.rehash`, the summary's "table rehashes").
   - `heap`: a snapshot of what the VM holds at the start, at every `Context.ProfilePhase` mark and at the
     end. Its figures are the reachable heap, what scripts and the engine still hold (what a full
     collection would keep): by type and Instance class, the biggest objects by what they keep alive (their
     dominated size) with the path that holds them, the run's own reachable objects by the stack that
     allocated them. The garbage the collector has not swept yet (what that collection would free) is
     counted apart, by type, and is in none of those figures: how much there is depends on where the
-    collector's cycle stood when the snapshot was taken. A snapshot collects nothing. And the collector's
-    work (steps, cycles, bytes freed, host time).
+    collector's cycle stood when the snapshot was taken. A snapshot collects nothing. Its reachable tables by the stack
+    that made them (`tables` in each snapshot): how many, their bytes (a table with its array and hash parts, and the
+    parts apart), their array and hash parts as distributions (slots, those holding a value, least, median, greatest, a
+    power-of-two histogram), how many levels of tables each is with the tables it holds, and the rehashes that grew them;
+    the summary lists the biggest sites. And the collector's work (steps, cycles, bytes freed, host time).
   - `timeline`: a row a frame: work, host time, instructions, the heap, allocations, the collector,
     live instances, connections and threads.
   - `cpu`: the run thread's CPU cycles, the process's CPU time, page faults and peak memory. Nothing is
@@ -266,13 +277,30 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   `alloc.counts.folded`, `heap.folded`, `counters.<counter>.folded`), `profile.speedscope.json`
   (speedscope.app) and `report.html`, one self-contained page (hot paths with callers, callees and
   annotated source, a call tree, memory, the timeline, caches, the CPU and its counters). `--profile-top
-  <n>` sets the summary's rows; `--profile-phase <a,b|all>` the phases the boundary profiler reports.
+  <n>` sets the summary's rows; `--profile-phase <a,b|all>` the phases the summary's function tables and
+  the boundary profiler report: by default `steady` when the run marked one (`Context.ProfilePhase`), else
+  every phase. The summary's tables are the game's code: the harness's own (`--harness` modules are
+  mounted under `ReplicatedStorage.RURFixtures`; the engine's `rur.record`, which calls the harness, is
+  counted with it) and what it called are set apart, with their total on the
+  summary's `reported below:` line and their top functions in a table of their own. Lines are counted for
+  the whole run, not per phase. In profile.json each function has `harness` and its figures per phase
+  (`phases`, with `harness_self_work_ms`, the part done for the harness's code), and `scope` names the
+  reported phases with each side's self work.
+  profile.json's `marks` (each `Context.ProfilePhase` mark) and `end` (the run's end) carry the counts so far, so a
+  phase's figures are the difference of two marks': the work clock, host time and the run thread's cycles, instructions,
+  the VM's work counters (`vm`: objects, their bytes, table storage, keys rehashed, cold first touches), the allocation
+  profile's bytes and objects, rehashes (all, and a script's own: `script_rehashes`, `script_rehash_keys`), the
+  collector's steps, cycles, bytes freed and host time, and the inline caches' outcomes by kind.
 - `ree profile diff <before> <after> [--out <dir>]` compares two profile directories: the headline
   figures (the reachable heap at the end, and apart from it the garbage not swept yet), the functions
   whose work, calls, instructions or allocations moved, the lines of modules whose source is the same in
   both, caches, memory by type and the timeline; it writes `diff.txt` (also printed), `diff.json` and
-  `diff.html`. `ree profile report <dir>` prints a profile's summary again and
-  rewrites its page from its profile.json.
+  `diff.html`. When both profiles report the same phases (or both marked `steady`), the headline leads
+  with the game's code and the harness's in those phases, and the function tables cover them, the
+  harness's functions in a table of their own: a harness's work moves with what it scans, not with the
+  game. Profiles from before the split are compared whole. `ree profile report <dir>` prints a profile's summary again and
+  rewrites its page from its profile.json. `ree profile view` explores one in the terminal and `ree profile render`
+  draws its screens to files ("The profile viewer").
 - With no profile the engine pays nothing measurable (a thread-local read where each profiler hooks in),
   and a profile changes nothing a script sees: the work clock, os.clock and a recording are the same with
   and without it (it allocates nothing on the VM's heap). A profiled command runs in its own process,
@@ -340,7 +368,12 @@ Windows service reads them on a profile's behalf (tools/hw-counters):
 - **Checking it**: `ree-hw-counters probe` (`%ProgramFiles%\ree-hw-counters\ree-hw-counters.exe probe`) counts
   kernels whose counts are known through the service: a loop of four instructions and a branch an iteration, random
   branches half of which mispredict, loads that hit the L1 data cache, and chases through random cycles of cache lines
-  that fit the L1, the L2 and the L3, and fit none. Each counter must count what its name says (exit 0).
+  that fit the L1, the L2 and the L3, and fit none. Each counter must count what its name says (exit 0). The L3 chase
+  runs three times and its last-level misses are read against the fastest try's own speed: on a busy machine other
+  programs push the buffer out of the shared L3, and at memory speed nearly every step must miss it (between L3 and
+  memory speed it is not checked). The probe is the client's: a build's own (`cargo build --release --manifest-path
+  tools/hw-counters/Cargo.toml`) checks the installed service; a change to the service itself takes effect when
+  setup.ps1 runs again.
 - Without the service (not installed, counting for another profile, the CPU's counters held by another tool) the run
   goes on and the profile says why. `REE_HW_COUNTERS=mock` counts without it (the run thread's cycle count at each
   reading and fixed shares of it: for tests, never a measurement); `REE_HW_COUNTERS=console` reads from
@@ -351,8 +384,9 @@ Windows service reads them on a profile's behalf (tools/hw-counters):
 
 `ree profile try <file.luau>` measures other ways to write the same thing side by side: every variant at every input
 size runs in a fresh engine under the profiler, and one folder holds the profiles and an index of what they show
-(`compare.json`), which agents and the profile viewer read. (The runner is being built: this is the format it will
-write.)
+(`compare.json`), which agents and the profile viewer read. tools/what-if/ has examples (nested keys either way, an
+array of records or a record of arrays, string or number keys, closures or methods, appending, a table per frame or one
+reused, ways to iterate, Vector3 or numbers) and what they show.
 
 - **The variant file** is a Luau module:
 
@@ -376,35 +410,52 @@ write.)
   variants runs in name order, a list of `{ name = ..., setup = ..., run = ... }` in its own; the first is the baseline,
   which the others are measured against. `check(a, b, n)` gets the baseline's result and another variant's at the same size
   and returns true, or false and a message; `check = true` compares them for deep equality. Results are checked in an
-  engine of their own, never in a profiled run.
-- **Versions of a module**: `versions = { before = "old/Handler.luau", after = "../src/Handler.luau" }` (paths from the
-  variant file's folder) makes each version of one module a variant. With `module = "ReplicatedStorage/Shared/Handler"`
-  each version stands in for that ModuleScript of the project before anything requires it (`Context.StandIn`), so it
-  requires its siblings as the project's own does; without `module` each version is mounted on its own. `setup(n, Module)`
-  and `run(data, Module)` get the version's module. Project options (`--roots`, `--project`, `--place`, `--mount`, and the
-  other engine options above) pass through to every run; without them the runs have no project.
+  engine of their own, never in a profiled run; without a check, the summary compares the results' digests.
+- **Versions of a module**: `versions = { before = "old/Handler.luau", after = "../src/Handler.luau" }` (or a list of
+  `{ name = ..., file = ... }`; paths from the variant file's folder) makes each version of one module a variant, with
+  `setup = function(n, Module)` and `run = function(data, Module)` driving it. With `module =
+  "ReplicatedStorage/Shared/Handler"` each version stands in for that ModuleScript of the project before anything requires
+  it (`Context.StandIn`), so it requires its siblings as the project's own does; without `module` each version is mounted on
+  its own. Project options (`--roots`, `--project`, `--place`, `--mount`, and the other engine options above) pass through
+  to every run; without them the runs have no project.
 - **What runs.** For each variant and size, one profiled run: `ree run` of a generated harness with `--profile all`,
-  written to `runs/<variant>/<size>/`, an ordinary profile folder (`ree profile report` and `diff` read it). The harness
+  written to `runs/<variant>/<n>/`, an ordinary profile folder (`ree profile report` and `diff` read it). The harness
   marks three phases, each with a heap snapshot at its mark: `setup` (the variant's setup, in a frame of its own), `run`
-  (`frames` calls of run, one a frame, from the frame after setup's) and `after` (the result still held). Setup's and
-  run's calls run on threads of their own, so their stacks hang from their phase in the call tree and the folded files.
-  Host time comes from runs of its own whose only profile is the marks' clock (`--profile cpu`): `--rounds` rounds (default
-  9), each running every variant and size once in a fresh process, in an order rotated each round, with the baseline run
-  twice (an A/A pair: how far two runs of the same code differ). Such a run prepares its inputs first, then calls run on
-  them back to back for about `--time-ms` (default 5) ms. With the hardware counter service installed, a run of its own
-  per variant and size reads `--profile hw` (`runs/<variant>/<size>/hw/`). One more engine runs every variant at every
-  size for `check`.
-- **Options**: `--out <dir>` (default `what-if/<file name>` here), `--sizes a,b`, `--variants a,b` (some of them, the
-  first the baseline), `--frames <n>`, `--rounds <n>`, `--time-ms <ms>`, `--no-time`, `--no-hw`, `--no-check`,
-  `--keep-timed` (keep the timed runs' profile folders in `timed/`), and engine options.
-- **Which numbers are exact.** The work clock, instructions, allocations (bytes and count), the reachable heap, the
-  collector's steps and bytes freed (it paces itself by the scripts' work), table shapes, rehashes, cold first touches
-  and inline cache counts are the same in every run of the same code: one profiled run is enough, and any difference
-  between variants is theirs. Host time, the collector's host time and hardware counters are measured: medians over the
-  rounds with their spread, and a winner only where the difference is wider than the A/A pair's.
-- **Files**: `compare.json` (below), `compare.txt` (the text summary, also printed), `runs/<variant>/<size>/`,
-  `diff/<variant>/` (`ree profile diff` of the baseline's profile and the variant's at the largest size) and `harness/`
-  (the generated harness).
+  (`frames` calls of run, one a frame, from the second frame after setup's, so that what it touches of setup's data is a
+  first touch in its frame) and `after` (the result still held). Every mark carries the run's counts so far (profile.json
+  `marks`), so a phase's figures are the difference of two marks'. Host time comes from runs of its own whose only
+  profile is the marks' clock (`--profile cpu`): `--rounds` rounds (default 9), each running every variant and size once in
+  a fresh process, in a new order each round, with the baseline run twice (an A/A pair: how far two runs of the same code
+  differ). Such a run calls run for about `--time-ms` (default 10) ms of warm work, at least three times, on inputs it
+  prepares in groups of about 1 MB (what a CPU's L2 cache holds); each group's calls run back to back and only they are
+  timed, by the run thread's cycles and the host's clock. With the hardware counter service installed, three more rounds
+  of such runs read `--profile hw` alone (a new order each round; the first round's profiles in `runs/<variant>/<n>/hw/`),
+  and each counter's figure is the median of its rounds. One more engine runs every variant at every size for the
+  check. The profiled runs take `--jobs` (default 4) processes at a time; the timed ones run one at a time.
+- **Options**: `--out <dir>` (default `what-if/<file name>` here; a folder holding anything a comparison does not write
+  is refused), `--sizes a,b`, `--variants a,b` (some of them, the first the baseline), `--frames <n>`, `--rounds <n>`,
+  `--time-ms <ms>`, `--jobs <n>`, `--no-time`, `--no-hw`, `--no-check`, `--keep-timed` (keep the timed runs' profile
+  folders in `timed/`), `--script-timeout <s>`, and engine options. Exit 0 when every run finished and every check held,
+  1 otherwise (compare.json is written either way), 2 for a command line it cannot read.
+- **Which numbers are exact.** The work clock (with and without its cold first touches), instructions, allocations
+  (bytes and count), the reachable heap, the collector's steps and bytes freed (it paces itself by the scripts' work),
+  table shapes, rehashes, cold first touches and inline cache counts are the same in every run of the same code: one
+  profiled run is enough, and any difference between variants is theirs. Host time and hardware counters are measured.
+  Host time is each variant's fastest round, since whatever else runs on the machine only ever slows a round (a shared
+  machine's scheduler can slow whole stretches of rounds several times over, which moves medians and round-by-round
+  wins); a variant wins on it only where its fastest round is faster by more than the A/A pair's fastest rounds differ,
+  3 % at least, and its median round agrees. On a counter (the median of its rounds: a core's own cycles, which such
+  slowing hardly moves), only where it won every round, by 5 % or more. The collector's host time comes from the profiled run
+  (its profilers slow it) and is a guide, not a measure.
+- **The summary** (`compare.txt`, also printed): the check; a table of each variant at each n by the main figures; the
+  setup's cost; the exponent of each figure against n; at the largest n the best variant on each figure with every other
+  variant's figure over it (host time with the rounds it won), the figures where they are about equal or within noise;
+  the tables each variant's run left, by the line that made them (count, array and hash parts, levels, bytes each, the
+  rehashes that grew them); then notes (where the work clock's model bears on the comparison: cold first touches of data
+  made before the frame, a gap host time sees and the work clock does not; the collector; failed runs), what is exact and
+  what measured, and the fidelity line.
+- **Files**: `compare.json` (below), `compare.txt`, `runs/<variant>/<n>/`, `diff/<variant>/` (`ree profile diff` of the
+  baseline's profile and the variant's at the largest n) and `harness/` (the generated harness and each run's context).
 
 ### compare.json
 
@@ -414,74 +465,180 @@ write.)
   "title": "t[k][v] or t[v][k]", "about": "...", "file": "<the variant file>", "out": "<this folder>",
   "command": "<the command line>",
   "baseline": "t[k][v]",
-  "variants": [{"name": "t[k][v]", "slug": "t-k-v", "kind": "function", "source": "tkv.luau:12"}],
+  "variants": [{"name": "t[k][v]", "slug": "t-k-v", "kind": "function", "source": "ReplicatedStorage.WhatIf.tkv:12", "file": null}],
   "sizes": [10, 100, 1000, 10000],
   "frames": 1,
+  "module": null,
   "fidelity": "fidelity: ...",
-  "metrics": [{"key": "work_ms", "label": "work clock", "unit": "ms", "better": "lower", "exact": true, "about": "..."}],
+  "metrics": [{"key": "work_ms", "label": "work clock", "unit": "ms", "better": "lower", "exact": true, "per_call": true, "about": "..."}],
   "runs": [{
     "variant": "t[k][v]", "size": 10, "status": "ok", "error": null,
     "profile": "runs/t-k-v/10", "hw_profile": null,
     "digest": "9f3c0a21", "check": {"ok": true, "message": null},
-    "setup": {"work_ms": 0.004, "insns": 120, "...": 0},
-    "run": {"work_ms": 0.002, "host_ms": 0.0011, "...": 0},
-    "host": {"ms": [0.0011, 0.0012], "cycles": [5200, 5310], "reps": 2500},
+    "setup": {"work_ms": 0.004, "insns": 120, "host_ms": null, "...": 0},
+    "run": {"work_ms": 0.002, "warm_ms": 0.0011, "host_ms": 0.0011, "...": 0},
+    "host": {"ms": [0.0011, 0.0012], "cycles": [5200, 5310], "rounds": [0, 2], "reps": 2500, "group": 133},
+    "hw": {"hw_instructions": [4100, 4102, 4100], "...": [], "rounds": [0, 1, 2]},
     "heap": {"before": 1052672, "after_setup": 1060864, "after_run": 1061888},
-    "tables": {"count": 3, "bytes": 1312, "sites": [{"...": "a site, below"}]},
-    "hot": [{"key": "...", "name": "build", "module": "tkv", "line": 14, "work_ms": 0.0018, "insns": 98}]
+    "tables": {"count": 3, "bytes": 1312, "setup": {"count": 1, "bytes": 560}, "run": {"count": 2, "bytes": 752},
+               "sizes": {"table": 48, "slot": 16, "node": 32}, "sites": [{"...": "a site, below"}]},
+    "hot": [{"key": "...", "name": "build", "module": "...", "line": 14, "work_ms": 0.0018, "insns": 98, "calls": 1}]
   }],
   "scaling": [{"variant": "t[k][v]", "metric": "work_ms", "exponent": 1.01, "r2": 0.999, "last": 1.0,
                "points": [[10, 0.002], [100, 0.019]]}],
-  "functions": [{"variant": "t[k][v]", "key": "...", "name": "build", "module": "tkv", "line": 14,
-                 "exponent": 1.98, "points": [[10, 0.0004], [100, 0.04]]}],
-  "winners": [{"metric": "work_ms", "size": 10000, "winner": "t[v][k]", "value": 1.2, "runner_up": "t[k][v]",
-               "ratio": 1.8, "vs_baseline": 1.8, "clear": true}],
-  "aa": [{"size": 10, "ratio": 1.02, "spread": 0.03}],
-  "hw": {"read": false, "why": "..."},
+  "functions": [{"variant": "t[k][v]", "key": "...", "name": "build", "module": "...", "line": 14,
+                 "exponent": 1.98, "r2": 0.99, "points": [[10, 0.0004], [100, 0.04]]}],
+  "winners": [{"metric": "host_ms", "size": 10000, "winner": "t[k][v]", "value": 3.3, "runner_up": "t[v][k]",
+               "ratio": 1.77, "vs_baseline": null, "clear": true, "material": true, "rounds": {"won": 9, "of": 9},
+               "ranking": [{"variant": "t[k][v]", "value": 3.3, "ratio": 1.0, "clear": false, "rounds": null},
+                           {"variant": "t[v][k]", "value": 5.8, "ratio": 1.77, "clear": true, "rounds": {"won": 9, "of": 9}}]}],
+  "aa": [{"size": 10, "ratio": 1.02, "min_ratio": 1.01, "spread": 0.03, "first_ms": [0.0011, 0.0012], "second_ms": [0.0012, 0.0011]}],
+  "host": {"rounds": 9, "time_ms": 10, "reps": [[10, 2500]], "groups": [[10, 133]]},
+  "hw": {"read": true, "why": null, "rounds": 3},
   "check": {"ran": true, "ok": true, "failures": []},
   "diffs": [{"variant": "t[v][k]", "size": 10000, "dir": "diff/t-v-k"}],
-  "notes": ["..."]
+  "notes": ["..."],
+  "seconds": 18.4
 }
 ```
 
 - `variants[].slug` is the variant's folder name; `kind` is `function` or `module` (a version); `source` is where it is
-  defined (a version: its file). `metrics` lists every figure a phase can carry, in the order a table shows them:
-  `label`, `unit` (`ms`, `count`, `bytes`, `ratio`), `better` (`lower` or `higher`) and whether it is `exact` (above).
-- `runs[]`: one per variant and size. `status` is `ok`, `error` (the variant raised: `error` says where) or `failed` (the
-  run did not finish). `profile` and `hw_profile` are folders relative to this one. `digest` is a hash of the result's
-  contents (keys sorted), equal for equal results; `check` is null when the file has none. `setup` and `run` hold the
-  figures of their phase by metric key, null where not measured; run's are per call (the phase's totals divided by
-  `frames`):
-  - `work_ms` the work clock (ms of a client's time, docs/engine.md "Work clock"); `insns` instructions; `alloc_bytes`
-    and `allocs` what the VM allocated (objects, table storage, stacks); `heap_bytes` the reachable heap at the phase's
-    end beyond its start (what the phase still holds); `gc_steps`, `gc_freed` (bytes) and `gc_ms` (host time) the
-    collector's work; `cache_hits`, `cache_misses` (misses and slow paths) and `cache_hit_rate` Luau's inline caches;
-    `cold_tables` and `cold_ms` the frame's first touches of tables made before it and the work they were charged;
-    `rehashes` and `rehash_keys` tables that rehashed to grow and the keys they moved; `host_ms` (median), `host_ms_min`
-    and `host_cycles` (median, the thread's reference cycles) from the timed runs; `hw_instructions`, `hw_cycles`,
+  defined (a function: its chunk and line; a version: the file as the variant file names it) and `file` a version's
+  file. `metrics` lists every figure a phase can carry, in the order a table shows them: `label`, `unit` (`ms`, `count`,
+  `bytes`, `ratio`), `better` (`lower`, `higher`, or `none` for a figure that names no winner), whether it is `exact`
+  (above) and whether a run's figure is `per_call`.
+- `runs[]`: one per variant and size. `status` is `ok`, `error` (the variant raised: `error` says in which phase and
+  where) or `failed` (the run did not finish). `profile` and `hw_profile` are folders relative to this one. `digest` is a
+  hash of the result's contents (keys sorted), equal for equal results; `check` is null when nothing was checked. `setup`
+  and `run` hold the figures of their phase by metric key, null where not measured; run's are per call (the phase's
+  totals divided by `frames`) where the metric says `per_call`:
+  - `work_ms` the work clock (ms of a client's time, docs/engine.md "Work clock") and `warm_ms` the same without the
+    frame's cold first touches (what the work costs with its data in the CPU's caches: a client's figure for data made
+    together lies between the two); `insns` instructions; `alloc_bytes` and `allocs` what the VM allocated (bytes of
+    objects, table parts and stacks; collectable objects); `heap_bytes` the reachable heap at the phase's end beyond its
+    start (what the phase still holds); `gc_steps`, `gc_freed` (bytes) and `gc_ms` the collector's work; `cache_hits`,
+    `cache_misses` (misses and slow paths) and `cache_hit_rate` Luau's inline caches; `cold_tables` and `cold_ms` the
+    frame's first touches of tables made before it and the work they were charged; `rehashes` and `rehash_keys` the
+    rehashes a script's own instructions made tables do to grow, and the keys they moved; `host_ms` (the fastest round),
+    `host_ms_median` and `host_cycles` (the fastest round, the run thread's reference cycles) from the timed runs; `hw_instructions`, `hw_cycles`,
     `hw_ipc`, `hw_l1d_misses`, `hw_l2_misses`, `hw_llc_misses` and `hw_branch_misses` from the hw run.
-  - `host`: the timed runs' samples (ms and cycles a call, one per round) and the calls a timed run made (`reps`).
+  - `host`: the timed runs' figures a call, one per round whose run finished (`rounds` names those rounds: a failed run
+    leaves its round out), the calls a timed run made (`reps`) and how many it prepared and ran at a time (`group`).
+    `hw`: each counter's figure a call, one per round of the counters' runs that finished, and `rounds` (empty when they
+    were not read).
   - `heap`: the reachable heap (bytes) at the setup mark, the run mark and the after mark.
-  - `tables`: the tables the run allocated that are reachable after it (the result held), by allocation site, largest
-    first. A site: `{"site": "tkv:14 < tkv:30", "frames": [{"module": "tkv", "name": "build", "line": 14, "path":
-    "<file>"}], "phase": "run", "count": 10000, "bytes": 1200000, "header_bytes": 560000, "array_bytes": 0,
-    "hash_bytes": 640000, "array": {"slots": 0, "used": 0, "min": 0, "median": 0, "max": 0, "hist": [[0, 10000]]},
-    "hash": {"slots": 20000, "used": 20000, "min": 2, "median": 2, "max": 2, "hist": [[2, 10000]]}, "levels": {"min": 1,
-    "max": 1, "hist": [[1, 10000]]}, "rehashes": 10000, "rehash_keys": 30000}`. `bytes` is each table with its array
-    and hash parts as the VM counts them (gcinfo); a part's `slots` is its size and `used` the slots holding a value;
-    `hist` is `[[upper, tables]]` over power-of-two buckets (a size of 3 counts under 4); `levels` is how many levels of
-    tables a table is with those below it (1: it holds no table; tables in a cycle share a level); `rehashes` and
-    `rehash_keys` count the rehashes of the site's tables over the run and the keys they moved.
-  - `hot`: the functions with the most work in the run phase (its threads' part of the call tree).
+  - `tables`: the tables setup and run allocated that are still reachable after the run (the result held), by
+    allocation site, largest first, with the totals of each phase's and the bytes of a table, an array slot and a hash
+    node. A site: `{"site": "tkv:14 < tkv:30", "frames": [{"module": "ReplicatedStorage.WhatIf.tkv", "name": "build",
+    "line": 14, "path": "<file>"}], "phase": "run", "count": 10000, "bytes": 1760000, "header_bytes": 480000,
+    "array_bytes": 0, "hash_bytes": 1280000, "array": {"slots": 0, "used": 0, "min": 0, "median": 0, "max": 0, "hist": [[0,
+    10000]]}, "hash": {"slots": 40000, "used": 40000, "min": 4, "median": 4, "max": 4, "hist": [[4, 10000]]}, "levels":
+    {"min": 1, "median": 1, "max": 1, "hist": [[1, 10000]]}, "rehashes": 30000, "rehash_keys": 60000}`. `frames` are the
+    site's Luau frames, innermost first, without the harness's; `bytes` is each table with its array and hash parts as the
+    VM counts them (gcinfo); a part's `slots` is its size summed over the site's tables and `used` the slots holding a
+    value; `hist` is `[[upper, tables]]` over power-of-two buckets (a part of 3 slots counts under 4); `levels` is how many
+    levels of tables a table is with those it holds (1: it holds no table; tables in a cycle share a level; a metatable is
+    not held); `rehashes` and `rehash_keys` count the rehashes of the site's tables over the run (any line's) and the keys
+    they moved.
+  - `hot`: the functions with the most work in the run phase (its part of the call tree), the harness's left out.
 - `scaling`: per variant and metric, the exponent k of a least-squares fit of the figure against n (`c * n^k`, sizes
-  with a figure above zero) with its r², `last` the exponent between the two largest sizes, and the points.
-  `functions`: the same for the hot functions' work, matched across sizes by their key.
-- `winners`: per metric and size, the variant with the best figure, the runner-up, `ratio` (the runner-up's figure over
-  the winner's, the other way for `better: higher`), and `vs_baseline`. `clear` is false for a measured figure whose
-  ratio is within the A/A pair's noise, and for exact figures within 1 %. `aa`: per size, the A/A pair's median ratio
-  and its spread (the relative interquartile range of the baseline's rounds).
-- `notes`: what to keep in mind reading this comparison: the fidelity line's limits where they bear on it (cold first
-  touches of many small tables, natively compiled modules), failed runs, a check that failed.
+  with a figure above zero) with its r², `last` the exponent between the two largest sizes (a constant overhead bends the
+  fit at small n; the last pair shows the trend), and the points. `functions`: the same for the hot functions' work,
+  matched across sizes by their key.
+- `winners`: per metric with a `better` and size, the variant with the best figure, the runner-up, `ratio` (the
+  runner-up's figure over the winner's, the other way for `better: higher`; null when only the runner-up is above 0) and
+  `vs_baseline`; `ranking` every variant from the best, each with its figure over the best's and whether that gap is
+  `clear`: an exact figure by 1 % or more, host time by the rule above (`rounds`: the rounds it won, of those both ran), a hardware counter when it won every round by 5 % or
+  more (`rounds` too). `clear` at the top is the runner-up's. `material` is false for a count too small to matter beside the run's work
+  (under a thousandth of its instructions, or 10) and for bytes under 1 KB; such a winner is no finding. `aa`: per size,
+  the A/A pair's median ratio round by round (the second run over the first), `min_ratio` the ratio of their fastest
+  rounds (the host-time rule's noise), `spread` the relative interquartile range of the round-by-round ratios, and both
+  runs' figures in the rounds where both finished. `host`: the timing's settings and the calls
+  per size. `check.ok` is there only when something was checked (`ran`); fields with no value are null, but `about`, a
+  frame's `path` and the samples' lists hold no nulls.
+- `notes`: what to keep in mind reading this comparison: where the work clock's model bears on it (a large share of
+  cold first touches, a gap host time sees and the clock does not), rounds the machine slowed (twice a variant's fastest
+  or more), the collector's work, failed runs and checks, why the hardware counters were not read.
+
+## The profile viewer
+
+`ree profile view <dir> [<dir2>]` opens a profile in the terminal: one profile, a before and after pair, or a what-if
+folder (`compare.json`). `ree profile render ...` draws the same screens headless to a PNG, an SVG or text. Both only
+read profile folders. They run `ree-profile-view`, a binary of its own beside `ree` that `cargo build --release` builds
+with it (profile-view/, on ratatui: the engine's crate has no terminal UI). Each view is panels with rounded borders,
+tables with their header raised and every other row shaded, charts and gauges; the panel that takes the keys has its
+border in the accent.
+
+<img src="media/profile-view-source.webp" width="100%" alt="The Source view of tools/profile-demo/leaderboard.luau: each line's work, instructions and allocations beside the code on a heat scale, the sort's comparator the hottest line, and the selected line's opcodes below">
+
+- **What it opens**: a profile folder (it holds profile.json), the folder of a run made with `--profile` (profile/ in
+  it), or a what-if folder. Two folders are a pair, before and after, and open on Diff. A what-if folder opens on
+  Compare, with the baseline's run at the largest size open in the other views.
+- **Views**, a key each:
+  - `1` Overview: the run's totals (the mount's work apart from a frame's), the work clock's fidelity line, the run
+    frame by frame, the issues and the hottest functions in the phases the profile reports (its `scope`: as the
+    summary's tables, `--profile-phase`, by default steady when the run marked one, else every phase). The game's code
+    leads, and the harness's own code (under ReplicatedStorage.RURFixtures, and the engine's `rur.record` that calls it,
+    with the C functions, the engine's Luau and mlua's helpers they called) comes in a panel of its own, with a card for
+    the two sides' work; a run whose code is all the harness's (under 1% on the game's side: code measured by
+    `--harness` alone) is shown whole.
+  - `2` Flame: the call tree as an icicle, the run at the top; each node as wide as its total and coloured by its own
+    share. It opens on the run's heaviest phase; down follows the heaviest callee, enter zooms into a node, esc comes
+    back out.
+  - `3` Calls: a function between its callers and its callees, what it cost under each, and its hottest lines.
+  - `4` Source: a module's lines with their heat, instructions, allocations and Luau cache misses, and the selected
+    line's opcodes.
+  - `5` Allocations: the sites (the Luau line that allocated), their bytes, objects, object size, bytes a frame in the
+    steady state and types, and each site's stacks.
+  - `6` Heap: the reachable heap at each snapshot, the biggest holders and what they keep alive, the heap by type, the
+    run's own objects still reachable by allocating stack, and the collector.
+  - `7` Timeline: a column a frame, by phase; pick a frame to see each of its figures beside its phase's median frame,
+    and each figure frame by frame.
+  - `8` Caches: Luau's inline caches by kind and by call site, and ree's own.
+  - `9` Issues: what the profile's numbers show to fix (below).
+  - `d` Diff, of a pair: the headline figures, then the functions, lines and allocation sites that moved. When both
+    profiles report the same phases, or both marked steady, it leads with the game's code and the harness's in them,
+    and the functions' work covers those phases, the harness's functions last and greyed, as `ree profile diff`.
+  - `c` Compare, of a what-if folder: each variant at each size in the comparison's metric, how it grows with n (a
+    log-log plot, a line a variant) and each variant over the baseline by n, the best of each size, each variant's
+    figure at the selected size as bars, every figure of a variant over the baseline's (worse to the right, on a log
+    scale; a figure that names no winner, as `better` "none", as it is, in no colour), and the variant's own table
+    shapes (its run's, the setup's input apart). A winner that is clear and material is marked ◆, one within noise or
+    too small to matter ≈. Enter opens the run in the other views, `D` diffs it against the baseline's.
+- **Keys**: arrows or hjkl move, enter goes in, esc or backspace comes back out; `m` and `M` the metric (Studio work,
+  host time, instructions, allocated bytes, allocations, Luau cache misses, each hardware counter the profile read);
+  `s` sort; `f` scripts only (C functions and the engine's own Luau fold into the script that called them); `/` search,
+  `n` and `N` the next and previous match; `y` copy the selected name or path (through the terminal); `x` the other
+  side of a pair; `t` light or dark; `?` help; `q` quit.
+- **Colour**: one heat scale for a figure's share of the run, through several hues as inferno's (purple at 0.1 %,
+  crimson, orange, gold at 30 % and more on the dark theme; the same turned round on the light one, so more is always
+  further from the page; its lightness steps evenly, so the order reads in grey and under colour blindness), grey
+  under 0.1 %, its legend along the bottom of the panels that use it; red ▲ and blue ▼ for more and less than before;
+  a colour a variant or phase, in the data-viz palette's fixed order; an issue's severity as an icon and a word.
+  24-bit colour where the terminal shows it, else each colour's nearest of the 256 every terminal has
+  (`REE_VIEW_COLOR=truecolor|256` decides). Screenshots are always 24-bit.
+- **Issues** come from measured patterns only, each with its numbers and a link (enter) to the view and line that show
+  it: `table.sort` about once a frame or more in the steady state (the last phase holding most of the frames); a site
+  that allocates through the steady state, or in bursts (more a frame on average than some frames allocate in all);
+  tables regrown (table storage allocated past their first); collector and frame spikes; connections, instances or
+  threads that keep growing; the reachable heap growing; an inline cache that misses; a property read again in the
+  same frame, and writes that change nothing (the boundary profile's, `--profile boundary`); in a comparison, cost that
+  grows faster than n and a variant whose result differs. The issues cover the game's code: what the harness's own code
+  sorts, allocates, misses or reads again is left out (unless the run's code is all the harness's), and a frame spike
+  says how much of the harness's work the frames hold. What the profile's kinds cannot show is listed as not checked.
+- `ree profile render <dir> [<dir2>] --out <file|dir|-> [--view <name>|all|<a,b>] [--metric <m>] [--select
+  <function|file:line>] [--keys "<keys>"] [--size <cols>x<rows>] [--theme dark|light] [--scale <n>] [--format
+  png|svg|txt]` draws exactly what the terminal shows at that size (default 160x48), the same on every machine:
+  `--out x.png` (the cells rasterized with the bundled JetBrains Mono, 9x20 pixels a cell at `--scale 1`), `.svg` or
+  `.txt`. A folder takes a file a view (`--view all`: every view the input has, `<folder>/<view>.png`), and `-` prints
+  text. `--select` picks a function by its name, or a line as `Module:line` or `file.luau:line`, before anything is
+  drawn; `--keys` then plays keys as typed (`"2 down enter"`: the Flame, down its heaviest callee, zoomed in; named
+  keys enter, esc, backspace, up, down, left, right, pgup, pgdn, home, end, tab, backtab, space; `/text` searches). It
+  prints each file it wrote, a PNG with its Markdown image line.
+- **For agents**: `ree profile render <dir> --view issues --out -` is the quickest read of what to fix; `--view all
+  --out <folder>` gives a screenshot of every view in one command, and the printed Markdown line shows a PNG to the
+  user. To show one finding, `--select` its function or line and render the view its issue links to (Calls for a
+  function, Source for a line, Allocations for a site, Timeline for a frame).
 
 ## Environment
 

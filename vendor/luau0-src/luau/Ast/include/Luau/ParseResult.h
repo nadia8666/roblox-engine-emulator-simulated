@@ -6,6 +6,8 @@
 #include "Luau/Lexer.h"
 #include "Luau/StringUtils.h"
 
+#include <exception>
+
 namespace Luau
 {
 
@@ -17,7 +19,7 @@ class ParseError : public std::exception
 public:
     ParseError(const Location& location, std::string message);
 
-    virtual const char* what() const throw();
+    const char* what() const throw() override;
 
     const Location& getLocation() const;
     const std::string& getMessage() const;
@@ -34,7 +36,7 @@ class ParseErrors : public std::exception
 public:
     ParseErrors(std::vector<ParseError> errors);
 
-    virtual const char* what() const throw();
+    const char* what() const throw() override;
 
     const std::vector<ParseError>& getErrors() const;
 
@@ -68,12 +70,13 @@ struct ParseResult
 
     std::vector<Comment> commentLocations;
 
-    CstNodeMap cstNodeMap{nullptr};
+    CstNodeMap cstNodeMap;
 };
 
-struct ParseExprResult
+template<typename Node>
+struct ParseNodeResult
 {
-    AstExpr* expr;
+    Node* root;
     size_t lines = 0;
 
     std::vector<HotComment> hotcomments;
@@ -81,7 +84,7 @@ struct ParseExprResult
 
     std::vector<Comment> commentLocations;
 
-    CstNodeMap cstNodeMap{nullptr};
+    CstNodeMap cstNodeMap;
 };
 
 inline constexpr const char* kParseNameError = "%error-id%";

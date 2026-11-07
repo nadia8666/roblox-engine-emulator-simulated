@@ -272,10 +272,12 @@ const PROFILE = /*PROFILE_DATA*/null;
 			{ key: "total_work", label: "total work ms", value: (f) => f.total.work_ms, fmt: (v) => fmt(v, 3) },
 			{ key: "calls", label: "calls", value: (f) => f.calls, fmt: (v) => fmt(v) },
 			{ key: "insns", label: "self insns", value: (f) => f.self.insns, fmt: (v) => compact(v) });
+		// (a function -O2 inlined into its callers: the calls its copies there stood for)
+		if (hasWork && functions.some((f) => f.inlined)) columns.splice(4, 0, { key: "inlined", label: "inlined calls", value: (f) => f.inlined ? f.inlined.calls : 0, fmt: (v) => v ? fmt(v) : "" });
 		if (hasTime) columns.push({ key: "self_time", label: "self host ms", value: (f) => f.self.time_ms, fmt: (v) => fmt(v, 1), bar: !hasWork }, { key: "total_time", label: "total host ms", value: (f) => f.total.time_ms, fmt: (v) => fmt(v, 1) });
 		if (hasAlloc) columns.push({ key: "self_alloc", label: "allocated", value: (f) => f.self.alloc_bytes, fmt: (v) => bytes(v), bar: !hasWork && !hasTime }, { key: "total_alloc", label: "total allocated", value: (f) => f.total.alloc_bytes, fmt: (v) => bytes(v) });
 		const detail = el("div");
-		const rows = functions.filter((f) => f.kind !== "engine Luau" && (f.self.work_ms > 0 || f.total.work_ms > 0 || f.self.time_ms > 0 || f.total.time_ms > 0 || f.self.alloc_bytes > 0 || f.calls > 0));
+		const rows = functions.filter((f) => f.kind !== "engine Luau" && (f.self.work_ms > 0 || f.total.work_ms > 0 || f.self.time_ms > 0 || f.total.time_ms > 0 || f.self.alloc_bytes > 0 || f.calls > 0 || f.inlined));
 		// (a profile with no work, time or allocations has the name column alone)
 		section.append(table(rows, columns, { sort: (columns[1] || columns[0]).key, limit: 300, onpick: (f) => showFunction(f, detail) }));
 		section.append(detail);
@@ -286,7 +288,7 @@ const PROFILE = /*PROFILE_DATA*/null;
 		const lines = (P.lines || []).filter((l) => byId.has(l.function) && byId.get(l.function).kind !== "engine Luau");
 		const lineColumns = [
 			{ key: "line", label: "line", text: true, value: (l) => `${shortModule(byId.get(l.function).module)}:${l.line >= 0 ? l.line : "native"}` },
-			{ key: "function", label: "function", text: true, value: (l) => byId.get(l.function).name || "anonymous" }];
+			{ key: "function", label: "function", text: true, value: (l) => (byId.get(l.function).name || "anonymous") + (l.inlined != null && byId.has(l.inlined) ? ` (inlined ${byId.get(l.inlined).name || "anonymous"})` : "") }];
 		if (hasWork) lineColumns.push(
 			{ key: "work", label: "self work ms", value: (l) => l.work_ms, fmt: (v) => fmt(v, 3), bar: true },
 			{ key: "total", label: "total work ms", value: (l) => l.total_work_ms, fmt: (v) => fmt(v, 3) },
@@ -313,18 +315,24 @@ const PROFILE = /*PROFILE_DATA*/null;
 		const callers = edges.filter((e) => e.callee === f.id).map((e) => ({ ...e, other: e.caller }));
 		const callees = edges.filter((e) => e.caller === f.id).map((e) => ({ ...e, other: e.callee }));
 		const otherColumns = [
-			{ key: "name", label: "function", text: true, value: (e) => fname(byId.get(e.other)) || "?" },
+			{ key: "name", label: "function", text: true, value: (e) => (fname(byId.get(e.other)) || "?") + (e.inlined ? " (inlined)" : "") },
 			{ key: "calls", label: "calls", value: (e) => e.calls, fmt: (v) => fmt(v) },
 			{ key: "work", label: "work ms", value: (e) => e.work_ms, fmt: (v) => fmt(v, 3), bar: true },
 			{ key: "insns", label: "insns", value: (e) => e.insns, fmt: (v) => compact(v) }];
 		const nodes = [el("h2", {}, fname(f)),
 			el("p", { class: "lead" }, `${f.module || ""}${f.native ? " · natively compiled: " + fmt(f.native_entries) + " native entries, instructions not counted" : ""} · ${fmt(f.calls)} calls · self ${fmt(f.self.work_ms, 3)} ms / total ${fmt(f.total.work_ms, 3)} ms of work`)];
+		if (f.inlined) nodes.push(el("div", { class: "warn" }, `Inlined by Luau's -O2 into ${f.inlined.into.map((i) => `${fname(byId.get(i.function)) || "?"} (${fmt(i.copies)} ${i.copies === 1 ? "copy" : "copies"})`).join(", ")}: ${fmt(f.inlined.calls)} calls through its copies, ${compact(f.inlined.insns)} instructions and ${fmt(f.inlined.work_ms, 3)} ms of work on its lines there (counted in those functions too).`));
 		if (P.edges) nodes.push(el("div", { class: "cols" },
 			el("div", {}, el("h3", {}, "Callers"), callers.length ? table(callers, otherColumns, { sort: "work", limit: 30 }) : el("p", { class: "muted" }, "none recorded")),
 			el("div", {}, el("h3", {}, "Callees"), callees.length ? table(callees, otherColumns, { sort: "work", limit: 30 }) : el("p", { class: "muted" }, "none recorded"))));
 		const listing = (P.listings || {})[String(f.id)];
 		if (listing) {
-			const lineFigures = new Map((P.lines || []).filter((l) => l.function === f.id).map((l) => [l.line, l]));
+			// (an inlined function's lines ran in its callers' copies: their figures are summed onto its own lines)
+			const lineFigures = new Map();
+			for (const l of (P.lines || []).filter((l) => l.function === f.id || l.inlined === f.id)) {
+				const sum = lineFigures.get(l.line);
+				lineFigures.set(l.line, sum ? { ...sum, work_ms: sum.work_ms + l.work_ms, insns: sum.insns + l.insns, time_ms: sum.time_ms + l.time_ms, alloc_bytes: sum.alloc_bytes + l.alloc_bytes } : l);
+			}
 			const maxWork = Math.max(1e-12, ...[...lineFigures.values()].map((l) => l.work_ms || l.time_ms || 0));
 			const rows = listing.lines.map(([line, text]) => {
 				const figures = lineFigures.get(line);
@@ -610,7 +618,8 @@ const PROFILE = /*PROFILE_DATA*/null;
 		const readings = k.readings || {};
 		section.append(el("p", { class: "muted" }, `${fmt(readings.count)} readings (${fmt(readings.samples)} samples at safepoints) over ${fmt((k.run || {}).seconds, 2)} s; ${fmt(readings.matched)} found their own switch.` + (readings.own_counts ? ` A reading's own counts, counted with the run's: ${names.map((n) => `${n} ${compact(readings.own_counts[n] || 0)}`).join(", ")}.` : "")));
 		const trace = k.trace || {};
-		if (trace.lost_events || trace.lost_buffers || trace.without_counters) section.append(el("div", { class: "warn" }, `The trace session lost ${fmt(trace.lost_events)} events and ${fmt(trace.lost_buffers)} buffers; ${fmt(trace.without_counters)} switches came without counter values: some counts are missing.`));
+		if (trace.lost_events || trace.lost_buffers) section.append(el("div", { class: "warn" }, `The trace session lost ${fmt(trace.lost_events)} events and ${fmt(trace.lost_buffers)} buffers: some of the threads' stretches are missing.`));
+		if (trace.without_counters) section.append(el("p", { class: "muted" }, `${fmt(trace.without_counters)} context switches came without counter values.`));
 		const ipcOf = (counts) => counts && counts.instructions != null && counts.cycles ? counts.instructions / counts.cycles : 0;
 		const counterColumns = (get, prefix) => names.map((name) => ({ key: name, label: prefix + name, value: (row) => (get(row) || {})[name] || 0, fmt: (v) => compact(v), bar: name === lead }));
 		if ((k.phases || []).length) {

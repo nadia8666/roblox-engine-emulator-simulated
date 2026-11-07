@@ -72,8 +72,11 @@ pub struct Collector {
     registered: HashSet<u32>,
     /// Per CPU: the thread switched in, when, and the counters' values then (None: values not known)
     cpus: Vec<Option<(u32, i64, [u64; MAX_COUNTERS])>>,
+    /// Per CPU: whether a switch with values has come there (the switches before it came before the counters were set)
+    counting: Vec<bool>,
     slices: HashMap<u32, Vec<Slice>>,
     switches: u64,
+    /// The process's threads' switches without values once their CPU was counting: stretches missing from the slices
     without_counters: u64,
 }
 
@@ -97,6 +100,7 @@ impl Collector {
             tracked: registered.iter().copied().collect(),
             registered: registered.iter().copied().collect(),
             cpus: Vec::new(),
+            counting: Vec::new(),
             slices: HashMap::new(),
             switches: 0,
             without_counters: 0,
@@ -113,12 +117,18 @@ impl Collector {
         self.switches += 1;
         if self.cpus.len() <= cpu {
             self.cpus.resize(cpu + 1, None);
+            self.counting.resize(cpu + 1, false);
         }
         let Some(values) = values.filter(|values| values.len() >= self.counters) else {
-            self.without_counters += 1;
+            // (the switches every CPU logs between the session's start and the counters being set carry none, and
+            // matter to nobody; one of the process's threads' once its CPU counts loses that stretch)
+            if self.counting[cpu] && (self.tracked.contains(&old) || self.tracked.contains(&new)) {
+                self.without_counters += 1;
+            }
             self.cpus[cpu] = None;
             return;
         };
+        self.counting[cpu] = true;
         let mut now = [0u64; MAX_COUNTERS];
         now[..self.counters].copy_from_slice(&values[..self.counters]);
         if let Some((thread, start, before)) = self.cpus[cpu].take()
@@ -157,7 +167,7 @@ impl Collector {
         let mut notes = Vec::new();
         if self.switches == 0 {
             notes.push("the session saw no context switch".to_string());
-        } else if self.without_counters == self.switches {
+        } else if !self.counting.iter().any(|&counting| counting) {
             notes.push(format!("none of the {} context switches carried the counters' values: the session took the counters but did not put them on its switches", self.switches));
         }
         protocol::Results { counters: self.counters as u8, threads, switches: self.switches, without_counters: self.without_counters, notes, ..protocol::Results::default() }
@@ -468,6 +478,9 @@ mod tests {
     #[test]
     fn switches_make_slices_of_the_tracked_threads() {
         let mut collector = Collector::new(100, 2, &[7]);
+        // (before the counters were set: CPU 2's switches carry no values, and count as missing nothing)
+        collector.switch(2, 5, 7, 0, None);
+        collector.switch(2, 6, 0, 7, None);
         collector.switch(0, 10, 7, 0, Some(&values(&[1000, 50])));
         collector.switch(1, 12, 9, 0, Some(&values(&[5, 5])));
         collector.switch(0, 20, 0, 7, Some(&values(&[1600, 80])));
@@ -478,11 +491,14 @@ mod tests {
         collector.thread_started(200, 12);
         collector.switch(1, 30, 11, 0, Some(&values(&[(1 << 48) - 10, 0])));
         collector.switch(1, 40, 0, 11, Some(&values(&[30, 4])));
-        // an event without values breaks the CPU's chain: the next switch-out makes no slice
+        // (another process's switch without values, on a counting CPU: none of ours missing)
+        collector.switch(1, 45, 9, 0, None);
+        // an event of ours without values breaks the CPU's chain: the next switch-out makes no slice, and it is counted
         collector.switch(0, 50, 7, 0, None);
         collector.switch(0, 60, 0, 7, Some(&values(&[2000, 90])));
         let results = collector.results();
-        assert_eq!((results.switches, results.without_counters), (8, 1));
+        assert_eq!((results.switches, results.without_counters), (11, 1));
+        assert!(results.notes.is_empty(), "{:?}", results.notes);
         let thread = |id: u32| results.threads.iter().find(|thread| thread.id == id).unwrap();
         let seven = thread(7);
         assert!(seven.registered);
@@ -493,6 +509,11 @@ mod tests {
         assert_eq!(eleven.slices[0].counts[0], 40, "wrapped at 48 bits");
         assert!(results.threads.iter().all(|thread| thread.id != 9 && thread.id != 12), "not the process's");
         assert_eq!(results.threads[0].id, 7, "the registered thread first");
+        // a session whose switches never carried values says so
+        let mut bare = Collector::new(100, 2, &[7]);
+        bare.switch(0, 1, 7, 0, None);
+        bare.switch(0, 2, 0, 7, None);
+        assert!(bare.results().notes.iter().any(|note| note.starts_with("none of the 2 context switches")));
     }
 
     /// What the consumer saw of an event

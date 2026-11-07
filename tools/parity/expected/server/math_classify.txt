@@ -1,0 +1,75 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+math-keys abs acos asin atan atan2 ceil clamp cos cosh deg e exp floor fmod frexp huge isfinite isinf isnan ldexp lerp log log10 map max min modf nan noise phi pi pow rad random randomseed round sign sin sinh sqrt sqrt2 tan tanh tau
+math-member isnan function ok [C] -1 isnan 0 true
+math-member isinf function ok [C] -1 isinf 0 true
+math-member isfinite function ok [C] -1 isfinite 0 true
+math-class 0 0 false false true
+math-class -0 -0 false false true
+math-class 1 1 false false true
+math-class -1 -1 false false true
+math-class 0.5 0.5 false false true
+math-class pi 3.1415926535897931 false false true
+math-class 2^53 9007199254740992 false false true
+math-class 1e308 1e+308 false false true
+math-class -1e308 -1e+308 false false true
+math-class max 1.7976931348623157e+308 false false true
+math-class min-normal 2.2250738585072014e-308 false false true
+math-class min-subnormal subnormal false false true
+math-class -min-subnormal subnormal false false true
+math-class inf inf false true false
+math-class -inf -inf false true false
+math-class overflow inf false true false
+math-class -overflow -inf false true false
+math-class underflow 0 false false true
+math-class 1/0 inf false true false
+math-class -1/0 -inf false true false
+math-class 0/0 nan true false false
+math-class -(0/0) nan true false false
+math-class inf-inf nan true false false
+math-class inf*0 nan true false false
+math-class sqrt(-1) nan true false false
+math-class (-2)^0.5 nan true false false
+math-class log(0) -inf false true false
+math-class log(-1) nan true false false
+math-class fmod(1,0) nan true false false
+math-class-calls of 87: pcall 87 field 87 alias 87
+math-folded true false true false true true false false true true
+math-results 1 1 1 ok true true true
+math-coerce "1" isnan ok false | isinf ok false | isfinite ok true
+math-coerce " 1 " isnan ok false | isinf ok false | isfinite ok true
+math-coerce "1.5" isnan ok false | isinf ok false | isfinite ok true
+math-coerce "-0" isnan ok false | isinf ok false | isfinite ok true
+math-coerce "0x10" isnan ok false | isinf ok false | isfinite ok true
+math-coerce "0X1p4" isnan ok false | isinf ok false | isfinite ok true
+math-coerce "0b101" isnan error invalid argument #1 to 'isnan' (number expected, got string) | isinf error invalid argument #1 to 'isinf' (number expected, got string) | isfinite error invalid argument #1 to 'isfinite' (number expected, got string)
+math-coerce "1e400" isnan ok false | isinf ok true | isfinite ok false
+math-coerce "-1e400" isnan ok false | isinf ok true | isfinite ok false
+math-coerce "1e-400" isnan ok false | isinf ok false | isfinite ok true
+math-coerce "inf" isnan ok false | isinf ok true | isfinite ok false
+math-coerce "-inf" isnan ok false | isinf ok true | isfinite ok false
+math-coerce "nan" isnan ok true | isinf ok false | isfinite ok false
+math-coerce "NaN" isnan ok true | isinf ok false | isfinite ok false
+math-coerce "infinity" isnan ok false | isinf ok true | isfinite ok false
+math-coerce "1e" isnan error invalid argument #1 to 'isnan' (number expected, got string) | isinf error invalid argument #1 to 'isinf' (number expected, got string) | isfinite error invalid argument #1 to 'isfinite' (number expected, got string)
+math-coerce "" isnan error invalid argument #1 to 'isnan' (number expected, got string) | isinf error invalid argument #1 to 'isinf' (number expected, got string) | isfinite error invalid argument #1 to 'isfinite' (number expected, got string)
+math-coerce " " isnan error invalid argument #1 to 'isnan' (number expected, got string) | isinf error invalid argument #1 to 'isinf' (number expected, got string) | isfinite error invalid argument #1 to 'isfinite' (number expected, got string)
+math-coerce "abc" isnan error invalid argument #1 to 'isnan' (number expected, got string) | isinf error invalid argument #1 to 'isinf' (number expected, got string) | isfinite error invalid argument #1 to 'isfinite' (number expected, got string)
+math-coerce "1 2" isnan error invalid argument #1 to 'isnan' (number expected, got string) | isinf error invalid argument #1 to 'isinf' (number expected, got string) | isfinite error invalid argument #1 to 'isfinite' (number expected, got string)
+math-coerce "0/0" isnan error invalid argument #1 to 'isnan' (number expected, got string) | isinf error invalid argument #1 to 'isinf' (number expected, got string) | isfinite error invalid argument #1 to 'isfinite' (number expected, got string)
+math-coerce "1_000" isnan error invalid argument #1 to 'isnan' (number expected, got string) | isinf error invalid argument #1 to 'isinf' (number expected, got string) | isfinite error invalid argument #1 to 'isfinite' (number expected, got string)
+math-error none isnan error @109: invalid argument #1 to 'isnan' (number expected, got nil) | isinf error missing argument #1 to 'isinf' (number expected) | isfinite error @111: missing argument #1 to 'isfinite' (number expected)
+math-error nil isnan error @109: invalid argument #1 to 'isnan' (number expected, got nil) | isinf error invalid argument #1 to 'isinf' (number expected, got nil) | isfinite error @111: invalid argument #1 to 'isfinite' (number expected, got nil)
+math-error true isnan error @109: invalid argument #1 to 'isnan' (number expected, got boolean) | isinf error invalid argument #1 to 'isinf' (number expected, got boolean) | isfinite error @111: invalid argument #1 to 'isfinite' (number expected, got boolean)
+math-error false isnan error @109: invalid argument #1 to 'isnan' (number expected, got boolean) | isinf error invalid argument #1 to 'isinf' (number expected, got boolean) | isfinite error @111: invalid argument #1 to 'isfinite' (number expected, got boolean)
+math-error table isnan error @109: invalid argument #1 to 'isnan' (number expected, got table) | isinf error invalid argument #1 to 'isinf' (number expected, got table) | isfinite error @111: invalid argument #1 to 'isfinite' (number expected, got table)
+math-error function isnan error @109: invalid argument #1 to 'isnan' (number expected, got function) | isinf error invalid argument #1 to 'isinf' (number expected, got function) | isfinite error @111: invalid argument #1 to 'isfinite' (number expected, got function)
+math-error Vector3 isnan error @109: invalid argument #1 to 'isnan' (number expected, got Vector3) | isinf error invalid argument #1 to 'isinf' (number expected, got Vector3) | isfinite error @111: invalid argument #1 to 'isfinite' (number expected, got Vector3)
+math-error Vector2 isnan error @109: invalid argument #1 to 'isnan' (number expected, got Vector2) | isinf error invalid argument #1 to 'isinf' (number expected, got Vector2) | isfinite error @111: invalid argument #1 to 'isfinite' (number expected, got Vector2)
+math-error CFrame isnan error @109: invalid argument #1 to 'isnan' (number expected, got CFrame) | isinf error invalid argument #1 to 'isinf' (number expected, got CFrame) | isfinite error @111: invalid argument #1 to 'isfinite' (number expected, got CFrame)
+math-error Instance isnan error @109: invalid argument #1 to 'isnan' (number expected, got Instance) | isinf error invalid argument #1 to 'isinf' (number expected, got Instance) | isfinite error @111: invalid argument #1 to 'isfinite' (number expected, got Instance)
+math-error EnumItem isnan error @109: invalid argument #1 to 'isnan' (number expected, got EnumItem) | isinf error invalid argument #1 to 'isinf' (number expected, got EnumItem) | isfinite error @111: invalid argument #1 to 'isfinite' (number expected, got EnumItem)
+math-error buffer isnan error @109: invalid argument #1 to 'isnan' (number expected, got buffer) | isinf error invalid argument #1 to 'isinf' (number expected, got buffer) | isfinite error @111: invalid argument #1 to 'isfinite' (number expected, got buffer)
+math-error thread isnan error @109: invalid argument #1 to 'isnan' (number expected, got thread) | isinf error invalid argument #1 to 'isinf' (number expected, got thread) | isfinite error @111: invalid argument #1 to 'isfinite' (number expected, got thread)
+math-error string isnan error @109: invalid argument #1 to 'isnan' (number expected, got string) | isinf error invalid argument #1 to 'isinf' (number expected, got string) | isfinite error @111: invalid argument #1 to 'isfinite' (number expected, got string)
+math-random 400 nan 80 inf 10 finite 310 agree 400

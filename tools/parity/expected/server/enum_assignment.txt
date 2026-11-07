@@ -1,0 +1,13 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+enum nil | error Unable to assign property Material. EnumItem, number, or string expected, got nil | error Unable to assign property Font. EnumItem, number, or string expected, got nil
+enum boolean | error Unable to assign property Material. EnumItem, number, or string expected, got boolean | error Unable to assign property Font. EnumItem, number, or string expected, got boolean
+enum table | error Unable to assign property Material. EnumItem, number, or string expected, got table | error Unable to assign property Font. EnumItem, number, or string expected, got table
+enum vector3 | error Unable to assign property Material. EnumItem, number, or string expected, got Vector3 | error Unable to assign property Font. EnumItem, number, or string expected, got Vector3
+enum other-enum | error Unable to assign property Material. EnumItem of type Material expected, got an EnumItem of type SortOrder | error Unable to assign property Font. EnumItem of type Font expected, got an EnumItem of type SortOrder
+enum lacking-name | error Unable to assign property Material. Invalid value "NotAName" for enum Material | error Unable to assign property Font. Invalid value "NotAName" for enum Font
+enum lacking-number | error Unable to assign property Material. Invalid value 999999 for enum Material | error Unable to assign property Font. Invalid value 999999 for enum Font
+enum name | ok Enum.Material.Wood | error Unable to assign property Font. Invalid value "Wood" for enum Font
+enum number | ok Enum.Material.Wood | error Unable to assign property Font. Invalid value 512 for enum Font
+enum numeric-string | ok Enum.Material.Plastic | error Unable to assign property Font. Invalid value 256 for enum Font
+enum fraction | ok Enum.Material.Wood | error Unable to assign property Font. Invalid value 512 for enum Font

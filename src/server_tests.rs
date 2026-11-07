@@ -76,10 +76,13 @@ fn a_server_has_no_local_player_and_renders_nothing() {
         local RunService = game:GetService("RunService")
         local Players = game:GetService("Players")
         assert(RunService:IsServer() and not RunService:IsClient() and RunService:IsStudio() and RunService:IsRunning())
-        assert(not RunService:IsRunMode() and not RunService:IsEdit())
+        assert(not RunService:IsRunMode())
+        -- (measured on a Studio 0.744 server, tools/parity/probes/run_service_sides.luau: a game script may not call IsEdit
+        -- nor connect to RenderStepped; PreRender and BindToRenderStep are taken and never run)
+        print("is-edit", pcall(RunService.IsEdit, RunService))
+        print("render-stepped", pcall(function() RunService.RenderStepped:Connect(function() end) end))
         assert(Players.LocalPlayer == nil and #Players:GetPlayers() == 0)
         local Rendered, Bound, Beats = 0, 0, 0
-        RunService.RenderStepped:Connect(function() Rendered += 1 end)
         RunService.PreRender:Connect(function() Rendered += 1 end)
         RunService:BindToRenderStep("Test", 1, function() Bound += 1 end)
         RunService.Heartbeat:Connect(function() Beats += 1 end)
@@ -106,7 +109,16 @@ fn a_server_has_no_local_player_and_renders_nothing() {
         "#,
         0.5,
     );
-    for wanted in ["print: added Fake 7", "print: containers Backpack,PlayerGui,StarterGear", "print: frames 0 0 true 1", "print: kicked true", "print: removing Fake", "print: left nil"] {
+    for wanted in [
+        "print: is-edit false The current thread cannot call 'IsEdit' (lacking capability PluginOrOpenCloud)",
+        "print: render-stepped false RenderStepped event can only be used from local scripts",
+        "print: added Fake 7",
+        "print: containers Backpack,PlayerGui,StarterGear",
+        "print: frames 0 0 true 1",
+        "print: kicked true",
+        "print: removing Fake",
+        "print: left nil",
+    ] {
         assert!(has(&lines, wanted), "{wanted}: {lines:?}");
     }
 }
@@ -356,8 +368,9 @@ fn a_server_compresses_and_encodes_buffers() {
 }
 
 /// A server's output reaches its scripts: LogService.MessageOut (message, MessageType) for each line and ScriptContext.Error
-/// (message, stack trace, nil) for a script error, deferred. A playing client's MessageOut gets them after the frame's
-/// Heartbeat, an error with its stack lines (measured: tools/parity/probes/logservice.luau); its ScriptContext.Error is
+/// (message, stack trace, nil) for a script error, deferred. MessageOut gets them after the frame's Heartbeat, an error with
+/// its stack lines, on a playing client and a server alike (measured: tools/parity/probes/logservice.luau, run.mjs and
+/// run.mjs --server; a server passes the script to ScriptContext.Error, here nil); a playing client's ScriptContext.Error is
 /// not emulated.
 #[test]
 fn a_server_hears_its_output_through_log_service_and_script_context() {
@@ -391,7 +404,12 @@ fn a_server_hears_its_output_through_log_service_and_script_context() {
         scheduler::run_until(&lua, &engine, now + 0.2).unwrap();
         let lines: Vec<String> = engine.state.borrow().output.entries.iter().map(|e| format!("{}: {}", e.kind, e.message)).collect();
         if run_context == RunContext::Server {
-            assert!(has(&lines, "print: heard MessageOutput=one 2;MessageWarning=careful;MessageError=boom"), "{lines:?}");
+            // (a server's error has its stack lines too: measured, run.mjs --server's logservice probes)
+            let heard = "print: heard MessageOutput=one 2;MessageWarning=careful;MessageError=boom
+    Stack Begin
+    Script 'Test', Line 11
+    Stack End";
+            assert!(has(&lines, heard), "{lines:?}");
             assert!(has(&lines, "print: errors boom|true|nil"), "{lines:?}");
         } else {
             let heard = "print: heard MessageOutput=one 2;MessageWarning=careful;MessageError=boom\n    Stack Begin\n    Script 'Test', Line 11\n    Stack End";

@@ -8,8 +8,6 @@
 
 #include <limits.h>
 
-LUAU_FASTFLAG(LuauParametrizedAttributeSyntax)
-
 namespace Luau
 {
 
@@ -204,7 +202,7 @@ size_t AstNameTable::EntryHash::operator()(const Entry& e) const
 }
 
 AstNameTable::AstNameTable(Allocator& allocator)
-    : data({AstName(""), 0, Lexeme::Eof}, 128)
+    : data(128)
     , allocator(allocator)
 {
     static_assert(sizeof(kReserved) / sizeof(kReserved[0]) == Lexeme::Reserved_END - Lexeme::Reserved_BEGIN);
@@ -991,35 +989,27 @@ Lexeme Lexer::readNext()
     }
     case '@':
     {
-        if (FFlag::LuauParametrizedAttributeSyntax)
+        if (peekch(1) == '[')
         {
-            if (peekch(1) == '[')
-            {
-                consume();
-                consume();
+            consume();
+            consume();
 
-                return Lexeme(Location(start, 2), Lexeme::AttributeOpen);
-            }
-            else
-            {
-                // consume @ first
-                consume();
-
-                if (isAlpha(peekch()) || peekch() == '_')
-                {
-                    std::pair<AstName, Lexeme::Type> attribute = readName();
-                    return Lexeme(Location(start, position()), Lexeme::Attribute, attribute.first.value);
-                }
-                else
-                {
-                    return Lexeme(Location(start, position()), Lexeme::Attribute, "");
-                }
-            }
+            return Lexeme(Location(start, 2), Lexeme::AttributeOpen);
         }
         else
         {
-            std::pair<AstName, Lexeme::Type> attribute = readName();
-            return Lexeme(Location(start, position()), Lexeme::Attribute, attribute.first.value);
+            // consume @ first
+            consume();
+
+            if (isAlpha(peekch()) || peekch() == '_')
+            {
+                std::pair<AstName, Lexeme::Type> attribute = readName();
+                return Lexeme(Location(start, position()), Lexeme::Attribute, attribute.first.value);
+            }
+            else
+            {
+                return Lexeme(Location(start, position()), Lexeme::Attribute, "");
+            }
         }
     }
     default:

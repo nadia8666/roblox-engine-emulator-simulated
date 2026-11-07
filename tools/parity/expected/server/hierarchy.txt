@@ -1,0 +1,25 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+move-subtree Root.ChildRemoved(A),B.DescendantAdded(A),B.DescendantAdded(A1),B.DescendantAdded(A2),B.DescendantAdded(A21),B.ChildAdded(A),A1.AncestryChanged(A,B),A21.AncestryChanged(A,B),A2.AncestryChanged(A,B),A.AncestryChanged(A,B),A.Parent
+remove-subtree B.DescendantRemoving(A),Root.DescendantRemoving(A),B.DescendantRemoving(A1),Root.DescendantRemoving(A1),B.DescendantRemoving(A2),Root.DescendantRemoving(A2),B.DescendantRemoving(A21),Root.DescendantRemoving(A21),B.ChildRemoved(A),A1.AncestryChanged(A,nil),A21.AncestryChanged(A,nil),A2.AncestryChanged(A,nil),A.AncestryChanged(A,nil),A.Parent
+insert-subtree Root.DescendantAdded(A),Root.DescendantAdded(A1),Root.DescendantAdded(A2),Root.DescendantAdded(A21),Root.ChildAdded(A),A1.AncestryChanged(A,Root),A21.AncestryChanged(A,Root),A2.AncestryChanged(A,Root),A.AncestryChanged(A,Root),A.Parent
+box-in Root.DescendantAdded(Box),Root.DescendantAdded(Item1),Root.DescendantAdded(Item2),Root.DescendantAdded(Item3),Root.ChildAdded(Box)
+bulk-move B.DescendantAdded(Item1),B.ChildAdded(Item1),B.DescendantAdded(Item2),B.ChildAdded(Item2),B.DescendantAdded(Item3),B.ChildAdded(Item3)
+destroy after-destroy parent nil A1 parent nil A21 parent nil,A.Destroying sees parent nil,A.Destroying,Root.DescendantRemoving(A),Root.DescendantRemoving(A1),Root.DescendantRemoving(A2),Root.DescendantRemoving(A21),Root.ChildRemoved(A),A1.AncestryChanged(A,nil),A21.AncestryChanged(A,nil),A2.AncestryChanged(A,nil),A.AncestryChanged(A,nil),A.Parent,A1.Destroying,A.DescendantRemoving(A1),A.ChildRemoved(A1),A1.AncestryChanged(A1,nil),A1.Parent,A2.Destroying,A.DescendantRemoving(A2),A.DescendantRemoving(A21),A.ChildRemoved(A2),A21.AncestryChanged(A2,nil),A2.AncestryChanged(A2,nil),A2.Parent,A21.Destroying,A2.DescendantRemoving(A21),A2.ChildRemoved(A21),A21.AncestryChanged(A21,nil),A21.Parent
+destroyed-parent-write error The Parent property of A is locked, current parent: NULL, new parent Root
+destroyed-child-parent-write error The Parent property of A21 is locked, current parent: NULL, new parent Root
+destroyed-name-write ok  Still
+destroy-twice ok 
+destroyed-findfirstchild nil children 0
+parent-into-destroyed A1
+destroy-tree Root.DescendantAdded(T),Root.ChildAdded(T),Root.DescendantAdded(T1),Root.DescendantAdded(T11),Root.DescendantAdded(T2),returned,T.Destroying parent=nil,Root.DescendantRemoving(T),Root.DescendantRemoving(T1),Root.DescendantRemoving(T11),Root.DescendantRemoving(T2),Root.ChildRemoved(T),T1.Destroying parent=nil,T11.Destroying parent=nil,T2.Destroying parent=nil
+clear-all-children Root.DescendantAdded(C),Root.ChildAdded(C),Root.DescendantAdded(C1),Root.DescendantAdded(C2),Root.DescendantAdded(C3),C.DescendantRemoving(C3),Root.DescendantRemoving(C3),C.ChildRemoved(C3),C.DescendantRemoving(C2),Root.DescendantRemoving(C2),C.ChildRemoved(C2),C.DescendantRemoving(C1),Root.DescendantRemoving(C1),C.ChildRemoved(C1)
+clear-all-children-left 0
+parent-to-self error Attempt to set Self as its own parent
+parent-to-descendant error Attempt to set parent of Outer to Outer.Inner would result in circular reference
+parent-to-number error @144: invalid argument #3 (Instance expected, got number)
+parent-to-service error Cannot change Parent of type Lighting
+parent-of-datamodel error The Parent property of <game> is locked, current parent: NULL, new parent Workspace
+destroy-service error The Parent property of Lighting is locked
+reparent-in-handler Root.DescendantAdded(Shuffle),Root.ChildAdded(Shuffle),Root.DescendantAdded(Other),Root.ChildAdded(Other),Root.DescendantAdded(Moved),Shuffle.ChildAdded(Moved) parent now Shuffle,Other.ChildAdded(Moved)
+added-then-removed Root.DescendantAdded(Gone),Shuffle.ChildAdded(Gone) parent now nil,Root.DescendantRemoving(Gone)

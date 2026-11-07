@@ -1,0 +1,39 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+read-method | ok true | ok true | ok true | ok true | ok true | ok function
+read-property | ok false 0 P Holder false | ok true true true | ok true
+read-event | ok true Signal Touched | ok true Signal Changed | ok Signal ChildRemoved Signal Destroying Signal AttributeChanged
+read-inherited | ok false true MeshPart | ok true 0 1 | ok nil function
+read-service | ok true true | ok true true
+callback-read | error OnInvoke is a callback member of BindableFunction; you can only set the callback value, get is not available | error OnInvoke is a callback member of BindableFunction; you can only set the callback value, get is not available
+callback-write | error onInvoke is not a valid member of BindableFunction "F"
+callback-invoke | ok 8 | ok 8
+write | error anchored is not a valid member of Part "Holder.P" | error position is not a valid member of Part "Holder.P" | error name is not a valid member of Part "Holder.P" | error parent is not a valid member of Part "Holder.P" | error size is not a valid member of Part "Holder.P"
+write-left | ok false P Holder true 1.2000000476837158
+child | ok Folder Folder Folder | ok false | error Foo is not a valid member of Part "Box"
+namecall | ok Signal NameChanged | ok true | ok Holder.P false P | ok Signal NameChanged
+namecall-attributes | ok 5 5 | ok true true
+namecall-not-method | error anchored is not a valid member of Part "Holder.P" | error Anchored is not a valid member of Part "Holder.P" | error touched is not a valid member of Part "Holder.P" | error Touched is not a valid member of Part "Holder.P" | error anchored is not a valid member of Part "Box" | error foo is not a valid member of Part "Box" | error onInvoke is not a valid member of BindableFunction "F"
+first-letter | ok [1] | error jsonEncode is not a valid member of HttpService "HttpService" | error ANCHORED is not a valid member of Part "Holder.P" | error aNCHORED is not a valid member of Part "Holder.P" | error cframe is not a valid member of Part "Holder.P" | error getpropertychangedsignal is not a valid member of Part "Holder.P"
+unknown | error fooBar is not a valid member of Part "Holder.P" | error FooBar is not a valid member of Part "Holder.P" | error fooBar is not a valid member of Part "Holder.P" | error fooBar is not a valid member of Part "Holder.P"
+vector3 | ok 1 2 3 true true true
+vector3-unknown | error dot is not a valid member of Vector3
+vector2 | ok 3 4 5 true true
+int16 | ok 1 2 3 | ok 4 5
+cframe | ok true 1 2 3 true true true | ok true true true true | ok true true true 12
+cframe-unknown | error position is not a valid member of CFrame | error fuzzyEq is not a valid member of CFrame
+color3 | ok 0.25 0.5 0.75 true
+color3-unknown | error toHSV is not a valid member of Color3
+udim2 | ok true
+udim-unknown | error x is not a valid member of UDim2 | error 'scale' is not a valid member of UDim
+brickcolor | ok Bright red 21 true
+brickcolor-unknown | error 'R' is not a valid member of BrickColor | error 'color' is not a valid member of BrickColor
+ray | ok 1
+ray-unknown | error origin is not a valid member of Ray
+datatype-unknown | error nextNumber is not a valid member of Random | error 'time' is not a valid member of TweenInfo | error 'min' is not a valid member of NumberRange | error 'width' is not a valid member of Rect | error 'top' is not a valid member of Faces
+signal | ok true false | ok function function
+signal-unknown | error once is not a valid member of RBXScriptSignal
+enum-unknown | error name is not a valid member of "Enum.KeyCode.A" | error getEnumItems is not a valid member of "Enum.KeyCode" | error keyCode is not a valid member of "Enum"
+library | ok nil nil nil nil nil function
+report-connect | ok 
+report-order | two,one

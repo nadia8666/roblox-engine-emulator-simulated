@@ -1572,6 +1572,27 @@ datatype("CFrame.ToEulerAnglesXYZ", function(N)
 		local _ = a:ToEulerAnglesXYZ()
 	end
 end)
+-- FuzzyEq: has a CFrame moved (a pair a micro-stud apart, the default eps: position and rotation compared), one that moved a stud
+-- (a client answers from the position alone), and two that differ in both parts with an eps given
+local c1near, c1moved = c1 * CFrame.new(1e-6, 0, 0), c1 + Vector3.new(1, 0, 0)
+datatype("CFrame.FuzzyEq", function(N)
+	local a, b = c1, c1near
+	for _ = 1, N do
+		local _ = a:FuzzyEq(b)
+	end
+end)
+datatype("CFrame.FuzzyEq.false", function(N)
+	local a, b = c1, c1moved
+	for _ = 1, N do
+		local _ = a:FuzzyEq(b)
+	end
+end)
+datatype("CFrame.FuzzyEq.eps", function(N)
+	local a, b = c1, c2
+	for _ = 1, N do
+		local _ = a:FuzzyEq(b, 0.01)
+	end
+end)
 datatype("Color3.new", function(N)
 	for I = 1, N do
 		local _ = Color3.new(I / N, 0.5, 0.5)

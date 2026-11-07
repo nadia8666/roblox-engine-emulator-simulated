@@ -135,7 +135,7 @@ local VectorMethods = {
 }
 
 -- The VM answers a vector's own members: x / y / z in either case (a key the compiler could not fold, `v[axis]`,
--- included) and Magnitude / Unit in either case (luaV_vectormember in patches/luau.patch: the work clock charges them
+-- included) and Magnitude / Unit in either case (luaV_vectormember in patches/luau/05-vector-members.patch: the work clock charges them
 -- Studio's 10-12 ns, where a function here cost a 15 ns host call). Methods are a table lookup, as in Studio
 -- (a:Dot(b) 9-10 ns); the table's own metatable raises Studio's error for any other member, from the script's line.
 R.SetVectorMetatable({

@@ -51,8 +51,9 @@ fn number(engine: &Engine, name: &str) -> f64 {
 fn a_playing_clients_resumption_points_run_as_measured() {
     // Measured in a playing client (Studio 0.744, tools/parity/probes/deferred_points.luau, deferred_flush.luau): every
     // due task.wait / task.delay thread resumes first, then one pass over the deferred queue, then the Heartbeat
-    // handlers; the render-step bindings get one pass too; wait / spawn threads resume after PreRender, before
-    // PreAnimation, followed by a full flush.
+    // handlers; wait / spawn threads resume after PreRender, before PreAnimation, followed by a full flush. What the
+    // render-step bindings defer runs after the PreRender handlers (roblox-sim's rendered and headless clients of the
+    // same engine, notes/macro/orderprobe.luau).
     let engine = Engine::new(Options { mode: "play".into(), ..Options::default() }).expect("engine");
     let lua = Lua::new();
     engine_lua::start(&lua, &engine).expect("start");
@@ -92,8 +93,56 @@ fn a_playing_clients_resumption_points_run_as_measured() {
     };
     let log = log.join(" ");
     assert!(log.contains("d0 w0 d1 w1 |Heartbeat d2 w2"), "{log}");
-    assert!(log.contains("b0 b1 |PreRender b2"), "{log}");
-    assert!(log.contains("|PreRender b2 s0 s1 s2 |PreAnimation"), "{log}");
+    assert!(log.contains("b0 |PreRender b1 b2 s0 s1 s2 |PreAnimation"), "{log}");
+}
+
+#[test]
+fn a_playing_clients_tween_step_follows_the_prerender_handlers() {
+    // Measured in roblox-sim's rendered and headless clients (Studio 0.744's engine, notes/macro/orderprobe.luau and
+    // bindprobe.luau): the RenderStepped and PreRender handlers read a tween's value from before the frame's tween step, a tween
+    // played in one of them or in a binding takes its first step that frame, and the tween step's Changed handlers, then what
+    // the bindings (any priority) and the PreRender handlers deferred, run after it with the stepped value.
+    let engine = Engine::new(Options { mode: "play".into(), ..Options::default() }).expect("engine");
+    let lua = Lua::new();
+    engine_lua::start(&lua, &engine).expect("start");
+    engine.state.borrow_mut().sched.set_main_thread(&lua.current_thread());
+    run(
+        &lua,
+        &engine,
+        r#"
+        local RunService = game:GetService("RunService")
+        local TweenService = game:GetService("TweenService")
+        _G.Log = {}
+        local Value = Instance.new("NumberValue")
+        local function Note(Tag) table.insert(_G.Log, string.format("%s%.4f", Tag, Value.Value)) end
+        local First = true
+        Value.Changed:Connect(function() Note("c") end)
+        RunService:BindToRenderStep("probe", 100, function()
+            if First then
+                task.defer(function() Note("b") end)
+            end
+        end)
+        RunService.RenderStepped:Connect(function()
+            Note("|RenderStepped ")
+            if First then
+                TweenService:Create(Value, TweenInfo.new(1, Enum.EasingStyle.Linear), { Value = 1 }):Play()
+            end
+        end)
+        RunService.PreRender:Connect(function()
+            Note("|PreRender ")
+            if First then
+                First = false
+                task.defer(function() Note("p") end)
+            end
+        end)
+        "#,
+    );
+    scheduler::step(&lua, &engine, Some(1.0 / 60.0)).unwrap();
+    let log: Vec<String> = match global(&engine, "Log") {
+        LuaValue::Table(table) => table.sequence_values::<String>().map(Result::unwrap).collect(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(log.join(" "), "|RenderStepped 0.0000 |PreRender 0.0000 c0.0167 b0.0167 p0.0167");
 }
 
 #[test]

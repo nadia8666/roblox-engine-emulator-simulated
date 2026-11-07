@@ -429,11 +429,19 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
         let query = query.clone();
         behaviors.add_method(base, name, method(move |lua, engine, id, args| {
             let text = args.string(1).map(|s| s.as_bytes().to_vec()).unwrap_or_default();
+            // (the call's own touch of the root says whether it was cold)
+            let cold = engine.state.borrow().sched.touched.borrow_mut().take_last_cold();
             let found = query(lua, engine, id, &text)?;
-            // (Studio: about 10 ns a descendant looked at and 15 a match, cost.rs)
+            // (Studio: about 10 ns a descendant looked at and 15 a match, cost.rs; the frame's first query runs its code cold, and a
+            // node the frame had not touched is read cold: Path::Query, QUERY_COLD_NODE)
             {
                 let state = engine.state.borrow();
-                state.sched.charge(state.dom.descendants(id).len() as f64 * crate::cost::QUERIED + found.len() as f64 * crate::cost::QUERY_FOUND);
+                let mut seconds = state.dom.descendants(id).len() as f64 * crate::cost::QUERIED + found.len() as f64 * crate::cost::QUERY_FOUND;
+                let mut touched = state.sched.touched.borrow_mut();
+                seconds += touched.first_path(crate::cost::Path::Query) + if cold { crate::cost::QUERY_COLD } else { 0.0 };
+                drop(touched);
+                state.sched.charge(seconds);
+                crate::boundary::add_cost(seconds);
             }
             let table = lua.create_table_with_capacity(found.len(), 0)?;
             for id in found {

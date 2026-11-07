@@ -33,23 +33,27 @@ CLASSES = {
     "c_simple": {"NOP", "BREAK", "LOADNIL", "LOADB", "LOADN", "LOADK", "LOADKX", "MOVE", "GETUPVAL", "SETUPVAL", "JUMP", "JUMPBACK", "JUMPX",
                  "JUMPIF", "JUMPIFNOT", "JUMPIFEQ", "JUMPIFLE", "JUMPIFLT", "JUMPIFNOTEQ", "JUMPIFNOTLE", "JUMPIFNOTLT", "JUMPXEQKNIL",
                  "JUMPXEQKB", "JUMPXEQKN", "JUMPXEQKS", "ADD", "SUB", "MUL", "DIV", "ADDK", "SUBK", "MULK", "DIVK", "SUBRK", "DIVRK", "AND",
-                 "OR", "ANDK", "ORK", "NOT", "MINUS", "FORNPREP", "FORNLOOP", "COVERAGE", "CLOSEUPVALS", "PREPVARARGS", "CAPTURE"},
+                 "OR", "ANDK", "ORK", "NOT", "MINUS", "FORNPREP", "FORNLOOP", "COVERAGE", "CLOSEUPVALS", "PREPVARARGS", "CAPTURE",
+                 "CMPPROTO", "NEWCLASSMEMBER", "FINCONSTRUCT"},
     "c_mod": {"MOD", "MODK", "POW", "POWK", "IDIV", "IDIVK"},
-    "c_tablek": {"GETTABLEKS", "SETTABLEKS", "GETTABLEN", "SETTABLEN", "LENGTH", "SETLIST"},
+    "c_tablek": {"GETTABLEKS", "SETTABLEKS", "GETTABLEN", "SETTABLEN", "LENGTH", "SETLIST", "GETUDATAKS", "SETUDATAKS", "GETPRIVATEFIELD",
+                 "SETPRIVATEFIELD"},
     "c_tabledyn": {"GETTABLE", "SETTABLE"},
-    "c_alloc": {"NEWTABLE", "DUPTABLE", "NEWCLOSURE", "DUPCLOSURE", "CONCAT", "GETVARARGS"},
-    "c_call": {"CALL", "NAMECALL", "RETURN", "NATIVECALL"},
+    "c_alloc": {"NEWTABLE", "DUPTABLE", "NEWCLOSURE", "DUPCLOSURE", "CONCAT", "GETVARARGS", "NEWCLASS", "CONSTRUCT"},
+    "c_call": {"CALL", "RETURN", "NATIVECALL", "NAMECALLUDATA", "CALLFB", "FASTPCALL"},
     "c_iter": {"FORGLOOP", "FORGPREP", "FORGPREP_INEXT", "FORGPREP_NEXT"},
     "c_fastcall": {"FASTCALL", "FASTCALL1", "FASTCALL2", "FASTCALL2K", "FASTCALL3"},
     "c_global": {"GETGLOBAL", "SETGLOBAL", "GETIMPORT"},
+    # a method call's lookup: Luau 0.746's interpreter dispatches the CALL after it apart (0.694 counted the two as one NAMECALL)
+    "c_namecall": {"NAMECALL"},
 }
 
 # src/cost.rs's Luau prices (nanoseconds): an instruction by its class, interpreted (INTERPRETED_OPS) and in a native module
 # (NATIVE_OPS), and the rest of `luau`'s counts (with the vector members' charges)
 INTERPRETED = {"c_simple": 0.48, "c_mod": 5.46, "c_tablek": 2.45, "c_tabledyn": 2.20, "c_alloc": 0.0, "c_call": 4.89, "c_iter": 2.54,
-               "c_fastcall": 3.75, "c_global": 1.36}
+               "c_fastcall": 3.75, "c_global": 1.36, "c_namecall": 0.0}
 NATIVE = {"c_simple": 0.43, "c_mod": 0.65, "c_tablek": 0.42, "c_tabledyn": 0.75, "c_alloc": 1.74, "c_call": 3.25, "c_iter": 1.93,
-          "c_fastcall": 0.19, "c_global": 0.27}
+          "c_fastcall": 0.19, "c_global": 0.27, "c_namecall": 3.25}
 LIBRARY = {"numtostr": 18.0, "newstring": 171.0, "sortcompare": 1.06, "sortcall": 9.7, "createitem": 4.3, "cloneitem": 4.3,
            "concatitem": 7.1, "splitpart": 25.4, "format": 102.0, "formatspec": 0.0}
 LUAU = {"object": 22.0, "stored": 0.4, "rehash": 12.0, "ccall": 5.0, "hostcall": 15.0, "magnitude": 12.5, "unit": 9.1,

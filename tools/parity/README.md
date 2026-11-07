@@ -9,12 +9,17 @@ node tools/parity/run.mjs task_order --diff   # one probe, with its differing li
 node tools/parity/run.mjs --write-known   # record the current differences in known.json (keeps their reasons)
 REE_PARITY_CAPTURE="<command>" node tools/parity/run.mjs --capture [probe ...]   # re-capture after a Roblox update
 node tools/parity/run.mjs ui_signals --rur <rur checkout>   # a probe that needs a GUI layout, through rur
+node tools/parity/run.mjs --server        # the probes as a server's script: expected/server, known-server.json
 ```
 
 `cargo test --release --test parity` runs the same comparison: every expected line ree does not print must be listed in
 `known.json`, so a change that breaks a matching line fails the tests. The table's columns are the expected lines, the
 ones ree printed the same, the known differences and the new ones; it also names `known.json` entries that now match
 (remove them).
+
+`--server` runs the same probes as a server's script would: ree with `--run-context server` against
+`expected/server` (what the probes printed as a Script in a play session's server) and `known-server.json`; a probe
+that asks for a device or a renderer is left out. `cargo test --release --test parity` checks both sets.
 
 ## Writing a probe
 
@@ -42,4 +47,6 @@ command `REE_PARITY_CAPTURE` names, called as `<command> <bodies.json> <outputs.
 with each body's printed lines (a probe's own `"engine"` text, when given, replaces the shared one in its header).
 It must run each body as a function body in a playing client whose `Workspace.SignalBehavior` is Deferred (ree's
 model), at script identity 2 unless the probe asks for another, on the device and with the rendering it asks for.
+With `--capture --server` each entry also has `"server": true`: run it as a server's game script (a Script in
+ServerScriptService, identity 2) in a play session, and return the lines it printed.
 

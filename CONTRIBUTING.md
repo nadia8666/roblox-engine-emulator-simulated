@@ -34,7 +34,8 @@ Search existing issues before filing. A thumbs-up on an existing issue helps mor
 3. The tests need about 2 GB of free memory (the `ree serve` tests check for it) and run the built `ree`
    (tests/process_guards.rs). None needs Roblox Studio, a game checkout, a GPU or the network.
 4. If you change a file in `patches/`, run `node tools/vendor.mjs` and commit `vendor/` with it;
-   `node tools/vendor.mjs --check` must pass. Never edit `vendor/` by hand.
+   `node tools/vendor.mjs --check` must pass. Never edit `vendor/` by hand. The Luau VM's patches are a
+   topic series (`patches/luau/`, one topic a file; docs/building.md "Updating Luau").
 
 [docs/engine.md](docs/engine.md) describes how the engine works inside; read the section for the part you change.
 

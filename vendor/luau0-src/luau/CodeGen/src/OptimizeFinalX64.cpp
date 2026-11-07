@@ -2,17 +2,109 @@
 #include "Luau/OptimizeFinalX64.h"
 
 #include "Luau/IrUtils.h"
+#include "Luau/IrVisitUseDef.h"
 
 #include <utility>
+
+LUAU_FASTFLAGVARIABLE(LuauCodegenX64ConflictCheck)
+LUAU_FLAGVERSION(LuauCodegenX64ConflictCheck, 2)
+
+// x64 assembly allows memory operands, but IR separates loads from uses
+// To improve final x64 lowering, we try to 'inline' single-use register/constant loads into some of our instructions
+// This pass might not be useful on different architectures
 
 namespace Luau
 {
 namespace CodeGen
 {
 
-// x64 assembly allows memory operands, but IR separates loads from uses
-// To improve final x64 lowering, we try to 'inline' single-use register/constant loads into some of our instructions
-// This pass might not be useful on different architectures
+static constexpr uint32_t kMaxInlineDistance = 16;
+
+struct DefinitionVisitor
+{
+    explicit DefinitionVisitor(int targetReg)
+        : targetReg(targetReg)
+    {
+    }
+
+    void def(IrOp op, int offset = 0)
+    {
+        matched |= (vmRegOp(op) + offset) == targetReg;
+    }
+
+    void maybeDef(IrOp op)
+    {
+        if (op.kind == IrOpKind::VmReg)
+            def(op, 0);
+    }
+
+    void defRange(int start, int count)
+    {
+        matched |= targetReg >= start && (count == -1 || targetReg < start + count);
+    }
+
+    // Required for a full visitor interface
+    void use(IrOp op, int offset = 0) {}
+    void maybeUse(IrOp op) {}
+    void useVarargs(uint8_t varargStart) {}
+    void useRange(int start, int count) {}
+    void capture(int reg) {}
+
+    int targetReg = 0;
+    bool matched = false;
+};
+
+static bool hasDefinitionInRange(IrFunction& function, int targetReg, uint32_t start, uint32_t end)
+{
+    DefinitionVisitor visitor{targetReg};
+
+    for (uint32_t instIdx = start; instIdx < end && !visitor.matched; instIdx++)
+        visitVmRegDefsUses(visitor, function, function.instructions[instIdx]);
+
+    return visitor.matched;
+}
+
+// Check that the operand value will be the same as it was at the load location
+static bool canInlineOperand(IrFunction& function, uint32_t sourceInstIdx, IrBlock& useBlock, uint32_t useInstIdx, IrOp op)
+{
+    if (op.kind != IrOpKind::VmReg)
+        return true;
+
+    // Simple check if the definition is inside our block
+    if (sourceInstIdx >= useBlock.start && sourceInstIdx < useInstIdx)
+    {
+        if (useInstIdx - sourceInstIdx > kMaxInlineDistance)
+            return false;
+
+        return !hasDefinitionInRange(function, vmRegOp(op), sourceInstIdx + 1, useInstIdx);
+    }
+
+    // Check source values coming from a previous block if there's a 1:1 relationship
+    uint32_t useBlockIdx = function.getBlockIndex(useBlock);
+    if (useBlockIdx >= function.cfg.predecessorsOffsets.size())
+        return false;
+
+    BlockIteratorWrapper preds = predecessors(function.cfg, useBlockIdx);
+    if (preds.size() != 1)
+        return false;
+
+    IrBlock& predBlock = function.blocks[*preds.begin()];
+    if (sourceInstIdx < predBlock.start || sourceInstIdx > predBlock.finish)
+        return false;
+
+    if ((predBlock.finish - sourceInstIdx) + (useInstIdx - useBlock.start) > kMaxInlineDistance)
+        return false;
+
+    return !hasDefinitionInRange(function, vmRegOp(op), sourceInstIdx + 1, predBlock.finish + 1) &&
+           !hasDefinitionInRange(function, vmRegOp(op), useBlock.start, useInstIdx);
+}
+
+static void replaceIfNoConflicts(IrFunction& function, IrInst& source, IrBlock& useBlock, uint32_t useInstIdx, IrOp& original, IrOp replacement)
+{
+    if (canInlineOperand(function, function.getInstIndex(source), useBlock, useInstIdx, replacement))
+        replace(function, original, replacement);
+}
+
 static void optimizeMemoryOperandsX64(IrFunction& function, IrBlock& block)
 {
     CODEGEN_ASSERT(block.kind != IrBlockKind::Dead);
@@ -26,31 +118,46 @@ static void optimizeMemoryOperandsX64(IrFunction& function, IrBlock& block)
         {
         case IrCmd::CHECK_TAG:
         {
-            if (inst.a.kind == IrOpKind::Inst)
+            if (OP_A(inst).kind == IrOpKind::Inst)
             {
-                IrInst& tag = function.instOp(inst.a);
+                IrInst& tag = function.instOp(OP_A(inst));
 
-                if (tag.useCount == 1 && tag.cmd == IrCmd::LOAD_TAG && (tag.a.kind == IrOpKind::VmReg || tag.a.kind == IrOpKind::VmConst))
-                    replace(function, inst.a, tag.a);
+                if (tag.useCount == 1 && tag.cmd == IrCmd::LOAD_TAG && (OP_A(tag).kind == IrOpKind::VmReg || OP_A(tag).kind == IrOpKind::VmConst))
+                {
+                    if (FFlag::LuauCodegenX64ConflictCheck)
+                        replaceIfNoConflicts(function, tag, block, index, OP_A(inst), OP_A(tag));
+                    else
+                        replace(function, OP_A(inst), OP_A(tag));
+                }
             }
             break;
         }
         case IrCmd::CHECK_TRUTHY:
         {
-            if (inst.a.kind == IrOpKind::Inst)
+            if (OP_A(inst).kind == IrOpKind::Inst)
             {
-                IrInst& tag = function.instOp(inst.a);
+                IrInst& tag = function.instOp(OP_A(inst));
 
-                if (tag.useCount == 1 && tag.cmd == IrCmd::LOAD_TAG && (tag.a.kind == IrOpKind::VmReg || tag.a.kind == IrOpKind::VmConst))
-                    replace(function, inst.a, tag.a);
+                if (tag.useCount == 1 && tag.cmd == IrCmd::LOAD_TAG && (OP_A(tag).kind == IrOpKind::VmReg || OP_A(tag).kind == IrOpKind::VmConst))
+                {
+                    if (FFlag::LuauCodegenX64ConflictCheck)
+                        replaceIfNoConflicts(function, tag, block, index, OP_A(inst), OP_A(tag));
+                    else
+                        replace(function, OP_A(inst), OP_A(tag));
+                }
             }
 
-            if (inst.b.kind == IrOpKind::Inst)
+            if (OP_B(inst).kind == IrOpKind::Inst)
             {
-                IrInst& value = function.instOp(inst.b);
+                IrInst& value = function.instOp(OP_B(inst));
 
                 if (value.useCount == 1 && value.cmd == IrCmd::LOAD_INT)
-                    replace(function, inst.b, value.a);
+                {
+                    if (FFlag::LuauCodegenX64ConflictCheck)
+                        replaceIfNoConflicts(function, value, block, index, OP_B(inst), OP_A(value));
+                    else
+                        replace(function, OP_B(inst), OP_A(value));
+                }
             }
             break;
         }
@@ -63,48 +170,65 @@ static void optimizeMemoryOperandsX64(IrFunction& function, IrBlock& block)
         case IrCmd::MIN_NUM:
         case IrCmd::MAX_NUM:
         {
-            if (inst.b.kind == IrOpKind::Inst)
+            if (OP_B(inst).kind == IrOpKind::Inst)
             {
-                IrInst& rhs = function.instOp(inst.b);
+                IrInst& rhs = function.instOp(OP_B(inst));
 
-                if (rhs.useCount == 1 && rhs.cmd == IrCmd::LOAD_DOUBLE && (rhs.a.kind == IrOpKind::VmReg || rhs.a.kind == IrOpKind::VmConst))
-                    replace(function, inst.b, rhs.a);
+                if (rhs.useCount == 1 && rhs.cmd == IrCmd::LOAD_DOUBLE && (OP_A(rhs).kind == IrOpKind::VmReg || OP_A(rhs).kind == IrOpKind::VmConst))
+                {
+                    if (FFlag::LuauCodegenX64ConflictCheck)
+                        replaceIfNoConflicts(function, rhs, block, index, OP_B(inst), OP_A(rhs));
+                    else
+                        replace(function, OP_B(inst), OP_A(rhs));
+                }
             }
             break;
         }
         case IrCmd::JUMP_EQ_TAG:
         {
-            if (inst.a.kind == IrOpKind::Inst)
+            if (OP_A(inst).kind == IrOpKind::Inst)
             {
-                IrInst& tagA = function.instOp(inst.a);
+                IrInst& tagA = function.instOp(OP_A(inst));
 
-                if (tagA.useCount == 1 && tagA.cmd == IrCmd::LOAD_TAG && (tagA.a.kind == IrOpKind::VmReg || tagA.a.kind == IrOpKind::VmConst))
+                if (tagA.useCount == 1 && tagA.cmd == IrCmd::LOAD_TAG && (OP_A(tagA).kind == IrOpKind::VmReg || OP_A(tagA).kind == IrOpKind::VmConst))
                 {
-                    replace(function, inst.a, tagA.a);
+                    if (FFlag::LuauCodegenX64ConflictCheck)
+                        replaceIfNoConflicts(function, tagA, block, index, OP_A(inst), OP_A(tagA));
+                    else
+                        replace(function, OP_A(inst), OP_A(tagA));
                     break;
                 }
             }
 
-            if (inst.b.kind == IrOpKind::Inst)
+            if (OP_B(inst).kind == IrOpKind::Inst)
             {
-                IrInst& tagB = function.instOp(inst.b);
+                IrInst& tagB = function.instOp(OP_B(inst));
 
-                if (tagB.useCount == 1 && tagB.cmd == IrCmd::LOAD_TAG && (tagB.a.kind == IrOpKind::VmReg || tagB.a.kind == IrOpKind::VmConst))
+                if (tagB.useCount == 1 && tagB.cmd == IrCmd::LOAD_TAG && (OP_A(tagB).kind == IrOpKind::VmReg || OP_A(tagB).kind == IrOpKind::VmConst))
                 {
-                    std::swap(inst.a, inst.b);
-                    replace(function, inst.a, tagB.a);
+                    std::swap(OP_A(inst), OP_B(inst));
+
+                    if (FFlag::LuauCodegenX64ConflictCheck)
+                        replaceIfNoConflicts(function, tagB, block, index, OP_A(inst), OP_A(tagB));
+                    else
+                        replace(function, OP_A(inst), OP_A(tagB));
                 }
             }
             break;
         }
         case IrCmd::JUMP_CMP_NUM:
         {
-            if (inst.a.kind == IrOpKind::Inst)
+            if (OP_A(inst).kind == IrOpKind::Inst)
             {
-                IrInst& num = function.instOp(inst.a);
+                IrInst& num = function.instOp(OP_A(inst));
 
                 if (num.useCount == 1 && num.cmd == IrCmd::LOAD_DOUBLE)
-                    replace(function, inst.a, num.a);
+                {
+                    if (FFlag::LuauCodegenX64ConflictCheck)
+                        replaceIfNoConflicts(function, num, block, index, OP_A(inst), OP_A(num));
+                    else
+                        replace(function, OP_A(inst), OP_A(num));
+                }
             }
             break;
         }
@@ -114,12 +238,17 @@ static void optimizeMemoryOperandsX64(IrFunction& function, IrBlock& block)
         case IrCmd::SQRT_NUM:
         case IrCmd::ABS_NUM:
         {
-            if (inst.a.kind == IrOpKind::Inst)
+            if (OP_A(inst).kind == IrOpKind::Inst)
             {
-                IrInst& arg = function.instOp(inst.a);
+                IrInst& arg = function.instOp(OP_A(inst));
 
-                if (arg.useCount == 1 && arg.cmd == IrCmd::LOAD_DOUBLE && (arg.a.kind == IrOpKind::VmReg || arg.a.kind == IrOpKind::VmConst))
-                    replace(function, inst.a, arg.a);
+                if (arg.useCount == 1 && arg.cmd == IrCmd::LOAD_DOUBLE && (OP_A(arg).kind == IrOpKind::VmReg || OP_A(arg).kind == IrOpKind::VmConst))
+                {
+                    if (FFlag::LuauCodegenX64ConflictCheck)
+                        replaceIfNoConflicts(function, arg, block, index, OP_A(inst), OP_A(arg));
+                    else
+                        replace(function, OP_A(inst), OP_A(arg));
+                }
             }
             break;
         }
@@ -134,6 +263,10 @@ void optimizeMemoryOperandsX64(IrFunction& function)
     for (IrBlock& block : function.blocks)
     {
         if (block.kind == IrBlockKind::Dead)
+            continue;
+
+        // Inlining a load into its consumer inside the ExitSync block would will kill the operands listed in VM exit sync info argOps
+        if (block.kind == IrBlockKind::ExitSync)
             continue;
 
         optimizeMemoryOperandsX64(function, block);

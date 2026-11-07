@@ -11,7 +11,6 @@
 // clang-format off
 typedef enum
 {
-    
     TM_INDEX,
     TM_NEWINDEX,
     TM_MODE,
@@ -22,7 +21,6 @@ typedef enum
 
     TM_EQ, // last tag method with `fast' access
 
-    
     TM_ADD,
     TM_SUB,
     TM_MUL,
@@ -32,7 +30,6 @@ typedef enum
     TM_POW,
     TM_UNM,
 
-    
     TM_LT,
     TM_LE,
     TM_CONCAT,
@@ -43,7 +40,8 @@ typedef enum
 } TMS;
 // clang-format on
 
-#define gfasttm(g, et, e) ((et) == NULL ? NULL : ((et)->tmcache & (1u << (e))) ? NULL : luaT_gettm(et, e, (g)->tmname[e]))
+#define gfasttm(g, et, e) \
+    ((et) == NULL ? NULL : ((et)->tmcache & (1u << (e))) ? NULL : (hasmetacache(et) ? getmetacache(et, e) : luaT_gettm(et, e, (g)->tmname[e])))
 
 #define fasttm(l, et, e) gfasttm(l->global, et, e)
 #define fastnotm(et, e) ((et) == NULL || ((et)->tmcache & (1u << (e))))

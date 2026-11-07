@@ -1,0 +1,40 @@
+[package]
+name = "ree-profile-view"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+license = "GPL-2.0-or-later"
+repository = "https://github.com/Anime-Vanguards/roblox-engine-emulator"
+description = "ree's profile viewer: a keyboard-driven terminal UI over profile directories, and the same screens rendered headless to PNG, SVG or text"
+
+[lib]
+name = "ree_profile_view"
+path = "src/lib.rs"
+
+# `ree profile view|render` runs this binary (src/main.rs); `cargo build --release` in the workspace builds it beside ree
+[[bin]]
+name = "ree-profile-view"
+path = "src/main.rs"
+
+# Exact versions, as the engine's: a host (rur) resolves the same ones
+[dependencies]
+# The terminal UI: its cell buffer, layout and styles, its widgets (panels, tabs, tables, charts, gauges,
+# sparklines) and its terminal through crossterm (Windows consoles, Unix terminals). The buffer the widgets draw is
+# what the terminal shows and what `render` rasterizes. Without its default features: no calendar, macros or layout
+# cache (MIT)
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm_0_29"] }
+# Glyphs rasterized for PNG screenshots from the bundled JetBrains Mono (fonts/, SIL OFL 1.1); pure Rust, no system
+# fonts, so a screenshot is the same on every machine (MIT OR Apache-2.0 OR Zlib)
+fontdue = "=0.9.4"
+# The rest are versions the engine already builds
+png = "=0.18.1"
+rustc-hash = "=2.1.3"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = { version = "=1.0.145", features = ["float_roundtrip"] }
+
+# tests/engine.rs: a real profile made by the engine in the test (the engine is not a dependency of the viewer itself),
+# and mimalloc, which the engine's service code calls (mi_collect) and ree's binary links; the engine's own version
+[dev-dependencies]
+roblox-engine-emulator = { path = ".." }
+mimalloc = { version = "=0.1.52", default-features = false, features = ["v2"] }

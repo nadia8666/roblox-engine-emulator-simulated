@@ -1,0 +1,35 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (loadstring in the server's bridge, script identity 4; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+nested info ReplicatedStorage.ParityProbes.Chunk
+nested fail ReplicatedStorage.ParityProbes.Chunk:3: inside
+nested index ReplicatedStorage.ParityProbes.Chunk:4: attempt to index nil with 'Field'
+nested member NotAMember is not a valid member of Workspace "Workspace"
+nested level2 up
+nested trace t / ReplicatedStorage.ParityProbes.Chunk:5 function trace
+odd-names info ReplicatedStorage.ParityProbes.Chunk
+odd-names fail ReplicatedStorage.ParityProbes.Chunk:3: inside
+odd-names index ReplicatedStorage.ParityProbes.Chunk:4: attempt to index nil with 'Field'
+odd-names member NotAMember is not a valid member of Workspace "Workspace"
+odd-names level2 up
+odd-names trace t / ReplicatedStorage.ParityProbes.Chunk:5 function trace
+loose info ReplicatedStorage.ParityProbes.Chunk
+loose fail ReplicatedStorage.ParityProbes.Chunk:3: inside
+loose index ReplicatedStorage.ParityProbes.Chunk:4: attempt to index nil with 'Field'
+loose member NotAMember is not a valid member of Workspace "Workspace"
+loose level2 up
+loose trace t / ReplicatedStorage.ParityProbes.Chunk:5 function trace
+long info ReplicatedStorage.ParityProbes.Chunk
+long fail ReplicatedStorage.ParityProbes.Chunk:3: inside
+long index ReplicatedStorage.ParityProbes.Chunk:4: attempt to index nil with 'Field'
+long member NotAMember is not a valid member of Workspace "Workspace"
+long level2 up
+long trace t / ReplicatedStorage.ParityProbes.Chunk:5 function trace
+require-broken false Requested module experienced an error while loading
+require-broken-again false Requested module experienced an error while loading
+require-broken-zero false Requested module experienced an error while loading
+require-two false Module code did not return exactly one value
+require-none false Module code did not return exactly one value
+require-cycle false Requested module experienced an error while loading
+require-yielding later
+require-string error error requiring "ReplicatedStorage.ParityRequires.Two": require path must start with a valid prefix: ./, ../, or @
+require-folder error Attempted to call require with invalid argument(s).

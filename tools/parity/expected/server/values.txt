@@ -1,0 +1,87 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+value nil typeof=nil type=nil tostring=nil
+value bool typeof=boolean type=boolean tostring=true
+value number typeof=number type=number tostring=1.5
+value string typeof=string type=string tostring=s
+value table typeof=table type=table tostring=table: ADDR
+value function typeof=function type=function tostring=function: ADDR
+value thread typeof=thread type=thread tostring=thread: ADDR
+value userdata typeof=userdata type=userdata tostring=userdata: ADDR
+value buffer typeof=buffer type=buffer tostring=buffer: ADDR
+value vector typeof=Vector3 type=vector tostring=1, 2, 3
+value Instance typeof=Instance type=userdata tostring=Part
+value Workspace typeof=Instance type=userdata tostring=Workspace
+value DataModel typeof=boolean type=boolean tostring=true
+value Vector3 typeof=Vector3 type=vector tostring=1, 2, 3
+value Vector2 typeof=Vector2 type=userdata tostring=1, 2
+value Vector3int16 typeof=Vector3int16 type=userdata tostring=1, 2, 3
+value Vector2int16 typeof=Vector2int16 type=userdata tostring=1, 2
+value CFrame typeof=CFrame type=userdata tostring=1, 2, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1
+value Color3 typeof=Color3 type=userdata tostring=1, 0.5, 0
+value BrickColor typeof=BrickColor type=userdata tostring=Bright red
+value UDim typeof=UDim type=userdata tostring=0.5, 3
+value UDim2 typeof=UDim2 type=userdata tostring={1, 2}, {3, 4}
+value Rect typeof=Rect type=userdata tostring=1, 2, 3, 4
+value NumberRange typeof=NumberRange type=userdata tostring=1 2 
+value NumberSequence typeof=NumberSequence type=userdata tostring=0 0 0 1 1 0 
+value NumberSequenceKeypoint typeof=NumberSequenceKeypoint type=userdata tostring=0 1 0.5 
+value ColorSequence typeof=ColorSequence type=userdata tostring=0 1 0 0 0 1 0 0 1 0 
+value ColorSequenceKeypoint typeof=ColorSequenceKeypoint type=userdata tostring=0 1 0 0 0 
+value Ray typeof=Ray type=userdata tostring={0, 0, 0}, {1, 0, 0}
+value Region3 typeof=Region3 type=userdata tostring=0.5, 0.5, 0.5, 1, 0, 0, 0, 1, 0, 0, 0, 1; 1, 1, 1
+value Region3int16 typeof=Region3int16 type=userdata tostring=0, 0, 0; 1, 1, 1
+value TweenInfo typeof=TweenInfo type=userdata tostring=Time:1 DelayTime:0 RepeatCount:0 Reverses:False EasingDirection:Out EasingStyle:Quad
+value Axes typeof=Axes type=userdata tostring=X
+value Faces typeof=Faces type=userdata tostring=Top
+value PhysicalProperties typeof=PhysicalProperties type=userdata tostring=1, 0.300000012, 0.5, 1, 1, 1
+value Enum typeof=Enum type=userdata tostring=Material
+value Enums typeof=Enums type=userdata tostring=Enums
+value EnumItem typeof=EnumItem type=userdata tostring=Enum.Material.Plastic
+value RBXScriptSignal typeof=RBXScriptSignal type=userdata tostring=Signal Changed
+value RBXScriptConnection typeof=RBXScriptConnection type=userdata tostring=Connection
+value Random typeof=Random type=userdata tostring=Random
+value DateTime typeof=DateTime type=userdata tostring=0
+value Font typeof=Font type=userdata tostring=Font { Family = rbxasset://fonts/families/Arial.json, Weight = Regular, Style = Normal }
+value Content typeof=Content type=userdata tostring=Content{SourceType=Uri, Uri=rbxassetid://1}
+value PathWaypoint typeof=PathWaypoint type=userdata tostring={0, 0, 0}, Walk, 
+value CatalogSearchParams typeof=CatalogSearchParams type=userdata tostring=CatalogSearchParams{SearchKeyword=, CategoryFilter=None, SortType=Relevance, SortAggregation=AllTime, SalesTypeFilter=All, CreatorName=, Limit=30, CreatorType=All, BundleTypes=, AssetTypes=, IncludeOffSale=false}
+value RaycastParams typeof=RaycastParams type=userdata tostring=RaycastParams{IgnoreWater=false, Margin=0, SizeGradient=0, BruteForceAllSlow=false, RespectCanCollide=false, CollisionGroup=Default, FilterDescendantsInstances={}}
+value OverlapParams typeof=OverlapParams type=userdata tostring=OverlapParams{MaxParts=0, Tolerance=0, BruteForceAllSlow=false, RespectCanCollide=false, CollisionGroup=Default, FilterDescendantsInstances={}}
+value SharedTable typeof=SharedTable type=userdata tostring=SharedTable: ADDR
+value Path2DControlPoint typeof=Path2DControlPoint type=userdata tostring=Path2DControlPoint { Position = {0, 0}, {0, 0}, LeftTangent = {0, 0}, {0, 0}, RightTangent = {0, 0}, {0, 0} }
+value FloatCurveKey typeof=FloatCurveKey type=userdata tostring={Linear, 0, 1, nil, nil}
+value RotationCurveKey typeof=RotationCurveKey type=userdata tostring={Linear, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0}
+value SecurityCapabilities typeof=SecurityCapabilities type=userdata tostring=
+typeof-metatable table userdata
+typeof-noarg error missing argument #1 | error missing argument #1
+tostring-more -0 1e+301 0, 0, 0, -4.37113883e-08, 0, 1, 0, 1, 0, -1, 0, -4.37113883e-08 | 1, 0.501961, 0 | 0.10000000149011612, -0, 100000002004087730000 | {0.5, 0}, {0.25, 0} | Enum.KeyCode.A | has-random
+enum Plastic 256 Material true Enum.Material.Plastic Enum.Material.Plastic nil
+enum-items 3 In=0,Out=1,InOut=2
+enum-compare false error @47: attempt to compare EnumItem < EnumItem
+enum-assign-forms Enum.Material.Wood Enum.Material.Wood Enum.Material.Slate E(Unable to assign property Material. Invalid value "wood" for enum Material) Enum.Material.Wood Enum.Material.Wood
+meta foo 3 concat(table,string) concat(string,table) unm 99 true true true false true add(table,number) add(number,table) mod idiv pow TOSTRING
+meta-log index foo,eq,eq,newindex bar,iter 1=iterated
+meta-eq-different false
+meta-tostring-nonstring ok 1
+meta-tostring-nil error '__tostring' must return a string
+meta-name table: ADDR
+metatable-locked locked! error cannot change a protected metatable
+string-metatable string false
+instance-metatable The metatable is locked error invalid argument #1 to 'setmetatable' (table expected, got Instance)
+rawequal false rawlen 0 rawget nil
+index-chain found
+index-loop error @134: '__index' chain too long; possible loop
+meta-call-nonfunction error @137: attempt to call a table value
+weak-mode ok k
+coroutine-status new:suspended,inside:running,outer-from-inner:normal,inner-suspended:suspended,after-yield:suspended:y1,after-return:dead:done
+coroutine-running thread 1 yieldable true
+coroutine-close ok true dead | ok false @175: boom dead | error cannot close running coroutine
+coroutine-wrap-yield-across-pcall ok from-pcall | resumed true back
+coroutine-resume-self ok false cannot resume running coroutine
+coroutine-resume-args 3 2
+coroutine-wrap-error-position error @207: @205: wrapped failure
+coroutine-error-object ok false table 3
+task-in-coroutine ok before,resume-returned true suspended,after,end dead
+resume-waiting-thread ok woke string,resumed true nil,dead
+deep-coroutines error C stack overflow

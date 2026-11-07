@@ -1,0 +1,54 @@
+# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-07
+buffer-reads 255 -1 65535 -1 -123456 4294843840 0.3333333432674408
+buffer-nan nan bytes "\000\000\000\000\000\000\xF8\xFF"
+buffer-f32-nan-bytes 0,0,192,255
+buffer-f32-overflow inf
+buffer-f32-underflow 0
+buffer-wrap 44 -56 4294967295 7 2 254
+buffer-oob error buffer access out of bounds | error buffer access out of bounds | error buffer access out of bounds | ok 200
+buffer-string ok hELlo 5 ELl
+buffer-writestring-count ok ab\x00\x00 | error buffer access out of bounds
+buffer-copy-fill ok ababcf "\000AA\000"
+buffer-create-errors error invalid argument #1 to 'create' (size) | error invalid argument #1 to 'create' (size) | ok 1
+buffer-bits ok 683 5464
+buffer-type buffer buffer buffer: ADDR
+buffer-equality false
+vector Vector3 vector 1, 2, 3 1 2 3 1
+vector-ops 2, 4, 6 | 2, 4, 6 | inf, inf, inf | -1, -2, -3 | 1, 4, 9 | 0, 1, 1
+vector-lib 3.7416575 14 0.26726123690605164, 0.5345224738121033, 0.8017836809158325 2, -1, 0
+vector-lib2 -2, 1, 0 -1, 2, 0 1, 2, 3 -1, 0, 1 1, 1, 1 2, 2, 3 1, 2, 2
+vector-angle ok 1.57079633 lerp ok 0.5, 1, 1.5
+vector-normalize-zero nan, nan, nan
+vector-precision 0.100000001 0.10000000149011612, 0.20000000298023224, 0.30000001192092896 10000000000, -1.000000013351432e-10, 0.3333333432674408
+vector-vs-Vector3 true Vector3 1, 2, 3 true
+vector-index error w is not a valid member of Vector3 | ok 3.7416574954986572 | ok 0.26726123690605164, 0.5345224738121033, 0.8017836809158325
+vector-key a a
+vector-create-2 ok 1, 2, 0 | ok 1, 2, 3
+vector-constants 0, 0, 0 1, 1, 1
+vector-format error invalid argument #2 to 'format' (string expected, got Vector3) ok 1, 2, 3 concat error @86: attempt to concatenate string with Vector3
+os.date 0 1970-01-01 00:00:00 001 Thu Thursday Jan January AM 70 4 %
+os.date 86399 1970-01-01 23:59:59 001 Thu Thursday Jan January PM 70 4 %
+os.date 951782400 2000-02-29 00:00:00 060 Tue Tuesday Feb February AM 00 2 %
+os.date 1700000000 2023-11-14 22:13:20 318 Tue Tuesday Nov November PM 23 2 %
+os.date 1790460000.5 2026-09-26 22:00:00 269 Sat Saturday Sep September PM 26 6 %
+os.date -86400 nil
+os.date 2147483648 2038-01-19 03:14:08 019 Tue Tuesday Jan January AM 38 2 %
+os.date 4102444800 2100-01-01 00:00:00 001 Fri Friday Jan January AM 00 5 %
+os.date 253402300799 nil
+os.date-table day=14,hour=22,isdst=false,min=13,month=11,sec=20,wday=3,yday=318,year=2023
+os.date-default-type string c ok Thu Jan  1 00:00:00 1970 x ok 01/01/70 X ok 00:00:00
+os.date-bad error invalid argument #1 to 'date' (invalid conversion specifier) | error invalid argument #2 to 'date' (number expected, got string)
+os.time ok 1577836800 | ok 1612872000 | error field 'day' missing in date table | type number integer true
+os.difftime ok 6 clock-type number
+os.other nil nil nil nil
+DateTime 0 iso 1970-01-01T00:00:00Z ms 0 s 0 parts 1970,1,1,0,0,0,0 fmt January 1, 1970 12:00 AM Thursday January 1o 1970 00:00:00.000 AM
+DateTime 1700000000 iso 2023-11-14T22:13:20Z ms 1700000000000 s 1700000000 parts 2023,11,14,22,13,20,0 fmt November 14, 2023 10:13 PM Tuesday November 14o 2023 22:13:20.000 PM
+DateTime 1700000000.1229999 iso 2023-11-14T22:13:20Z ms 1700000000000 s 1700000000 parts 2023,11,14,22,13,20,0 fmt November 14, 2023 10:13 PM Tuesday November 14o 2023 22:13:20.000 PM
+DateTime -1 iso 1969-12-31T23:59:59Z ms -1000 s -1 parts 1969,12,31,23,59,59,0 fmt December 31, 1969 11:59 PM Wednesday December 31o 1969 23:59:59.000 PM
+DateTime 253402300799 iso 9999-12-31T23:59:59Z ms 253402300799000 s 253402300799 parts 9999,12,31,23,59,59,0 fmt December 31, 9999 11:59 PM Friday December 31o 9999 23:59:59.000 PM
+DateTime-millis 2023-11-14T22:13:20Z
+DateTime-iso-parse ok 1582979696 | ok 1582972496789 | nil
+DateTime-universal error Error interpreting year, month, day, hour, minute, second as a precise point in time. Fields out of range.
+DateTime-locales ok mardi 14 novembre 2023 22:13 | 2023年11月14日 火曜日 22:13 | 14. Nov. 2023 22:13
+DateTime-tostring 0 typeof DateTime
