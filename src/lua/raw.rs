@@ -971,7 +971,11 @@ unsafe extern "C-unwind" fn instance_new(state: *mut ffi::lua_State) -> c_int {
                     if crate::boundary::active() && api.muted.get() == 0 {
                         crate::boundary::record_named(crate::boundary::Kind::Create, "Instance", &format!("new({})", engine.reflection.class(class).name), cost);
                     }
-                    api.touched.borrow_mut().mark(id.index); // (an instance made this frame is hot)
+                    {
+                        let mut touched = api.touched.borrow_mut();
+                        touched.mark(id.index); // (an instance made this frame is hot)
+                        touched.count(|ops| ops.created += 1);
+                    }
                     push_instance(state, api, Some(&dom_state), id);
                 }
                 sync_if_moved(state, api);
@@ -1670,7 +1674,11 @@ unsafe fn base_call(state: *mut ffi::lua_State, api: &Api, engine: &Engine, id: 
                 let dom_state = engine.state.borrow();
                 let descendants = dom_state.dom.descendants(id);
                 // (the frame's first GetDescendants runs its code cold: cost.rs Path::Descendants)
-                let first = api.touched.borrow_mut().first_path(crate::cost::Path::Descendants);
+                let first = {
+                    let mut touched = api.touched.borrow_mut();
+                    touched.count(|ops| ops.queries += 1);
+                    touched.first_path(crate::cost::Path::Descendants)
+                };
                 if first > 0.0 {
                     api.charge(first);
                     crate::boundary::add_cost(first);

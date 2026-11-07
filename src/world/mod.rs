@@ -395,6 +395,7 @@ pub fn install(engine: &Rc<Engine>) {
             {
                 let state = engine.state.borrow();
                 let mut touched = state.sched.touched.borrow_mut();
+                touched.count(|ops| ops.emits += 1);
                 let cold = touched.first_path(crate::cost::Path::Emit) + if touched.take_last_cold() { crate::cost::EMIT_COLD } else { 0.0 };
                 drop(touched);
                 state.sched.charge(cold);
@@ -467,6 +468,7 @@ pub fn install(engine: &Rc<Engine>) {
                     {
                         let state = engine.state.borrow();
                         let mut touched = state.sched.touched.borrow_mut();
+                        touched.count(|ops| ops.bulk_moved += 1);
                         if touched.mark_moved(id.index) {
                             cold += crate::cost::BULK_COLD_PART;
                             for node in state.dom.descendants(id) {

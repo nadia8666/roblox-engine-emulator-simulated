@@ -299,3 +299,37 @@ fn the_games_code_leads_and_the_harnesss_comes_apart() {
     assert_eq!(labels(&older, &from_tree.harness), labels(&app, &got.harness));
     assert_eq!(labels(&older, &from_tree.lead), labels(&app, &got.lead));
 }
+
+#[test]
+fn what_the_scripts_asked_the_engine_to_do_reads_by_phase() {
+    // the steady phase's counts are its mark's to the run's end: 100 clones, 3,000 writes (2,400 changed, 600 moving a
+    // part), 50 emits; the change clones a tenth and writes less
+    let temp = Temp::new("engine");
+    let before = write_profile(&temp.path().join("before"), Shape::BEFORE);
+    let after = write_profile(&temp.path().join("after"), Shape::AFTER);
+    let mut app = open(&[&before]);
+    let ops = app.profile().engine_ops(&app.profile().scope()).expect("the counts");
+    assert_eq!((ops["cloned"], ops["writes"], ops["changed"], ops["geometry"], ops["emits"]), (100.0, 3000.0, 2400.0, 600.0, 50.0));
+    let every = app.profile().scope_of(&[]);
+    assert_eq!(app.profile().engine_ops(&every).unwrap()["cloned"], 140.0, "the mount's 40 and the steady state's 100");
+    let text = screen(&mut app, "", 200, ROWS);
+    assert!(text.contains("engine  phase steady  100 cloned · 100 destroyed · 100 into the Workspace · 3,000 writes (2,400 changed: 600 moved a part, 20 switched an effect) · 10 pivots · 50 emits · 200 queries"), "{text}");
+    // the diff compares them in the phases both report, as ree profile diff groups them
+    let mut pair = open(&[&before, &after]);
+    let text = screen(&mut pair, "", 160, 48);
+    for row in ["engine: instances made", "engine: property writes", "engine: parts moved", "engine: pivots"] {
+        assert!(text.contains(row), "{row}: {text}");
+    }
+    assert!(text.contains("the first figure, the engine's counts and the functions' work cover phase steady"), "{text}");
+    // a profile from before the counts shows none
+    let path = before.join("profile.json");
+    let mut json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for mark in json["marks"].as_array_mut().unwrap() {
+        mark.as_object_mut().unwrap().remove("engine");
+    }
+    json.as_object_mut().unwrap().remove("end");
+    std::fs::write(&path, json.to_string()).unwrap();
+    let mut older = open(&[&before]);
+    assert!(older.profile().engine_ops(&older.profile().scope()).is_none());
+    assert!(!screen(&mut older, "", COLS, ROWS).contains("◇ engine"));
+}

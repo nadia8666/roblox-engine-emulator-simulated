@@ -309,6 +309,23 @@ pub fn write_profile(dir: &Path, shape: Shape) -> PathBuf {
         {"type": "table", "name": "", "size": 4096.0, "retained": 1_800_000.0, "path": "registry > Items", "stack": [[0, 5]]},
         {"type": "thread", "name": "", "size": 6768.0, "retained": 220_000.0, "path": "(engine reference)", "stack": null},
     ]);
+    // what the scripts asked the engine to do, so far at each mark and at the end (ree 64fb6e6): the mount makes the
+    // grid, the frames add a little, and the steady state clones, destroys and writes a frame's worth each frame (a
+    // tenth of it after the change, and half the writes)
+    let names = ["cloned", "created", "destroyed", "entered", "writes", "changed", "geometry", "toggles", "pivots", "bulk_moved", "emits", "queries"];
+    let mount = [40.0, 12.0, 0.0, 52.0, 300.0, 260.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0];
+    let frames_ops = [0.0, 0.0, 0.0, 0.0, 40.0, 40.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let busy = shape.records > 0;
+    let steady_ops = if busy { [100.0, 0.0, 100.0, 100.0, 3000.0, 2400.0, 600.0, 20.0, 10.0, 0.0, 50.0, 200.0] } else { [10.0, 0.0, 10.0, 10.0, 1200.0, 1150.0, 300.0, 20.0, 10.0, 0.0, 50.0, 200.0] };
+    let engine_at = |mark: usize| -> Value {
+        let mut map = serde_json::Map::new();
+        for (index, name) in names.iter().enumerate() {
+            let so_far = [0.0, mount[index], mount[index] + frames_ops[index], mount[index] + frames_ops[index] + steady_ops[index]][mark];
+            map.insert(name.to_string(), json!(so_far));
+        }
+        Value::Object(map)
+    };
+    let steady_engine: Value = Value::Object(names.iter().zip(steady_ops).map(|(name, n)| (name.to_string(), json!(n))).collect());
     let mut cache_sites = vec![json!({"function": 4, "line": 31, "pc": 7, "op": "GETTABLEKS", "hits": 1000, "misses": 5000, "slow": 0, "other": 0}), json!({"function": 2, "line": 21, "pc": 3, "op": "GETTABLEKS", "hits": 89000, "misses": 0, "slow": 0, "other": 2000})];
     if shape.harness {
         // (the watcher's lookups miss every time: the harness's, not an issue of the game's)
@@ -319,7 +336,8 @@ pub fn write_profile(dir: &Path, shape: Shape) -> PathBuf {
         "kinds": ["work", "caches", "alloc", "heap", "timeline", "cpu", "phases"],
         "run": {"command": "run", "status": "ok", "harness": "C:/fixture/Fixture.luau", "frames": 120, "seconds": 2.0, "fps": 60.0, "elapsed": 0.5},
         "phases": ["startup", "frames", "steady"],
-        "marks": [{"phase": "startup", "frame": 0, "seconds": 0.0, "work_ms": 0.0}, {"phase": "frames", "frame": 0, "seconds": 0.0, "work_ms": 0.5}, {"phase": "steady", "frame": 20, "seconds": 0.333, "work_ms": 2.54}],
+        "marks": [{"phase": "startup", "frame": 0, "seconds": 0.0, "work_ms": 0.0, "engine": engine_at(0)}, {"phase": "frames", "frame": 0, "seconds": 0.0, "work_ms": 0.5, "engine": engine_at(1)}, {"phase": "steady", "frame": 20, "seconds": 0.333, "work_ms": 2.54, "engine": engine_at(2)}],
+        "end": {"phase": "end", "frame": 120, "seconds": 2.0, "work_ms": us(total_work) + 0.06, "engine": engine_at(3)},
         "warnings": [],
         "functions": functions,
         "lines": lines,
@@ -340,7 +358,7 @@ pub fn write_profile(dir: &Path, shape: Shape) -> PathBuf {
             "2": {"path": source_path.to_string_lossy(), "lines": [[20, "local function rank(items)"]]},
         },
         "source_hashes": {MODULE: hash},
-        "scope": {"phases": ["steady"], "game_self_ms": us(game_steady), "harness_self_ms": us(harness_steady), "harness_folder": "ReplicatedStorage.RURFixtures"},
+        "scope": {"phases": ["steady"], "game_self_ms": us(game_steady), "harness_self_ms": us(harness_steady), "harness_folder": "ReplicatedStorage.RURFixtures", "engine": steady_engine},
         "summary": "ree profile: run ok (a test fixture)\n",
         "files": ["summary.txt", "profile.json"],
     });

@@ -142,6 +142,27 @@ fn side_totals(profile: &Json, scope: &[String]) -> (f64, f64) {
     sides
 }
 
+/// What the scripts asked the engine to do in the scope's phases (the whole run without one), from profile.json's marks: each
+/// mark's counts (cost::EngineOps) to the next mark's, the last to the run's end. None for a profile from before the counts.
+fn engine_ops(profile: &Json, scope: Option<&[String]>) -> Option<BTreeMap<String, f64>> {
+    let marks = profile["marks"].as_array()?;
+    let mut sum: BTreeMap<String, f64> = BTreeMap::new();
+    let mut counted = false;
+    for (index, mark) in marks.iter().enumerate() {
+        let phase = mark["phase"].as_str().unwrap_or_default();
+        if scope.is_some_and(|phases| !phases.iter().any(|reported| reported == phase)) {
+            continue;
+        }
+        let next = marks.get(index + 1).unwrap_or(&profile["end"]);
+        let (Some(from), Some(to)) = (mark["engine"].as_object(), next["engine"].as_object()) else { continue };
+        counted = true;
+        for (name, value) in to {
+            *sum.entry(name.clone()).or_insert(0.0) += (num(value) - from.get(name).map_or(0.0, num)).max(0.0);
+        }
+    }
+    counted.then_some(sum)
+}
+
 /// Lines of modules whose source is unchanged: (module, line) -> (self work, insns, alloc)
 fn lines(profile: &Json, same: &BTreeSet<String>) -> BTreeMap<(String, i64), (f64, f64, f64)> {
     let mut by_id: BTreeMap<i64, String> = BTreeMap::new();
@@ -212,6 +233,21 @@ pub fn compare(before: &Json, after: &Json, top: usize) -> (String, Json) {
         add("work clock", num(&before["work"]["total_ms"]), num(&after["work"]["total_ms"]), "ms");
         add("work clock a frame", num(&before["work"]["per_frame_ms"]), num(&after["work"]["per_frame_ms"]), "ms");
         add("script instructions", num(&before["work"]["script_insns"]), num(&after["work"]["script_insns"]), "");
+    }
+    // the engine's side of the same phases: what the scripts asked it to do, counted, whatever the work clock prices it at
+    if let (Some(b), Some(a)) = (engine_ops(before, scope.as_deref()), engine_ops(after, scope.as_deref())) {
+        let label = scope_label.as_ref().map_or_else(|| "the whole run".to_string(), String::clone);
+        let get = |ops: &BTreeMap<String, f64>, names: &[&str]| names.iter().map(|name| ops.get(*name).copied().unwrap_or(0.0)).sum::<f64>();
+        for (name, counts) in [
+            ("instances made", &["cloned", "created"][..]),
+            ("instances destroyed", &["destroyed"][..]),
+            ("property writes", &["writes"][..]),
+            ("parts moved", &["geometry", "bulk_moved"][..]),
+            ("pivots", &["pivots"][..]),
+            ("emits", &["emits"][..]),
+        ] {
+            add(&format!("engine: {name}, {label}"), get(&b, counts), get(&a, counts), "");
+        }
     }
     if before["alloc"].is_object() || after["alloc"].is_object() {
         add("allocated", num(&before["alloc"]["bytes"]), num(&after["alloc"]["bytes"]), "bytes");

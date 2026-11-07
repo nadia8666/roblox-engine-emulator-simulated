@@ -1183,6 +1183,84 @@ fn a_phase_is_the_difference_of_its_marks_counts() {
     assert_eq!((figures["rehash_keys"], figures["rehashes"]), (20.0, 5.0));
 }
 
+/// A clip-shaped run whose steady phase casts `casts` times: each cast clones a template of three into the Workspace, moves a
+/// part by a write, pivots the copy, bulk-moves both parts, emits from a new emitter and switches it off, lists the copy's
+/// descendants and destroys it. Returns the summary and profile.json.
+fn engine_ops_profile(name: &str, casts: u32) -> (String, serde_json::Value) {
+    let (lua, engine) = start();
+    let config = Config { print: false, ..Config::new(Kinds::WORK, temp_dir(name)) };
+    let session = profiler::Session::begin(config.clone());
+    crate::luau_profile::install(&lua);
+    // (the template, made before the phase: its three instances are startup's)
+    run(
+        &lua,
+        &engine,
+        "setup",
+        "local model = Instance.new(\"Model\")\nmodel.Name = \"Template\"\nfor i = 1, 2 do\n\tInstance.new(\"Part\", model)\nend\nmodel.Parent = game:GetService(\"ReplicatedStorage\")\n",
+    );
+    profiler::phase("steady");
+    let cast = "local Workspace = game:GetService(\"Workspace\")
+local copy = game:GetService(\"ReplicatedStorage\").Template:Clone()
+copy.Parent = Workspace
+local parts = copy:GetChildren()
+parts[1].CFrame = CFrame.new(0, 10, 0)
+parts[1].Name = \"Moved\"
+parts[1].Name = \"Moved\"
+copy:PivotTo(CFrame.new(5, 0, 0))
+Workspace:BulkMoveTo(parts, { CFrame.new(1, 0, 0), CFrame.new(2, 0, 0) })
+local emitter = Instance.new(\"ParticleEmitter\")
+emitter.Parent = parts[2]
+emitter:Emit(4)
+emitter.Enabled = false
+local _ = copy:GetDescendants()
+copy:Destroy()
+";
+    for _ in 0..casts {
+        run(&lua, &engine, "cast", cast);
+    }
+    profiler::phase("after");
+    run(&lua, &engine, "idle", "local idle = Instance.new(\"Folder\")\n");
+    profiler::collect(&lua);
+    let summary = session.finish(profiler::Run { command: "test".into(), status: "ok".into(), frames: 1, seconds: 1.0 / 60.0, fps: 60.0, ..Default::default() }).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(config.out.join("profile.json")).unwrap()).unwrap();
+    let _ = std::fs::remove_dir_all(&config.out);
+    (summary, json)
+}
+
+/// The engine's side of a phase: what its scripts asked the engine to do (cost::EngineOps), carried by each mark like the work
+/// clock, so the steady phase's counts are its own; the summary reports them under the reported phase, and a diff compares them
+#[test]
+fn a_phase_counts_what_its_scripts_asked_the_engine_to_do() {
+    let _lock = lock();
+    let (summary, json) = engine_ops_profile("engine-ops", 1);
+    let ops = &json["scope"]["engine"];
+    let count = |name: &str| ops[name].as_u64().unwrap_or_else(|| panic!("no {name} in {ops}"));
+    // the copy and its two parts; the emitter; the copy, its parts and the emitter destroyed; the copy and its parts entering the
+    // Workspace, then the emitter
+    assert_eq!((count("cloned"), count("created"), count("destroyed"), count("entered")), (3, 1, 4, 4), "{ops}");
+    // one part moved by a write, one emitter switched, one pivot, both parts bulk-moved, one emit, one descendant query
+    assert_eq!((count("geometry"), count("toggles"), count("pivots"), count("bulk_moved"), count("emits"), count("queries")), (1, 1, 1, 2, 1, 1), "{ops}");
+    // the CFrame, both names and Enabled at least (the second name changed nothing)
+    assert!(count("writes") >= 4 && count("changed") >= 3 && count("changed") < count("writes"), "{ops}");
+    // startup's template is not the phase's, and after's folder is not either; the marks carry the counts so far
+    let marks = json["marks"].as_array().unwrap();
+    let mark = |phase: &str| marks.iter().find(|mark| mark["phase"] == phase).unwrap_or_else(|| panic!("{marks:#?}"));
+    assert!(mark("steady")["engine"]["created"].as_u64().unwrap() >= 3, "{marks:#?}");
+    assert_eq!(json["end"]["engine"]["created"].as_u64().unwrap() - mark("after")["engine"]["created"].as_u64().unwrap(), 1);
+    let line = summary.lines().find(|line| line.starts_with("engine operations, phase steady:")).unwrap_or_else(|| panic!("{summary}"));
+    for part in ["3 instances cloned", "1 made with Instance.new", "4 destroyed", "4 entered the Workspace", "1 moved or resized a part in the Workspace", "1 switched an effect", "1 pivot, 2 parts bulk-moved", "1 emit", "1 descendant query"] {
+        assert!(line.contains(part), "{part:?} in {line}");
+    }
+    // a diff: twice the casts, twice the engine's counts in the phase both report
+    let (_, twice) = engine_ops_profile("engine-ops-twice", 2);
+    let (text, diff) = profiler::diff::compare(&json, &twice, 10);
+    let figure = |name: &str| diff["figures"].as_array().unwrap().iter().find(|f| f["name"] == name).unwrap_or_else(|| panic!("no {name} in\n{text}")).clone();
+    let made = figure("engine: instances made, phase steady");
+    assert_eq!((made["before"].as_f64().unwrap(), made["after"].as_f64().unwrap()), (4.0, 8.0), "{text}");
+    let moved = figure("engine: parts moved, phase steady");
+    assert_eq!((moved["before"].as_f64().unwrap(), moved["after"].as_f64().unwrap()), (3.0, 6.0), "{text}");
+}
+
 /// A level is one more than the deepest table a table holds; the tables of a cycle share theirs
 #[test]
 fn nesting_levels_follow_what_a_table_holds() {

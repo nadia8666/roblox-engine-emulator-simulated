@@ -520,6 +520,7 @@ pub fn set_parent(
             let mut part = false;
             for node in std::iter::once(id).chain(state.dom.descendants(id)) {
                 touched.set_entered(node.index, now_placed);
+                touched.count(|ops| ops.entered += u64::from(now_placed));
                 part = part || touched.kind(state.dom.at(node).class) == crate::cost::ColdKind::Part;
             }
             if now_placed {

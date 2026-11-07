@@ -1,9 +1,15 @@
  ◆ ree profile   after  ✓ run ok · Fixture.luau · 120 frames · 2.00 s                              Studio work 6.814 ms
   1 Overview  2 Flame  3 Calls  4 Source  5 Alloc  6 Heap  7 Timeline  8 Caches  9 Issues  d Diff  c Compare
 ╭ Before → after ──────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ◇ the first figure and the functions' work cover phase steady; the rest cover the whole run                          │
+│ ◇ the first figure, the engine's counts and the functions' work cover phase steady; the rest cover the whole run     │
 │                                                                                                                      │
 │ the game's code, phase steady        10.60 ms → 4.214 ms    ▼    -60.2%                                              │
+│ engine: instances made                    100 → 10          ▼    -90.0%                                              │
+│ engine: instances destroyed               100 → 10          ▼    -90.0%                                              │
+│ engine: property writes                  3000 → 1200        ▼    -60.0%                                              │
+│ engine: parts moved                       600 → 300         ▼    -50.0%                                              │
+│ engine: pivots                             10 → 10                 same                                              │
+│ engine: emits                              50 → 50                 same                                              │
 │ Studio work                          13.20 ms → 6.814 ms    ▼    -48.4%                                              │
 │ script instructions                     40.0K → 40.0K              same                                              │
 │ allocated                             2.63 MB → 63.6 KB     ▼    -97.6%                                              │
@@ -26,12 +32,6 @@
 │ ▌ anonymous  Main:22               4.000 ms     40.0 µs ▼   -3.960 ms   -99.0%       50.0K → 500 █████████│          │
 │   rank  Main:20                    3.000 ms    0.772 ms ▼   -2.228 ms   -74.2%         100 → 100     █████│          │
 │   sort [C]                         0.200 ms      2.0 µs ▼   -0.198 ms   -99.0%           100 → 1         █│          │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

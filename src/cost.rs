@@ -325,6 +325,88 @@ pub const FIRST_READ: f64 = 0.5e-6;
 pub const FIRST_WRITE: f64 = 1.4e-6;
 pub const FIRST_CALL: f64 = 0.8e-6;
 
+/// What a run's scripts asked the engine to do, counted where the work clock charges it ([`Touched::ops`]): the engine's side of
+/// a cast, whatever the work clock prices it at. A profile's marks carry the counts so far (profiler::Mark::engine), so a
+/// phase's are the difference of two marks'.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EngineOps {
+    /// Instances made: each instance of a Clone's copy, and each Instance.new
+    pub cloned: u64,
+    pub created: u64,
+    /// Instances destroyed (each of a Destroy's subtree), and instances that entered the Workspace (each of the subtree a
+    /// parent change took into it)
+    pub destroyed: u64,
+    pub entered: u64,
+    /// Scripts' property writes; those that changed the value; of those, a part's in the Workspace that moved or resized it
+    /// (CFrame, Position, Orientation, Rotation, Size), and an emitter's, beam's or trail's Enabled
+    pub writes: u64,
+    pub changed: u64,
+    pub geometry: u64,
+    pub toggles: u64,
+    /// PivotTo on what is in the Workspace, and the parts BulkMoveTo moved
+    pub pivots: u64,
+    pub bulk_moved: u64,
+    /// ParticleEmitter:Emit calls, and descendant queries (GetDescendants, QueryDescendants)
+    pub emits: u64,
+    pub queries: u64,
+}
+
+impl EngineOps {
+    /// Each count by name, in the order profile.json and the summary give them
+    pub fn named(&self) -> [(&'static str, u64); 12] {
+        [
+            ("cloned", self.cloned),
+            ("created", self.created),
+            ("destroyed", self.destroyed),
+            ("entered", self.entered),
+            ("writes", self.writes),
+            ("changed", self.changed),
+            ("geometry", self.geometry),
+            ("toggles", self.toggles),
+            ("pivots", self.pivots),
+            ("bulk_moved", self.bulk_moved),
+            ("emits", self.emits),
+            ("queries", self.queries),
+        ]
+    }
+
+    /// The counts from `earlier` to these (a phase's, from its mark to the next)
+    pub fn since(&self, earlier: &EngineOps) -> EngineOps {
+        EngineOps {
+            cloned: self.cloned.saturating_sub(earlier.cloned),
+            created: self.created.saturating_sub(earlier.created),
+            destroyed: self.destroyed.saturating_sub(earlier.destroyed),
+            entered: self.entered.saturating_sub(earlier.entered),
+            writes: self.writes.saturating_sub(earlier.writes),
+            changed: self.changed.saturating_sub(earlier.changed),
+            geometry: self.geometry.saturating_sub(earlier.geometry),
+            toggles: self.toggles.saturating_sub(earlier.toggles),
+            pivots: self.pivots.saturating_sub(earlier.pivots),
+            bulk_moved: self.bulk_moved.saturating_sub(earlier.bulk_moved),
+            emits: self.emits.saturating_sub(earlier.emits),
+            queries: self.queries.saturating_sub(earlier.queries),
+        }
+    }
+
+    /// These counts and `other`'s
+    pub fn plus(&self, other: &EngineOps) -> EngineOps {
+        EngineOps {
+            cloned: self.cloned + other.cloned,
+            created: self.created + other.created,
+            destroyed: self.destroyed + other.destroyed,
+            entered: self.entered + other.entered,
+            writes: self.writes + other.writes,
+            changed: self.changed + other.changed,
+            geometry: self.geometry + other.geometry,
+            toggles: self.toggles + other.toggles,
+            pivots: self.pivots + other.pivots,
+            bulk_moved: self.bulk_moved + other.bulk_moved,
+            emits: self.emits + other.emits,
+            queries: self.queries + other.queries,
+        }
+    }
+}
+
 /// The frame each instance slot was last touched in (one per engine: the scheduler owns it, the Instance API's C metamethods
 /// share it like the work cell), the frame each member was last used in ([`Touched::first_use`]), each engine path and each class
 /// was last cloned or destroyed in ([`Touched::first_path`]), and the frame each instance entered the Workspace in.
@@ -360,10 +442,15 @@ pub struct Touched {
     emitters: Vec<bool>,
     /// PivotTo's name, priced by the method call itself ([`Touched::pivot_cold`])
     pub pivot_to: Option<crate::reflection::NameId>,
+    /// What the run's scripts have asked the engine to do so far ([`EngineOps`], [`Touched::count`]), and the scheduler's mute:
+    /// above 0 while the engine's own Luau prices a whole call (Scheduler::muted), whose inner operations are not counted
+    ops: EngineOps,
+    muted: std::rc::Rc<std::cell::Cell<u32>>,
 }
 
 impl Touched {
-    pub fn new() -> Self {
+    /// `muted`: the scheduler's mute (Scheduler::muted)
+    pub fn new(muted: std::rc::Rc<std::cell::Cell<u32>>) -> Self {
         Touched {
             frame: 1,
             stamps: Vec::new(),
@@ -383,7 +470,23 @@ impl Touched {
             hangs: Vec::new(),
             emitters: Vec::new(),
             pivot_to: None,
+            ops: EngineOps::default(),
+            muted,
         }
+    }
+
+    /// Counts an engine operation a script asked for ([`EngineOps`]). Not while the engine's own Luau prices a whole call: a
+    /// PivotTo's GetDescendants and its parts' CFrame writes are the pivot's, as the work clock drops their charges.
+    #[inline]
+    pub fn count(&mut self, add: impl FnOnce(&mut EngineOps)) {
+        if self.muted.get() == 0 {
+            add(&mut self.ops);
+        }
+    }
+
+    /// What the run's scripts have asked the engine to do so far
+    pub fn ops(&self) -> EngineOps {
+        self.ops
     }
 
     /// Prices each class's first touch ([`cold_touch`]), cold writes ([`ColdKind`]) and its share of a frame's first clones and destroys.

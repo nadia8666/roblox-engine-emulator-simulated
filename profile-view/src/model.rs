@@ -31,6 +31,9 @@ pub struct Mark {
     pub frame: u64,
     pub seconds: f64,
     pub work_ms: f64,
+    /// What the scripts had asked the engine to do so far, each count by name (ree 64fb6e6: cloned, created,
+    /// destroyed, entered, writes, changed, geometry, toggles, pivots, bulk_moved, emits, queries)
+    pub engine: Option<BTreeMap<String, f64>>,
 }
 
 /// A function's figures (self or total)
@@ -434,6 +437,8 @@ pub struct Raw {
     pub source_hashes: BTreeMap<String, String>,
     pub summary: String,
     pub scope: Option<RawScope>,
+    /// The run's end, with the counts so far as a mark carries them
+    pub end: Option<Mark>,
 }
 
 /// boundary.json: a crossing site (a Luau line reading, writing or calling an engine member)
@@ -970,6 +975,28 @@ impl Profile {
             Some(scope) => Some((scope.game_self_ms, scope.harness_self_ms)),
             None => self.side_work(&self.scope()),
         }
+    }
+
+    /// What the scripts asked the engine to do in a scope's phases, each count by name: each of the phases' marks to
+    /// the next mark (the last to the run's end), as ree's report and diff count them. None for a profile from before
+    /// the counts (ree 64fb6e6)
+    pub fn engine_ops(&self, scope: &Scope) -> Option<BTreeMap<String, f64>> {
+        let marks = &self.raw.marks;
+        let mut sum: BTreeMap<String, f64> = BTreeMap::new();
+        let mut counted = false;
+        for (index, mark) in marks.iter().enumerate() {
+            let Some(phase) = self.raw.phases.iter().position(|phase| *phase == mark.phase) else { continue };
+            if !scope.covers(phase as u32) {
+                continue;
+            }
+            let next = marks.get(index + 1).or(self.raw.end.as_ref());
+            let (Some(from), Some(to)) = (mark.engine.as_ref(), next.and_then(|next| next.engine.as_ref())) else { continue };
+            counted = true;
+            for (name, value) in to {
+                *sum.entry(name.clone()).or_default() += (value - from.get(name).copied().unwrap_or(0.0)).max(0.0);
+            }
+        }
+        counted.then_some(sum)
     }
 
     /// Whether the functions carry their figures per phase (ree c692e40 and later)

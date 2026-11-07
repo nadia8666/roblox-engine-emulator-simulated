@@ -286,11 +286,20 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   the whole run, not per phase. In profile.json each function has `harness` and its figures per phase
   (`phases`, with `harness_self_work_ms`, the part done for the harness's code), and `scope` names the
   reported phases with each side's self work.
+  The summary's `engine operations` line counts what the reported phases' scripts asked the engine to do, whatever the
+  work clock prices it at (the engine's side of a cast, which the work clock reads lower than a client pays): instances
+  cloned (each of a copy), made with Instance.new, destroyed (each of the subtree) and taken into the Workspace; property
+  writes, those that changed a value, and among them the moves and resizes of a part in the Workspace and the switches of
+  an emitter, beam or trail; pivots of what is in the Workspace, parts bulk-moved, emits and descendant queries
+  (`scope.engine` in profile.json: `cloned`, `created`, `destroyed`, `entered`, `writes`, `changed`, `geometry`,
+  `toggles`, `pivots`, `bulk_moved`, `emits`, `queries`). They are counted at the engine, so they are every script's,
+  the harness's too, and what the engine's own Luau does inside a call it prices whole (a PivotTo's moves) is the call's.
   profile.json's `marks` (each `Context.ProfilePhase` mark) and `end` (the run's end) carry the counts so far, so a
   phase's figures are the difference of two marks': the work clock, host time and the run thread's cycles, instructions,
   the VM's work counters (`vm`: objects, their bytes, table storage, keys rehashed, cold first touches), the allocation
   profile's bytes and objects, rehashes (all, and a script's own: `script_rehashes`, `script_rehash_keys`), the
-  collector's steps, cycles, bytes freed and host time, and the inline caches' outcomes by kind.
+  collector's steps, cycles, bytes freed and host time, the inline caches' outcomes by kind, and the engine operations
+  (`engine`).
 - `ree profile diff <before> <after> [--out <dir>]` compares two profile directories: the headline
   figures (the reachable heap at the end, and apart from it the garbage not swept yet), the functions
   whose work, calls, instructions or allocations moved, the lines of modules whose source is the same in
@@ -298,7 +307,9 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   `diff.html`. When both profiles report the same phases (or both marked `steady`), the headline leads
   with the game's code and the harness's in those phases, and the function tables cover them, the
   harness's functions in a table of their own: a harness's work moves with what it scans, not with the
-  game. Profiles from before the split are compared whole. `ree profile report <dir>` prints a profile's summary again and
+  game. The headline's `engine:` rows compare the engine operations in the same phases (the whole run when
+  the profiles share none): instances made, instances destroyed, property writes, parts moved (by a write
+  or BulkMoveTo), pivots and emits. Profiles from before the split are compared whole. `ree profile report <dir>` prints a profile's summary again and
   rewrites its page from its profile.json. `ree profile view` explores one in the terminal and `ree profile render`
   draws its screens to files ("The profile viewer").
 - With no profile the engine pays nothing measurable (a thread-local read where each profiler hooks in),
@@ -581,7 +592,10 @@ border in the accent.
     leads, and the harness's own code (under ReplicatedStorage.RURFixtures, and the engine's `rur.record` that calls it,
     with the C functions, the engine's Luau and mlua's helpers they called) comes in a panel of its own, with a card for
     the two sides' work; a run whose code is all the harness's (under 1% on the game's side: code measured by
-    `--harness` alone) is shown whole.
+    `--harness` alone) is shown whole. A line under the fidelity line counts what those phases' scripts asked the
+    engine to do (instances cloned, made, destroyed and taken into the Workspace, property writes and the moves among
+    them, pivots, bulk moves, emits, queries: profile.json's marks, from ree 64fb6e6), every script's, the harness's
+    too: the engine's side of a cast, which the work clock reads lower than a client pays.
   - `2` Flame: the call tree as an icicle, the run at the top; each node as wide as its total and coloured by its own
     share. It opens on the run's heaviest phase; down follows the heaviest callee, enter zooms into a node, esc comes
     back out.
@@ -598,7 +612,9 @@ border in the accent.
   - `9` Issues: what the profile's numbers show to fix (below).
   - `d` Diff, of a pair: the headline figures, then the functions, lines and allocation sites that moved. When both
     profiles report the same phases, or both marked steady, it leads with the game's code and the harness's in them,
-    and the functions' work covers those phases, the harness's functions last and greyed, as `ree profile diff`.
+    and the functions' work covers those phases, the harness's functions last and greyed, as `ree profile diff`. The
+    engine's counts in the same phases follow (instances made and destroyed, property writes, parts moved, pivots,
+    emits), in ree profile diff's groups.
   - `c` Compare, of a what-if folder: each variant at each size in the comparison's metric, how it grows with n (a
     log-log plot, a line a variant) and each variant over the baseline by n, the best of each size, each variant's
     figure at the selected size as bars, every figure of a variant over the baseline's (worse to the right, on a log
