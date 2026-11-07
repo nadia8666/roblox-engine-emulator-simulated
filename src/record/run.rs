@@ -4,6 +4,7 @@
 //!   ree record --harness <file.luau> --out <dir> [--seconds 3] [--fps 60]
 //!       [--context <json|file>] [--assets-at <Service.Path>] [--assets <prefix>,...]
 //!       [--animations <dir>[;<dir>...]] (pre-fetched KeyframeSequences, `<id>.rbxm`)
+//!       [--timing-check] (record again with the in-frame clock moved: does the recording hinge on sub-frame timing?)
 //!       [the engine options (launch.rs): --roots / --place (default game) / --project / --mode
 //!        (default play) / --mount / --snapshot-dir / --player / --offline / --verbose ...]
 //!   ree run --harness <file.luau> [the same options but --out]
@@ -30,7 +31,10 @@
 //! `events.json`, `camera.json` and `summary.json` (also printed) with a `<host>: record ...` line
 //! on stderr; `run` prints the status and every output line as JSON.
 
-use std::{path::PathBuf, rc::Rc};
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use mlua::prelude::*;
 use serde_json::{Map, Value as Json, json};
@@ -69,6 +73,11 @@ pub struct RecordArgs {
     /// `--max-script-timeouts <n>`: script timeouts after which the run exits with 126 (None: `REE_MAX_SCRIPT_TIMEOUTS`, else
     /// 3; 0 never)
     pub script_timeouts: Option<u32>,
+    /// `--timing-check` (or `REE_TIMING_CHECK=1`): record again with the in-frame clock moved and say whether the recording
+    /// changed ([`check_timing`])
+    pub timing_check: bool,
+    /// This run is that second recording (Options::clock_moved)
+    pub clock_moved: bool,
 }
 
 impl RecordArgs {
@@ -271,7 +280,8 @@ pub fn parse(args: &[String], record: bool) -> Result<RecordArgs, String> {
         .map(|text| text.parse::<f64>().ok().filter(|n| n.is_finite() && *n >= 0.0).ok_or("--script-timeout: not a number of seconds"))
         .transpose()?;
     let script_timeouts = value("--max-script-timeouts").map(|text| text.parse::<u32>().map_err(|_| "--max-script-timeouts: not a count")).transpose()?;
-    Ok(RecordArgs { engine, harness, out, seconds, fps, context, model_assets, animations, frame_times, script_timeout, script_timeouts })
+    let timing_check = record && (args.iter().any(|arg| arg == "--timing-check") || std::env::var("REE_TIMING_CHECK").as_deref() == Ok("1"));
+    Ok(RecordArgs { engine, harness, out, seconds, fps, context, model_assets, animations, frame_times, script_timeout, script_timeouts, timing_check, clock_moved: false })
 }
 
 /// What a command produced: the summary (printed on stdout) and its status line (stderr).
@@ -344,6 +354,7 @@ pub(crate) fn execute_with(args: &RecordArgs, host: &Host, record: bool, spool: 
     finished(&emulator, &history);
     // (a profile reads the VM while it still runs)
     crate::profiler::collect(&emulator.lua);
+    let done = if record && args.timing_check && !args.clock_moved { check_timing(args, host, done) } else { done };
     Ok((done, emulator))
 }
 
@@ -372,7 +383,9 @@ pub(crate) fn start(args: &RecordArgs, host: &Host, listings: bool) -> Result<(E
         Some(files) => Some(modules::Prefetch::start(files.clone())),
         None => None,
     };
-    let engine = crate::timing::time("engine (reflection)", || (host.new_engine)(prepared.options.clone()))?;
+    let mut options = prepared.options.clone();
+    options.clock_moved = args.clock_moved;
+    let engine = crate::timing::time("engine (reflection)", || (host.new_engine)(options))?;
     if let Some(prefetch) = prefetch {
         modules::use_prefetch(&engine, prefetch);
     }
@@ -1257,5 +1270,105 @@ mod warm_tests {
         assert!(!lists.join("gone.txt").exists(), "a removed checkout's list goes");
         assert!(lists.join("ours.txt").exists() && lists.join("empty.txt").exists());
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// `ree record --timing-check`: records the harness a second time with the in-frame clock moved (twice the modelled work, never
+/// frozen: Options::clock_moved) and compares the two recordings' playback and camera. A script that times itself on
+/// os.clock within a frame (a visual clock's waits, an elapsed-time sum) can draw differently in a client whenever its real
+/// work moves, which ree's modelled work, or a frozen clock, does not follow: when the second recording differs, an A/B whose
+/// recordings read identical has not shown the change keeps the look. The verdict goes into the summary (`timing`) and
+/// `timing.json`, and the status line says from when the recording hinges on sub-frame timing; the second recording's files
+/// are removed.
+fn check_timing(args: &RecordArgs, host: &Host, mut done: Done) -> Done {
+    let Some(out) = args.out.clone() else { return done };
+    let moved_out = out.join("timing-check");
+    let mut moved = args.clone();
+    moved.out = Some(moved_out.clone());
+    moved.timing_check = false;
+    moved.clock_moved = true;
+    let second = start(&moved, host, false).and_then(|(emulator, _)| {
+        let result = record_in(&emulator, &moved, host);
+        release(emulator);
+        result
+    });
+    let mut verdict = match second {
+        Ok(_) => compare_recordings(&out, &moved_out),
+        Err(error) => json!({ "error": error }),
+    };
+    verdict["moved"] = json!("the in-frame clock ran on twice the modelled work, never frozen");
+    let _ = std::fs::remove_dir_all(&moved_out);
+    let _ = std::fs::write(out.join("timing.json"), serde_json::to_string_pretty(&verdict).unwrap_or_default());
+    if let Ok(text) = std::fs::read_to_string(out.join("summary.json")) {
+        if let Ok(mut summary) = serde_json::from_str::<Json>(&text) {
+            summary["timing"] = verdict.clone();
+            let _ = std::fs::write(out.join("summary.json"), serde_json::to_string(&summary).unwrap_or(text));
+        }
+    }
+    match (verdict["hinges"].as_bool(), &verdict["first"]) {
+        (Some(true), first) => {
+            done.line.push_str(&format!(
+                "; hinges on sub-frame timing from {:.3} s ({}): an identical A/B there is not a pass",
+                first["at"].as_f64().unwrap_or(0.0),
+                first["what"].as_str().unwrap_or("?")
+            ));
+        }
+        (Some(false), _) => done.line.push_str("; sub-frame timing: no change"),
+        _ => done.line.push_str(&format!("; timing check failed: {}", verdict["error"].as_str().unwrap_or("?"))),
+    }
+    done.summary["timing"] = verdict;
+    done
+}
+
+/// Where two recordings of one harness part: each of playback.json's lists (actions, tweens, motion) and camera.json compared
+/// entry by entry, the first difference by time (an entry's `at`, else its `start`), and how many entries differ.
+pub(crate) fn compare_recordings(a: &Path, b: &Path) -> Json {
+    let read = |dir: &Path, file: &str| -> Option<Json> { serde_json::from_str(&std::fs::read_to_string(dir.join(file)).ok()?).ok() };
+    let (Some(first), Some(second)) = (read(a, "playback.json"), read(b, "playback.json")) else {
+        return json!({ "error": "a recording has no playback.json" });
+    };
+    let mut lists: Vec<(String, Json, Json)> = ["actions", "tweens", "motion"].iter().map(|key| (key.to_string(), first[key].clone(), second[key].clone())).collect();
+    lists.push(("camera".into(), read(a, "camera.json").unwrap_or(Json::Null), read(b, "camera.json").unwrap_or(Json::Null)));
+    let time = |entry: &Json| entry["at"].as_f64().or_else(|| entry["start"].as_f64()).unwrap_or(0.0);
+    // (a motion track's keys: where its first differing key is)
+    let parted = |x: Option<&Json>, y: Option<&Json>| -> f64 {
+        let keys = |entry: Option<&Json>| entry.and_then(|entry| entry["keys"].as_array()).cloned().unwrap_or_default();
+        let (left, right) = (keys(x), keys(y));
+        if left.is_empty() && right.is_empty() {
+            return x.map(time).unwrap_or(f64::INFINITY).min(y.map(time).unwrap_or(f64::INFINITY));
+        }
+        (0..left.len().max(right.len()))
+            .find(|&index| left.get(index) != right.get(index))
+            .map(|index| left.get(index).map(time).unwrap_or(f64::INFINITY).min(right.get(index).map(time).unwrap_or(f64::INFINITY)))
+            .unwrap_or(0.0)
+    };
+    let what = |entry: &Json| {
+        let target = entry["target"].as_str().or_else(|| entry["path"].as_str()).unwrap_or("");
+        let property = entry["property"].as_str().or_else(|| entry["kind"].as_str()).unwrap_or("");
+        format!("{target} {property}").trim().to_string()
+    };
+    let mut differing = serde_json::Map::new();
+    let mut earliest: Option<(f64, String, String)> = None;
+    for (name, left, right) in lists {
+        let empty = Vec::new();
+        let (left, right) = (left.as_array().unwrap_or(&empty), right.as_array().unwrap_or(&empty));
+        let mut count = 0usize;
+        for index in 0..left.len().max(right.len()) {
+            let (x, y) = (left.get(index), right.get(index));
+            if x == y {
+                continue;
+            }
+            count += 1;
+            let entry = x.or(y).unwrap();
+            let at = parted(x, y);
+            if earliest.as_ref().is_none_or(|(when, _, _)| at < *when) {
+                earliest = Some((at, name.clone(), what(entry)));
+            }
+        }
+        differing.insert(name, json!(count));
+    }
+    match earliest {
+        Some((at, list, what)) => json!({ "hinges": true, "first": { "at": at, "list": list, "what": what }, "differing": differing }),
+        None => json!({ "hinges": false, "differing": differing }),
     }
 }

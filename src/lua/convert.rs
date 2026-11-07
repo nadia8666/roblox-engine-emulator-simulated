@@ -103,6 +103,23 @@ pub fn from_lua(value: &LuaValue) -> Value {
     }
 }
 
+/// A script's Vector3 as a property stores it: its float32 components as they are. (lune's conversion rounds each
+/// fractional part to 1/65536, which is for the files it writes: a playing client keeps the float, measured with
+/// notes/macro/bodyprobe.luau.)
+fn vector3_exact(v: &lune::Vector3) -> dom::Vector3 {
+    dom::Vector3::new(v.0.x, v.0.y, v.0.z)
+}
+
+/// A script's CFrame as a property stores it: position and rotation rows as the float32s the script made (lune's
+/// conversion rounds each to 1/65536: CFrame.Angles(0.001, 0, 0) read back sin 0.001007; a client reads 0.001000).
+fn cframe_exact(v: &lune::CFrame) -> dom::CFrame {
+    let (x, y, z, w) = (v.0.x_axis, v.0.y_axis, v.0.z_axis, v.0.w_axis);
+    dom::CFrame::new(
+        dom::Vector3::new(w.x, w.y, w.z),
+        dom::Matrix3::new(dom::Vector3::new(x.x, y.x, z.x), dom::Vector3::new(x.y, y.y, z.y), dom::Vector3::new(x.z, y.z, z.z)),
+    )
+}
+
 fn userdata_value(ud: &LuaAnyUserData) -> Option<Value> {
     if let Some(instance) = instance_of_ud(ud) {
         return Some(Value::Instance(instance));
@@ -123,7 +140,7 @@ fn userdata_value(ud: &LuaAnyUserData) -> Option<Value> {
         return Some(Value::UDim(dom::UDim::from(*v)));
     }
     if let Ok(v) = ud.borrow::<lune::Vector3>() {
-        return Some(Value::Vector3(dom::Vector3::from(*v)));
+        return Some(Value::Vector3(vector3_exact(&v)));
     }
     if let Ok(font) = ud.borrow::<LFont>() {
         return Some(Value::Font(Rc::new(font.0.borrow().clone())));
@@ -144,7 +161,7 @@ fn userdata_value(ud: &LuaAnyUserData) -> Option<Value> {
         return Some(Value::ColorSequence(Rc::new(dom::ColorSequence::from(v.clone()))));
     }
     if let Ok(v) = ud.borrow::<lune::CFrame>() {
-        return Some(Value::Dom(Rc::new(Variant::CFrame(dom::CFrame::from(*v)))));
+        return Some(Value::Dom(Rc::new(Variant::CFrame(cframe_exact(&v)))));
     }
     if let Ok(v) = ud.borrow::<lune::BrickColor>() {
         return Some(Value::Dom(Rc::new(Variant::BrickColor(dom::BrickColor::from(*v)))));

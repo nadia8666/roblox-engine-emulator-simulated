@@ -77,7 +77,9 @@ You're welcome to use AI tools. The maintainers use coding agents heavily too. T
 
 ## Review
 
-A maintainer aims to reply within a week. If two weeks pass without a word, a polite ping on the PR is welcome. We may push small fixups on accepted PRs ourselves while landing them.
+Issues and pull requests are triaged and reviewed by the maintainers' automated review, so a first reply usually comes within the hour; anything it can't decide goes to a maintainer. Bugs and requests filed as issues are fixed by the maintainers: you don't need to send a pull request for them.
+
+Every pull request is screened for security first, then reviewed for quality and fit with the project. You make the changes a review asks for: push them to the same PR, which is reviewed again. Changes to build scripts, CI, dependencies or agent instructions always need a maintainer's sign-off.
 
 ## License
 

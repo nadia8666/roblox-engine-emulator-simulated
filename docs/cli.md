@@ -9,6 +9,7 @@ The [README](../README.md) has a first run; [engine.md](engine.md) is the contra
 ree record --harness path/to/Harness.luau --out out/scene --roots "game/shared;game/src" \
     --seconds 3 --fps 60 --context '{"Scenario":"demo"}' --assets-at ReplicatedStorage.Bundles --assets Models \
     [--animations <dir>]                             # pre-fetched KeyframeSequences, <id>.rbxm
+    [--timing-check]                                 # record again with the in-frame clock moved (What a recording holds)
 ror video out/scene/scene.rbxm --playback out/scene/playback.json --duration 3
 ree run --harness path/to/Probe.luau --seconds 1     # no recording: the status and every output line as JSON
 ree run --harness path/to/Server.luau --run-context server --seconds 60   # a Play-mode server; `@done` ends it early
@@ -144,6 +145,15 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   as `set` actions naming the referenced instance's path, Lighting),
   `events.json` (prints, warnings, errors, sound plays and stops with their times), `camera.json` and
   `summary.json`, which is also printed on stdout; a `ree: record ...` line goes to stderr.
+- `--timing-check` (or `REE_TIMING_CHECK=1`) records the harness a second time with the in-frame clock moved
+  (twice the modelled work, never frozen; a frozen run's wall clock stays pinned) and compares the two
+  recordings' playback and camera. A script that times itself on `os.clock` within a frame (a visual
+  clock's waits, an elapsed-time sum, a work budget) draws differently in a client whenever its real work
+  moves, which ree's modelled work and a frozen clock do not follow: if the second recording differs, an A/B
+  whose recordings read identical has not shown the look holds there. The verdict is `timing` in the summary
+  and `timing.json` (`hinges`, the first difference's time and what, how many entries differ per list), and
+  the status line ends `hinges on sub-frame timing from <t> s (<what>)` or `sub-frame timing: no change`.
+  The second recording's files are removed. A warm service's prepared run is not checked.
 
 ## Animation
 

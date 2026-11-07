@@ -353,10 +353,6 @@
 			"why": "GetValue's argument casts: a client raises `Unable to cast string to float` for an alpha string; ree reads it"
 		},
 		{
-			"line": "tween-final 10 10 1 10 0 0 -1 0 -8.74227766e-08 0 1 0 8.74227766e-08 0 -1 Enum.PlaybackState.Completed",
-			"why": "a tweened CFrame's last digits: TweenService interpolates it in its own order (not the CFrame:Lerp model)"
-		},
-		{
 			"line": "tween-errors error TweenService:Create property named 'Value' cannot be tweened due to type mismatch (property is a 'double', but given type is 'string') | ok Tween | ok Tween",
 			"why": "TweenService:Create's type-mismatch text names the property's and the value's types as the client does not here"
 		}

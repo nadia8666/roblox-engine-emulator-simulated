@@ -544,6 +544,64 @@ fn a_spooled_run_prints_what_a_kept_one_prints() {
     assert!(kept.ends_with("}\n") && kept.matches('\n').count() == 1);
 }
 
+/// `ree record --timing-check`: a recording whose script budgets its work on os.clock within a frame hinges on sub-frame
+/// timing (a second recording with the in-frame clock moved differs, from the first changed key), one that does not reads
+/// no change; the verdict is in the summary and timing.json, and the second recording's files are gone.
+#[test]
+fn a_timing_check_says_whether_a_recording_hinges_on_sub_frame_timing() {
+    let root = std::env::temp_dir().join(format!("ree-record-timing-test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(root.join("none")).unwrap();
+    let write = |name: &str, body: &str| {
+        let path = root.join(name);
+        std::fs::write(&path, body).unwrap();
+        path
+    };
+    let steady = write(
+        "Steady.luau",
+        "return function(Context)\n\
+         local Part = Instance.new('Part') Part.Anchored = true Part.Parent = workspace\n\
+         game:GetService('TweenService'):Create(Part, TweenInfo.new(0.2), {Transparency = 0.5}):Play()\n\
+         task.wait(0.25)\n\
+         end",
+    );
+    let budgeted = write(
+        "Budgeted.luau",
+        "return function(Context)\n\
+         local Part = Instance.new('Part') Part.Anchored = true Part.Parent = workspace\n\
+         local Steps = 0\n\
+         for _ = 1, 10 do\n\
+         local Start = os.clock()\n\
+         repeat for _ = 1, 200 do local _ = Part.Position end Steps += 1 until os.clock() - Start > 0.0005 or Steps % 50 == 0\n\
+         Part.Position = Vector3.new(Steps, 0, 0)\n\
+         task.wait()\n\
+         end\n\
+         end",
+    );
+    let host = crate::launch::Host::default();
+    let check = |harness: &std::path::Path, name: &str| {
+        let out = root.join(name);
+        let args: Vec<String> = ["--harness", &harness.to_string_lossy(), "--out", &out.to_string_lossy(), "--roots", &root.join("none").to_string_lossy(), "--seconds", "0.3", "--fps", "60", "--timing-check"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let parsed = super::run::parse(&args, true).expect("arguments");
+        let (done, emulator) = super::run::execute_with(&parsed, &host, true, false).expect("record");
+        drop(emulator);
+        let written: Json = serde_json::from_str(&std::fs::read_to_string(out.join("timing.json")).unwrap()).unwrap();
+        assert_eq!(written, done.summary["timing"]);
+        assert!(!out.join("timing-check").exists(), "the second recording's files are removed");
+        done
+    };
+    let steady = check(&steady, "steady");
+    assert_eq!(steady.summary["timing"]["hinges"], Json::Bool(false), "{}", steady.summary["timing"]);
+    assert!(steady.line.ends_with("sub-frame timing: no change"), "{}", steady.line);
+    let budgeted = check(&budgeted, "budgeted");
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(budgeted.summary["timing"]["hinges"], Json::Bool(true), "{}", budgeted.summary["timing"]);
+    assert_eq!(budgeted.summary["timing"]["first"]["what"], "Part");
+    assert!(budgeted.line.contains("hinges on sub-frame timing from"), "{}", budgeted.line);
+}
+
 /// `ree record` writes the same files whether its output lines are kept or written to a temporary file
 /// as events.json holds them, as they come (the command line's recording).
 #[test]
@@ -640,6 +698,8 @@ fn a_harness_requires_its_own_modules() {
             frame_times: None,
             script_timeout: None,
             script_timeouts: None,
+            timing_check: false,
+            clock_moved: false,
         };
         let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
         assert_eq!(ran.status, "ok", "{harness}: {:?}", ran.failure);
@@ -1416,6 +1476,8 @@ fn frame_times_replay_a_take_then_go_on_at_the_frame_rate() {
         frame_times,
         script_timeout: None,
         script_timeouts: None,
+        timing_check: false,
+        clock_moved: false,
     };
     let round = |times: Vec<f64>| times.into_iter().map(|t| (t * 1e4).round() / 1e4).collect::<Vec<_>>();
     assert_eq!(round(args(Some(vec![0.03, 0.05])).frame_schedule()), vec![0.03, 0.05, 0.0667, 0.0833, 0.1]);
@@ -1675,6 +1737,8 @@ fn trace_writes_names_the_line_of_each_write() {
         frame_times: None,
         script_timeout: None,
         script_timeouts: None,
+        timing_check: false,
+        clock_moved: false,
     };
     let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
     let _ = std::fs::remove_dir_all(&root);
@@ -1733,6 +1797,8 @@ fn trace_writes_star_names_every_property_and_attribute_write() {
         frame_times: None,
         script_timeout: None,
         script_timeouts: None,
+        timing_check: false,
+        clock_moved: false,
     };
     let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
     let _ = std::fs::remove_dir_all(&root);
@@ -1790,6 +1856,8 @@ fn profile_phase_splits_the_allocation_profile() {
         frame_times: None,
         script_timeout: None,
         script_timeouts: None,
+        timing_check: false,
+        clock_moved: false,
     };
     let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
     drop(guard);
@@ -1853,6 +1921,8 @@ fn census_names_the_line_behind_what_accumulates() {
         frame_times: None,
         script_timeout: None,
         script_timeouts: None,
+        timing_check: false,
+        clock_moved: false,
     };
     let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
     let _ = std::fs::remove_dir_all(&root);
@@ -1930,6 +2000,8 @@ fn holders_name_what_keeps_an_orphan_tree_alive() {
         frame_times: None,
         script_timeout: None,
         script_timeouts: None,
+        timing_check: false,
+        clock_moved: false,
     };
     let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
     let _ = std::fs::remove_dir_all(&root);

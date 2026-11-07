@@ -1110,6 +1110,175 @@ fn nothing_falls_in_edit_mode() {
 }
 
 #[test]
+fn a_thrown_part_flies_as_a_playing_client_steps_it() {
+    // Measured in a playing client (notes/macro flyprobe.luau): velocity first, then the move by it, four 1/240 s steps on
+    // the first simulated frame and one 1/60 s step a frame after; a velocity set by AssemblyLinearVelocity, the legacy
+    // Velocity, ApplyImpulse or on a welded partner flies the same path
+    check_running(
+        "play",
+        r#"
+        local RunService = game:GetService("RunService")
+        local function part(x)
+            local P = Instance.new("Part")
+            P.Size = Vector3.new(2, 2, 2)
+            P.Anchored = false
+            P.CanCollide = false
+            P.CFrame = CFrame.new(x, 500, 0)
+            P.Parent = workspace
+            return P
+        end
+        local Throw = Vector3.new(30, 60, -20)
+        local Thrown, Legacy, Pushed, Dropped = part(0), part(10), part(20), part(30)
+        Thrown.AssemblyLinearVelocity = Throw
+        Legacy.Velocity = Throw
+        Pushed:ApplyImpulse(Throw * Pushed:GetMass())
+        assert(Pushed.AssemblyLinearVelocity == Vector3.zero, "an impulse acts at the next physics step")
+        local A, B = part(40), part(43)
+        local Joint = Instance.new("WeldConstraint")
+        Joint.Part0, Joint.Part1 = A, B
+        Joint.Parent = A
+        B.AssemblyLinearVelocity = Throw
+        assert(A.AssemblyLinearVelocity == Throw and A.Velocity == Throw, "a welded partner reads the velocity")
+        local function path(v0, frames)
+            local y, v = 0, v0
+            for frame = 1, frames do
+                local steps = frame == 1 and 4 or 1
+                for _ = 1, steps do
+                    v -= workspace.Gravity / (60 * steps)
+                    y += v / (60 * steps)
+                end
+            end
+            return y, v
+        end
+        local From = {}
+        for _, P in { Thrown, Legacy, Pushed, Dropped, A } do
+            From[P] = P.Position
+        end
+        for _ = 1, 10 do
+            RunService.Heartbeat:Wait()
+        end
+        local Y, V = path(60, 10)
+        for _, P in { Thrown, Legacy, Pushed, A } do
+            local Moved = P.Position - From[P]
+            assert(math.abs(Moved.X - 5) < 1e-3 and math.abs(Moved.Z + 10 / 3) < 1e-3, `{P.Name} sideways {Moved}`)
+            assert(math.abs(Moved.Y - Y) < 2e-3, `{P.Name} rose {Moved.Y}, the client {Y}`)
+            assert(math.abs(P.AssemblyLinearVelocity.Y - V) < 1e-3, `{P.Name} speed {P.AssemblyLinearVelocity.Y}, the client {V}`)
+        end
+        local Drop = path(0, 10)
+        assert(math.abs((Dropped.Position - From[Dropped]).Y - Drop) < 2e-3, `dropped {(Dropped.Position - From[Dropped]).Y}, the client {Drop}`)
+        "#,
+        1.0,
+    );
+}
+
+#[test]
+fn a_spinning_part_turns_about_its_centre_and_slows() {
+    // Measured (notes/macro flyprobe.luau, bodyprobe.luau): a 2-stud cube spun at 6 rad/s about Y reads 5.995 after one frame
+    // and 5.800 after 39; ApplyAngularImpulse divides by the inertia (a cube's m * 2/3), so m * (0, 4, 0) spins it at 6
+    check_running(
+        "play",
+        r#"
+        local RunService = game:GetService("RunService")
+        local function cube(x)
+            local P = Instance.new("Part")
+            P.Size = Vector3.new(2, 2, 2)
+            P.Anchored = false
+            P.CanCollide = false
+            P.CFrame = CFrame.new(x, 500, 0)
+            P.Parent = workspace
+            return P
+        end
+        local Spun, Twisted = cube(0), cube(10)
+        Spun.AssemblyAngularVelocity = Vector3.new(0, 6, 0)
+        Twisted:ApplyAngularImpulse(Vector3.new(0, 4, 0) * Twisted.AssemblyMass)
+        RunService.Heartbeat:Wait()
+        assert(math.abs(Spun.AssemblyAngularVelocity.Y - 5.995) < 1e-3, `spin {Spun.AssemblyAngularVelocity}`)
+        assert(math.abs(Twisted.AssemblyAngularVelocity.Y - 5.995) < 1e-3, `impulse spin {Twisted.AssemblyAngularVelocity}`)
+        assert(math.abs(Spun.CFrame.LookVector:Dot(Vector3.new(math.sin(-0.1), 0, -math.cos(0.1)))) > 0.9999, "it turned a frame's worth")
+        for _ = 1, 38 do
+            RunService.Heartbeat:Wait()
+        end
+        assert(math.abs(Spun.AssemblyAngularVelocity.Y - 5.8) < 2e-3, `spin after 39 frames {Spun.AssemblyAngularVelocity}`)
+        assert(Spun.AssemblyAngularVelocity.X == 0 and Spun.AssemblyAngularVelocity.Z == 0, "a cube does not wobble")
+        "#,
+        1.0,
+    );
+}
+
+#[test]
+fn a_parts_mass_is_its_volume_times_its_density() {
+    // Measured in a playing client (notes/macro bodyprobe.luau)
+    check_running(
+        "play",
+        r#"
+        local function part(size, material)
+            local P = Instance.new("Part")
+            P.Size = size
+            P.Material = material or Enum.Material.Plastic
+            P.Anchored = false
+            P.CanCollide = false
+            P.CFrame = CFrame.new(0, 500, 0)
+            P.Parent = workspace
+            return P
+        end
+        local function near(a, b) return math.abs(a - b) < 1e-4 end
+        assert(near(part(Vector3.new(2, 2, 2)).Mass, 5.6))
+        assert(near(part(Vector3.new(2, 2, 2), Enum.Material.Slate):GetMass(), 21.528))
+        assert(near(part(Vector3.new(0.1, 0.1, 0.1)).Mass, 0.0007), "no minimum")
+        local Ball = part(Vector3.new(2, 2, 2))
+        Ball.Shape = Enum.PartType.Ball
+        assert(near(Ball.Mass, 2.932153), `ball {Ball.Mass}`)
+        local Custom = part(Vector3.new(2, 2, 2))
+        Custom.CustomPhysicalProperties = PhysicalProperties.new(3, 0.3, 0.5)
+        assert(near(Custom.Mass, 24), `custom {Custom.Mass}`)
+        local Base = part(Vector3.new(2, 2, 2))
+        local Light = part(Vector3.new(1, 1, 1))
+        Light.Massless = true
+        Light.CFrame = Base.CFrame * CFrame.new(3, 0, 0)
+        local Heavy = part(Vector3.new(1, 1, 1))
+        Heavy.CFrame = Base.CFrame * CFrame.new(0, 0, 3)
+        for _, Other in { Light, Heavy } do
+            local Joint = Instance.new("WeldConstraint")
+            Joint.Part0, Joint.Part1 = Base, Other
+            Joint.Parent = Base
+        end
+        assert(Light.Mass == 0 and Light:GetMass() == 0, "a Massless part weighs nothing")
+        assert(near(Light.AssemblyMass, 6.3) and near(Base.AssemblyMass, 6.3), `assembly {Base.AssemblyMass}`)
+        local Offset = Base.AssemblyCenterOfMass - Base.Position
+        assert(near(Offset.Z, 0.7 * 3 / 6.3) and near(Offset.X, 0) and near(Offset.Y, 0), `centre {Offset}`)
+        "#,
+        0.2,
+    );
+}
+
+#[test]
+fn cframe_and_vector3_properties_keep_their_floats() {
+    // A playing client keeps a property's float32s (notes/macro bodyprobe.luau: CFrame.Angles(0.001, 0, 0) on an
+    // Attachment reads back sin 0.001000000); lune's file conversion rounded them to 1/65536 (0.001007)
+    check_running(
+        "play",
+        r#"
+        local Where = CFrame.new(40.123456, 30.987654, -25.5) * CFrame.Angles(0.3, 1.1, -0.2)
+        local P = Instance.new("Part")
+        P.Anchored = true
+        P.CFrame = Where
+        P.Parent = workspace
+        assert(P.CFrame == Where, "a part's CFrame")
+        local A = Instance.new("Attachment")
+        A.CFrame = CFrame.Angles(0.001, 0, 0)
+        assert(A.CFrame == CFrame.Angles(0.001, 0, 0), `an attachment's {A.CFrame}`)
+        local V = Instance.new("CFrameValue")
+        V.Value = Where
+        assert(V.Value == Where, "a CFrameValue's")
+        local M = Instance.new("Motor6D")
+        M.C0 = Where
+        assert(M.C0 == Where, "a Motor6D's C0")
+        "#,
+        0.1,
+    );
+}
+
+#[test]
 fn a_streaming_place_simulates_near_its_foci() {
     check_with(
         Options { mode: "play".into(), streaming_target_radius: Some(400.0), ..Options::default() },

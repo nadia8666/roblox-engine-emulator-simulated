@@ -267,7 +267,8 @@ scheduler.rs    Scheduler data and the Luau-running steps (flush_deferred, resum
 - **Assignment** (`convert::coerce`, measured in a playing client): a number property takes any value, a
   string as Luau reads a number and anything else as 0; `int` properties truncate (the minimum when out
   of range or not finite), `int64` ones round half away from zero (0 when out of range); a boolean
-  property takes Lua truth; a string property takes strings and numbers.
+  property takes Lua truth; a string property takes strings and numbers. A Vector3 or CFrame property keeps
+  the script value's float32s as they are (a client reads back `CFrame.Angles(0.001, 0, 0)` exactly).
 - **Scripts' chunk names**: a script or module compiles as a chunk named by its full name, as Roblox
   names it: error positions, tracebacks and `debug.info(f, "s")` read `ReplicatedStorage.Module:3:`
   (measured in a playing client; tools/parity/probes/chunknames.luau). Roblox keeps one compiled chunk per
@@ -514,7 +515,9 @@ proxies and tables, vectors as Vector3), and the compiler leaves a constant vect
 
 So a loop that slices its work by an os.clock budget per Heartbeat takes as many frames as in Studio, and
 a frozen clock (`REE_FROZEN_CLOCK=1`: the clock follows the frames only) makes runs of code that differs
-in speed write the same values. The clock never runs backwards and never falls behind the frame's time.
+in speed write the same values; a client's os.clock is real time, so a script that times itself on it within a
+frame can draw differently there when its real work moves (`ree record --timing-check` says when a recording
+hinges on that: docs/cli.md). The clock never runs backwards and never falls behind the frame's time.
 A recorded clock (`RUR_CLOCK`) takes no charges; the busy-loop allowance still ends a loop that only reads
 the clock.
 
@@ -661,7 +664,7 @@ world/frame.rs   CFrame arithmetic (glam, f32), Orientation (YXZ) and Rotation (
 world/query.rs   spatial queries: solids, cast_ray, cast_box, overlaps, the WorldRoot methods
 world/camera.rs  WorldToViewportPoint / WorldToScreenPoint / ViewportPointToRay / ScreenPointToRay
 world/joints.rs  rigid assemblies, the Motor6D.Transform batch
-world/gravity.rs free fall
+world/gravity.rs free flight: gravity, a script's velocity and spin, impulses, mass
 record/mod.rs    Recorder::install / sample / write: what is recorded and how
 record/encode.rs values as playback JSON and as rbx-dom variants
 record/run.rs    `ree record` / `ree run`: the project, the harness module and Context, the frame loop
@@ -680,13 +683,20 @@ record/prepare.rs runs prepared ahead by `ree serve`
   part's CFrame write moves its whole assembly rigidly; Position / Orientation / Rotation move the part
   alone and rewrite its joints. Model:PivotTo and ScaleTo write their parts as one batch.
   Motor6D.Transform applies after PreSimulation (edit mode: at each Heartbeat's start).
-- **Free fall** (measured in a Studio playtest client): in play mode an assembly in the Workspace with no
-  anchored part, nothing that can collide, no Humanoid and no constraint falls under Workspace.Gravity
-  from its first simulation step. A place that streams simulates only near its replication foci (the
-  character, Player.ReplicationFocus, Player:AddReplicationFocus parts): an assembly whose bounding sphere
-  starts about a focus simulates while its centre distance plus radius stays within StreamingTargetRadius
-  cut to a whole 64 studs (32 less for an added focus), then stands still. Not modelled: collisions,
-  angular velocity, FallenPartsDestroyHeight.
+- **Free flight** (measured in playing clients): in play mode an assembly in the Workspace with no
+  anchored part, nothing that can collide, no Humanoid and no constraint flies from its first simulation
+  step under Workspace.Gravity, at the velocity and with the spin a script gave any of its parts
+  (AssemblyLinearVelocity or Velocity, AssemblyAngularVelocity or RotVelocity; ApplyImpulse,
+  ApplyImpulseAtPosition and ApplyAngularImpulse act at its next step). Each step updates the velocity,
+  then moves by it: four steps of 1/240 s on an assembly's first simulated frame, one of 1/60 s a frame
+  after. Spin turns it about its centre of mass as a free rigid body (box inertia), decaying 5.2% a
+  second. Mass is volume times density (CustomPhysicalProperties', else the Material's; a Ball's volume a
+  sphere's); Massless parts weigh nothing; Mass, AssemblyMass, AssemblyCenterOfMass and GetMass() read it.
+  A place that streams simulates only near its replication foci (the character, Player.ReplicationFocus,
+  Player:AddReplicationFocus parts): an assembly whose bounding sphere starts about a focus simulates while
+  its centre distance plus radius stays within StreamingTargetRadius cut to a whole 64 studs (32 less for
+  an added focus), then stands still. Not modelled: collisions, FallenPartsDestroyHeight, a mesh's own
+  volume and inertia (a MeshPart's box), and the extra steps a client takes when a frame runs long.
 - **Queries**: Block parts are boxes, Ball parts spheres, Cylinder parts cylinders along X, anything else
   its oriented bounding box (no mesh geometry); Terrain is never hit. Rays starting inside a part do not
   hit it; CanQuery off is skipped, RespectCanCollide skips CanCollide off; collision groups are not
@@ -788,7 +798,7 @@ measurements in a playing client.
 
 - ImageLabel and ImageButton report `IsLoaded` true at once; Sounds report `IsLoaded` true and a
   `TimeLength` of 1; `DataModel:IsLoaded()` is true. No asset is fetched for them.
-- Physics beyond free fall (collisions, constraints, body movers), particles and the default character
+- Physics beyond free flight (collisions, constraints, body movers), particles and the default character
   scripts are not simulated.
 - Script HTTP requests are disabled: no script reaches the network.
 - SecurityCapabilities are not emulated. A ReflectionService entry's `Permits` is a frozen empty table
@@ -832,7 +842,7 @@ rur, whose tools set them.
   `RUR_LUAU_PROFILE`, `RUR_LUAU_PROFILE_CLOCK`, `RUR_LUAU_PROFILE_UNIT`, `RUR_LUAU_ALLOC_PROFILE`,
   `RUR_LUAU_ALLOC_STEP`, `RUR_BOUNDARY_PROFILE`, `RUR_CHARGE_TALLY`.
 - `REE_SCRIPT_TIMEOUT`, `REE_MAX_SCRIPT_TIMEOUTS`, `REE_MAX_WALL_SECONDS`, `REE_PARENT_WATCH`,
-  `REE_SERVE_WORKERS`, `REE_FROZEN_CLOCK`, `REE_RANDOM_SEED`, `REE_WORK_COUNTERS`, `REE_HASH_SEED`,
+  `REE_SERVE_WORKERS`, `REE_FROZEN_CLOCK`, `REE_TIMING_CHECK`, `REE_RANDOM_SEED`, `REE_WORK_COUNTERS`, `REE_HASH_SEED`,
   `REE_HASH_ADDRESS`, `REE_LOCALIZED_PLACES`, `REE_MATCH_PLACES`, `REE_ASSET_WORKER`, `REE_PROFILE`,
   `REE_PROFILE_OUT`, `REE_PROFILE_COUNTERS`, `REE_HW_COUNTERS`, `REE_LUAU_FLAGS`, `REE_VIEW_COLOR` (the profile viewer's colours:
   `truecolor` or `256`), `REE_VIEW_BLESS` (its snapshot tests write their snapshots).

@@ -1,12 +1,27 @@
-//! Free fall: an assembly in the Workspace with no anchored part and nothing that can collide falls
-//! under Workspace.Gravity from the simulation step after it is there, as Roblox's physics moves it
-//! (play mode only: edit mode simulates nothing).
+//! Free flight: an assembly in the Workspace with no anchored part and nothing that can collide flies from the
+//! simulation step after it is there, as Roblox's physics moves it (play mode only: edit mode simulates nothing): under
+//! Workspace.Gravity, at the velocity and with the spin a script gives any of its parts (AssemblyLinearVelocity or the legacy
+//! Velocity, AssemblyAngularVelocity or RotVelocity; ApplyImpulse, ApplyImpulseAtPosition and ApplyAngularImpulse take effect
+//! at its next step).
+//!
+//! Measured in a playing client (roblox-sim, Studio 0.744; notes/macro flyprobe.luau, bodyprobe.luau): each step updates the
+//! velocity, then moves the assembly by it (semi-implicit Euler), four steps of 1/240 s in an assembly's first simulated
+//! frame and one of 1/60 s a frame after: a dropped part, a thrown spinning cube, a thrown spinning brick and a thrown welded
+//! pair follow it within 0.0001 studs over their first ten frames, where the exact parabola ree flew was 0.25 studs off. A
+//! velocity set on either part of a welded pair flies the pair; one set before the part is in the Workspace holds. Spin
+//! turns an assembly about its centre of mass as a free rigid body: its angular momentum is kept while its inertia turns
+//! with it, and decays 5.2% a second (a 2-stud cube spun at 6 rad/s read 5.995, 5.990, 5.903 and 5.800 at its 2nd, 3rd, 20th
+//! and 40th frames). Mass is volume times density, CustomPhysicalProperties' or else the Material's (Plastic 0.7, Slate
+//! 2.691, Metal 7.85, a 0.1-stud cube 0.0007, no minimum), a Ball's volume a sphere's, a mesh-less MeshPart's its box; a
+//! Massless part's Mass reads 0 and adds nothing to its assembly's. An impulse is divided by the assembly's mass, an angular
+//! one by its inertia (a cube's spin from ApplyAngularImpulse(m * (0, 4, 0)) read 6 rad/s less one frame's decay), and both
+//! add to a velocity a script set.
 //!
 //! Measured in a capture Studio (presence, 2026-10-17): a 4 x 1 x 4 unanchored CanCollide-false Part
 //! parented to the Workspace by a playtest's client, and an effect scene cloned there by the
-//! client (its unanchored scene mesh), fall from their first frame at 196.2 studs/s² (drop ½ g t²
-//! within a frame's time: 37.5 studs at 0.62 s, 99.8 at 0.99), near the character, 600 and 2,000
-//! studs off, 2,048 up, the camera on them or not; Run mode (the server) alike.
+//! client (its unanchored scene mesh), fall from their first frame at 196.2 studs/s² (37.5 studs
+//! at 0.62 s, 99.8 at 0.99), near the character, 600 and 2,000 studs off, 2,048 up, the camera on
+//! them or not; Run mode (the server) alike.
 //!
 //! A place that streams (Workspace.StreamingEnabled) simulates only near its replication foci: with
 //! it on, the same client parts stand still 2,900 studs off and 1,104 off (StreamingTargetRadius
@@ -29,19 +44,23 @@
 //! studs; a CFrame write carries them): the recorder marks a part's motion from the frame physics
 //! first moved it (`physicsFrom`), and a renderer leaves its locked particles behind from there.
 //!
-//! Not modelled (such an assembly stays where it is, as before): collisions (an assembly with a part
-//! that can collide), Humanoids (a part beside one), constraints and body movers under its parts,
-//! angular velocity, FallenPartsDestroyHeight.
+//! Not modelled: collisions (an assembly with a part that can collide stays where it is, as before), Humanoids (a part
+//! beside one), constraints and body movers under its parts, FallenPartsDestroyHeight; a mesh's own volume and inertia (a
+//! MeshPart weighs and turns as its box); the steps a client adds when a frame runs long (five 1/240 s steps in a slow
+//! first frame) or the 1/120 s ones its adaptive stepping gave a fast thrown part for a while in one session; and a thrown
+//! part without spin that took half a frame more of gravity on its third frame in one session (0.12 studs by its 11th).
 
 use std::rc::Rc;
 
-use glam::{Affine3A, Vec3};
+use mlua::prelude::*;
+
+use glam::{Affine3A, Mat3, Quat, Vec3};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{frame, joints};
 use rbx_dom_weak::types::Variant;
 
-use crate::{ClassId, Engine, InstanceId, NameId, Reflection, State, instance as core, value::Value};
+use crate::{ClassId, Engine, Hooks, InstanceId, NameId, Reflection, State, instance as core, reflection::EnumItemId, value::Value};
 
 /// Names and classes, resolved once at install.
 struct Setup {
@@ -66,6 +85,21 @@ struct Setup {
     attachment: Option<ClassId>,
     /// Constraint, BodyMover: what pushes an assembly besides gravity
     movers: Vec<ClassId>,
+    assembly_linear: Option<NameId>,
+    assembly_angular: Option<NameId>,
+    rot_velocity: Option<NameId>,
+    material: Option<NameId>,
+    custom_physical: Option<NameId>,
+    massless: Option<NameId>,
+    shape: Option<NameId>,
+    /// Each Material's density (PhysicalProperties.new(material), as measured: vendor lune-roblox physical_properties.rs)
+    densities: FxHashMap<EnumItemId, f32>,
+    ball: Option<EnumItemId>,
+    cylinder: Option<EnumItemId>,
+    wedge_shape: Option<EnumItemId>,
+    corner_shape: Option<EnumItemId>,
+    wedge_part: Option<ClassId>,
+    corner_part: Option<ClassId>,
 }
 
 /// The free-fall state of one engine (in [`State`]).
@@ -87,6 +121,10 @@ pub struct Gravity {
     added: Vec<InstanceId>,
     /// Falling parts whose assembly started about a focus (held to its reach)
     bounded: FxHashSet<InstanceId>,
+    /// Each flying part's spin (world, rad/s), its assembly's
+    spin: FxHashMap<InstanceId, Vec3>,
+    /// Impulses applied since the last step, by part: linear (ApplyImpulse) and angular
+    impulses: FxHashMap<InstanceId, (Vec3, Vec3)>,
 }
 
 impl Gravity {
@@ -132,8 +170,23 @@ pub fn install(engine: &Rc<Engine>) {
         humanoid: class("Humanoid"),
         attachment: class("Attachment"),
         movers: ["Constraint", "BodyMover"].iter().filter_map(|text| class(text)).collect(),
+        assembly_linear: name("AssemblyLinearVelocity"),
+        assembly_angular: name("AssemblyAngularVelocity"),
+        rot_velocity: name("RotVelocity"),
+        material: name("Material"),
+        custom_physical: name("CustomPhysicalProperties"),
+        massless: name("Massless"),
+        shape: name("Shape"),
+        densities: DENSITIES.iter().filter_map(|&(material, density)| reflection.enum_item("Material", material).map(|item| (item, density))).collect(),
+        ball: reflection.enum_item("PartType", "Ball"),
+        cylinder: reflection.enum_item("PartType", "Cylinder"),
+        wedge_shape: reflection.enum_item("PartType", "Wedge"),
+        corner_shape: reflection.enum_item("PartType", "CornerWedge"),
+        wedge_part: class("WedgePart"),
+        corner_part: class("CornerWedgePart"),
     });
     engine.state.borrow_mut().gravity.setup = Some(setup.clone());
+    let body_setup = setup.clone();
     let mut hooks = engine.hooks.borrow_mut();
     let entered = setup.clone();
     let reflection_for_parent = engine.reflection.clone();
@@ -152,6 +205,10 @@ pub fn install(engine: &Rc<Engine>) {
             note(state, &reflection_for_property, &setup, id);
         } else if name == setup.cframe && !state.gravity.stepping && state.gravity.velocity.contains_key(&id) {
             state.gravity.steered.insert(id);
+        } else if !state.gravity.stepping && (name == setup.velocity || Some(name) == setup.assembly_linear) {
+            assign(state, &reflection_for_property, &setup, id, name, false);
+        } else if !state.gravity.stepping && (Some(name) == setup.assembly_angular || Some(name) == setup.rot_velocity) {
+            assign(state, &reflection_for_property, &setup, id, name, true);
         }
     }));
     hooks.instance_freed.push(Box::new(|state, id| {
@@ -162,9 +219,12 @@ pub fn install(engine: &Rc<Engine>) {
         gravity.velocity.remove(&id);
         gravity.steered.remove(&id);
         gravity.bounded.remove(&id);
+        gravity.spin.remove(&id);
+        gravity.impulses.remove(&id);
         gravity.added.retain(|&focus| focus != id);
     }));
     drop(hooks);
+    install_body(engine, &body_setup);
 
     // Player:AddReplicationFocus / RemoveReplicationFocus: the server's extra foci, which a harness calls in the client
     let Some(player_class) = reflection.class_id("Player") else { return };
@@ -394,21 +454,7 @@ pub fn step(engine: &Engine, delta: f64) {
                 continue;
             }
         }
-        let velocity = match state.gravity.velocity.get(&part) {
-            Some(&velocity) => velocity,
-            None => state.dom.raw_get(part, setup.velocity).and_then(frame::vector_of).unwrap_or(Vec3::ZERO),
-        };
-        let moved = velocity * dt + 0.5 * g * dt * dt;
-        let velocity = velocity + g * dt;
-        state.gravity.stepping = true;
-        for &other in &component {
-            let cframe = frame::affine_of(state.dom.raw_get(other, setup.cframe));
-            let target = Affine3A::from_translation(moved) * cframe;
-            core::raw_set_unsignalled(&mut state, reflection, &hooks, other, setup.cframe, frame::cframe_value(&target));
-            core::raw_set_unsignalled(&mut state, reflection, &hooks, other, setup.velocity, frame::vector_value(velocity));
-            state.gravity.velocity.insert(other, velocity);
-        }
-        state.gravity.stepping = false;
+        fly(&mut state, reflection, &hooks, &setup, &component, part, g, dt);
     }
     if !gone.is_empty() {
         let gravity = &mut state.gravity;
@@ -416,8 +462,294 @@ pub fn step(engine: &Engine, delta: f64) {
             gravity.listed.remove(&part);
             gravity.velocity.remove(&part);
             gravity.bounded.remove(&part);
+            gravity.spin.remove(&part);
         }
         let listed = &gravity.listed;
         gravity.loose.retain(|part| listed.contains(part));
+    }
+}
+
+/// Each Material's density, as PhysicalProperties.new(material) reads it in a playing client (the table the datatype keeps:
+/// vendor lune-roblox physical_properties.rs, Studio 0.744); a part's Mass is its volume times this (notes/macro bodyprobe.luau).
+const DENSITIES: &[(&str, f32)] = &[
+    ("Plastic", 0.7), ("SmoothPlastic", 0.7), ("Neon", 0.7), ("Wood", 0.35), ("WoodPlanks", 0.35), ("Marble", 2.563),
+    ("Basalt", 2.691), ("Slate", 2.691), ("CrackedLava", 2.691), ("Concrete", 2.403), ("Limestone", 2.691), ("Granite", 2.691),
+    ("Pavement", 2.691), ("Brick", 1.922), ("Pebble", 2.403), ("Cobblestone", 2.691), ("Rock", 2.691), ("Sandstone", 2.691),
+    ("CorrodedMetal", 7.85), ("DiamondPlate", 7.85), ("Foil", 2.7), ("Metal", 7.85), ("Grass", 0.9), ("LeafyGrass", 0.9),
+    ("Sand", 1.602), ("Fabric", 0.7), ("Snow", 0.9), ("Mud", 0.9), ("Ground", 0.9), ("Asphalt", 2.36), ("Salt", 2.165),
+    ("Ice", 0.919), ("Glacier", 0.919), ("Glass", 2.403), ("ForceField", 2.403), ("Air", 0.01), ("Water", 1.0),
+    ("Cardboard", 0.7), ("Carpet", 1.1), ("CeramicTiles", 2.4), ("ClayRoofTiles", 2.0), ("RoofShingles", 2.36),
+    ("Leather", 0.86), ("Plaster", 0.75), ("Rubber", 1.3),
+];
+
+/// A free assembly's spin decays this much a second: 0.99913 a 60 Hz frame (notes/macro flyprobe.luau: a 2-stud cube spun at
+/// 6 rad/s read 5.995, 5.990, 5.903 and 5.800 at its 2nd, 3rd, 20th and 40th frames).
+const SPIN_DECAY: f32 = 0.05222;
+
+/// A part's mass (0 when Massless) and its principal moments of inertia about its centre, in its own frame: a box's from
+/// its Size, a sphere's for a Ball, a cylinder's (along X) for a Cylinder, half a box's volume for a wedge and a third for a
+/// corner wedge (their moments a box's).
+fn part_body(state: &State, setup: &Setup, part: InstanceId) -> (f32, Vec3) {
+    if setup.massless.is_some_and(|name| state.dom.boolean(part, name) == Some(true)) {
+        return (0.0, Vec3::ZERO);
+    }
+    let size = match setup.size.and_then(|name| state.dom.raw_get(part, name)) {
+        Some(Value::Vector3(v)) => Vec3::new(v.x, v.y, v.z),
+        _ => Vec3::ONE,
+    };
+    let custom = setup.custom_physical.and_then(|name| match state.dom.raw_get(part, name) {
+        Some(Value::Dom(variant)) => match &**variant {
+            Variant::PhysicalProperties(rbx_dom_weak::types::PhysicalProperties::Custom(custom)) => Some(custom.density()),
+            _ => None,
+        },
+        // (a script's PhysicalProperties.new(...) is kept as it was given)
+        Some(Value::Lua(value)) => match &**value {
+            LuaValue::UserData(data) => data
+                .borrow::<lune_roblox::datatypes::types::PhysicalProperties>()
+                .ok()
+                .map(|properties| rbx_dom_weak::types::CustomPhysicalProperties::from(*properties).density()),
+            _ => None,
+        },
+        _ => None,
+    });
+    let density = custom.unwrap_or_else(|| {
+        let material = setup.material.and_then(|name| state.dom.raw_get(part, name)).and_then(|value| match value {
+            Value::EnumItem(item) => Some(*item),
+            _ => None,
+        });
+        material.and_then(|item| setup.densities.get(&item).copied()).unwrap_or(0.7)
+    });
+    let class = state.dom.at(part).class;
+    let shape = setup.shape.and_then(|name| state.dom.raw_get(part, name)).and_then(|value| match value {
+        Value::EnumItem(item) => Some(*item),
+        _ => None,
+    });
+    let boxed = Vec3::new(size.y * size.y + size.z * size.z, size.x * size.x + size.z * size.z, size.x * size.x + size.y * size.y) / 12.0;
+    let volume = size.x * size.y * size.z;
+    let (volume, moments) = if shape.is_some() && shape == setup.ball {
+        let r = size.min_element() * 0.5;
+        (4.0 / 3.0 * std::f32::consts::PI * r * r * r, Vec3::splat(0.4 * r * r))
+    } else if shape.is_some() && shape == setup.cylinder {
+        let (r, h) = (size.y.min(size.z) * 0.5, size.x);
+        let across = (3.0 * r * r + h * h) / 12.0;
+        (std::f32::consts::PI * r * r * h, Vec3::new(0.5 * r * r, across, across))
+    } else if (shape.is_some() && shape == setup.wedge_shape) || Some(class) == setup.wedge_part {
+        (volume * 0.5, boxed)
+    } else if (shape.is_some() && shape == setup.corner_shape) || Some(class) == setup.corner_part {
+        (volume / 3.0, boxed)
+    } else {
+        (volume, boxed)
+    };
+    let mass = volume * density;
+    (mass, moments * mass)
+}
+
+/// An assembly's mass, centre of mass and inertia about it (world axes).
+struct Body {
+    mass: f32,
+    centre: Vec3,
+    inertia: Mat3,
+}
+
+fn body_of(state: &State, setup: &Setup, component: &[InstanceId]) -> Body {
+    let parts: Vec<(Affine3A, f32, Vec3)> = component
+        .iter()
+        .map(|&part| {
+            let (mass, moments) = part_body(state, setup, part);
+            (frame::affine_of(state.dom.raw_get(part, setup.cframe)), mass, moments)
+        })
+        .collect();
+    let mass: f32 = parts.iter().map(|(_, mass, _)| mass).sum();
+    // (averaged about the first part, so far from the origin the float's step does not show: 3e-5 studs at 400 up)
+    let origin = parts.first().map(|(at, _, _)| Vec3::from(at.translation)).unwrap_or(Vec3::ZERO);
+    let centre = origin
+        + if mass > 0.0 {
+            parts.iter().map(|(at, part_mass, _)| (Vec3::from(at.translation) - origin) * *part_mass).sum::<Vec3>() / mass
+        } else {
+            parts.iter().map(|(at, _, _)| Vec3::from(at.translation) - origin).sum::<Vec3>() / parts.len().max(1) as f32
+        };
+    let mut inertia = Mat3::ZERO;
+    for (at, part_mass, moments) in &parts {
+        let rotation = Mat3::from(at.matrix3);
+        inertia += rotation * Mat3::from_diagonal(*moments) * rotation.transpose();
+        let r = Vec3::from(at.translation) - centre;
+        inertia += (Mat3::IDENTITY * r.length_squared() - Mat3::from_cols(r * r.x, r * r.y, r * r.z)) * *part_mass;
+    }
+    Body { mass, centre, inertia }
+}
+
+/// A script set a part's velocity or spin: its assembly takes it, read back under both names (AssemblyLinearVelocity and the
+/// legacy Velocity, AssemblyAngularVelocity and RotVelocity) on each of its parts, and a flying one flies on with it.
+fn assign(state: &mut State, reflection: &Reflection, setup: &Setup, id: InstanceId, name: NameId, angular: bool) {
+    if state.dom.get(id).is_none() || !reflection.class(state.dom.at(id).class).is_a(setup.base_part) {
+        return;
+    }
+    let Some(value) = state.dom.raw_get(id, name).and_then(frame::vector_of) else { return };
+    let names = if angular { [setup.assembly_angular, setup.rot_velocity] } else { [Some(setup.velocity), setup.assembly_linear] };
+    let flying = state.gravity.velocity.contains_key(&id);
+    for part in joints::linked_parts(state, reflection, id) {
+        for &target in names.iter().flatten() {
+            if part != id || target != name {
+                state.dom.exchange(part, target, frame::vector_value(value));
+                state.dom.bump_version(part);
+            }
+        }
+        if flying {
+            if !angular {
+                state.gravity.velocity.insert(part, value);
+            } else if value == Vec3::ZERO {
+                state.gravity.spin.remove(&part);
+            } else {
+                state.gravity.spin.insert(part, value);
+            }
+        }
+    }
+}
+
+/// One simulation step of a free assembly (`part` one of `component`'s): the velocity and spin it has (a first step reads the
+/// ones a script set), plus the impulses since the last step, then four steps of 1/240 s on its first frame and one of 1/60 s
+/// after (each: velocity, then the move by it), the spin turning it about its centre of mass as a free rigid body.
+#[allow(clippy::too_many_arguments)]
+fn fly(state: &mut State, reflection: &Reflection, hooks: &Hooks, setup: &Setup, component: &[InstanceId], part: InstanceId, g: Vec3, dt: f32) {
+    let first = !state.gravity.velocity.contains_key(&part);
+    let read = |state: &State, name: Option<NameId>| name.and_then(|name| state.dom.raw_get(part, name)).and_then(frame::vector_of);
+    let (mut linear, spin) = if first {
+        let linear = read(state, setup.assembly_linear).filter(|v| *v != Vec3::ZERO).or_else(|| read(state, Some(setup.velocity))).unwrap_or(Vec3::ZERO);
+        let spin = read(state, setup.assembly_angular).filter(|v| *v != Vec3::ZERO).or_else(|| read(state, setup.rot_velocity)).unwrap_or(Vec3::ZERO);
+        (linear, spin)
+    } else {
+        (state.gravity.velocity[&part], state.gravity.spin.get(&part).copied().unwrap_or(Vec3::ZERO))
+    };
+    let (mut push, mut twist) = (Vec3::ZERO, Vec3::ZERO);
+    for other in component {
+        if let Some((pushed, twisted)) = state.gravity.impulses.remove(other) {
+            push += pushed;
+            twist += twisted;
+        }
+    }
+    let wants_spin = spin != Vec3::ZERO || twist != Vec3::ZERO;
+    let body = (push != Vec3::ZERO || wants_spin).then(|| body_of(state, setup, component));
+    if let Some(body) = &body {
+        if push != Vec3::ZERO && body.mass > 0.0 {
+            linear += push / body.mass;
+        }
+    }
+    // (an assembly with no inertia to turn, all of it Massless, does not spin)
+    let turning = body.as_ref().filter(|body| wants_spin && body.inertia.determinant().abs() > 1e-12);
+    let inverse = turning.map(|body| body.inertia.inverse()).unwrap_or(Mat3::ZERO);
+    let mut momentum = turning.map(|body| body.inertia * spin + twist).unwrap_or(Vec3::ZERO);
+    let steps = if first { 4 } else { 1 };
+    let h = dt / steps as f32;
+    let mut moved = Vec3::ZERO;
+    let mut turn = Quat::IDENTITY;
+    let spin_at = |turn: Quat, momentum: Vec3| {
+        let rotation = Mat3::from_quat(turn);
+        rotation * (inverse * (rotation.transpose() * momentum))
+    };
+    for _ in 0..steps {
+        linear += g * h;
+        moved += linear * h;
+        if turning.is_some() {
+            momentum *= (-SPIN_DECAY * h).exp();
+            let omega = spin_at(turn, momentum);
+            let angle = omega.length() * h;
+            if angle > 0.0 {
+                turn = (Quat::from_axis_angle(omega / omega.length(), angle) * turn).normalize();
+            }
+        }
+    }
+    let omega = if turning.is_some() { spin_at(turn, momentum) } else { Vec3::ZERO };
+    let centre = turning.map(|body| body.centre);
+    state.gravity.stepping = true;
+    for &other in component {
+        let cframe = frame::affine_of(state.dom.raw_get(other, setup.cframe));
+        let (target, velocity) = match centre {
+            Some(centre) => {
+                let target = Affine3A::from_translation(centre + moved) * Affine3A::from_quat(turn) * Affine3A::from_translation(-centre) * cframe;
+                let r = Vec3::from(target.translation) - (centre + moved);
+                (target, linear + omega.cross(r))
+            }
+            None => (Affine3A::from_translation(moved) * cframe, linear),
+        };
+        core::raw_set_unsignalled(state, reflection, hooks, other, setup.cframe, frame::cframe_value(&target));
+        core::raw_set_unsignalled(state, reflection, hooks, other, setup.velocity, frame::vector_value(velocity));
+        if let Some(name) = setup.assembly_linear {
+            core::raw_set_unsignalled(state, reflection, hooks, other, name, frame::vector_value(linear));
+        }
+        for name in [setup.assembly_angular, setup.rot_velocity].into_iter().flatten() {
+            core::raw_set_unsignalled(state, reflection, hooks, other, name, frame::vector_value(omega));
+        }
+        state.gravity.velocity.insert(other, linear);
+        if omega != Vec3::ZERO {
+            state.gravity.spin.insert(other, omega);
+        } else {
+            state.gravity.spin.remove(&other);
+        }
+    }
+    state.gravity.stepping = false;
+}
+
+/// BasePart's mass and impulses: Mass, AssemblyMass, AssemblyCenterOfMass and GetMass() read the masses above; ApplyImpulse,
+/// ApplyImpulseAtPosition and ApplyAngularImpulse act at an unanchored part's next physics step (read back after it), as measured.
+fn install_body(engine: &Rc<Engine>, setup: &Rc<Setup>) {
+    let reflection = &engine.reflection;
+    let Some(base_part) = reflection.class_id("BasePart") else { return };
+    let name = |text: &str| reflection.name_id(text);
+    let mut behaviors = engine.behaviors.borrow_mut();
+    let number = |value: f32| Ok(LuaValue::Number(value as f64));
+    if let Some(mass) = name("Mass") {
+        let setup = setup.clone();
+        behaviors.add_getter(base_part, mass, crate::services::getter(move |_, engine, id| number(part_body(&engine.state.borrow(), &setup, id).0)));
+    }
+    if let Some(get_mass) = name("GetMass") {
+        let setup = setup.clone();
+        behaviors.add_method(base_part, get_mass, crate::services::method(move |_, engine, id, _| {
+            Ok(crate::lua::values([LuaValue::Number(part_body(&engine.state.borrow(), &setup, id).0 as f64)]))
+        }));
+    }
+    let assembly = |engine: &Rc<Engine>, setup: &Setup, id: InstanceId| {
+        let mut state = engine.state.borrow_mut();
+        let component = joints::linked_parts(&mut state, &engine.reflection, id);
+        body_of(&state, setup, &component)
+    };
+    if let Some(assembly_mass) = name("AssemblyMass") {
+        let setup = setup.clone();
+        behaviors.add_getter(base_part, assembly_mass, crate::services::getter(move |_, engine, id| number(assembly(engine, &setup, id).mass)));
+    }
+    if let Some(centre_of_mass) = name("AssemblyCenterOfMass") {
+        let setup = setup.clone();
+        behaviors.add_getter(base_part, centre_of_mass, crate::services::getter(move |lua, engine, id| {
+            let centre = assembly(engine, &setup, id).centre;
+            Ok(crate::lua::convert::to_lua(lua, engine, &frame::vector_value(centre))?)
+        }));
+    }
+    let vector = |args: &crate::lua::Args, index: usize| frame::vector_of(&crate::lua::convert::from_lua(args.get(index)));
+    for (method, kind) in [("ApplyImpulse", 0u8), ("ApplyAngularImpulse", 1), ("ApplyImpulseAtPosition", 2)] {
+        let Some(method_name) = name(method) else { continue };
+        let setup = setup.clone();
+        behaviors.add_method(base_part, method_name, crate::services::method(move |_, engine, id, args| {
+            let Some(impulse) = vector(args, 1) else { return crate::lua::raise("Argument 1 missing or nil") };
+            let at = if kind == 2 {
+                let Some(at) = vector(args, 2) else { return crate::lua::raise("Argument 2 missing or nil") };
+                Some(at)
+            } else {
+                None
+            };
+            let centre = at.map(|_| assembly(engine, &setup, id).centre);
+            let mut state = engine.state.borrow_mut();
+            if state.dom.boolean(id, setup.anchored) == Some(false) {
+                let entry = state.gravity.impulses.entry(id).or_default();
+                match (kind, at, centre) {
+                    (0, ..) => entry.0 += impulse,
+                    (1, ..) => entry.1 += impulse,
+                    (_, Some(at), Some(centre)) => {
+                        entry.0 += impulse;
+                        entry.1 += (at - centre).cross(impulse);
+                    }
+                    _ => {}
+                }
+            }
+            Ok(crate::lua::none())
+        }));
     }
 }

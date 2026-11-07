@@ -130,6 +130,10 @@ pub struct Options {
     /// FireServer reaches OnServerEvent (the local player in front), FireClient / FireAllClients reach OnClientEvent, Invoke*
     /// call the other side's callback, and the local player fires PlayerAdded / PlayerRemoving like any joining player
     pub loopback: bool,
+    /// A sub-frame timing check's second run (`ree record --timing-check`, record/run.rs): the in-frame clock moves, on twice
+    /// the modelled work and never frozen (a frozen run's wall clock stays pinned), so a recording that changes with it hinges
+    /// on when within a frame a script reads os.clock
+    pub clock_moved: bool,
 }
 
 impl Default for Options {
@@ -160,6 +164,7 @@ impl Default for Options {
             project: None,
             place_prices: cost::PlacePrices::default(),
             loopback: false,
+            clock_moved: false,
         }
     }
 }
