@@ -247,6 +247,8 @@ pub struct Mark {
     /// What the VM and the profilers had counted so far, once the VM is installed: a phase's figures are the difference
     /// between its mark's and the next one's (the last phase's: the profile's end, [`State::end`])
     pub totals: Option<Totals>,
+    /// What the run's scripts had asked the engine to do so far (cost::EngineOps), once the engine is installed
+    pub engine: Option<crate::cost::EngineOps>,
 }
 
 /// Running counts at a mark ([`Mark::totals`])
@@ -563,15 +565,16 @@ pub fn install(lua: &Lua) {
         });
     }
     let totals = FrameTotals { work: engine.state.borrow().sched.work_total(), instructions: counters.map(|c| instructions(unsafe { &*c })).unwrap_or(0), ..Default::default() };
-    let (frame, seconds) = {
+    let (frame, seconds, ops) = {
         let engine_state = engine.state.borrow();
-        (engine_state.sched.frame, engine_state.sched.now)
+        let ops = engine_state.sched.touched.borrow().ops();
+        (engine_state.sched.frame, engine_state.sched.now, ops)
     };
     with_state(|s| {
         s.installed = Some(Installed { state, engine: Rc::downgrade(&engine), _work: work, _drained: drained, counters, frame_started: None, last: totals });
         let (host, cycles) = (s.started.elapsed().as_secs_f64(), cpu::thread_cycles());
         let counts = s.totals();
-        s.marks.push(Mark { phase: s.phases[0].clone(), frame, seconds, work: totals.work, host, cycles, totals: counts });
+        s.marks.push(Mark { phase: s.phases[0].clone(), frame, seconds, work: totals.work, host, cycles, totals: counts, engine: Some(ops) });
     });
     if kinds.has(Kinds::HEAP) {
         snapshot("start");
@@ -611,15 +614,16 @@ pub fn collect(lua: &Lua) {
     }
     vm::stop(state);
     with_state(|s| {
-        let (frame, seconds, work) = match s.installed.as_ref().and_then(|installed| installed.engine.upgrade()) {
+        let (frame, seconds, work, ops) = match s.installed.as_ref().and_then(|installed| installed.engine.upgrade()) {
             Some(engine) => {
                 let engine_state = engine.state.borrow();
-                (engine_state.sched.frame, engine_state.sched.now, engine_state.sched.work_total())
+                let ops = engine_state.sched.touched.borrow().ops();
+                (engine_state.sched.frame, engine_state.sched.now, engine_state.sched.work_total(), Some(ops))
             }
-            None => (0, 0.0, 0.0),
+            None => (0, 0.0, 0.0, None),
         };
         let host = ended.duration_since(s.started).as_secs_f64();
-        s.end = Some(Mark { phase: "end".into(), frame, seconds, work, host, cycles: end_cycles, totals: s.totals() });
+        s.end = Some(Mark { phase: "end".into(), frame, seconds, work, host, cycles: end_cycles, totals: s.totals(), engine: ops });
     });
     let results = vm::results(state);
     vm::free(state);
@@ -678,16 +682,17 @@ pub fn phase(name: &str) {
         if let Some(hw) = s.hw.as_mut() {
             hw.read(hw::What::Mark, id);
         }
-        let (frame, seconds, work) = match s.installed.as_ref().and_then(|installed| installed.engine.upgrade()) {
+        let (frame, seconds, work, ops) = match s.installed.as_ref().and_then(|installed| installed.engine.upgrade()) {
             Some(engine) => {
                 let engine_state = engine.state.borrow();
-                (engine_state.sched.frame, engine_state.sched.now, engine_state.sched.work_total())
+                let ops = engine_state.sched.touched.borrow().ops();
+                (engine_state.sched.frame, engine_state.sched.now, engine_state.sched.work_total(), Some(ops))
             }
-            None => (0, 0.0, 0.0),
+            None => (0, 0.0, 0.0, None),
         };
         let host = now.duration_since(s.started).as_secs_f64();
         let totals = s.totals();
-        s.marks.push(Mark { phase: name.to_string(), frame, seconds, work, host, cycles, totals });
+        s.marks.push(Mark { phase: name.to_string(), frame, seconds, work, host, cycles, totals, engine: ops });
         (s.config.kinds.steps(), s.config.kinds.has(Kinds::HEAP) && s.config.snapshots_at_marks && name != "frames", s.installed.as_ref().map(|installed| (installed.state, id)))
     }) else {
         return;

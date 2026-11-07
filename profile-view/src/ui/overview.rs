@@ -227,7 +227,9 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
     let p = &app.profiles[app.shown];
     let fidelity = p.raw.work.as_ref().map(|w| w.fidelity.trim_start_matches("fidelity: ").to_string()).filter(|f| !f.is_empty());
     let has_timeline = p.raw.timeline.is_some();
-    let parts = kit::rows(area, &[4, u16::from(fidelity.is_some()), if has_timeline { 9 } else { 0 }, 0]);
+    // (the profile's reported phases, whatever the metric: the counts are the engine's, not a function's)
+    let engine = engine_line(p, &p.scope(), apart, theme);
+    let parts = kit::rows(area, &[4, u16::from(fidelity.is_some()), u16::from(engine.is_some()), if has_timeline { if engine.is_some() { 8 } else { 9 } } else { 0 }, 0]);
     cards(buf, parts[0], p, split.as_ref(), theme);
     if let Some(fidelity) = fidelity {
         let line = Line::from(vec![
@@ -237,11 +239,14 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
         ]);
         Paragraph::new(line).render(parts[1], buf);
     }
+    if let Some(line) = engine {
+        Paragraph::new(line).render(parts[2], buf);
+    }
     if has_timeline {
-        frames(buf, parts[2], app, theme);
+        frames(buf, parts[3], app, theme);
     }
     // the issues and the hottest functions, side by side
-    let (left, right) = kit::split(parts[3], parts[3].width / 2);
+    let (left, right) = kit::split(parts[4], parts[4].width / 2);
     let (found, unchecked) = (&issues.0, &issues.1);
     let inner = kit::draw_panel(buf, left, kit::panel(theme, "Issues", &fmt::grouped(found.len() as f64), true));
     if found.is_empty() {
@@ -308,6 +313,38 @@ fn hot_panel(buf: &mut Buffer, area: Rect, block: ratatui::widgets::Block, p: &P
         .collect();
     let grid = kit::table(buf, inner, theme, &cols, rows, None, 0);
     kit::mark(buf, grid.column(3), Mark::Bar);
+}
+
+/// What the scripts asked the engine to do in the scope, on one line: the instances made, destroyed and taken into the
+/// Workspace, the property writes (the moves and switches among them), pivots and bulk moves, emits and queries. The
+/// engine's side of a cast, which the work clock reads lower than a client pays; counted at the engine, so every
+/// script's, the harness's too (said when the harness's code is set apart). None for a profile without the counts, or
+/// when the scripts asked for nothing
+fn engine_line(p: &Profile, scope: &Scope, apart: bool, theme: &Theme) -> Option<Line<'static>> {
+    let ops = p.engine_ops(scope)?;
+    let get = |name: &str| ops.get(name).copied().unwrap_or(0.0);
+    let count = |n: f64, word: &str| (n > 0.0).then(|| format!("{} {word}", fmt::grouped(n)));
+    let mut parts: Vec<String> = [count(get("cloned"), "cloned"), count(get("created"), "made new"), count(get("destroyed"), "destroyed"), count(get("entered"), "into the Workspace")].into_iter().flatten().collect();
+    if get("writes") > 0.0 {
+        let among: Vec<String> = [count(get("geometry"), "moved a part"), count(get("toggles"), "switched an effect")].into_iter().flatten().collect();
+        let among = if among.is_empty() { String::new() } else { format!(": {}", among.join(", ")) };
+        parts.push(format!("{} writes ({} changed{among})", fmt::grouped(get("writes")), fmt::grouped(get("changed"))));
+    }
+    parts.extend([count(get("pivots"), "pivots"), count(get("bulk_moved"), "bulk-moved"), count(get("emits"), "emits"), count(get("queries"), "queries")].into_iter().flatten());
+    if parts.is_empty() {
+        return None;
+    }
+    let mut spans = vec![Span::styled(" ◇ engine  ", Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)), Span::styled(format!("{}  ", scope.label), Style::new().fg(theme.muted))];
+    for (index, part) in parts.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" · ", Style::new().fg(theme.faint)));
+        }
+        spans.push(Span::styled(part, Style::new().fg(theme.ink2)));
+    }
+    if apart {
+        spans.push(Span::styled("  (the harness's too)", Style::new().fg(theme.muted)));
+    }
+    Some(Line::from(spans))
 }
 
 /// A card: its title, its figure, a line under it, and a share drawn as a gauge over that line

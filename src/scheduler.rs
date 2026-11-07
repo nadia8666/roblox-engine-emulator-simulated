@@ -358,6 +358,7 @@ pub fn standard_offset_min_seconds() -> f64 {
 impl Scheduler {
     /// Scheduler state plus Scheduler.Configure: the mode, RUR_EPOCH and RUR_CLOCK.
     pub fn new(options: &Options) -> Self {
+        let muted = Rc::new(std::cell::Cell::new(0));
         let mut scheduler = Scheduler {
             now: 0.0,
             frame: 0,
@@ -382,9 +383,9 @@ impl Scheduler {
             clock_drift: 0.0,
             last_clock: f64::NEG_INFINITY,
             work: Rc::new(std::cell::Cell::new(0.0)),
-            muted: Rc::new(std::cell::Cell::new(0)),
+            muted: muted.clone(),
             work_drained: Rc::new(std::cell::Cell::new(0.0)),
-            touched: Rc::new(std::cell::RefCell::new(crate::cost::Touched::new())),
+            touched: Rc::new(std::cell::RefCell::new(crate::cost::Touched::new(muted))),
             vm_counters: None,
             cold_tracking: false,
             vm_charged: 0.0,

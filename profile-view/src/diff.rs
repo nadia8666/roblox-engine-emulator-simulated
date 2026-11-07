@@ -96,6 +96,30 @@ pub fn headline(b: &Profile, a: &Profile) -> (Vec<Figure>, Vec<String>) {
             }
         }
     }
+    // the engine's side of the same phases (the whole run without them): what the scripts asked it to do, counted,
+    // whatever the work clock prices it at, in ree profile diff's groups (the note says which phases)
+    let (scope_b, scope_a) = match &shared {
+        Some(names) => (b.scope_of(names), a.scope_of(names)),
+        None => (crate::model::Scope { phases: None, label: String::new() }, crate::model::Scope { phases: None, label: String::new() }),
+    };
+    let mut engine_rows = false;
+    if let (Some(eb), Some(ea)) = (b.engine_ops(&scope_b), a.engine_ops(&scope_a)) {
+        let get = |ops: &BTreeMap<String, f64>, names: &[&str]| names.iter().map(|name| ops.get(*name).copied().unwrap_or(0.0)).sum::<f64>();
+        for (name, counts) in [
+            ("instances made", &["cloned", "created"][..]),
+            ("instances destroyed", &["destroyed"][..]),
+            ("property writes", &["writes"][..]),
+            ("parts moved", &["geometry", "bulk_moved"][..]),
+            ("pivots", &["pivots"][..]),
+            ("emits", &["emits"][..]),
+        ] {
+            let (before, after) = (get(&eb, counts), get(&ea, counts));
+            if before > 0.0 || after > 0.0 {
+                add(&format!("engine: {name}"), before, after, Unit::Count, true, true);
+                engine_rows = true;
+            }
+        }
+    }
     if let (Some(wb), Some(wa)) = (&b.raw.work, &a.raw.work) {
         add("Studio work", wb.total_ms, wa.total_ms, Unit::Ms, true, true);
         // (a frame's from the timeline when both have one, below: the mount apart)
@@ -146,11 +170,11 @@ pub fn headline(b: &Profile, a: &Profile) -> (Vec<Figure>, Vec<String>) {
     }
     if let Some(names) = &shared {
         let label = a.scope_of(names).label;
-        notes.push(if b.has_harness() || a.has_harness() {
-            format!("the first two figures and the functions' work cover {label} (the harness's functions last); the rest cover the whole run")
-        } else {
-            format!("the first figure and the functions' work cover {label}; the rest cover the whole run")
-        });
+        let harness = b.has_harness() || a.has_harness();
+        let first = if harness { "the first two figures" } else { "the first figure" };
+        let engine = if engine_rows { ", the engine's counts" } else { "" };
+        let last = if harness { " (the harness's functions last)" } else { "" };
+        notes.push(format!("{first}{engine} and the functions' work cover {label}{last}; the rest cover the whole run"));
     }
     let changed = changed_modules(b, a);
     if !changed.is_empty() {

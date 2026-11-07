@@ -399,6 +399,10 @@ pub fn script_set_property(engine: &Engine, id: InstanceId, name: NameId, value:
     let price = crate::cost::write(&engine.reflection, class, engine.reflection.name(name), changed, placed)
         * crate::cost::place_write_scale(&engine.options.place_prices, engine.options.place_id, engine.reflection.name(name), placed);
     let mut paid = price + write_touch(&state, id, name, engine.reflection.name(name), changed);
+    state.sched.touched.borrow_mut().count(|ops| {
+        ops.writes += 1;
+        ops.changed += u64::from(changed);
+    });
     // (the frame's first geometry write on a part in the Workspace, and its first switch of an effect, run the engine's code for
     // them cold; an effect switched cold reads more: cost.rs Path::Geometry, Path::Toggle, TOGGLE_COLD)
     if changed {
@@ -406,8 +410,10 @@ pub fn script_set_property(engine: &Engine, id: InstanceId, name: NameId, value:
         let mut touched = state.sched.touched.borrow_mut();
         let cold = touched.take_last_cold();
         if placed && matches!(property, "CFrame" | "Position" | "Orientation" | "Rotation" | "Size") {
+            touched.count(|ops| ops.geometry += 1);
             paid += touched.first_path(crate::cost::Path::Geometry);
         } else if property == "Enabled" && ["ParticleEmitter", "Beam", "Trail"].iter().any(|kind| engine.reflection.is_a(class, kind)) {
+            touched.count(|ops| ops.toggles += 1);
             paid += touched.first_path(crate::cost::Path::Toggle) + if cold { crate::cost::TOGGLE_COLD } else { 0.0 };
         }
     }
@@ -539,6 +545,7 @@ pub fn destroy(lua: &Lua, engine: &Rc<Engine>, id: InstanceId) -> Result<(), Flo
         let mut cold = touched.first_path(crate::cost::Path::Destroy);
         for node in std::iter::once(id).chain(state.dom.descendants(id)) {
             cold += touched.destroyed(node.index, state.dom.at(node).class);
+            touched.count(|ops| ops.destroyed += 1);
         }
         drop(touched);
         state.sched.charge(cold);
@@ -597,6 +604,7 @@ pub fn pivot_cold(engine: &Engine, id: InstanceId) -> f64 {
     if !touched.workspace.is_some_and(|workspace| state.dom.is_descendant_of(id, workspace)) {
         return 0.0;
     }
+    touched.count(|ops| ops.pivots += 1);
     let mut seconds = touched.first_path(crate::cost::Path::Pivot);
     // (the call touched the root: cold then, and not moved the frame before either)
     if root_cold && !touched.last_cold_was_recent() {
@@ -633,6 +641,7 @@ pub fn clone(engine: &Engine, id: InstanceId) -> Option<InstanceId> {
             }
             for node in std::iter::once(copy).chain(state.dom.descendants(copy)) {
                 touched.mark(node.index);
+                touched.count(|ops| ops.cloned += 1);
             }
         }
         state.sched.charge(work);
@@ -1016,7 +1025,11 @@ fn install_base(behaviors: &mut Behaviors, reflection: &crate::Reflection) {
         // (the frame's first GetDescendants runs its code cold: cost.rs Path::Descendants)
         {
             let state = engine.state.borrow();
-            let first = state.sched.touched.borrow_mut().first_path(crate::cost::Path::Descendants);
+            let first = {
+                let mut touched = state.sched.touched.borrow_mut();
+                touched.count(|ops| ops.queries += 1);
+                touched.first_path(crate::cost::Path::Descendants)
+            };
             if first > 0.0 {
                 state.sched.charge(first);
                 crate::boundary::add_cost(first);

@@ -524,6 +524,17 @@ pub fn write(input: &Input) -> Result<String, String> {
         .iter()
         .filter(|((_, phase, _), _)| scope.contains(phase))
         .fold((0.0, 0.0), |(game, harness), ((_, _, side), figures)| if *side { (game, harness + figures.0) } else { (game + figures.0, harness) });
+    // what the scripts asked the engine to do in the reported phases: each of their marks' counts to the next mark's (the last
+    // to the run's end)
+    let scope_names: Vec<String> = scope.iter().map(|phase| phase_name(*phase)).collect();
+    let mut scope_engine: Option<crate::cost::EngineOps> = None;
+    for (index, mark) in input.marks.iter().enumerate() {
+        let next = input.marks.get(index + 1).or(input.end);
+        if let (true, Some(from), Some(to)) = (scope_names.contains(&mark.phase), mark.engine, next.and_then(|next| next.engine)) {
+            let ops = to.since(&from);
+            scope_engine = Some(scope_engine.map_or(ops, |sum| sum.plus(&ops)));
+        }
+    }
     let function_json = |id: i32, figures: &Figures| -> Json {
         let function = names.function(id);
         json!({
@@ -561,6 +572,7 @@ pub fn write(input: &Input) -> Result<String, String> {
         "game_self_ms": ms(game_self),
         "harness_self_ms": ms(harness_self),
         "harness_folder": HARNESS_FOLDER,
+        "engine": scope_engine.as_ref().map(engine_json),
     });
 
     // lines (with their opcodes)
@@ -715,6 +727,9 @@ pub fn write(input: &Input) -> Result<String, String> {
             ms(game_self),
             ms(harness_self)
         );
+        if let Some(ops) = &scope_engine {
+            let _ = writeln!(summary, "{}", engine_line(&scope_label, ops));
+        }
         // one side's functions in the reported phases: (id, self work, total work, calls, self instructions)
         let side_rows = |harness: bool| -> Vec<(i32, f64, f64, u64, u64)> {
             let mut rows: FxHashMap<i32, (f64, f64, u64, u64)> = FxHashMap::default();
@@ -1270,7 +1285,62 @@ fn mark_json(mark: &Mark) -> Json {
             json["caches"] = Json::Object(vm::CACHE_KINDS.iter().zip(caches.iter()).map(|(kind, outcomes)| (kind.to_string(), json!(outcomes))).collect());
         }
     }
+    if let Some(ops) = &mark.engine {
+        json["engine"] = engine_json(ops);
+    }
     json
+}
+
+/// What the scripts asked the engine to do (cost::EngineOps), each count by name
+fn engine_json(ops: &crate::cost::EngineOps) -> Json {
+    Json::Object(ops.named().iter().map(|(name, count)| (name.to_string(), json!(count))).collect())
+}
+
+/// The summary's line of what the scripts asked the engine to do in the reported phases: the instances made, destroyed and taken
+/// into the Workspace, the property writes (the moves and switches among them), pivots and bulk moves, emits and queries. Counts,
+/// whatever the work clock prices them at: the engine's side of a cast, which the work clock reads lower than a client pays.
+fn engine_line(scope_label: &str, ops: &crate::cost::EngineOps) -> String {
+    let count = |n: u64, one: &str, many: &str| (n > 0).then(|| format!("{} {}", group_digits(n), if n == 1 { one } else { many }));
+    let mut groups: Vec<String> = Vec::new();
+    let made: Vec<String> = [
+        count(ops.cloned, "instance cloned", "instances cloned"),
+        count(ops.created, "made with Instance.new", "made with Instance.new"),
+        count(ops.destroyed, "destroyed", "destroyed"),
+        count(ops.entered, "entered the Workspace", "entered the Workspace"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !made.is_empty() {
+        groups.push(made.join(", "));
+    }
+    if ops.writes > 0 {
+        let among: Vec<String> = [
+            count(ops.geometry, "moved or resized a part in the Workspace", "moved or resized a part in the Workspace"),
+            count(ops.toggles, "switched an effect", "switched an effect"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        groups.push(format!(
+            "{} ({} changed a value{})",
+            count(ops.writes, "property write", "property writes").unwrap_or_default(),
+            group_digits(ops.changed),
+            if among.is_empty() { String::new() } else { format!(": {}", among.join(", ")) }
+        ));
+    }
+    let moves: Vec<String> = [count(ops.pivots, "pivot", "pivots"), count(ops.bulk_moved, "part bulk-moved", "parts bulk-moved")].into_iter().flatten().collect();
+    if !moves.is_empty() {
+        groups.push(moves.join(", "));
+    }
+    groups.extend(count(ops.emits, "emit", "emits"));
+    groups.extend(count(ops.queries, "descendant query", "descendant queries"));
+    // (counted at the engine, so every script's, the harness's too: its scans are most of an attack clip's descendant queries)
+    if groups.is_empty() {
+        format!("engine operations, {scope_label}: none asked by scripts")
+    } else {
+        format!("engine operations, {scope_label}: {} (every script's, the harness's too)", groups.join("; "))
+    }
 }
 
 /// A distribution of a table part's size: its slots, those holding a value, the least, median and greatest part, and how
