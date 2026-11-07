@@ -51,6 +51,7 @@ pub struct Args {
     pub verbose: bool,
     pub repo: Option<String>,
     pub mounts: Vec<project::Mount>,
+    pub loopback: bool,
 }
 
 fn size(key: &str, text: &str) -> Result<(f64, f64), String> {
@@ -69,6 +70,7 @@ impl Args {
             "--offline" => self.offline = true,
             "--verbose" => self.verbose = true,
             "--no-snapshots" => self.no_snapshots = true,
+            "--loopback" => self.loopback = true,
             "--roots" => self.roots = need()?.split(';').filter(|r| !r.is_empty()).map(str::to_string).collect(),
             "--project" => self.project = Some(need()?),
             "--place" => self.place = Some(need()?),
@@ -96,7 +98,7 @@ impl Args {
             "--instance" => self.mounts.push(project::Mount::parse(&need()?, true)?),
             _ => return Ok(None),
         }
-        Ok(Some(if matches!(key, "--offline" | "--verbose" | "--no-snapshots") { 1 } else { 2 }))
+        Ok(Some(if matches!(key, "--offline" | "--verbose" | "--no-snapshots" | "--loopback") { 1 } else { 2 }))
     }
 }
 
@@ -189,6 +191,9 @@ pub fn prepare(args: &Args, default_repo: &Path) -> Result<Prepared, String> {
             return Err("--player names the local player; a server has none (a harness adds its players)".into());
         }
     }
+    if args.loopback && run_context == RunContext::Server {
+        return Err("--loopback plays both sides in a client run; drop --run-context server".into());
+    }
     let local_player_name = match run_context {
         RunContext::Server => None,
         RunContext::Client => Some(args.player.clone().or_else(|| std::env::var("RUR_PLAYER").ok()).unwrap_or_else(|| "Player".into())),
@@ -215,6 +220,7 @@ pub fn prepare(args: &Args, default_repo: &Path) -> Result<Prepared, String> {
         project: project_dir,
         streaming_target_radius: args.streaming.or_else(|| project::project_setting(&roots, "streamingTargetRadius").and_then(|v| v.as_f64())),
         place_prices,
+        loopback: args.loopback,
         device,
         ..Options::default()
     };

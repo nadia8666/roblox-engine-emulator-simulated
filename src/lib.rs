@@ -126,6 +126,10 @@ pub struct Options {
     /// The places whose clients pay more than ree's default prices (a Text write's localization lookup, a match place's
     /// geometry writes): cost.rs's list, plus `REE_LOCALIZED_PLACES` / `REE_MATCH_PLACES` on a command line (launch.rs)
     pub place_prices: cost::PlacePrices,
+    /// `--loopback` (a client run): one VM plays both sides. The server-only services load beside the client's, a client's
+    /// FireServer reaches OnServerEvent (the local player in front), FireClient / FireAllClients reach OnClientEvent, Invoke*
+    /// call the other side's callback, and the local player fires PlayerAdded / PlayerRemoving like any joining player
+    pub loopback: bool,
 }
 
 impl Default for Options {
@@ -155,6 +159,7 @@ impl Default for Options {
             repo: default_repo(),
             project: None,
             place_prices: cost::PlacePrices::default(),
+            loopback: false,
         }
     }
 }
@@ -166,6 +171,11 @@ impl Options {
 
     pub fn server(&self) -> bool {
         self.run_context == RunContext::Server
+    }
+
+    /// Whether the server-only services are installed: a server's, or a loopback client's
+    pub fn server_services(&self) -> bool {
+        self.server() || self.loopback
     }
 
     /// The file content `uri` names on disk, by ror's rules (its ror-assets uri.rs): `file://<path>`

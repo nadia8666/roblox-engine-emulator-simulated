@@ -1232,6 +1232,7 @@ local function IsPlayer(Value)
 	return typeof(Value) == "Instance" and Value:IsA("Player")
 end
 
+if not R.Loopback then
 for _, Class in { "RemoteEvent", "UnreliableRemoteEvent" } do
 	Method(Class, "FireClient", function(_, Player)
 		if not IsPlayer(Player) then
@@ -1263,5 +1264,26 @@ Method("RemoteFunction", "InvokeClient", function(Self, Player)
 	end
 	error(`InvokeClient: {Player.Name} left the game before {Self:GetFullName()} returned`, 0)
 end)
+else
+	-- `--loopback`: one VM plays both sides, so an invoke reaches the callback the other side set (waiting, as a real
+	-- invoke does, until one is set); its arguments are not copied
+	local function WaitForCallback(Self, Name)
+		local Callback = R.GetCallback(Self, Name)
+		while not Callback do
+			task.wait()
+			Callback = R.GetCallback(Self, Name)
+		end
+		return Callback
+	end
+	Method("RemoteFunction", "InvokeServer", function(Self, ...)
+		return WaitForCallback(Self, "OnServerInvoke")(Players.LocalPlayer, ...)
+	end)
+	Method("RemoteFunction", "InvokeClient", function(Self, Player, ...)
+		if not IsPlayer(Player) then
+			Raise("InvokeClient: player argument must be a Player object")
+		end
+		return WaitForCallback(Self, "OnClientInvoke")(...)
+	end)
+end
 
 return true

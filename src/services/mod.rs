@@ -499,10 +499,11 @@ pub fn install(engine: &Rc<Engine>) {
             let weak = Rc::downgrade(engine);
             let reflection_for_parent = engine.reflection.clone();
             let server = options.server();
+            let loopback = options.loopback;
             let mut hooks = engine.hooks.borrow_mut();
             hooks.hierarchy_changed.push(Box::new(move |state, id, old, new| {
                 let Some(engine) = weak.upgrade() else { return };
-                if !reflection_for_parent.is_a(state.dom.at(id).class, "Player") || engine.world().local_player == Some(id) {
+                if !reflection_for_parent.is_a(state.dom.at(id).class, "Player") || (engine.world().local_player == Some(id) && !loopback) {
                     return;
                 }
                 let is_players = |state: &State, parent: Option<InstanceId>| {
@@ -512,7 +513,7 @@ pub fn install(engine: &Rc<Engine>) {
                     core::fire_event(state, old.unwrap(), removing, vec![Value::Instance(id)]);
                 }
                 if is_players(state, new) {
-                    if server && !is_players(state, old) {
+                    if (server || loopback) && !is_players(state, old) {
                         for name in JOINED_PLAYER_CONTAINERS {
                             if state.dom.find_child(id, name.as_bytes()).is_some() {
                                 continue;
@@ -860,10 +861,40 @@ pub fn install(engine: &Rc<Engine>) {
         }));
     }
 
-    // Remotes never reach a server offline; Bindables fire locally
+    // Remotes never reach a server offline. With `--loopback` one VM plays both sides: FireServer reaches OnServerEvent with the
+    // local player in front, FireClient (to the local player) and FireAllClients reach OnClientEvent; arguments are copied as
+    // Bindable's are. Bindables fire locally
+    let loopback = options.loopback;
     for remote in ["RemoteEvent", "UnreliableRemoteEvent"] {
-        if let (Some(c), Some(n)) = (class(&reflection, remote), name(&reflection, "FireServer")) {
-            behaviors.add_method(c, n, method(|_, _, _, _| Ok(none())));
+        let Some(c) = class(&reflection, remote) else { continue };
+        for (member, event, from_player) in [("FireServer", "OnServerEvent", true), ("FireClient", "OnClientEvent", false), ("FireAllClients", "OnClientEvent", false)] {
+            let (Some(n), Some(event)) = (name(&reflection, member), name(&reflection, event)) else { continue };
+            if !loopback && member != "FireServer" {
+                continue;
+            }
+            behaviors.add_method(c, n, method(move |lua, engine, id, args| {
+                if !loopback {
+                    return Ok(none());
+                }
+                let local = engine.world().local_player;
+                let mut arguments: Vec<Value> = Vec::new();
+                if from_player {
+                    let Some(player) = local else { return Ok(none()) };
+                    arguments.push(Value::Instance(player));
+                }
+                if member == "FireClient" && args.instance(1) != local {
+                    return Ok(none());
+                }
+                let skip = if member == "FireClient" { 2 } else { 1 };
+                for argument in args.0.iter().skip(skip) {
+                    match super::lua::bindable::sent_value(lua, engine, argument) {
+                        Ok(value) => arguments.push(value),
+                        Err(message) => return super::lua::raise(message),
+                    }
+                }
+                core::fire_event(&mut engine.state.borrow_mut(), id, event, arguments);
+                Ok(none())
+            }));
         }
     }
     if let Some(bindable) = class(&reflection, "BindableEvent") {

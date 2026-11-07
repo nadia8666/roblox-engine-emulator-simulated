@@ -419,12 +419,13 @@ pub fn load(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
     r.set("Options", options)?;
     let mouse: LuaValue = engine.lua.borrow().shared.as_ref().map(|s| s.raw_get("__rurMouse")).transpose()?.unwrap_or(LuaValue::Nil);
     r.set("Mouse", mouse)?;
+    r.set("Loopback", engine.options.loopback)?;
 
     let shared = engine.lua.borrow().shared.clone().ok_or_else(|| LuaError::runtime("shared globals"))?;
     let services = lua.load(SERVICES).set_name("=rur.services").set_environment(shared.clone()).set_compiler(modules::engine_compiler()).into_function()?;
     crate::cost::engine_luau(lua, services)?.call::<()>(r.clone())?;
     // A server's own services (DataStores, MemoryStores, MessagingService, the server side of remotes)
-    if engine.options.server() {
+    if engine.options.server_services() {
         let server = lua.load(SERVER).set_name("=rur.server").set_environment(shared).set_compiler(modules::engine_compiler()).into_function()?;
         crate::cost::engine_luau(lua, server)?.call::<()>(r.clone())?;
         if let LuaValue::Function(set_join_data) = r.get::<LuaValue>("SetJoinData")? {
