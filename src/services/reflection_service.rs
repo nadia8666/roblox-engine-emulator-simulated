@@ -10,9 +10,10 @@
 //! ree emulates no SecurityCapabilities, so `Permits` is a frozen empty table that reports itself as not emulated when a script
 //! reads or iterates it (Output `missing`, ReflectedClass.Permits). A `Security` filter of another type is refused as Roblox
 //! refuses it; a SecurityCapabilities one (ree has no such value yet) would report itself (ReflectionClassFilter.Security) and
-//! filter nothing. GetPropertiesOfClass, GetMethodsOfClass and GetEventsOfClass need
-//! fields the dump does not record (a reference type's InstanceType, a parameter's DefaultValue, member Display and event
-//! Permits) and stay unemulated.
+//! filter nothing. GetMethodsOfClass and GetEventsOfClass need fields the dump does not record (a parameter's DefaultValue,
+//! member Display and event Permits) and stay unemulated. GetPropertiesOfClass is approximate (not measured): each entry has
+//! only `Name`, since the dump lacks a reference type's InstanceType and the member Display; it lists every property a script
+//! can read, inherited ones included, in name order, and an unknown class gives an empty list.
 
 use std::rc::Rc;
 
@@ -185,6 +186,36 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
             let Some(class) = class else { return Ok(values([LuaValue::Nil])) };
             charge(engine, 1, 0, filter.display);
             Ok(values([LuaValue::Table(entry(lua, engine, class, filter.display)?)]))
+        }));
+    }
+    if let Some(n) = reflection.name_id("GetPropertiesOfClass") {
+        behaviors.add_method(service, n, method(|lua, engine, _, args| {
+            let name = match args.get(1) {
+                LuaValue::Nil => return raise("Argument 2 missing or nil"),
+                LuaValue::String(name) => Some(name.to_string_lossy()),
+                _ => None,
+            };
+            let class = name.and_then(|name| engine.reflection.class_id(&name));
+            let list = lua.create_table()?;
+            if let Some(class) = class {
+                let reflection = &engine.reflection;
+                let mut names: Vec<&str> = reflection
+                    .class(class)
+                    .properties
+                    .values()
+                    .map(|&index| reflection.property(index))
+                    .filter(|property| property.scriptable)
+                    .map(|property| reflection.name(property.name))
+                    .collect();
+                names.sort_unstable();
+                for (index, property_name) in names.iter().enumerate() {
+                    let entry = lua.create_table_with_capacity(0, 1)?;
+                    entry.raw_set("Name", *property_name)?;
+                    list.raw_set(index + 1, frozen(entry))?;
+                }
+                charge(engine, names.len(), 0, false);
+            }
+            Ok(values([LuaValue::Table(frozen(list))]))
         }));
     }
 }
