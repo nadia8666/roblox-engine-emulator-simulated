@@ -261,7 +261,7 @@ pub fn get(lua: &Lua, engine: &Rc<Engine>, id: InstanceId, key: &LuaValue) -> Re
             .class_id(&service_name)
             .is_some_and(|service| engine.reflection.class(service).service)
         {
-            let service = super::services::get_service(engine, id, &service_name)?;
+            let service = crate::services::get_service(engine, id, &service_name)?;
             return Ok(instance_value(lua, engine, service)?);
         }
     }
