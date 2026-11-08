@@ -747,7 +747,7 @@ record/prepare.rs runs prepared ahead by `ree serve`
   its character, Player.ReplicationFocus and Player:AddReplicationFocus foci. Default models stream
   by part; Atomic models stream as a subtree; Persistent and PersistentPerPlayer models stay loaded.
   Streamed instances are detached from their original parent and reattached when they return within
-  StreamingTargetRadius. Updates run every 15 frames. This is a local hierarchy approximation: it
+  StreamingTargetRadius, with updates at 0.1-second virtual-time intervals. This is a local hierarchy approximation: it
   does not reproduce server replication, instance recreation, or non-spatial descendants without parts.
 - **Queries**: Block parts are boxes, Ball parts spheres, Cylinder parts cylinders along X, anything else
   its oriented bounding box (no mesh geometry); Terrain is never hit. Rays starting inside a part do not
