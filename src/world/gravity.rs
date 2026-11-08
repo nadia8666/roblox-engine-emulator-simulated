@@ -81,8 +81,6 @@ struct Setup {
     base_part: ClassId,
     world_root: ClassId,
     workspace: ClassId,
-    model: Option<ClassId>,
-    model_streaming_mode: Option<NameId>,
     humanoid: Option<ClassId>,
     attachment: Option<ClassId>,
     /// Constraint, BodyMover: what pushes an assembly besides gravity
@@ -123,8 +121,6 @@ pub struct Gravity {
     added: Vec<InstanceId>,
     /// Falling parts whose assembly started about a focus (held to its reach)
     bounded: FxHashSet<InstanceId>,
-    streamed: FxHashMap<InstanceId, InstanceId>,
-    stream_time: Option<f64>,
     /// Each flying part's spin (world, rad/s), its assembly's
     spin: FxHashMap<InstanceId, Vec3>,
     /// Impulses applied since the last step, by part: linear (ApplyImpulse) and angular
@@ -171,8 +167,6 @@ pub fn install(engine: &Rc<Engine>) {
         base_part,
         world_root,
         workspace,
-        model: class("Model"),
-        model_streaming_mode: name("ModelStreamingMode"),
         humanoid: class("Humanoid"),
         attachment: class("Attachment"),
         movers: ["Constraint", "BodyMover"].iter().filter_map(|text| class(text)).collect(),
@@ -197,9 +191,6 @@ pub fn install(engine: &Rc<Engine>) {
     let entered = setup.clone();
     let reflection_for_parent = engine.reflection.clone();
     hooks.hierarchy_changed.push(Box::new(move |state, id, _, new| {
-        if new.is_some() {
-            state.gravity.streamed.remove(&id);
-        }
         if new.is_some() && in_workspace(state, &reflection_for_parent, &entered, id) {
             let mut nodes = vec![id];
             nodes.extend(state.dom.descendants(id));
@@ -231,7 +222,6 @@ pub fn install(engine: &Rc<Engine>) {
         gravity.spin.remove(&id);
         gravity.impulses.remove(&id);
         gravity.added.retain(|&focus| focus != id);
-        gravity.streamed.remove(&id);
     }));
     drop(hooks);
     install_body(engine, &body_setup);
@@ -404,108 +394,6 @@ fn bounds(state: &State, setup: &Setup, component: &[InstanceId]) -> (Vec3, f32)
     (middle, spheres.iter().map(|(centre, radius)| centre.distance(middle) + radius).fold(0.0, f32::max))
 }
 
-fn streaming_parts(state: &State, reflection: &Reflection, setup: &Setup, unit: InstanceId) -> Vec<InstanceId> {
-    if reflection.class(state.dom.at(unit).class).is_a(setup.base_part) {
-        return vec![unit];
-    }
-    state.dom.descendants(unit).into_iter().filter(|&id| {
-        reflection.class(state.dom.at(id).class).is_a(setup.base_part)
-    }).collect()
-}
-
-fn streaming_unit(state: &State, reflection: &Reflection, setup: &Setup, workspace: InstanceId, part: InstanceId) -> Option<InstanceId> {
-    let mut current = state.dom.parent_of(part);
-    let mut atomic = None;
-    while let Some(id) = current {
-        if Some(state.dom.at(id).class) == setup.model {
-            if let Some(mode) = setup.model_streaming_mode.and_then(|name| state.dom.raw_get(id, name)).and_then(|value| {
-                match value {
-                    Value::EnumItem(item) => Some(&*reflection.enum_item_info(*item).name),
-                    _ => None,
-                }
-            }) {
-                if mode == "Persistent" || mode == "PersistentPerPlayer" {
-                    return None;
-                }
-                if mode == "Atomic" {
-                    atomic = Some(id);
-                }
-            }
-        }
-        if id == workspace {
-            break;
-        }
-        current = state.dom.parent_of(id);
-    }
-    Some(atomic.unwrap_or(part))
-}
-
-fn within_focus(state: &State, setup: &Setup, parts: &[InstanceId], foci: &[Focus], padding: f32) -> bool {
-    let (centre, radius) = bounds(state, setup, parts);
-    foci.iter().any(|focus| focus.at.distance(centre) + radius <= focus.reach + padding)
-}
-
-fn update_streaming(state: &mut State, reflection: &Reflection, hooks: &Hooks, setup: &Setup, engine: &Engine, foci: &[Focus]) {
-    let now = state.sched.now;
-    if state.gravity.stream_time.is_some_and(|last| now - last < 0.1) {
-        return;
-    }
-    state.gravity.stream_time = Some(now);
-    let workspace = engine.world().workspace;
-    let streamed: Vec<(InstanceId, InstanceId)> = state.gravity.streamed.iter().map(|(&unit, &parent)| (unit, parent)).collect();
-    for (unit, parent) in streamed {
-        if state.dom.get(unit).is_none() || state.dom.get(parent).is_none() || state.dom.at(parent).has(crate::dom::flags::DESTROYED) {
-            state.gravity.streamed.remove(&unit);
-            continue;
-        }
-        let parts = streaming_parts(state, reflection, setup, unit);
-        if !parts.is_empty() && within_focus(state, setup, &parts, foci, 0.0) {
-            state.gravity.streamed.remove(&unit);
-            let _ = core::set_parent(state, reflection, hooks, unit, Some(parent));
-        }
-    }
-
-    let mut units: FxHashMap<InstanceId, (InstanceId, Vec<InstanceId>)> = FxHashMap::default();
-    for part in state.dom.descendants(workspace) {
-        if !in_workspace(state, reflection, setup, part) || !reflection.class(state.dom.at(part).class).is_a(setup.base_part) {
-            continue;
-        }
-        let Some(unit) = streaming_unit(state, reflection, setup, workspace, part) else {
-            continue;
-        };
-        if state.gravity.streamed.contains_key(&unit) || units.contains_key(&unit) {
-            continue;
-        }
-        let Some(parent) = state.dom.parent_of(unit) else {
-            continue;
-        };
-        let parts = streaming_parts(state, reflection, setup, unit);
-        if !parts.is_empty() {
-            units.insert(unit, (parent, parts));
-        }
-    }
-
-    let outside: Vec<(InstanceId, InstanceId)> = units.into_iter().filter_map(|(unit, (parent, parts))| {
-        (!within_focus(state, setup, &parts, foci, 64.0)).then_some((unit, parent))
-    }).collect();
-    for (unit, parent) in outside {
-        if state.dom.get(unit).is_none() || state.dom.parent_of(unit) != Some(parent) {
-            continue;
-        }
-        state.gravity.streamed.insert(unit, parent);
-        let _ = core::set_parent(state, reflection, hooks, unit, None);
-    }
-}
-
-fn restore_streamed(state: &mut State, reflection: &Reflection, hooks: &Hooks) {
-    let streamed: Vec<(InstanceId, InstanceId)> = state.gravity.streamed.drain().collect();
-    for (unit, parent) in streamed {
-        if state.dom.get(unit).is_some() && state.dom.get(parent).is_some() && !state.dom.at(parent).has(crate::dom::flags::DESTROYED) {
-            let _ = core::set_parent(state, reflection, hooks, unit, Some(parent));
-        }
-    }
-}
-
 /// The simulation step: every free assembly falls for `delta` seconds.
 pub fn step(engine: &Engine, delta: f64) {
     let hooks = engine.hooks.borrow();
@@ -523,17 +411,6 @@ pub fn step(engine: &Engine, delta: f64) {
     }
     if delta <= 0.0 {
         return;
-    }
-    let streams = setup.streaming.is_some_and(|name| state.dom.boolean(workspace, name) == Some(true));
-    let reach = reach(&state, reflection, &setup, engine);
-    if !engine.options.server() {
-        if streams {
-            if let Some((foci, _)) = &reach {
-                update_streaming(&mut state, reflection, &hooks, &setup, engine, foci);
-            }
-        } else if !state.gravity.streamed.is_empty() {
-            restore_streamed(&mut state, reflection, &hooks);
-        }
     }
     if state.gravity.loose.is_empty() {
         return;

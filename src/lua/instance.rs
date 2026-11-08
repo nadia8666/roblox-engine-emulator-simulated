@@ -612,13 +612,10 @@ pub fn destroy(lua: &Lua, engine: &Rc<Engine>, id: InstanceId) -> Result<(), Flo
         state.sched.charge(cold);
         crate::boundary::add_cost(cold);
     }
-    let mut destroyed = Vec::new();
-    let result = destroy_subtree(lua, engine, id, &mut destroyed);
-    core::finish_destroy(&mut engine.state.borrow_mut(), destroyed);
-    result
+    destroy_subtree(lua, engine, id)
 }
 
-fn destroy_subtree(lua: &Lua, engine: &Rc<Engine>, id: InstanceId, destroyed: &mut Vec<InstanceId>) -> Result<(), Flow> {
+fn destroy_subtree(lua: &Lua, engine: &Rc<Engine>, id: InstanceId) -> Result<(), Flow> {
     let destroying = {
         let state = engine.state.borrow();
         let instance = state.dom.at(id);
@@ -650,12 +647,12 @@ fn destroy_subtree(lua: &Lua, engine: &Rc<Engine>, id: InstanceId, destroyed: &m
         core::begin_destroy(&mut state, &engine.reflection, &hooks, id)?
     };
     for child in children {
-        destroy_subtree(lua, engine, child, destroyed)?;
+        destroy_subtree(lua, engine, child)?;
     }
-    let state = engine.state.borrow();
+    let mut state = engine.state.borrow_mut();
     state.sched.charge(crate::cost::DESTROYED + extra);
     crate::boundary::add_cost(crate::cost::DESTROYED + extra);
-    destroyed.push(id);
+    core::finish_destroy(&mut state, id);
     Ok(())
 }
 
