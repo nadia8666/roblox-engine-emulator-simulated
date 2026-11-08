@@ -38,6 +38,18 @@ use super::{
 /// tools/parity/probes/deferred_chains.luau, deferred_points.luau).
 pub const MAX_REENTRANCY: u32 = 80;
 
+fn trace_scheduler(engine: &Engine, label: &str) {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var("REE_TRACE_SCHEDULER").as_deref() == Ok("1")) {
+        return;
+    }
+    let (frame, now) = {
+        let state = engine.state.borrow();
+        (state.sched.frame, state.sched.now)
+    };
+    crate::output::diagnostic(&format!("ree trace frame={frame} time={now:.6} {label}"));
+}
+
 /// A job that belongs to no signal.
 pub const NO_SIGNAL: SignalId = SignalId::MAX;
 
@@ -1293,7 +1305,9 @@ fn flush_deferred_upto(lua: &Lua, engine: &Rc<Engine>, processed: &mut usize, up
             let mut state = engine.state.borrow_mut();
             std::mem::replace(&mut state.sched.event_depth, job.event_depth)
         };
+        trace_scheduler(engine, &format!("deferred {} begin", *processed));
         let result = run_job(lua, engine, job);
+        trace_scheduler(engine, &format!("deferred {} end", *processed));
         engine.state.borrow_mut().sched.event_depth = previous;
         if let Err(error) = result {
             engine.state.borrow_mut().sched.flushing -= 1;
@@ -1358,7 +1372,9 @@ fn run_timers_in(lua: &Lua, engine: &Rc<Engine>, legacy: bool, limit: Option<f64
                 job_args(lua, engine, &timer.args)?
             }
         };
+        trace_scheduler(engine, &format!("timer {:?} begin", timer.kind));
         resume(lua, engine, &timer.thread, args);
+        trace_scheduler(engine, &format!("timer {:?} end", timer.kind));
         if flush == TimerFlush::EachResumption {
             flush_deferred(lua, engine)?;
         }
@@ -1379,8 +1395,10 @@ fn run_hooks(lua: &Lua, engine: &Rc<Engine>, phase: Phase, delta: f64) -> LuaRes
     });
     let result = (|| {
         let hooks = engine.state.borrow().sched.hooks_of(phase);
-        for hook in hooks {
+        for (index, hook) in hooks.into_iter().enumerate() {
+            trace_scheduler(engine, &format!("phase {phase:?} hook {index} begin"));
             hook(lua, engine, delta)?;
+            trace_scheduler(engine, &format!("phase {phase:?} hook {index} end"));
             flush_deferred(lua, engine)?;
         }
         Ok(())
@@ -1454,7 +1472,12 @@ fn step_tweens(lua: &Lua, engine: &Rc<Engine>, delta: f64) -> LuaResult<()> {
 fn run_phase(lua: &Lua, engine: &Rc<Engine>, phase: Phase, label: &'static str, delta: f64) -> LuaResult<()> {
     profile::enter(label);
     let hooks = engine.state.borrow().sched.hooks_of(phase);
-    let result = hooks.into_iter().try_for_each(|hook| hook(lua, engine, delta));
+    let result = hooks.into_iter().enumerate().try_for_each(|(index, hook)| {
+        trace_scheduler(engine, &format!("{label} {phase:?} hook {index} begin"));
+        let result = hook(lua, engine, delta);
+        trace_scheduler(engine, &format!("{label} {phase:?} hook {index} end"));
+        result
+    });
     profile::leave();
     result
 }
@@ -1713,6 +1736,7 @@ pub fn step(lua: &Lua, engine: &Rc<Engine>, duration: Option<f64>) -> LuaResult<
 }
 
 fn step_frame(lua: &Lua, engine: &Rc<Engine>, duration: Option<f64>) -> LuaResult<()> {
+    trace_scheduler(engine, "frame begin");
     {
         let state = engine.state.borrow();
         if state.sched.captured {
@@ -1748,6 +1772,7 @@ fn step_frame(lua: &Lua, engine: &Rc<Engine>, duration: Option<f64>) -> LuaResul
         return Ok(());
     }
     let target = start + delta;
+    trace_scheduler(engine, "heartbeat begin");
     match beats {
         Some(beats) => {
             let mut elapsed = 0.0;
@@ -1760,8 +1785,11 @@ fn step_frame(lua: &Lua, engine: &Rc<Engine>, duration: Option<f64>) -> LuaResul
         }
         None => heartbeat(lua, engine, target, f32r(delta))?,
     }
+    trace_scheduler(engine, "heartbeat end");
     engine.state.borrow_mut().sched.now = target;
+    trace_scheduler(engine, "render begin");
     render(lua, engine, f32r(delta))?;
+    trace_scheduler(engine, "render end");
     let mut state = engine.state.borrow_mut();
     if let Some(index) = state.sched.display_interval_index.as_mut() {
         *index += 1;
