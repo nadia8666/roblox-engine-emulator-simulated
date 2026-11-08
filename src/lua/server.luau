@@ -1191,6 +1191,45 @@ for _, Name in { "CreateHumanoidModelFromDescription", "CreateHumanoidModelFromD
 	end)
 end
 
+-- `--loopback`: Roblox's server loads a joining player's character itself (CharacterAutoLoads); offline there is no avatar to
+-- fetch, so LoadCharacter builds the default R6 rig above at the first SpawnLocation (the origin when the place has none),
+-- puts StarterCharacterScripts in it, parents it to Workspace and sets Player.Character (which fires CharacterAdded), then
+-- respawns the player Players.RespawnTime seconds after the humanoid dies, as the engine does.
+
+if R.Loopback then
+	local function Spawn(Player)
+		local Old = Player.Character
+		if Old then
+			Old:Destroy()
+		end
+		local Model = R6Rig()
+		Model.Name = Player.Name
+		local Place = game:GetService("Workspace")
+		local SpawnPoint = Place:FindFirstChildWhichIsA("SpawnLocation", true)
+		Model:PivotTo(if SpawnPoint then SpawnPoint.CFrame + Vector3.new(0, 3, 0) else CFrame.new(0, 10, 0))
+		local StarterScripts = game:GetService("StarterPlayer"):FindFirstChild("StarterCharacterScripts")
+		if StarterScripts then
+			for _, Child in StarterScripts:GetChildren() do
+				Child:Clone().Parent = Model
+			end
+		end
+		Model.Parent = Place
+		Player.Character = Model
+		Model:FindFirstChildOfClass("Humanoid").Died:Connect(function()
+			task.delay(Players.RespawnTime, function()
+				if Player.Parent == Players and Player.Character == Model then
+					Spawn(Player)
+				end
+			end)
+		end)
+	end
+	for _, Name in { "LoadCharacter", "LoadCharacterAsync" } do
+		Method("Player", Name, function(Self)
+			Spawn(Self)
+		end)
+	end
+end
+
 -- InsertService:LoadAsset: a run is offline, so every request fails as a failed load does on Roblox (the
 -- documentation's failure mode: it raises), after the request's frame. Not emulating it returned nil,
 -- which no Roblox call returns, so callers that pcall it read the nil as an asset.
