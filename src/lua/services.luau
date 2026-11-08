@@ -1157,13 +1157,19 @@ end
 -- RemoteFunction invocations reach the local server only in loopback mode.
 Method("RemoteFunction", "InvokeServer", function(Self, ...)
 	if R.Loopback then
-		local Callback = R.GetCallback(Self, "OnServerInvoke")
+		local Callback
+		repeat
+			Callback = R.GetCallback(Self, "OnServerInvoke")
+			if not Callback then
+				task.wait()
+			end
+		until Callback
 		local Player = LocalPlayer()
-		if Callback and Player then
+		if Player then
 			return R.Copied(Callback(Player, R.Copied(...)))
 		end
 	end
-	Missing("RemoteFunction", `InvokeServer (${Self:GetFullName()}) never returns offline`)
+	Missing("RemoteFunction", `InvokeServer ({Self:GetFullName()}) never returns offline`)
 	return coroutine.yield()
 end)
 Method("BindableFunction", "Invoke", function(Self, ...)

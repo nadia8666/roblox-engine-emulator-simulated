@@ -49,6 +49,22 @@ fn remote_function_invoke_server_uses_loopback_handler() {
 }
 
 #[test]
+fn remote_function_invoke_server_waits_for_late_loopback_handler() {
+    let root = scratch("remote-function-late-loopback");
+    let remote = harness(
+        &root,
+        "return function()\\n            local remote = Instance.new('RemoteFunction')\\n            task.delay(0.1, function() remote.OnServerInvoke = function(_, value) return value + 1 end end)\\n            print('late result', remote:InvokeServer(41))\\n            print('@done')\\n        end",
+    );
+    let done = ree(&root, &remote, &["--seconds", "1", "--loopback"]).output().unwrap();
+    let (stdout, stderr) = (String::from_utf8_lossy(&done.stdout), String::from_utf8_lossy(&done.stderr));
+    assert_eq!(done.status.code(), Some(0), "{stderr}");
+    let summary: serde_json::Value = serde_json::from_str(stdout.trim()).expect("the summary on stdout");
+    assert_eq!(summary["done"], true, "{summary}");
+    assert!(summary["output"].as_array().unwrap().iter().any(|entry| entry["message"] == "late result 42"), "{summary}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn a_run_past_its_wall_clock_cap_exits_124() {
     let root = scratch("cap");
     let spin = harness(&root, "return function() while true do end end");
