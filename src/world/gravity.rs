@@ -71,6 +71,10 @@ struct Setup {
     gravity: NameId,
     streaming: Option<NameId>,
     radius: Option<NameId>,
+    streaming_min_radius: Option<NameId>,
+    stream_out_behavior: Option<NameId>,
+    model_streaming_behavior: Option<NameId>,
+    model_streaming_mode: Option<NameId>,
     character: Option<NameId>,
     primary_part: Option<NameId>,
     focus: Option<NameId>,
@@ -158,6 +162,10 @@ pub fn install(engine: &Rc<Engine>) {
         gravity,
         streaming: name("StreamingEnabled"),
         radius: name("StreamingTargetRadius"),
+        streaming_min_radius: name("StreamingMinRadius"),
+        stream_out_behavior: name("StreamOutBehavior"),
+        model_streaming_behavior: name("ModelStreamingBehavior"),
+        model_streaming_mode: name("ModelStreamingMode"),
         character: name("Character"),
         primary_part: name("PrimaryPart"),
         focus: name("ReplicationFocus"),
@@ -418,18 +426,6 @@ fn has_model_ancestor(state: &State, reflection: &Reflection, model: ClassId, wo
     false
 }
 
-fn in_workspace(state: &State, reflection: &Reflection, setup: &Setup, id: InstanceId) -> bool {
-    let mut parent = state.dom.parent_of(id);
-    while let Some(node) = parent {
-        let class = reflection.class(state.dom.at(node).class);
-        if class.is_a(setup.world_root) {
-            return class.is_a(setup.workspace);
-        }
-        parent = state.dom.parent_of(node);
-    }
-    false
-}
-
 fn part_radius(state: &State, setup: &Setup, part: InstanceId) -> f32 {
     match setup.size.and_then(|name| state.dom.raw_get(part, name)) {
         Some(Value::Vector3(size)) => Vec3::new(size.x, size.y, size.z).length() * 0.5,
@@ -478,7 +474,8 @@ fn restore_streamed_out(
         let alive = state.dom.get(root).is_some() && state.dom.get(parent).is_some();
         let destroyed = state.dom.get(root).is_some_and(|instance| instance.has(crate::dom::flags::DESTROYED));
         let still_detached = alive && state.dom.parent_of(root).is_none();
-        if !alive || destroyed || !still_detached || !in_workspace(state, reflection, setup, parent) {
+        let parent_in_workspace = alive && (reflection.class(state.dom.at(parent).class).is_a(setup.workspace) || in_workspace(state, reflection, setup, parent));
+        if !alive || destroyed || !still_detached || !parent_in_workspace {
             streamed_out.remove(&root);
             if alive {
                 state.dom.unpin(root);
@@ -492,11 +489,11 @@ fn restore_streamed_out(
             continue;
         }
         if core::set_parent(state, reflection, hooks, root, Some(parent)).is_ok() {
-            let children = &mut state.dom.at_mut(parent).children;
-            if let Some(current) = children.iter().position(|&child| child == root) {
-                let child = children.remove(current);
-                children.insert(index.min(children.len()), child);
-                state.dom.at_mut(parent).child_version = state.dom.at(parent).child_version.wrapping_add(1);
+            let parent_instance = state.dom.at_mut(parent);
+            if let Some(current) = parent_instance.children.iter().position(|&child| child == root) {
+                let child = parent_instance.children.remove(current);
+                parent_instance.children.insert(index.min(parent_instance.children.len()), child);
+                parent_instance.child_version = parent_instance.child_version.wrapping_add(1);
             }
         }
         streamed_out.remove(&root);
@@ -553,7 +550,7 @@ fn stream_instances(
     }
     for part in descendants.iter().copied().filter(|&id| {
         reflection.class(state.dom.at(id).class).is_a(setup.base_part)
-            && model.is_none_or(|model| !has_model_ancestor(state, reflection, model, workspace, id))
+            && model.map_or(true, |model| !has_model_ancestor(state, reflection, model, workspace, id))
     }) {
         candidates.push((part, vec![part]));
     }
