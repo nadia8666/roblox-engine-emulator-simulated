@@ -424,7 +424,7 @@ fn streaming_unit(state: &State, reflection: &Reflection, setup: &Setup, workspa
                     _ => None,
                 }
             }) {
-                if mode == "Persistent" {
+                if mode == "Persistent" || mode == "PersistentPerPlayer" {
                     return None;
                 }
                 if mode == "Atomic" {
