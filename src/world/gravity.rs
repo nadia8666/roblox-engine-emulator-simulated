@@ -124,6 +124,7 @@ pub struct Gravity {
     /// The parts Player:AddReplicationFocus added, in order
     added: Vec<InstanceId>,
     streamed_out: FxHashMap<InstanceId, (InstanceId, usize)>,
+    persistent_players: FxHashSet<(InstanceId, InstanceId)>,
     /// Falling parts whose assembly started about a focus (held to its reach)
     bounded: FxHashSet<InstanceId>,
     /// Each flying part's spin (world, rad/s), its assembly's
@@ -231,6 +232,7 @@ pub fn install(engine: &Rc<Engine>) {
         gravity.spin.remove(&id);
         gravity.impulses.remove(&id);
         gravity.added.retain(|&focus| focus != id);
+        gravity.persistent_players.retain(|(model, player)| *model != id && *player != id);
     }));
     drop(hooks);
     install_body(engine, &body_setup);
@@ -256,6 +258,24 @@ pub fn install(engine: &Rc<Engine>) {
             }
             Ok(crate::lua::none())
         }));
+    }
+    if let Some(model_class) = reflection.class_id("Model") {
+        if let Some(add) = name("AddPersistentPlayer") {
+            behaviors.add_method(model_class, add, crate::services::method(|_, engine, model, args| {
+                if let Some(player) = args.instance(1) {
+                    engine.state.borrow_mut().gravity.persistent_players.insert((model, player));
+                }
+                Ok(crate::lua::none())
+            }));
+        }
+        if let Some(remove) = name("RemovePersistentPlayer") {
+            behaviors.add_method(model_class, remove, crate::services::method(|_, engine, model, args| {
+                if let Some(player) = args.instance(1) {
+                    engine.state.borrow_mut().gravity.persistent_players.remove(&(model, player));
+                }
+                Ok(crate::lua::none())
+            }));
+        }
     }
 }
 
@@ -404,6 +424,11 @@ fn bounds(state: &State, setup: &Setup, component: &[InstanceId]) -> (Vec3, f32)
 }
 
 
+fn engine_local_player(state: &State, reflection: &Reflection, setup: &Setup) -> Option<InstanceId> {
+    let _ = (state, reflection, setup);
+    None
+}
+
 fn enum_name(state: &State, reflection: &Reflection, id: InstanceId, name: Option<NameId>) -> Option<String> {
     let item = name.and_then(|name| state.dom.raw_get(id, name)).and_then(|value| match value {
         Value::EnumItem(item) => Some(*item),
@@ -530,10 +555,20 @@ fn stream_instances(
             .collect();
         for root in models {
             let mode = enum_name(state, reflection, root, setup.model_streaming_mode).unwrap_or_else(|| "Nonatomic".to_string());
-            if mode == "Persistent" {
+            if mode == "Persistent"
+                || mode == "PersistentPerPlayer" && engine_local_player(state, reflection, setup).is_some_and(|player| state.gravity.persistent_players.contains(&(root, player)))
+            {
                 continue;
             }
-            let parts: Vec<InstanceId> = state.dom.descendants(root).into_iter().filter(|&id| reflection.class(state.dom.at(id).class).is_a(setup.base_part)).collect();
+            let descendants = state.dom.descendants(root);
+            let nested_persistent = descendants.iter().copied().any(|id| {
+                model.map(|model| reflection.class(state.dom.at(id).class).is_a(model)).unwrap_or(false)
+                    && enum_name(state, reflection, id, setup.model_streaming_mode).as_deref() == Some("Persistent")
+            });
+            if nested_persistent {
+                continue;
+            }
+            let parts: Vec<InstanceId> = descendants.into_iter().filter(|&id| reflection.class(state.dom.at(id).class).is_a(setup.base_part)).collect();
             if parts.is_empty() {
                 continue;
             }
@@ -566,7 +601,6 @@ fn stream_instances(
     for (root, parts, parent, index) in candidates {
         if state.gravity.streamed_out.contains_key(&root)
             || state.dom.get(root).is_none()
-            || state.dom.at(root).has(crate::dom::flags::SCRIPT_CREATED)
             || !far_from_foci(&parts, state, setup, foci, target, minimum)
         {
             continue;
