@@ -11,7 +11,7 @@ ree record --harness path/to/Harness.luau --out out/scene --roots "game/shared;g
     [--animations <dir>]                             # pre-fetched KeyframeSequences, <id>.rbxm
     [--timing-check]                                 # record again with the in-frame clock moved (What a recording holds)
 ror video out/scene/scene.rbxm --playback out/scene/playback.json --duration 3
-ree run --harness path/to/Probe.luau --seconds 1     # no recording: the status and every output line as JSON
+ree run --harness path/to/Probe.luau --seconds 1 --output-log out/run.jsonl
 ree run --harness path/to/Server.luau --run-context server --seconds 60   # a Play-mode server; `@done` ends it early
 ree record --service ...                             # the same, run by the warm service (started when missing)
 ree record ... --profile                             # where the time went, on stderr
@@ -79,6 +79,10 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   render step per frame, `Stepped` fires; `--mode edit` runs the edit-mode clock). A script that prints a
   line that is exactly `@done` ends the run at the end of that frame: the summary's `frames` are the
   frames that ran, and it says `"done": true`.
+
+## Output logs
+
+- ree run --output-log <file.jsonl> writes each script output entry as one JSON object per line as soon as it is emitted. The file remains available if the run hangs or is stopped. The final JSON summary on stdout is unchanged.
 
 ## Run context
 
