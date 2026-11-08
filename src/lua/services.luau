@@ -1018,6 +1018,11 @@ end)
 
 -- (CollectionService:GetAllTags is Rust: services/mod.rs)
 
+-- PlayerGui:GetGuiObjectsAtPosition has no rendered UI in an offline run.
+Method("PlayerGui", "GetGuiObjectsAtPosition", function()
+	return {}
+end)
+
 -- GuiService.TopbarInset
 Getter("GuiService", "TopbarInset", function()
 	if Options.TopbarInset > 0 then
@@ -1146,6 +1151,9 @@ for _, Name in { "GetCameraYInvert", "GetOnboardingCompleted", "InFullScreen", "
 		return false
 	end)
 end
+Method("UserGameSettings", "GetCameraYInvertValue", function()
+	return 1
+end)
 for _, Name in { "SetCameraYInvertVisible", "SetGamepadCameraSensitivityVisible", "SetOnboardingCompleted" } do
 	Method("UserGameSettings", Name, function() end)
 end
