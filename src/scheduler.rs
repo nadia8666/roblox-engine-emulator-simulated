@@ -1315,9 +1315,17 @@ fn flush_deferred_upto(lua: &Lua, engine: &Rc<Engine>, processed: &mut usize, up
             let mut state = engine.state.borrow_mut();
             std::mem::replace(&mut state.sched.event_depth, job.event_depth)
         };
-        trace_scheduler_format(engine, || format!("deferred {} begin", *processed));
+        let target_label = match &job.target {
+            JobTarget::Handler(connection) => {
+                let signal = engine.state.borrow().signals.get(job.signal).label.to_string_lossy().into_owned();
+                format!("handler signal={signal} connection={}", connection.slot())
+            }
+            JobTarget::Thread(_) => "thread".to_string(),
+            JobTarget::DisconnectAll(instance) => format!("disconnect instance={}", instance.index),
+        };
+        trace_scheduler_format(engine, || format!("deferred {} begin {target_label}", *processed));
         let result = run_job(lua, engine, job);
-        trace_scheduler_format(engine, || format!("deferred {} end", *processed));
+        trace_scheduler_format(engine, || format!("deferred {} end {target_label}", *processed));
         engine.state.borrow_mut().sched.event_depth = previous;
         if let Err(error) = result {
             engine.state.borrow_mut().sched.flushing -= 1;
