@@ -743,6 +743,12 @@ record/prepare.rs runs prepared ahead by `ree serve`
   its centre distance plus radius stays within StreamingTargetRadius cut to a whole 64 studs (32 less for
   an added focus), then stands still. Not modelled: collisions, FallenPartsDestroyHeight, a mesh's own
   volume and inertia (a MeshPart's box), and the extra steps a client takes when a frame runs long.
+- **Instance streaming**: a playing client with Workspace.StreamingEnabled streams BaseParts around
+  its character, Player.ReplicationFocus and Player:AddReplicationFocus foci. Default models stream
+  by part; Atomic models stream as a subtree; Persistent and PersistentPerPlayer models stay loaded.
+  Streamed instances are detached from their original parent and reattached when they return within
+  StreamingTargetRadius. Updates run every 15 frames. This is a local hierarchy approximation: it
+  does not reproduce server replication, instance recreation, or non-spatial descendants without parts.
 - **Queries**: Block parts are boxes, Ball parts spheres, Cylinder parts cylinders along X, anything else
   its oriented bounding box (no mesh geometry); Terrain is never hit. Rays starting inside a part do not
   hit it; CanQuery off is skipped, RespectCanCollide skips CanCollide off; collision groups are not
