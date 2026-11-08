@@ -481,6 +481,7 @@ fn restore_streamed_out(
     reflection: &Reflection,
     hooks: &Hooks,
     setup: &Setup,
+    local_player: Option<InstanceId>,
     streamed_out: &mut FxHashMap<InstanceId, (InstanceId, usize)>,
     restore_all: bool,
     foci: &[Focus],
@@ -505,7 +506,13 @@ fn restore_streamed_out(
         }
         let mut parts = vec![root];
         parts.extend(state.dom.descendants(root).into_iter().filter(|&id| reflection.class(state.dom.at(id).class).is_a(setup.base_part)));
-        let should_restore = restore_all || close_to_focus(&parts, state, setup, foci, radius);
+        let model = reflection.class_id("Model");
+        let mode = enum_name(state, reflection, root, setup.model_streaming_mode);
+        let persistent = model.is_some_and(|model| reflection.class(state.dom.at(root).class).is_a(model))
+            && (mode.as_deref() == Some("Persistent")
+                || mode.as_deref() == Some("PersistentPerPlayer")
+                    && local_player.is_some_and(|player| state.gravity.persistent_players.contains(&(root, player))));
+        let should_restore = restore_all || persistent || close_to_focus(&parts, state, setup, foci, radius);
         if !should_restore {
             continue;
         }
@@ -611,7 +618,7 @@ fn streaming_step(engine: &Engine, hooks: &Hooks, state: &mut State, setup: &Set
     let streamed_out = std::mem::take(&mut state.gravity.streamed_out);
     let mut streamed_out = streamed_out;
     if !enabled {
-        restore_streamed_out(state, &engine.reflection, hooks, setup, &mut streamed_out, true, &[], 0.0);
+        restore_streamed_out(state, &engine.reflection, hooks, setup, engine.world().local_player, &mut streamed_out, true, &[], 0.0);
         state.gravity.streamed_out = streamed_out;
         return;
     }
@@ -619,7 +626,7 @@ fn streaming_step(engine: &Engine, hooks: &Hooks, state: &mut State, setup: &Set
         state.gravity.streamed_out = streamed_out;
         return;
     };
-    restore_streamed_out(state, &engine.reflection, hooks, setup, &mut streamed_out, false, foci, *radius);
+    restore_streamed_out(state, &engine.reflection, hooks, setup, engine.world().local_player, &mut streamed_out, false, foci, *radius);
     state.gravity.streamed_out = streamed_out;
     stream_instances(state, &engine.reflection, hooks, setup, engine.world().local_player, foci, *radius);
 }
