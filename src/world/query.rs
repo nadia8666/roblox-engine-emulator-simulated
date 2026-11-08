@@ -276,6 +276,12 @@ fn query_trace(engine: &Engine, label: &str) {
     crate::output::diagnostic(&format!("ree query frame={frame} time={now:.6} {label}"));
 }
 
+fn query_trace_format(engine: &Engine, label: impl FnOnce() -> String) {
+    if query_trace_enabled() {
+        query_trace(engine, &label());
+    }
+}
+
 fn query_cache(engine: &Engine) -> &QueryCache {
     engine.extension_or_insert_with(QueryCache::default)
 }
@@ -309,7 +315,7 @@ fn cached_solids(engine: &Engine, filter: &Filter) -> Rc<[Solid]> {
     crate::profiler::caches::miss(crate::profiler::caches::Cache::Queries);
     query_trace(engine, "solids build begin");
     let made: Rc<[Solid]> = solids(engine, filter).into();
-    query_trace(engine, &format!("solids build end count={}", made.len()));
+    query_trace_format(engine, || format!("solids build end count={}", made.len()));
     let mut entries = cache.entries.borrow_mut();
     let before = entries.len();
     entries.retain(|entry| entry.stamp == stamp);
@@ -718,7 +724,7 @@ fn charge_cast(engine: &Engine, origin: Vec3, direction: Vec3, grow: f32) {
     if crossed > 0 {
         charge_query(engine, crate::cost::RAY_MET + (crossed - 1) as f64 * crate::cost::RAY_CROSSED);
     }
-    query_trace(engine, &format!("cast cost end solids={} crossed={crossed}", solids.len()));
+    query_trace_format(engine, || format!("cast cost end solids={} crossed={crossed}", solids.len()));
 }
 
 /// A spatial query's charge beyond its call's price (cost.rs QUERY_BOX_PART, RAY_CROSSED)
@@ -767,7 +773,7 @@ pub fn install(engine: &Rc<Engine>) {
         let filter = take_filter(engine, args.get(4));
         query_trace(engine, "Blockcast begin");
         let solids = cached_solids(engine, &filter);
-        query_trace(engine, &format!("Blockcast cast begin solids={}", solids.len()));
+        query_trace_format(engine, || format!("Blockcast cast begin solids={}", solids.len()));
         let hit = cast_box(&solids, &frame, size, direction, None);
         query_trace(engine, "Blockcast cast end");
         keep_filter(engine, filter);
