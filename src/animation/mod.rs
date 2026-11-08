@@ -114,6 +114,8 @@ struct Names {
     motor6d: ClassId,
     bone: ClassId,
     model: ClassId,
+    humanoid: ClassId,
+    animation_controller: ClassId,
     /// Enum.AnimationPriority items by value
     priorities: Vec<(u32, crate::reflection::EnumItemId)>,
 }
@@ -154,6 +156,8 @@ impl Names {
             motor6d: c("Motor6D")?,
             bone: c("Bone")?,
             model: c("Model")?,
+            humanoid: c("Humanoid")?,
+            animation_controller: c("AnimationController")?,
             priorities,
         })
     }
@@ -891,8 +895,33 @@ fn rig_of(state: &State, reflection: &Reflection, names: &Names, animator: Insta
         1.0
     };
     let mut rig = Rig { motors: FxHashMap::default(), bones: FxHashMap::default(), scale };
-    for id in state.dom.descendants(model) {
+    let descendants = state.dom.descendants(model);
+    // A model inside this one with its own Humanoid or AnimationController is a rig of its own: its joints are not this rig's,
+    // however they are named
+    let carried: Vec<InstanceId> = descendants
+        .iter()
+        .filter(|id| {
+            let class = reflection.class(state.dom.at(**id).class);
+            class.is_a(names.humanoid) || class.is_a(names.animation_controller)
+        })
+        .filter_map(|id| state.dom.parent_of(*id))
+        .filter(|parent| *parent != model)
+        .collect();
+    let in_carried_rig = |id: InstanceId| {
+        let mut at = state.dom.parent_of(id);
+        while let Some(parent) = at.filter(|parent| *parent != model) {
+            if carried.contains(&parent) {
+                return true;
+            }
+            at = state.dom.parent_of(parent);
+        }
+        false
+    };
+    for id in descendants {
         let class = reflection.class(state.dom.at(id).class);
+        if !(class.is_a(names.motor6d) || class.is_a(names.bone)) || in_carried_rig(id) {
+            continue;
+        }
         if class.is_a(names.motor6d) {
             let part = |name| state.dom.raw_get(id, name).and_then(Value::as_instance).and_then(|part| state.dom.get(part)).map(|part| part.name.clone());
             if let (Some(part0), Some(part1)) = (part(names.part0), part(names.part1)) {

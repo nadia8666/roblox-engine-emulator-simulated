@@ -126,11 +126,21 @@ pool while Engine.Start runs (`project::Prescan`). `begin_project` stops after t
 there).
 
 - **Rojo roots**: `<root>/<Service>/...` with `init.luau`, `*.server.luau`, `*.client.luau`,
-  `init.meta.json`, JSON modules and `*.model.json` models. A root's folder is the project folder that
-  the conventions below are read from. A link to a directory (a symlink or a Windows junction) mounts
-  what it leads to, unless it leads back to a directory on the way down to it: that directory would
-  hold itself without end, so the link is left out with a warning (place content's folders, below, are
-  walked the same way).
+  `init.meta.json`, JSON modules and `*.model.json` models. A directory holding `default.project.json`
+  mounts as that project's tree (its `$path`, `$className` and child nodes; Wally packages ship one
+  each), ahead of any init script, named by the project's `name` (else the directory's), as Rojo nests
+  it; a directory mounted itself (by `--mount`, `Context.Mount` or a `$path`) keeps that name rather
+  than the project's. A project file can come from a third-party package, so a `$path` stays inside the
+  folder holding the file: it is looked up only in that folder's listing, and one that is absolute (a
+  leading `/` or `\`, a UNC path or a drive such as `C:`) or has a `..` segment is refused with a
+  warning. On a tree's root, a `$path` that is refused or names nothing leaves the directory mounted as
+  it is, as does a project file ree can't read (not JSON, or no `tree` object); on a child node, the
+  node is left out. Each is reported, except an absent `{ "optional": ... }` target. A project inside
+  more than 32 others, or past the 10000th of one mount, is left an empty Folder, with a warning. A
+  root's folder is the project folder that the conventions below are read from. A link to a
+  directory (a symlink or a Windows junction) mounts what it leads to, unless it leads back to a
+  directory on the way down to it: that directory would hold itself without end, so the link is left
+  out with a warning (place content's folders, below, are walked the same way).
 - **Project settings**: `rur.json` at the project folder, keyed by the root folder's name (the first
   root with a value wins): `placeIds`, `modelAssets` (`mount`, `prefixes`), `clientGui`,
   `streamingTargetRadius`. The name is kept from rur, which wrote these files first.
@@ -741,18 +751,20 @@ record/prepare.rs runs prepared ahead by `ree serve`
 - **World events** (`Hooks::world_events`): `ParticleEmitter:Emit` (with where its emitter was at the
   call), `Clear`, `Trail:Clear`, sound plays and stops. Particles, trails and beams are not simulated:
   a renderer draws them from these events and the recorded switches.
-- **What is recorded**: the Workspace's descendants (code, sounds, values, animators, Humanoids, Terrain
-  and Cameras skipped with their subtrees), the CurrentCamera's and Terrain's children as roots (Roblox
-  draws what a client parents there), Lighting's own properties and the skies, atmospheres and post
+- **What is recorded**: the Workspace's descendants (code, sounds, values, animators, Humanoids, Terrain,
+  Cameras and Clouds skipped with their subtrees), the CurrentCamera's and Terrain's children as roots (Roblox
+  draws what a client parents there), Lighting's own properties, the Terrain's Clouds' and the skies, atmospheres and post
   effects a run parents to Lighting or the camera, SurfaceGuis and BillboardGuis in the PlayerGui under
   their adornees, and the PlayerGui's ScreenGuis in the scene's `PlayerGui`. Each instance gets one copy
   in `scene.rbxm` as it appeared, hidden before and after. Lighting's values before the run stand in for the
   place's, which the renderer's stage draws: every write the run makes to a tracked Lighting property plays
   (one before frame 0 at frame 0, one of the value the engine held too), and a keyed tween holds
-  `{"initial": true}` (the stage's value) until the run first changes the property. `playback.json` holds `set` actions, keyed
+  `{"initial": true}` (the stage's value) until the run first changes the property. The Terrain's Clouds (a
+  Clouds in the Workspace's Terrain, whatever its name or who made it; Roblox draws no other) play the same way on
+  the target `Workspace.Terrain.Clouds`, their path in a place: Color, Cover, Density and Enabled. `playback.json` holds `set` actions, keyed
   tweens for properties that change frame after frame, motion tracks, emits and clears, reparenting and
   references written later; `events.json` holds prints, warnings, errors and sounds with their times.
-  Values are rounded to 1e-5, motion keys within 2e-4, and keys a straight line reproduces are dropped.
+  Values are rounded to 1e-5, and keys a straight line reproduces are dropped: a motion key's position within 0.002 studs, its rotation within 2e-4.
   A Studio-only placeholder is the place's own: it has a class and a name and no values, and it is made
   when a script first lists its parent, so drawing it drew default effects and parts, and a run that
   looked at more of the place recorded more of it than one that did not. One that draws (an effect, a

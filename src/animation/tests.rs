@@ -206,6 +206,43 @@ fn a_track_poses_its_rig_over_time() {
     );
 }
 
+/// A model can carry other rigs inside it, each with its own Humanoid or AnimationController and joints named like the
+/// outer rig's. A track poses the joints of the rig its animator belongs to, even when a carried rig comes first in the tree.
+#[test]
+fn a_track_poses_its_own_rig_and_not_a_rig_carried_inside_it() {
+    check(
+        r#"
+        local Carried, _, CarriedShoulder = Rig()
+        Carried.Name = "Carried"
+        Carried.Humanoid:Destroy()
+        local Controller = Instance.new("AnimationController")
+        Controller.Parent = Carried
+        local CarriedAnimator = Instance.new("Animator")
+        CarriedAnimator.Parent = Controller
+        local Model, Animator, Shoulder = Rig()
+        Carried.Parent = Model
+        for _, Child in Model:GetChildren() do
+            if Child ~= Carried then
+                Child.Parent = nil
+                Child.Parent = Model
+            end
+        end
+        assert(Model:GetChildren()[1] == Carried, "the carried rig comes first")
+        local Track = Animator:LoadAnimation(Sequence({ {0, 0}, {1, 1} }))
+        Track:Play(0)
+        task.wait(0.5)
+        assert(near(angle(Shoulder.Transform), Track.TimePosition, 0.02), "the outer rig's shoulder " .. angle(Shoulder.Transform))
+        assert(near(angle(CarriedShoulder.Transform), 0), "the carried rig's shoulder " .. angle(CarriedShoulder.Transform))
+        Track:Stop(0)
+        local CarriedTrack = CarriedAnimator:LoadAnimation(Sequence({ {0, 0}, {1, 1} }))
+        CarriedTrack:Play(0)
+        task.wait(0.5)
+        assert(near(angle(CarriedShoulder.Transform), CarriedTrack.TimePosition, 0.02), "its own track poses the carried rig " .. angle(CarriedShoulder.Transform))
+        "#,
+        2.0,
+    );
+}
+
 /// `pose` rebuilt each posed rig's joint maps (a walk over every descendant of the model) every step: 0.046 host ms a frame for 60
 /// enemies in ree's `(ree engine step: animation)` row. They are kept per animator while nothing inside the model
 /// changed, and rebuilt when a Name, Part0, Part1 or Scale is written inside it or a child is added or removed: renaming the arm's

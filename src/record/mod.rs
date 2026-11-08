@@ -22,6 +22,9 @@
 //!   `Lighting` while they are there (so are the post effects it parents to the CurrentCamera: Studio
 //!   draws them as it draws Lighting's). The place's own (ror's stage: `--lighting-from`'s) leave with
 //!   the run's taking its own of their class out of Lighting and come back with them.
+//! - The Terrain's Clouds (a Clouds in the Workspace's Terrain, the only place Roblox draws one) play on
+//!   ror's `Workspace.Terrain.Clouds` as Lighting's own properties do: every write of the run, its setup's
+//!   at frame 0 (the engine's clouds stand in for the place's, ror's stage). No Clouds is recorded as an instance.
 //! - A Studio-only placeholder (the place's hierarchy snapshot gives it a class and a name and no values;
 //!   project::materialize builds it when a script first lists its parent) is the place's own: one that
 //!   draws (an effect, a part, a highlight, a sky) is never drawn, in the world or in Lighting, since the
@@ -149,6 +152,7 @@ const VISUAL: &[(&str, &[(&str, Track)])] = {
         ("SunRaysEffect", &[("Intensity", Plain), ("Spread", Plain)]),
         ("DepthOfFieldEffect", &[("FarIntensity", Plain), ("FocusDistance", Plain), ("InFocusRadius", Plain), ("NearIntensity", Plain)]),
         ("Atmosphere", &[("Density", Plain), ("Offset", Plain), ("Color", Plain), ("Decay", Plain), ("Glare", Plain), ("Haze", Plain)]),
+        ("Clouds", &[("Color", Plain), ("Cover", Plain), ("Density", Plain), ("Enabled", Plain)]),
     ]
 };
 
@@ -158,14 +162,18 @@ const SWITCHABLE: &[&str] = &["ParticleEmitter", "Trail", "Beam", "PointLight", 
 const CLEARABLE: &[&str] = &["ParticleEmitter", "Trail"];
 /// What a child of Lighting adds to the look.
 const LIGHTING_CHILDREN: &[&str] = &["Sky", "Atmosphere", "ColorCorrectionEffect", "BloomEffect", "BlurEffect", "SunRaysEffect", "DepthOfFieldEffect", "ColorGradingEffect"];
-/// Never recorded, with everything under them: code, sounds, values and the like draw nothing.
+/// Never recorded, with everything under them: code, sounds, values and the like draw nothing (and
+/// the Terrain's Clouds play on [`CLOUDS`]).
 const SKIPPED: &[&str] = &[
     "LuaSourceContainer", "Sound", "ValueBase", "BindableEvent", "BindableFunction", "RemoteEvent", "UnreliableRemoteEvent",
     "RemoteFunction", "Animation", "AnimationController", "Animator", "Humanoid", "Configuration", "SoundEffect", "SoundGroup",
-    "Terrain", "Camera",
+    "Terrain", "Camera", "Clouds",
 ];
 /// The scene folder holding what the run parented to Lighting.
 const LIGHTING_FOLDER: &str = "~Lighting";
+/// The playback's target for the Terrain's Clouds: their path in a place, where ror keeps the clouds it
+/// draws (its stage's).
+const CLOUDS: &str = "Workspace.Terrain.Clouds";
 /// The scene's PlayerGui, holding the ScreenGuis the local player's PlayerGui shows (ror draws them on
 /// the screen; their paths read as Roblox names them).
 const PLAYER_GUI: &str = "PlayerGui";
@@ -278,6 +286,9 @@ struct Inner {
     camera: Vec<(u32, Affine3A, f64)>,
     /// Lighting's own properties (target "Lighting")
     lighting: Option<Record>,
+    /// The Terrain's Clouds' properties (target [`CLOUDS`]) and what finds those clouds
+    clouds: Option<Record>,
+    terrain_clouds: Option<TerrainClouds>,
     warnings: Vec<String>,
     unsupported: BTreeSet<String>,
     /// Sibling names already used in the scene, by parent record (None: the file's roots)
@@ -340,7 +351,13 @@ impl Recorder {
             let engine_state = engine.state.borrow();
             state.ignored.extend(engine_state.dom.children_of(lighting).iter().copied());
             state.lighting_id = Some(lighting);
-            state.lighting = Some(lighting_record(&engine_state, lighting));
+            state.lighting = Some(stage_record(lighting, engine_state.dom.at(lighting).class, "Lighting", "Lighting"));
+        }
+        // (so is the Terrain's Clouds', whenever the place's clouds are built or the run makes its own)
+        let terrain_clouds = TerrainClouds::of(engine);
+        if let Some(found) = terrain_clouds {
+            state.clouds = Some(stage_record(found.workspace, found.clouds, "Clouds", CLOUDS));
+            state.terrain_clouds = terrain_clouds;
         }
         let lighting_id = state.lighting_id;
         let inner = Rc::new(RefCell::new(state));
@@ -366,12 +383,12 @@ impl Recorder {
                 inner.dirty.push((id, name));
             }
         }));
-        // a write to Lighting is the run's even when it stores the value the engine held: that value
-        // only stands in for the place's, which the renderer's stage draws
-        if let Some(lighting) = lighting_id {
+        // a write to Lighting or the Terrain's Clouds is the run's even when it stores the value the engine
+        // held: that value only stands in for the place's, which the renderer's stage draws
+        if lighting_id.is_some() || terrain_clouds.is_some() {
             let kept = inner.clone();
-            hooks.property_unchanged.push(Box::new(move |_state: &mut State, id, name| {
-                if id == lighting {
+            hooks.property_unchanged.push(Box::new(move |state: &mut State, id, name| {
+                if Some(id) == lighting_id || terrain_clouds.is_some_and(|clouds| clouds.holds(state, id)) {
                     let mut inner = kept.borrow_mut();
                     if inner.dirty_set.insert((id, name)) {
                         inner.dirty.push((id, name));
@@ -757,6 +774,27 @@ fn is_drawn_camera(state: &State, engine: &Engine, id: InstanceId) -> bool {
 fn is_drawn_terrain(state: &State, engine: &Engine, id: InstanceId) -> bool {
     let world = engine.world();
     state.dom.parent_of(id) == Some(world.workspace) && is_a(engine, state.dom.at(id).class, "Terrain")
+}
+
+/// What finds the Terrain's Clouds: the Clouds and Terrain classes and the Workspace.
+#[derive(Clone, Copy)]
+struct TerrainClouds {
+    clouds: ClassId,
+    terrain: ClassId,
+    workspace: InstanceId,
+}
+
+impl TerrainClouds {
+    fn of(engine: &Engine) -> Option<Self> {
+        Some(Self { clouds: engine.reflection.class_id("Clouds")?, terrain: engine.reflection.class_id("Terrain")?, workspace: engine.world().workspace })
+    }
+
+    /// Whether `id` is a Clouds in the Workspace's Terrain: the Terrain's clouds, whatever its name
+    /// (Roblox's documentation: a Clouds draws only as the Terrain's child).
+    fn holds(self, state: &State, id: InstanceId) -> bool {
+        let Some(instance) = state.dom.get(id).filter(|instance| instance.class == self.clouds) else { return false };
+        instance.parent.and_then(|parent| state.dom.get(parent)).is_some_and(|terrain| terrain.class == self.terrain && terrain.parent == Some(self.workspace))
+    }
 }
 
 /// Transparency as drawn: LocalTransparencyModifier over Transparency.
@@ -1537,17 +1575,18 @@ fn sample_changes(inner: &mut Inner, state: &State, engine: &Rc<Engine>, lightin
             }
             continue;
         }
-        if Some(id) == lighting_id {
-            if let Some(mut record) = inner.lighting.take() {
+        let clouds = inner.terrain_clouds.is_some_and(|found| found.holds(state, id));
+        if Some(id) == lighting_id || clouds {
+            if let Some(mut record) = if clouds { inner.clouds.take() } else { inner.lighting.take() } {
                 if let Some(&(_, track)) = tracked(inner, engine, record.class).iter().find(|(n, _)| *n == name) {
                     match current(&state, engine, id, name, track) {
                         Some(value) => change(&mut record, name, track, value, frame),
                         None => {
-                            inner.unsupported.insert(format!("Lighting.{}", engine.reflection.name(name)));
+                            inner.unsupported.insert(format!("{}.{}", record.class_name, engine.reflection.name(name)));
                         }
                     }
                 }
-                inner.lighting = Some(record);
+                *if clouds { &mut inner.clouds } else { &mut inner.lighting } = Some(record);
             }
             continue;
         }
@@ -1669,16 +1708,17 @@ fn sample_changes(inner: &mut Inner, state: &State, engine: &Rc<Engine>, lightin
     }
 }
 
-/// Lighting's own record. It holds no values from before the run: the engine's Lighting stands in
-/// for the place's, which the renderer's stage draws, so every write of the run is a change, and a
-/// property holds the stage's value until the run first writes it.
-fn lighting_record(state: &State, lighting: InstanceId) -> Record {
+/// The record of a look the renderer's stage draws: Lighting's own properties (`id` Lighting), the
+/// Terrain's Clouds (`id` the Workspace holding them). It holds no values from before the run: the
+/// engine's instance stands in for the place's, so every write of the run is a change, and a property
+/// holds the stage's value until the run first writes it.
+fn stage_record(id: InstanceId, class: ClassId, class_name: &str, path: &str) -> Record {
     Record {
-        id: lighting,
-        class: state.dom.at(lighting).class,
-        class_name: "Lighting".into(),
-        name: "Lighting".into(),
-        path: "Lighting".into(),
+        id,
+        class,
+        class_name: class_name.into(),
+        name: class_name.into(),
+        path: path.into(),
         parent: None,
         appear: 0,
         visibility: Visibility::None,
@@ -1792,8 +1832,19 @@ fn frame_keys(inner: &Inner, list: &[(u32, Json)], initial: Option<&Json>, field
     keys
 }
 
-/// Drops keys a straight line between their neighbours reproduces (within `tolerance`).
-fn reduce(keys: Vec<Json>, field: &str, tolerance: f64) -> Vec<Json> {
+/// How far a motion track's line may stray from a dropped key's position, in studs. A fixed distance: a bound that
+/// grew with the distance from the origin let a part 400 studs out stray 0.08 studs, which reads as a shake when the
+/// camera (keyed far more finely) follows that part.
+const MOTION_POSITION_STUDS: f64 = 2e-3;
+
+/// What a motion key's numbers may stray by: its position by a fixed distance, its rotation by a proportion.
+fn motion_allowance(component: usize, value: f64) -> f64 {
+    if component < 3 { MOTION_POSITION_STUDS } else { 2e-4 * (1.0 + value.abs()) }
+}
+
+/// Drops keys a straight line between their neighbours reproduces (each number within what `allowed` gives for its
+/// index and value).
+fn reduce(keys: Vec<Json>, field: &str, allowed: impl Fn(usize, f64) -> f64) -> Vec<Json> {
     if keys.len() <= 2 {
         return keys;
     }
@@ -1812,7 +1863,7 @@ fn reduce(keys: Vec<Json>, field: &str, tolerance: f64) -> Vec<Json> {
                     return false;
                 }
                 let alpha = (at[between] - ta) / (tb - ta).max(1e-9);
-                v.iter().zip(a.iter().zip(b.iter())).all(|(v, (a, b))| (a + (b - a) * alpha - v).abs() <= tolerance * (1.0 + v.abs()))
+                v.iter().zip(a.iter().zip(b.iter())).enumerate().all(|(component, (v, (a, b)))| (a + (b - a) * alpha - v).abs() <= allowed(component, *v))
             }),
             _ => false,
         };
@@ -1830,9 +1881,9 @@ fn playback(inner: &Inner) -> Playback {
     let mut actions: Vec<(f64, Box<[u8]>)> = Vec::new();
     let mut tweens: Vec<Box<[u8]>> = Vec::new();
     let mut motion: Vec<Box<[u8]>> = Vec::new();
-    // (Lighting's values before the run's first write are the stage's: ror's `{"initial": true}`)
+    // (Lighting's and the Terrain's Clouds' values before the run's first write are the stage's: ror's `{"initial": true}`)
     let stage = json!({ "initial": true });
-    let records = inner.records.iter().map(|record| (record, false)).chain(inner.lighting.iter().map(|record| (record, true)));
+    let records = inner.records.iter().map(|record| (record, false)).chain(inner.lighting.iter().chain(inner.clouds.iter()).map(|record| (record, true)));
     for (record, staged) in records {
         let target = record.path.as_str();
         for (name, track, list) in &record.changes {
@@ -1857,7 +1908,7 @@ fn playback(inner: &Inner) -> Playback {
             let continuous = list.windows(2).any(|pair| pair[1].0 == pair[0].0 + 1);
             if continuous && lerpable {
                 let initial = if staged { Some(&stage) } else { record.file.get(name).filter(|v| numbers(v).map(|n| n.len()) == shape) };
-                let keys = reduce(frame_keys(inner, list, initial, "value"), "value", 1e-4);
+                let keys = reduce(frame_keys(inner, list, initial, "value"), "value", |_, value| 1e-4 * (1.0 + value.abs()));
                 tweens.push(element(&json!({ "target": target, "property": property, "keys": keys })));
             } else {
                 for (frame, value) in list {
@@ -1898,7 +1949,7 @@ fn playback(inner: &Inner) -> Playback {
         }
         if !record.motion.is_empty() {
             let list: Vec<(u32, Json)> = record.motion.iter().map(|(frame, cframe)| (*frame, cframe_json(cframe))).collect();
-            let keys = reduce(frame_keys(inner, &list, None, "cframe"), "cframe", 2e-4);
+            let keys = reduce(frame_keys(inner, &list, None, "cframe"), "cframe", motion_allowance);
             match record.physics_from.filter(|_| !record.physics_steered) {
                 Some(frame) => motion.push(element(&json!({ "target": target, "keys": keys, "physicsFrom": time_of(inner, frame) }))),
                 None => motion.push(element(&json!({ "target": target, "keys": keys }))),

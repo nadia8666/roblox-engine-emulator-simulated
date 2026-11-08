@@ -272,6 +272,105 @@ fn lighting_writes_before_the_first_frame_play_from_it() {
     assert!(summary["unsupported"].as_array().unwrap().is_empty(), "{summary}");
 }
 
+/// The Terrain's Clouds play on `Workspace.Terrain.Clouds` as Lighting's own properties play on
+/// `Lighting`: the place's (a Studio-only placeholder, at the engine's defaults) stand in for the clouds
+/// the renderer's stage draws, so every write of the run plays, its setup's at frame 0, a write of the
+/// value the engine held too, and a tween holds the stage's value until it first changes the property.
+/// A Clouds is never recorded as an instance, and one outside the Terrain draws nothing.
+#[test]
+fn terrain_cloud_writes_play_on_the_stages_clouds() {
+    let run = |source: &str, place_clouds: bool| -> (Json, rbx_dom_weak::WeakDom, Json) {
+        let engine = Engine::new(Options { mode: "play".into(), ..Options::default() }).expect("engine");
+        let lua = Lua::new();
+        engine_lua::start(&lua, &engine).expect("start");
+        if place_clouds {
+            let terrain = crate::world::terrain(&engine, engine.world().workspace).expect("Terrain");
+            let mut state = engine.state.borrow_mut();
+            let class = engine.reflection.class_id("Clouds").unwrap();
+            let id = crate::instance::create_named(&mut state, &engine.reflection, class, "Clouds");
+            state.dom.at_mut(id).set_flag(crate::dom::flags::STUDIO_ONLY, true);
+            state.dom.attach(id, terrain);
+        }
+        let recorder = Recorder::install(&engine, 60.0);
+        let script = {
+            let mut state = engine.state.borrow_mut();
+            let class = engine.reflection.class_id("ModuleScript").unwrap();
+            crate::instance::create_named(&mut state, &engine.reflection, class, "Harness")
+        };
+        let env = engine_lua::modules::environment(&lua, &engine, script).expect("environment");
+        let function = lua.load(source).set_name("=Harness").set_environment(env).into_function().expect("compile");
+        let call = engine_lua::globals::call(&lua, &engine, function, LuaMultiValue::new()).expect("call");
+        if let CallOutcome::Failed(message, _) = call.outcome().unwrap() {
+            panic!("harness failed: {message}");
+        }
+        recorder.sample(&engine, 0);
+        for frame in 1..=16 {
+            scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("frame");
+            recorder.sample(&engine, frame);
+        }
+        let out = std::env::temp_dir().join(format!("rur-record-test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let summary = recorder.write(&engine, &out, Map::new()).expect("write");
+        let playback: Json = serde_json::from_str(&std::fs::read_to_string(out.join("playback.json")).unwrap()).unwrap();
+        let scene = rbx_binary::from_reader(std::fs::read(out.join("scene.rbxm")).unwrap().as_slice()).expect("scene.rbxm");
+        let _ = std::fs::remove_dir_all(&out);
+        drop(lua);
+        engine.teardown();
+        (playback, scene, summary)
+    };
+    let sets = |playback: &Json, property: &str| -> Vec<(f64, Json)> {
+        find(&playback["actions"], |a| a["target"] == "Workspace.Terrain.Clouds" && !a["set"][property].is_null()).iter().map(|a| (a["at"].as_f64().unwrap(), a["set"][property].clone())).collect()
+    };
+    let (playback, scene, summary) = run(
+        r#"
+        local Clouds = workspace.Terrain:FindFirstChildOfClass("Clouds")
+        local Held = Clouds.Enabled
+        Clouds.Enabled = Held
+        Clouds.Color = Color3.fromRGB(70, 74, 88)
+        Clouds.Cover = 0.95
+        local Stray = Instance.new("Clouds")
+        Stray.Parent = workspace
+        Stray.Cover = 0.1
+        task.delay(0.1, function()
+            Clouds.Cover = 0.95
+            game:GetService("TweenService"):Create(Clouds, TweenInfo.new(0.05, Enum.EasingStyle.Linear), {Density = 0.2}):Play()
+        end)
+        "#,
+        true,
+    );
+    let enabled = sets(&playback, "Enabled");
+    assert_eq!(enabled, vec![(0.0, Json::Bool(true))], "the held value written back plays at frame 0");
+    let color = sets(&playback, "Color");
+    assert_eq!(color.len(), 1, "{color:?}");
+    let rgb: Vec<f64> = color[0].1.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    assert!(color[0].0 == 0.0 && (rgb[0] - 70.0 / 255.0).abs() < 1e-4 && (rgb[2] - 88.0 / 255.0).abs() < 1e-4, "{color:?}");
+    let cover = sets(&playback, "Cover");
+    assert_eq!(cover.len(), 1, "a write of the value the run last wrote plays nothing: {cover:?}");
+    assert!(cover[0].0 == 0.0 && (cover[0].1.as_f64().unwrap() - 0.95).abs() < 1e-5, "{cover:?}");
+    let tweens = find(&playback["tweens"], |t| t["target"] == "Workspace.Terrain.Clouds");
+    assert_eq!(tweens.len(), 1, "{tweens:?}");
+    assert_eq!(tweens[0]["property"], "Density");
+    let keys = tweens[0]["keys"].as_array().unwrap();
+    assert_eq!(keys[0]["value"], serde_json::json!({ "initial": true }), "{keys:?}");
+    assert!(keys[0]["at"].as_f64().unwrap() > 0.0, "{keys:?}");
+    assert!((keys.last().unwrap()["value"].as_f64().unwrap() - 0.2).abs() < 1e-5, "{keys:?}");
+    assert!(find(&playback["actions"], |a| a["target"] != "Workspace.Terrain.Clouds").is_empty(), "the stray Clouds plays nothing: {}", playback["actions"]);
+    assert!(scene.descendants().all(|instance| instance.class != "Clouds"), "no Clouds is recorded as an instance");
+    assert!(summary["unsupported"].as_array().unwrap().is_empty(), "{summary}");
+
+    // clouds the run makes in the Terrain are the Terrain's too
+    let (playback, scene, _) = run(
+        r#"
+        local Clouds = Instance.new("Clouds")
+        Clouds.Cover = 0.3
+        Clouds.Parent = workspace.Terrain
+        "#,
+        false,
+    );
+    let cover = sets(&playback, "Cover");
+    assert!(cover.len() == 1 && cover[0].0 == 0.0 && (cover[0].1.as_f64().unwrap() - 0.3).abs() < 1e-5, "{cover:?}");
+    assert!(scene.descendants().all(|instance| instance.class != "Clouds"), "no Clouds is recorded as an instance");
+}
+
 /// A Glass part still draws at Transparency 1 when a Highlight is under it (ror's notes, glass-quirks),
 /// so one that appears later and is destroyed leaves the world before and after instead of turning
 /// Transparency 1: the house's distortion bubbles (a disabled Highlight under each) otherwise hung on
@@ -2220,4 +2319,37 @@ fn studio_only_placeholders_are_not_drawn_whenever_they_are_built() {
     }
     instance(&scene, &["Entities", "Circles", "Circle"]);
     assert!(find(&during["actions"], |a| a["target"].as_str().is_some_and(|t| t.contains("Blur") || t.contains("Highlight"))).is_empty(), "no action for a placeholder");
+}
+
+#[test]
+fn a_motion_key_is_kept_by_distance_however_far_the_part_is_from_the_origin() {
+    let key = |at: f64, x: f64, y: f64, z: f64| {
+        let mut cframe = vec![x, y, z];
+        cframe.extend([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        serde_json::json!({ "at": at, "cframe": cframe })
+    };
+    let far = 400.0;
+    let curve: Vec<Json> = (0..120)
+        .map(|frame| {
+            let at = f64::from(frame) / 60.0;
+            key(at, far, far + 1.5 * at * at, -far)
+        })
+        .collect();
+    let kept = super::reduce(curve.clone(), "cframe", super::motion_allowance);
+    let times: Vec<f64> = kept.iter().map(|kept| kept["at"].as_f64().unwrap()).collect();
+    for original in &curve {
+        let at = original["at"].as_f64().unwrap();
+        let index = times.partition_point(|time| *time <= at).clamp(1, times.len() - 1);
+        let alpha = (at - times[index - 1]) / (times[index] - times[index - 1]);
+        let (from, to) = (kept[index - 1]["cframe"][1].as_f64().unwrap(), kept[index]["cframe"][1].as_f64().unwrap());
+        let strayed = (from + (to - from) * alpha - original["cframe"][1].as_f64().unwrap()).abs();
+        assert!(strayed <= super::MOTION_POSITION_STUDS + 1e-9, "at {at} the line strays {strayed} studs");
+    }
+    let straight: Vec<Json> = (0..120)
+        .map(|frame| {
+            let at = f64::from(frame) / 60.0;
+            key(at, far + at, far, -far)
+        })
+        .collect();
+    assert_eq!(super::reduce(straight, "cframe", super::motion_allowance).len(), 2, "a straight line needs only its ends");
 }
