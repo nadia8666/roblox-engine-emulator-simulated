@@ -93,11 +93,10 @@ impl Output {
             }
         }
         let entry = Entry { kind, message, time, trace };
-        if let Some(log) = &mut self.log {
-            if let Err(error) = log.write(&entry) {
-                self.log_error = Some(error.to_string());
-                self.log = None;
-            }
+        let log_error = self.log.as_mut().and_then(|log| log.write(&entry).err());
+        if let Some(error) = log_error {
+            self.log_error = Some(error.to_string());
+            self.log = None;
         }
         match &mut self.spool {
             Some(spool) => spool.write(&entry),
