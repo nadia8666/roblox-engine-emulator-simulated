@@ -467,7 +467,7 @@ fn update_streaming(state: &mut State, reflection: &Reflection, hooks: &Hooks, s
 
     let mut units: FxHashMap<InstanceId, (InstanceId, Vec<InstanceId>)> = FxHashMap::default();
     for part in state.dom.descendants(workspace) {
-        if !reflection.class(state.dom.at(part).class).is_a(setup.base_part) {
+        if !in_workspace(state, reflection, setup, part) || !reflection.class(state.dom.at(part).class).is_a(setup.base_part) {
             continue;
         }
         let Some(unit) = streaming_unit(state, reflection, setup, workspace, part) else {
