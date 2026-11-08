@@ -124,7 +124,7 @@ pub struct Gravity {
     /// Falling parts whose assembly started about a focus (held to its reach)
     bounded: FxHashSet<InstanceId>,
     streamed: FxHashMap<InstanceId, InstanceId>,
-    stream_frame: Option<u64>,
+    stream_time: Option<f64>,
     /// Each flying part's spin (world, rad/s), its assembly's
     spin: FxHashMap<InstanceId, Vec3>,
     /// Impulses applied since the last step, by part: linear (ApplyImpulse) and angular
@@ -446,11 +446,11 @@ fn within_focus(state: &State, setup: &Setup, parts: &[InstanceId], foci: &[Focu
 }
 
 fn update_streaming(state: &mut State, reflection: &Reflection, hooks: &Hooks, setup: &Setup, engine: &Engine, foci: &[Focus]) {
-    let frame = state.sched.frame;
-    if state.gravity.stream_frame.is_some_and(|last| frame.saturating_sub(last) < 15) {
+    let now = state.sched.now;
+    if state.gravity.stream_time.is_some_and(|last| now - last < 0.1) {
         return;
     }
-    state.gravity.stream_frame = Some(frame);
+    state.gravity.stream_time = Some(now);
     let workspace = engine.world().workspace;
     let streamed: Vec<(InstanceId, InstanceId)> = state.gravity.streamed.iter().map(|(&unit, &parent)| (unit, parent)).collect();
     for (unit, parent) in streamed {
