@@ -69,7 +69,7 @@ pub enum JobTarget {
     /// A connection's handler: a fresh thread on its callback, if still connected when it runs
     Handler(ConnectionId),
     /// Destroy's deferred signal cleanup
-    DisconnectAll(InstanceId),
+    DisconnectAll(Vec<InstanceId>),
 }
 
 pub struct Job {
@@ -1226,8 +1226,11 @@ fn run_job(lua: &Lua, engine: &Rc<Engine>, job: Job) -> LuaResult<()> {
                 end_handler_sample(sample, &thread);
             }
         }
-        JobTarget::DisconnectAll(id) => {
-            super::instance::disconnect_all(&mut engine.state.borrow_mut(), id);
+        JobTarget::DisconnectAll(instances) => {
+            let mut state = engine.state.borrow_mut();
+            for id in instances {
+                super::instance::disconnect_all(&mut state, id);
+            }
         }
     }
     Ok(())
@@ -1322,7 +1325,7 @@ fn flush_deferred_upto(lua: &Lua, engine: &Rc<Engine>, processed: &mut usize, up
                 format!("handler signal={signal} connection={}", connection.slot())
             }
             JobTarget::Thread(_) => "thread".to_string(),
-            JobTarget::DisconnectAll(instance) => format!("disconnect instance={instance:?}"),
+            JobTarget::DisconnectAll(instances) => format!("disconnect instances={}", instances.len()),
         };
         trace_scheduler_format(engine, || format!("deferred {} begin {target_label}", *processed));
         let result = run_job(lua, engine, job);
@@ -1957,8 +1960,10 @@ pub fn run_until(lua: &Lua, engine: &Rc<Engine>, until: f64) -> LuaResult<()> {
 impl Scheduler {
     pub fn visit_instance_refs(&self, visit: &mut dyn FnMut(InstanceId)) {
         for job in self.deferred.iter().chain(self.held.iter()) {
-            if let JobTarget::DisconnectAll(id) = job.target {
-                visit(id);
+            if let JobTarget::DisconnectAll(instances) = &job.target {
+                for &id in instances {
+                    visit(id);
+                }
             }
             for value in &job.args {
                 value.visit_instances(visit);

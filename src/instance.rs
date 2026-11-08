@@ -763,8 +763,10 @@ pub fn begin_destroy(
 
 /// The rest of Destroy: signals disconnect at the next resumption point. (The instance keeps its
 /// tags, as in Studio: CollectionService's removed signals fired when it left the DataModel.)
-pub fn finish_destroy(state: &mut State, id: InstanceId) {
-    state.sched.defer(JobTarget::DisconnectAll(id), Vec::new());
+pub fn finish_destroy(state: &mut State, instances: Vec<InstanceId>) {
+    if !instances.is_empty() {
+        state.sched.defer(JobTarget::DisconnectAll(instances), Vec::new());
+    }
 }
 
 /// Disconnects every signal of an instance (Destroy's deferred cleanup).
