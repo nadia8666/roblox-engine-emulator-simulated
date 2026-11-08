@@ -43,7 +43,7 @@ fn trace_scheduler_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("REE_TRACE_SCHEDULER").as_deref() == Ok("1"))
 }
 
-fn trace_scheduler(engine: &Engine, label: &str) {
+pub(crate) fn trace_scheduler(engine: &Engine, label: &str) {
     if !trace_scheduler_enabled() {
         return;
     }
