@@ -172,7 +172,8 @@ struct OutputLog {
 
 impl OutputLog {
     fn write(&mut self, entry: &Entry) -> std::io::Result<()> {
-        self.file.write_all(&serde_json::to_vec(&entry.json())?)?;
+        let line = serde_json::to_vec(&entry.json()).map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+        self.file.write_all(&line)?;
         self.file.write_all(b"\n")?;
         self.file.flush()
     }
