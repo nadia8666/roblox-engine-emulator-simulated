@@ -352,6 +352,11 @@ const CALLBACK_SUPPLEMENT: &[(&str, &[&str])] = &[
     ("DataModel", &["OnClose"]),
 ];
 
+// Properties the dump leaves out although a game script reads or writes them (deprecated ones the Studio plugin's reflection
+// hides; a game's UI core sets GuiService.CoreGuiNavigationEnabled): (class, property, script type, engine type). Each is
+// readable, writable and not serialized
+const PROPERTY_SUPPLEMENT: &[(&str, &str, &str, &str)] = &[("GuiService", "CoreGuiNavigationEnabled", "boolean", "bool")];
+
 /// The dump as written by the Studio plugin: empty tables may be `[]` or `{}` anywhere.
 fn list(value: Option<&serde_json::Value>) -> &[serde_json::Value] {
     match value {
@@ -617,6 +622,20 @@ impl Reflection {
                     if !own.contains(&name) {
                         own.push(name);
                     }
+                }
+            }
+        }
+
+        for (class, property, script_type, engine_type_name) in PROPERTY_SUPPLEMENT {
+            if let Some(&id) = reflection.class_ids.get(*class) {
+                let name = reflection.intern(property);
+                let present = reflection.classes[id as usize]
+                    .own_properties
+                    .iter()
+                    .any(|&index| reflection.properties[index as usize].name == name);
+                if !present {
+                    let index = reflection.add_property(property, script_type, engine_type_name, None, false, true, false, id);
+                    reflection.classes[id as usize].own_properties.push(index);
                 }
             }
         }
