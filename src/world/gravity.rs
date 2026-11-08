@@ -424,11 +424,6 @@ fn bounds(state: &State, setup: &Setup, component: &[InstanceId]) -> (Vec3, f32)
 }
 
 
-fn engine_local_player(state: &State, reflection: &Reflection, setup: &Setup) -> Option<InstanceId> {
-    let _ = (state, reflection, setup);
-    None
-}
-
 fn enum_name(state: &State, reflection: &Reflection, id: InstanceId, name: Option<NameId>) -> Option<String> {
     let item = name.and_then(|name| state.dom.raw_get(id, name)).and_then(|value| match value {
         Value::EnumItem(item) => Some(*item),
@@ -532,6 +527,7 @@ fn stream_instances(
     reflection: &Reflection,
     hooks: &Hooks,
     setup: &Setup,
+    local_player: Option<InstanceId>,
     foci: &[Focus],
     target: f32,
 ) {
@@ -556,7 +552,7 @@ fn stream_instances(
         for root in models {
             let mode = enum_name(state, reflection, root, setup.model_streaming_mode).unwrap_or_else(|| "Nonatomic".to_string());
             if mode == "Persistent"
-                || mode == "PersistentPerPlayer" && engine_local_player(state, reflection, setup).is_some_and(|player| state.gravity.persistent_players.contains(&(root, player)))
+                || mode == "PersistentPerPlayer" && local_player.is_some_and(|player| state.gravity.persistent_players.contains(&(root, player)))
             {
                 continue;
             }
@@ -570,11 +566,6 @@ fn stream_instances(
             }
             let parts: Vec<InstanceId> = descendants.into_iter().filter(|&id| reflection.class(state.dom.at(id).class).is_a(setup.base_part)).collect();
             if parts.is_empty() {
-                continue;
-            }
-            if parts.iter().any(|&part| {
-                state.dom.descendants(part).iter().any(|&child| state.dom.at(child).has(crate::dom::flags::SCRIPT_CREATED))
-            }) {
                 continue;
             }
             if mode == "Nonatomic" && !improved {
@@ -630,7 +621,7 @@ fn streaming_step(engine: &Engine, hooks: &Hooks, state: &mut State, setup: &Set
     };
     restore_streamed_out(state, &engine.reflection, hooks, setup, &mut streamed_out, false, foci, *radius);
     state.gravity.streamed_out = streamed_out;
-    stream_instances(state, &engine.reflection, hooks, setup, foci, *radius);
+    stream_instances(state, &engine.reflection, hooks, setup, engine.world().local_player, foci, *radius);
 }
 
 /// The simulation step: every free assembly falls for `delta` seconds.
