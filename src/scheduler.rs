@@ -1321,7 +1321,7 @@ fn flush_deferred_upto(lua: &Lua, engine: &Rc<Engine>, processed: &mut usize, up
                 format!("handler signal={signal} connection={}", connection.slot())
             }
             JobTarget::Thread(_) => "thread".to_string(),
-            JobTarget::DisconnectAll(instance) => format!("disconnect instance={}", instance.index),
+            JobTarget::DisconnectAll(instance) => format!("disconnect instance={instance:?}"),
         };
         trace_scheduler_format(engine, || format!("deferred {} begin {target_label}", *processed));
         let result = run_job(lua, engine, job);
