@@ -417,6 +417,7 @@ pub fn step(engine: &Engine, delta: f64) {
     }
     let g = Vec3::new(0.0, -(state.dom.number(workspace, setup.gravity).unwrap_or(196.2) as f32), 0.0);
     let dt = delta as f32;
+    let reach = reach(&state, reflection, &setup, engine);
     let candidates = state.gravity.loose.clone();
     let mut visited: FxHashSet<InstanceId> = FxHashSet::default();
     let mut gone = Vec::new();
