@@ -515,10 +515,9 @@ pub fn step(engine: &Engine, delta: f64) {
             }
         }
     }
-    if state.gravity.loose.is_empty() || delta <= 0.0 {
+    if delta <= 0.0 {
         return;
     }
-    let g = Vec3::new(0.0, -(state.dom.number(workspace, setup.gravity).unwrap_or(196.2) as f32), 0.0);
     let streams = setup.streaming.is_some_and(|name| state.dom.boolean(workspace, name) == Some(true));
     let reach = reach(&state, reflection, &setup, engine);
     if !engine.options.server() {
@@ -530,6 +529,10 @@ pub fn step(engine: &Engine, delta: f64) {
             restore_streamed(&mut state, reflection, &hooks);
         }
     }
+    if state.gravity.loose.is_empty() {
+        return;
+    }
+    let g = Vec3::new(0.0, -(state.dom.number(workspace, setup.gravity).unwrap_or(196.2) as f32), 0.0);
     let dt = delta as f32;
     let candidates = state.gravity.loose.clone();
     let mut visited: FxHashSet<InstanceId> = FxHashSet::default();
