@@ -504,7 +504,7 @@ fn restore_streamed_out(
             }
             continue;
         }
-        let mut parts = vec![root];
+        let mut parts = if reflection.class(state.dom.at(root).class).is_a(setup.base_part) { vec![root] } else { Vec::new() };
         parts.extend(state.dom.descendants(root).into_iter().filter(|&id| reflection.class(state.dom.at(id).class).is_a(setup.base_part)));
         let model = reflection.class_id("Model");
         let mode = enum_name(state, reflection, root, setup.model_streaming_mode);
@@ -565,8 +565,13 @@ fn stream_instances(
             }
             let descendants = state.dom.descendants(root);
             let nested_persistent = descendants.iter().copied().any(|id| {
-                model.map(|model| reflection.class(state.dom.at(id).class).is_a(model)).unwrap_or(false)
-                    && enum_name(state, reflection, id, setup.model_streaming_mode).as_deref() == Some("Persistent")
+                if !model.is_some_and(|model| reflection.class(state.dom.at(id).class).is_a(model)) {
+                    return false;
+                }
+                let mode = enum_name(state, reflection, id, setup.model_streaming_mode);
+                mode.as_deref() == Some("Persistent")
+                    || mode.as_deref() == Some("PersistentPerPlayer")
+                        && local_player.is_some_and(|player| state.gravity.persistent_players.contains(&(id, player)))
             });
             if nested_persistent {
                 continue;
