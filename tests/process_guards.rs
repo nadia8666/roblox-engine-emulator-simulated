@@ -69,9 +69,9 @@ fn user_game_settings_and_player_gui_have_offline_defaults() {
     let root = scratch("client-settings");
     let client = harness(
         &root,
-        "return function()\n            local settings = UserSettings():GetService('UserGameSettings')\n            assert(settings:GetCameraYInvertValue() == 1)\n            local playerGui = Instance.new('PlayerGui')\n            local objects = playerGui:GetGuiObjectsAtPosition(0, 0)\n            assert(type(objects) == 'table' and #objects == 0)\n            print('@done')\n        end",
+        "return function()\n            local settings = UserSettings():GetService('UserGameSettings')\n            assert(settings:GetCameraYInvertValue() == 1)\n            local playerGui = game:GetService('Players').LocalPlayer:WaitForChild('PlayerGui')\n            local objects = playerGui:GetGuiObjectsAtPosition(0, 0)\n            assert(type(objects) == 'table' and #objects == 0)\n            print('@done')\n        end",
     );
-    let done = ree(&root, &client, &["--seconds", "1"]).output().unwrap();
+    let done = ree(&root, &client, &["--seconds", "1", "--run-context", "client"]).output().unwrap();
     let (stdout, stderr) = (String::from_utf8_lossy(&done.stdout), String::from_utf8_lossy(&done.stderr));
     assert_eq!(done.status.code(), Some(0), "{stderr}");
     let summary: serde_json::Value = serde_json::from_str(stdout.trim()).expect("the summary on stdout");
