@@ -550,10 +550,11 @@ pub fn install(engine: &Rc<Engine>) {
     if let Some(run_service) = class(&reflection, "RunService") {
         let mode_edit = options.edit_mode();
         let server = options.server();
+        let loopback = options.loopback;
         let studio = options.studio;
         behaviors.add_method(run_service, K::IsStudio as NameId, constant(move |_| Ok(LuaValue::Boolean(studio))));
         behaviors.add_method(run_service, K::IsClient as NameId, constant(move |_| Ok(LuaValue::Boolean(!server))));
-        behaviors.add_method(run_service, K::IsServer as NameId, constant(move |_| Ok(LuaValue::Boolean(server))));
+        behaviors.add_method(run_service, K::IsServer as NameId, constant(move |_| Ok(LuaValue::Boolean(server || loopback))));
         behaviors.add_method(run_service, K::IsRunning as NameId, constant(move |_| Ok(LuaValue::Boolean(!mode_edit))));
         behaviors.add_method(run_service, K::IsRunMode as NameId, constant(|_| Ok(LuaValue::Boolean(false))));
         // (a game script may not ask: "The current thread cannot call 'IsEdit' (lacking capability PluginOrOpenCloud)" on a
