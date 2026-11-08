@@ -712,10 +712,13 @@ fn limited(max_parts: usize, parts: Vec<InstanceId>) -> Vec<InstanceId> {
 /// What a cast pays for the parts its path crosses, whatever its filter admits (cost.rs RAY_MET, RAY_CROSSED): the engine's
 /// broadphase meets them all before the filter is asked
 fn charge_cast(engine: &Engine, origin: Vec3, direction: Vec3, grow: f32) {
-    let crossed = cached_solids(engine, &Filter::default()).iter().filter(|solid| ray_solid(solid, origin, direction, grow).is_some()).count();
+    query_trace(engine, "cast cost begin");
+    let solids = cached_solids(engine, &Filter::default());
+    let crossed = solids.iter().filter(|solid| ray_solid(solid, origin, direction, grow).is_some()).count();
     if crossed > 0 {
         charge_query(engine, crate::cost::RAY_MET + (crossed - 1) as f64 * crate::cost::RAY_CROSSED);
     }
+    query_trace(engine, &format!("cast cost end solids={} crossed={crossed}", solids.len()));
 }
 
 /// A spatial query's charge beyond its call's price (cost.rs QUERY_BOX_PART, RAY_CROSSED)
