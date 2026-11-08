@@ -277,6 +277,11 @@ pub fn install(engine: &Rc<Engine>) {
             }));
         }
     }
+    drop(behaviors);
+    engine.state.borrow_mut().sched.add_hook(crate::scheduler::Phase::Simulation, Rc::new(|_, engine, delta| {
+        step(engine, delta);
+        Ok(())
+    }));
 }
 
 /// Whether an instance is in the Workspace's own world (not a WorldModel's).
