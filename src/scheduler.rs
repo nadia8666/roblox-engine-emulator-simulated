@@ -38,9 +38,13 @@ use super::{
 /// tools/parity/probes/deferred_chains.luau, deferred_points.luau).
 pub const MAX_REENTRANCY: u32 = 80;
 
-fn trace_scheduler(engine: &Engine, label: &str) {
+fn trace_scheduler_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*ENABLED.get_or_init(|| std::env::var("REE_TRACE_SCHEDULER").as_deref() == Ok("1")) {
+    *ENABLED.get_or_init(|| std::env::var("REE_TRACE_SCHEDULER").as_deref() == Ok("1"))
+}
+
+fn trace_scheduler(engine: &Engine, label: &str) {
+    if !trace_scheduler_enabled() {
         return;
     }
     let (frame, now) = {
@@ -48,6 +52,12 @@ fn trace_scheduler(engine: &Engine, label: &str) {
         (state.sched.frame, state.sched.now)
     };
     crate::output::diagnostic(&format!("ree trace frame={frame} time={now:.6} {label}"));
+}
+
+fn trace_scheduler_format(engine: &Engine, label: impl FnOnce() -> String) {
+    if trace_scheduler_enabled() {
+        trace_scheduler(engine, &label());
+    }
 }
 
 /// A job that belongs to no signal.
@@ -1305,9 +1315,9 @@ fn flush_deferred_upto(lua: &Lua, engine: &Rc<Engine>, processed: &mut usize, up
             let mut state = engine.state.borrow_mut();
             std::mem::replace(&mut state.sched.event_depth, job.event_depth)
         };
-        trace_scheduler(engine, &format!("deferred {} begin", *processed));
+        trace_scheduler_format(engine, || format!("deferred {} begin", *processed));
         let result = run_job(lua, engine, job);
-        trace_scheduler(engine, &format!("deferred {} end", *processed));
+        trace_scheduler_format(engine, || format!("deferred {} end", *processed));
         engine.state.borrow_mut().sched.event_depth = previous;
         if let Err(error) = result {
             engine.state.borrow_mut().sched.flushing -= 1;
@@ -1372,9 +1382,9 @@ fn run_timers_in(lua: &Lua, engine: &Rc<Engine>, legacy: bool, limit: Option<f64
                 job_args(lua, engine, &timer.args)?
             }
         };
-        trace_scheduler(engine, &format!("timer {:?} begin", timer.kind));
+        trace_scheduler_format(engine, || format!("timer {:?} begin", timer.kind));
         resume(lua, engine, &timer.thread, args);
-        trace_scheduler(engine, &format!("timer {:?} end", timer.kind));
+        trace_scheduler_format(engine, || format!("timer {:?} end", timer.kind));
         if flush == TimerFlush::EachResumption {
             flush_deferred(lua, engine)?;
         }
@@ -1396,9 +1406,9 @@ fn run_hooks(lua: &Lua, engine: &Rc<Engine>, phase: Phase, delta: f64) -> LuaRes
     let result = (|| {
         let hooks = engine.state.borrow().sched.hooks_of(phase);
         for (index, hook) in hooks.into_iter().enumerate() {
-            trace_scheduler(engine, &format!("phase {phase:?} hook {index} begin"));
+            trace_scheduler_format(engine, || format!("phase {phase:?} hook {index} begin"));
             hook(lua, engine, delta)?;
-            trace_scheduler(engine, &format!("phase {phase:?} hook {index} end"));
+            trace_scheduler_format(engine, || format!("phase {phase:?} hook {index} end"));
             flush_deferred(lua, engine)?;
         }
         Ok(())
@@ -1473,9 +1483,9 @@ fn run_phase(lua: &Lua, engine: &Rc<Engine>, phase: Phase, label: &'static str, 
     profile::enter(label);
     let hooks = engine.state.borrow().sched.hooks_of(phase);
     let result = hooks.into_iter().enumerate().try_for_each(|(index, hook)| {
-        trace_scheduler(engine, &format!("{label} {phase:?} hook {index} begin"));
+        trace_scheduler_format(engine, || format!("{label} {phase:?} hook {index} begin"));
         let result = hook(lua, engine, delta);
-        trace_scheduler(engine, &format!("{label} {phase:?} hook {index} end"));
+        trace_scheduler_format(engine, || format!("{label} {phase:?} hook {index} end"));
         result
     });
     profile::leave();
