@@ -1213,6 +1213,7 @@ fn run_job(lua: &Lua, engine: &Rc<Engine>, job: Job) -> LuaResult<()> {
             let census = crate::census::handler_site(engine, connection);
             let callback = engine.state.borrow_mut().signals.begin_handler(connection);
             if let Some((callback, signal)) = callback {
+                trace_scheduler_format(engine, || format!("deferred callback {}", handler_label(engine, signal, &callback)));
                 let args = job_args(lua, engine, &job.args)?;
                 let sample = sample_handler(engine, signal, &callback);
                 let _scope = crate::microprofile::enabled()
