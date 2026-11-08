@@ -166,6 +166,7 @@ impl Output {
     }
 }
 
+#[derive(Debug)]
 struct OutputLog {
     file: std::fs::File,
 }
