@@ -136,6 +136,21 @@ fn instances_properties_and_errors() {
 }
 
 #[test]
+fn datamodel_services_are_available_by_class_name() {
+    assert_script(
+        r#"
+        local runService = game.RunService
+        assert(runService == game:GetService("RunService"))
+        assert(runService.Name == "Run Service")
+        assert(runService:IsA("RunService"))
+        assert(runService.RenderStepped == game:GetService("RunService").RenderStepped)
+        local lighting = game.Lighting
+        assert(lighting == game:GetService("Lighting"))
+        "#,
+    );
+}
+
+#[test]
 fn not_scriptable_properties_are_no_members() {
     // Studio's dump permits no Read on PVInstance.Origin, PVInstance."Pivot Offset" or
     // Model.WorldPivotData: a script indexing them finds a child of that name, else no member

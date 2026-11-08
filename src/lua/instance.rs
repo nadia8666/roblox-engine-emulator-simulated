@@ -254,6 +254,17 @@ pub fn get(lua: &Lua, engine: &Rc<Engine>, id: InstanceId, key: &LuaValue) -> Re
     if let Some(child) = super::globals::missing_child(lua, engine, id, &key_bytes)? {
         return Ok(instance_value(lua, engine, child)?);
     }
+    if engine.world().game == id {
+        let service_name = key_string.to_string_lossy();
+        if engine
+            .reflection
+            .class_id(&service_name)
+            .is_some_and(|service| engine.reflection.class(service).service)
+        {
+            let service = super::services::get_service(engine, id, &service_name)?;
+            return Ok(instance_value(lua, engine, service)?);
+        }
+    }
     if let Some(name) = engine.reflection.upper_first_id(&key_bytes)
         && let Some(value) = get_member(lua, engine, id, class, name)
     {
