@@ -260,6 +260,22 @@ struct CachedSolids {
 
 impl crate::Extension for QueryCache {}
 
+fn query_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("REE_TRACE_QUERIES").as_deref() == Ok("1"))
+}
+
+fn query_trace(engine: &Engine, label: &str) {
+    if !query_trace_enabled() {
+        return;
+    }
+    let (frame, now) = {
+        let state = engine.state.borrow();
+        (state.sched.frame, state.sched.now)
+    };
+    crate::output::diagnostic(&format!("ree query frame={frame} time={now:.6} {label}"));
+}
+
 fn query_cache(engine: &Engine) -> &QueryCache {
     engine.extension_or_insert_with(QueryCache::default)
 }
@@ -291,7 +307,9 @@ fn cached_solids(engine: &Engine, filter: &Filter) -> Rc<[Solid]> {
         return found.solids.clone();
     }
     crate::profiler::caches::miss(crate::profiler::caches::Cache::Queries);
+    query_trace(engine, "solids build begin");
     let made: Rc<[Solid]> = solids(engine, filter).into();
+    query_trace(engine, &format!("solids build end count={}", made.len()));
     let mut entries = cache.entries.borrow_mut();
     let before = entries.len();
     entries.retain(|entry| entry.stamp == stamp);
@@ -509,12 +527,23 @@ fn sweep_boxes(a: &Oriented, direction: Vec3, b: &Oriented) -> Option<(f32, Vec3
 /// The closest part a box (`frame`, `size`) swept along `direction` touches, `except` aside.
 pub fn cast_box(solids: &[Solid], frame: &Affine3A, size: Vec3, direction: Vec3, except: Option<InstanceId>) -> Option<Hit> {
     let moving = Oriented::of(&unit_frame(frame), size * 0.5);
+    let moving_radius = moving.half.length();
+    let direction_length_squared = direction.length_squared();
     let mut best: Option<Hit> = None;
     for solid in solids {
         if except == Some(solid.part) {
             continue;
         }
         let other = Oriented::of(&solid.frame, solid.half_extents());
+        let combined_radius = moving_radius + other.half.length();
+        let along = if direction_length_squared > 0.0 {
+            ((other.center - moving.center).dot(direction) / direction_length_squared).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if (moving.center + direction * along - other.center).length_squared() > combined_radius * combined_radius {
+            continue;
+        }
         let Some((t, normal)) = sweep_boxes(&moving, direction, &other) else { continue };
         let distance = direction.length() * t;
         if best.is_some_and(|hit| hit.distance <= distance) {
@@ -733,10 +762,14 @@ pub fn install(engine: &Rc<Engine>) {
             return raise("Blockcast: cframe, size and direction expected");
         };
         let filter = take_filter(engine, args.get(4));
-        let hit = cast_box(&cached_solids(engine, &filter), &frame, size, direction, None);
+        query_trace(engine, "Blockcast begin");
+        let solids = cached_solids(engine, &filter);
+        query_trace(engine, &format!("Blockcast cast begin solids={}", solids.len()));
+        let hit = cast_box(&solids, &frame, size, direction, None);
+        query_trace(engine, "Blockcast cast end");
         keep_filter(engine, filter);
-        // (a box's path counted as its centre's, grown by its half diagonal)
         charge_cast(engine, frame::translation(&frame), direction, size.length() * 0.5);
+        query_trace(engine, "Blockcast end");
         hit_values(lua, engine, hit)
     })));
     members.push(("Shapecast", method(|lua, engine, _, args| {
