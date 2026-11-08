@@ -1154,9 +1154,16 @@ for _, Name in { "LogCustomEvent", "LogEconomyEvent", "LogProgressionEvent", "Lo
 end
 -- (SoundService:PlayLocalSound is Rust: engine::world reports the play)
 
--- Remotes never reach a server offline; invocations yield forever like a dropped connection.
-Method("RemoteFunction", "InvokeServer", function(Self)
-	Missing("RemoteFunction", `InvokeServer ({Self:GetFullName()}) never returns offline`)
+-- RemoteFunction invocations reach the local server only in loopback mode.
+Method("RemoteFunction", "InvokeServer", function(Self, ...)
+	if R.Loopback then
+		local Callback = R.GetCallback(Self, "OnServerInvoke")
+		local Player = LocalPlayer()
+		if Callback and Player then
+			return R.Copied(Callback(Player, R.Copied(...)))
+		end
+	end
+	Missing("RemoteFunction", `InvokeServer (${Self:GetFullName()}) never returns offline`)
 	return coroutine.yield()
 end)
 Method("BindableFunction", "Invoke", function(Self, ...)
