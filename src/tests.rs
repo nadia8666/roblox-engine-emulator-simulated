@@ -3537,6 +3537,59 @@ fn a_frozen_clock_ignores_the_work_between_reads() {
     }
 }
 
+/// A frozen clock is the frame's time for every thread that reads it, however many read it in a frame, as the bench's
+/// frame-locked clock is: 400 threads timed on os.clock, as a heavy attack's copies are, all read it the same within each
+/// frame. (The reads counted against the allowance for the whole phase, so from the 257th on each moved it 10 us, and an arm
+/// that read more ran its copies ahead.) A busy loop in one resumption still moves it, so it ends.
+#[test]
+fn a_frozen_clock_reads_the_same_for_every_thread_in_a_frame() {
+    let (lua, engine) = start();
+    engine.state.borrow_mut().sched.frozen_clock = true;
+    crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    run(
+        &lua,
+        &engine,
+        r#"
+        local RunService = game:GetService("RunService")
+        local Reads = { {}, {} }
+        _G.FrozenReads = Reads
+        for _ = 1, 400 do
+            task.spawn(function()
+                for Frame = 1, 2 do
+                    RunService.Heartbeat:Wait()
+                    table.insert(Reads[Frame], os.clock())
+                end
+            end)
+        end
+        "#,
+    );
+    for _ in 0..3 {
+        crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    }
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local function Spread(List)
+            local Low, High = math.huge, -math.huge
+            for _, Value in List do
+                Low, High = math.min(Low, Value), math.max(High, Value)
+            end
+            return High - Low
+        end
+        local Reads = _G.FrozenReads
+        print(string.format("reads %d %d spread %.9f %.9f", #Reads[1], #Reads[2], Spread(Reads[1]), Spread(Reads[2])))
+        local Start, Count = os.clock(), 0
+        while os.clock() - Start < 0.001 do
+            Count += 1
+        end
+        print(string.format("busy loop ended after %d reads", Count))
+        "#,
+    );
+    assert!(output.contains(&"print: reads 400 400 spread 0.000000000 0.000000000".to_string()), "{output:?}");
+    assert!(output.iter().any(|line| line.starts_with("print: busy loop ended after ")), "{output:?}");
+}
+
 /// A frozen clock stops the wall clock too: tick(), os.time() and DateTime.now() read the same in a run an hour later, so two
 /// differential runs that straddle an hour boundary still write the same values.
 #[test]
@@ -6765,4 +6818,76 @@ fn a_phone_run_pays_the_calibrated_factor_on_its_script_work() {
     let (phone, phone_touch) = per("phone");
     assert!((phone / desktop - crate::cost::PHONE_SCRIPTS).abs() < 0.02, "a phone {phone} ns a Folder, a desktop {desktop}");
     assert_eq!((desktop_touch.as_str(), phone_touch.as_str()), ("false", "true"));
+}
+
+/// A link to directory `target` at `link`: a junction on Windows, which needs no privilege (a directory
+/// symlink does), a symlink elsewhere.
+fn link_directory(target: &std::path::Path, link: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        // mklink reads a "/" as the start of a switch
+        let native = |path: &std::path::Path| path.to_string_lossy().replace('/', "\\");
+        let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J", &native(link), &native(target)]).stdout(std::process::Stdio::null()).status().unwrap();
+        assert!(made.success(), "mklink /J {} {}", link.display(), target.display());
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+/// A link back to a directory on the way down to it is not followed: the directory would hold itself
+/// without end, and two such links made the scan list 2^depth copies (a hang). Every other link mounts
+/// what it leads to, and each link left out says where it leads.
+#[test]
+fn a_mount_leaves_out_a_link_back_up_its_way_down() {
+    let dir = std::env::temp_dir().join(format!("ree-link-loops-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for folder in ["Folder", "A", "B"] {
+        std::fs::create_dir_all(dir.join(folder)).unwrap();
+    }
+    std::fs::write(dir.join("Folder/a.luau"), "return 1").unwrap();
+    std::fs::write(dir.join("B/b.luau"), "return 2").unwrap();
+    link_directory(&dir, &dir.join("Folder/Back"));
+    link_directory(&dir, &dir.join("Folder/Again"));
+    link_directory(&dir.join("B"), &dir.join("A/ToB"));
+    link_directory(&dir.join("A"), &dir.join("B/ToA"));
+    let root = dir.to_string_lossy().replace('\\', "/");
+    let (lua, engine) = start();
+    engine.state.borrow_mut().project.listings = Some(Vec::new());
+    super::project::mount_at(&engine, &super::project::Mount::parse(&format!("ReplicatedStorage/Looped={root}"), false).unwrap()).unwrap();
+    // a prepared run's listing of it reads the same again (the links left out have no stamps to compare)
+    let listings = engine.state.borrow_mut().project.listings.take().unwrap();
+    assert!(!listings.is_empty() && listings.iter().all(|listing| listing.unchanged(&Default::default())));
+    let output = run(&lua, &engine, r#"
+        local Looped = game:GetService("ReplicatedStorage").Looped
+        assert(Looped.Folder:FindFirstChild("a") and not Looped.Folder:FindFirstChild("Back") and not Looped.Folder:FindFirstChild("Again"), "Folder")
+        -- each link is followed once, up to the link that leads back
+        assert(Looped.A.ToB:FindFirstChild("b") and not Looped.A.ToB:FindFirstChild("ToA"), "A.ToB")
+        assert(Looped.B:FindFirstChild("b") and Looped.B:FindFirstChild("ToA") and not Looped.B.ToA:FindFirstChild("ToB"), "B.ToA")
+        print("ok")
+    "#);
+    assert!(output.contains(&"print: ok".to_string()), "{output:?}");
+    let left_out: Vec<&String> = output.iter().filter(|line| line.contains("a link back to")).collect();
+    let says = |link: &str, above: &str| format!("warn: {root}/{link}: a link back to {root}{above}, which would hold itself; not mounted");
+    for expected in [says("Folder/Again", ""), says("Folder/Back", ""), says("A/ToB/ToA", "/A"), says("B/ToA/ToB", "/B")] {
+        assert!(left_out.contains(&&expected), "{expected} in {left_out:?}");
+    }
+    assert_eq!(left_out.len(), 4, "{left_out:?}");
+    drop(lua);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Place content's walk leaves out a link back up its way down, as a mount does.
+#[test]
+fn place_content_leaves_out_a_link_back_up_its_way_down() {
+    let repo = std::env::temp_dir().join(format!("ree-place-content-loops-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    let place = repo.join("data/place-content/Lobby");
+    std::fs::create_dir_all(place.join("ReplicatedStorage")).unwrap();
+    link_directory(&place, &place.join("ReplicatedStorage/Back"));
+    link_directory(&place, &place.join("ReplicatedStorage/Again"));
+    let engine = Engine::new(Options { repo: repo.clone(), ..Options::default() }).expect("engine");
+    assert_eq!(super::project::mount_place_content(&engine, "Lobby.json"), 0);
+    let left_out: Vec<String> = lines(&engine).into_iter().filter(|line| line.contains("a link back to")).collect();
+    assert_eq!(left_out.len(), 2, "{left_out:?}");
+    let _ = std::fs::remove_dir_all(&repo);
 }

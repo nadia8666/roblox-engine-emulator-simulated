@@ -16,7 +16,8 @@
 //!   (world CFrames), as do attachments whose CFrame is written (or whose parent is not a part).
 //!   `ParticleEmitter:Emit(n)` and `Clear()` become actions at their frame; an instance reparented
 //!   inside the world a `parent` action.
-//! - Lighting's own properties play on ror's `Lighting`; the skies, atmospheres and post effects a
+//! - Lighting's own properties play on ror's `Lighting`: every write of the run, its setup's at frame 0
+//!   (the engine's values before the run stand in for the place's, ror's stage); the skies, atmospheres and post effects a
 //!   run parents to Lighting are kept in the scene's `~Lighting` folder and parented into
 //!   `Lighting` while they are there (so are the post effects it parents to the CurrentCamera: Studio
 //!   draws them as it draws Lighting's). The place's own (ror's stage: `--lighting-from`'s) leave with
@@ -138,7 +139,8 @@ const VISUAL: &[(&str, &[(&str, Track)])] = {
         ("Lighting", &[
             ("ExposureCompensation", Plain), ("Brightness", Plain), ("Ambient", Plain), ("OutdoorAmbient", Plain), ("ClockTime", Plain),
             ("FogColor", Plain), ("FogStart", Plain), ("FogEnd", Plain), ("ColorShift_Top", Plain), ("ColorShift_Bottom", Plain),
-            ("EnvironmentDiffuseScale", Plain), ("EnvironmentSpecularScale", Plain), ("GeographicLatitude", Plain),
+            ("EnvironmentDiffuseScale", Plain), ("EnvironmentSpecularScale", Plain), ("GeographicLatitude", Plain), ("GlobalShadows", Plain),
+            ("ShadowSoftness", Plain),
         ]),
         ("PostEffect", &[("Enabled", Plain)]),
         ("ColorCorrectionEffect", &[("Brightness", Plain), ("Contrast", Plain), ("Saturation", Plain), ("TintColor", Plain)]),
@@ -333,10 +335,14 @@ impl Recorder {
                 state.property_names.insert(name, property.to_string());
             }
         }
+        // (Lighting's record is there before the harness runs: what it writes then is a change at frame 0)
         if let Some(lighting) = super::services::find_service(engine, engine.world().game, "Lighting") {
-            state.ignored.extend(engine.state.borrow().dom.children_of(lighting).iter().copied());
+            let engine_state = engine.state.borrow();
+            state.ignored.extend(engine_state.dom.children_of(lighting).iter().copied());
             state.lighting_id = Some(lighting);
+            state.lighting = Some(lighting_record(&engine_state, lighting));
         }
+        let lighting_id = state.lighting_id;
         let inner = Rc::new(RefCell::new(state));
         let mut hooks = engine.hooks.borrow_mut();
         let moves = inner.clone();
@@ -360,6 +366,19 @@ impl Recorder {
                 inner.dirty.push((id, name));
             }
         }));
+        // a write to Lighting is the run's even when it stores the value the engine held: that value
+        // only stands in for the place's, which the renderer's stage draws
+        if let Some(lighting) = lighting_id {
+            let kept = inner.clone();
+            hooks.property_unchanged.push(Box::new(move |_state: &mut State, id, name| {
+                if id == lighting {
+                    let mut inner = kept.borrow_mut();
+                    if inner.dirty_set.insert((id, name)) {
+                        inner.dirty.push((id, name));
+                    }
+                }
+            }));
+        }
         let events = inner.clone();
         hooks.world_events.push(Box::new(move |state: &mut State, event: &WorldEvent| {
             let mut inner = events.borrow_mut();
@@ -1417,9 +1436,6 @@ fn walk_world(inner: &mut Inner, state: &State, engine: &Rc<Engine>, lighting: O
             now.push(id);
             stack.extend(state.dom.children_of(id).iter().rev().copied());
         }
-        if inner.lighting.is_none() {
-            inner.lighting = Some(lighting_record(state, engine, lighting, inner));
-        }
     }
     inner.walks += 1;
     let walk = inner.walks;
@@ -1653,12 +1669,13 @@ fn sample_changes(inner: &mut Inner, state: &State, engine: &Rc<Engine>, lightin
     }
 }
 
-/// Lighting's own record: its properties as the run started.
-fn lighting_record(state: &State, engine: &Engine, lighting: InstanceId, inner: &mut Inner) -> Record {
-    let class = state.dom.at(lighting).class;
-    let mut record = Record {
+/// Lighting's own record. It holds no values from before the run: the engine's Lighting stands in
+/// for the place's, which the renderer's stage draws, so every write of the run is a change, and a
+/// property holds the stage's value until the run first writes it.
+fn lighting_record(state: &State, lighting: InstanceId) -> Record {
+    Record {
         id: lighting,
-        class,
+        class: state.dom.at(lighting).class,
         class_name: "Lighting".into(),
         name: "Lighting".into(),
         path: "Lighting".into(),
@@ -1684,13 +1701,7 @@ fn lighting_record(state: &State, engine: &Engine, lighting: InstanceId, inner: 
         lighting_child: false,
         screen: false,
         attachment: false,
-    };
-    for &(name, track) in tracked(inner, engine, class).iter() {
-        if let Some(value) = current(state, engine, lighting, name, track) {
-            record.file.insert(name, value);
-        }
     }
-    record
 }
 
 // Output
@@ -1819,8 +1830,10 @@ fn playback(inner: &Inner) -> Playback {
     let mut actions: Vec<(f64, Box<[u8]>)> = Vec::new();
     let mut tweens: Vec<Box<[u8]>> = Vec::new();
     let mut motion: Vec<Box<[u8]>> = Vec::new();
-    let records = inner.records.iter().chain(inner.lighting.iter());
-    for record in records {
+    // (Lighting's values before the run's first write are the stage's: ror's `{"initial": true}`)
+    let stage = json!({ "initial": true });
+    let records = inner.records.iter().map(|record| (record, false)).chain(inner.lighting.iter().map(|record| (record, true)));
+    for (record, staged) in records {
         let target = record.path.as_str();
         for (name, track, list) in &record.changes {
             let property = inner.property_names.get(name).cloned().unwrap_or_default();
@@ -1843,7 +1856,7 @@ fn playback(inner: &Inner) -> Playback {
             let lerpable = shape.is_some() && list.iter().all(|(_, v)| numbers(v).map(|n| n.len()) == shape);
             let continuous = list.windows(2).any(|pair| pair[1].0 == pair[0].0 + 1);
             if continuous && lerpable {
-                let initial = record.file.get(name).filter(|v| numbers(v).map(|n| n.len()) == shape);
+                let initial = if staged { Some(&stage) } else { record.file.get(name).filter(|v| numbers(v).map(|n| n.len()) == shape) };
                 let keys = reduce(frame_keys(inner, list, initial, "value"), "value", 1e-4);
                 tweens.push(element(&json!({ "target": target, "property": property, "keys": keys })));
             } else {

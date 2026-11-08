@@ -524,6 +524,41 @@ Is(F(Color3.fromHSV(1, 1, 1).R, Color3.fromHSV(1.5, 1, 1).G, Color3.fromHSV(-0.2
     );
 }
 
+/// CFrame:Lerp blends the quaternions of rotations within about 2.2 degrees and slerps those farther apart, as a Studio
+/// 0.746 playing client does (the components it printed; it switches between quaternion dots 0.99980998, which slerped,
+/// and 0.99981022, which blended). Lerp between equal rotations was not-a-number for every alpha but 0 and 1, so a
+/// tween of a part's CFrame to a goal with its own rotation turned the part not-a-number.
+#[test]
+fn cframe_lerp_blends_rotations_that_nearly_agree() {
+    assert_script(
+        r#"
+local function F(...)
+	local Out = {}
+	for _, Value in { ... } do
+		table.insert(Out, string.format("%.9g", Value))
+	end
+	return table.concat(Out, " ")
+end
+local function Is(Got, Want)
+	assert(Got == Want, `got "{Got}", expected "{Want}"`)
+end
+local Base = CFrame.Angles(0.3, 0.7, 0.2)
+Is(F(Base:GetComponents()), "0 0 0 0.749596298 -0.151950687 0.64421767 0.376380503 0.898470879 -0.226026341 -0.544465959 0.411899477 0.730681717")
+-- the same rotation comes back through its quaternion, a float step off
+Is(F(Base:Lerp(Base, 0.3):GetComponents()), "0 0 0 0.749596238 -0.151950702 0.64421773 0.376380503 0.898470819 -0.226026326 -0.544466019 0.411899477 0.730681658")
+Is(F(Base:Lerp(Base, -0.1):GetComponents()), "0 0 0 0.749596238 -0.151950657 0.64421767 0.376380444 0.898470879 -0.226026312 -0.544465959 0.411899447 0.730681658")
+-- 0.03898 radians apart blends and 0.039 slerps: far outside 0..1, the two forms differ by 4e-5
+local Near, Past = Base * CFrame.Angles(0, 0.03898, 0), Base * CFrame.Angles(0, 0.039, 0)
+Is(F(Near:GetComponents()), "0 0 0 0.723921657 -0.151950687 0.672940195 0.384902894 0.898470879 -0.21118705 -0.572527111 0.411899477 0.708908796")
+Is(F(Base:Lerp(Near, -2):GetComponents()), "0 0 0 0.797448635 -0.151950747 0.583940625 0.357652992 0.898470819 -0.254626215 -0.485962987 0.411899447 0.770829976")
+Is(F(Base:Lerp(Near, 3):GetComponents()), "0 0 0 0.669367254 -0.151950628 0.727226496 0.400167853 0.898470819 -0.180598542 -0.62594974 0.411899447 0.662212729")
+Is(F(Past:GetComponents()), "0 0 0 0.723908186 -0.151950687 0.672954679 0.384907097 0.898470879 -0.211179346 -0.572541296 0.411899477 0.708897352")
+Is(F(Base:Lerp(Past, -2):GetComponents()), "0 0 0 0.797515154 -0.151950657 0.583849788 0.357623935 0.898470819 -0.254666984 -0.48587516 0.411899447 0.770885348")
+Is(F(Base:Lerp(Past, 3):GetComponents()), "0 0 0 0.669270039 -0.151950687 0.727316082 0.400191993 0.898470879 -0.180545002 -0.626038373 0.411899418 0.662129045")
+"#,
+    );
+}
+
 /// Every CFrame constructor, member, method, deprecated alias and operator gives the same bits run after run
 /// (cframe_golden/ops.txt, printed with %.17g), and a misuse gives the same error text. Three misuse texts differ
 /// from the build before CFrame took and returned native vectors itself: a table where a Vector3 is expected names

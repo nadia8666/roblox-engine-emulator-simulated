@@ -250,6 +250,10 @@ local function MoveDescendants(Self, Delta)
 	end
 	return Parts
 end
+-- Measured (roblox-sim, Studio 0.746, 2026-11-07): after PivotTo the pivot is the target exactly, every call. Composing
+-- Delta = Target * Pivot:Inverse() onto the old one instead let its float error compound: the inverse is the transpose, so a
+-- pivot scaled by s came back scaled by s squared, and a model pivoted every frame (an attack effect's spin) lost its
+-- rotation in about 25 frames (its start part went to [0 0 0; 0 1 0; 0 0 0], the parts it emitted to NaN).
 Method("PVInstance", "PivotTo", Priced(function(Self, Target)
 	if Self:IsA("BasePart") then
 		-- Measured (Studio 2026-10-16): a part's PivotTo carries every part under it, through Folders, Attachments and
@@ -257,7 +261,7 @@ Method("PVInstance", "PivotTo", Priced(function(Self, Target)
 		local Delta = Target * Self:GetPivot():Inverse()
 		local Below = 0
 		Together(function()
-			Self.CFrame = Delta * RawGet(Self, "CFrame")
+			Self.CFrame = Target * RawGet(Self, "PivotOffset"):Inverse()
 			Below = MoveDescendants(Self, Delta)
 		end)
 		Charge(Cost.PivotSingle + Below * if Self:IsDescendantOf(workspace) then Cost.PivotPart else Cost.PivotLoose)
@@ -269,8 +273,11 @@ Method("PVInstance", "PivotTo", Priced(function(Self, Target)
 			Moved = MoveDescendants(Self, Delta)
 		end)
 		Charge(Cost.PivotBase + Moved * if Self:IsDescendantOf(workspace) then Cost.PivotPart else Cost.PivotLoose)
-		if Stored or not (Self:IsA("Model") and RawGet(Self, "PrimaryPart")) then
-			StorePivot(Self, if Stored then Delta * Stored else Target)
+		-- (a model whose pivot is its own stores the target; one whose PrimaryPart sets it carries its stored pivot along)
+		if not (Self:IsA("Model") and RawGet(Self, "PrimaryPart")) then
+			StorePivot(Self, Target)
+		elseif Stored then
+			StorePivot(Self, Delta * Stored)
 		end
 	end
 end))

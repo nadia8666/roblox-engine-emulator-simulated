@@ -5,17 +5,19 @@
 //! place files Studio writes hold it).
 //!
 //! Rules (Roblox's documentation, BasePart / JointInstance / WeldConstraint / Motor6D and the
-//! Assemblies guide; not measured in Studio yet):
+//! Assemblies guide; the root measured in a Studio 0.746 playing client, the rest not measured yet):
 //! - A joint is active while it is Enabled, names two different parts that are in the same
 //!   WorldRoot (the Workspace or a WorldModel) and is itself in that WorldRoot or in JointsService.
 //!   Active joints link parts into assemblies; each assembly is a tree hanging from its root part.
-//! - The root: an anchored part (each anchored part roots its own assembly: a joint between two
-//!   anchored trees, or one closing a cycle, does nothing), else a part that is not Massless, then
-//!   the higher RootPriority, then the larger floor(largest face area * 50) times 20 for a Seat or
-//!   VehicleSeat, 10 for a part named HumanoidRootPart and 5 for one named Torso (the RootPriority
-//!   announcement's formula), then the earlier made part (Roblox sorts by an internal id).
+//! - The root (BasePart.AssemblyRootPart, nil outside a WorldRoot): an anchored part (each anchored
+//!   part roots its own assembly: a joint between two anchored trees, or one closing a cycle, does
+//!   nothing), else a part that is not Massless, then the higher RootPriority, then the larger
+//!   largest face area (the product of its two largest Size components, not rounded: 16.0004 beats
+//!   16) times 20 for a Seat or VehicleSeat, 10 for a part named exactly HumanoidRootPart and 5 for
+//!   one named exactly Torso (the RootPriority announcement's weights), then the later made part.
 //! - Setting a part's CFrame moves its whole assembly with it, now (BasePart.CFrame): the root moves
-//!   as the part moved, rigidly, and the rest follows its joints from the root. The joints never
+//!   as the part moved, rigidly (its rotation stored as a script's write to it would be:
+//!   frame::stored_rotation), and the rest follows its joints from the root. The joints never
 //!   place the root, so a Motor6D.Transform set since the parts were last placed bends the limbs it
 //!   drives and leaves the root (an anchored one above all) where the move puts it. The other
 //!   parts' CFrames change without Changed events, as physics moves parts; engine hooks (the
@@ -39,7 +41,8 @@
 //!
 //! Not modelled: Motor.CurrentAngle / DesiredAngle (the legacy motors' rotation), AnimationConstraint,
 //! RigidConstraint and the other constraints (solver-driven, nothing is simulated), and the members
-//! that report assemblies (AssemblyRootPart, GetRootPart, GetConnectedParts, JointInstance.Active).
+//! that report assemblies other than AssemblyRootPart (GetRootPart, GetConnectedParts,
+//! JointInstance.Active).
 
 use std::{collections::VecDeque, rc::Rc};
 
@@ -210,6 +213,15 @@ pub fn install(engine: &Rc<Engine>) {
     };
     engine.state.borrow_mut().joints.setup = Some(Rc::new(setup));
     engine.hooks.borrow_mut().instance_freed.push(Box::new(|state, id| state.joints.forget(id)));
+    if let Some(root_name) = name("AssemblyRootPart") {
+        engine.behaviors.borrow_mut().add_getter(base_part, root_name, crate::services::getter(|lua, engine, id| {
+            let root = root_part(&mut engine.state.borrow_mut(), &engine.reflection, id);
+            match root {
+                Some(root) => crate::lua::instance_value(lua, engine, root).map_err(crate::lua::Flow::from),
+                None => Ok(mlua::Value::Nil),
+            }
+        }));
+    }
 }
 
 impl Joints {
@@ -369,15 +381,17 @@ fn anchored(state: &State, setup: &Setup, part: InstanceId) -> bool {
     state.dom.boolean(part, setup.anchored) == Some(true)
 }
 
-/// The root a part would be among unanchored parts: (not Massless, RootPriority, size score).
-fn root_rank(state: &State, reflection: &Reflection, setup: &Setup, part: InstanceId) -> (bool, i64, f64) {
+/// The root a part would be among unanchored parts: (not Massless, RootPriority, size score). The score is the largest
+/// face's area, not rounded, times the seats' and names' weights (measured in Studio 0.746 through AssemblyRootPart: a
+/// 4 x 4.0001 face beats a 4 x 4 one, a 1 x 1 HumanoidRootPart ties a face of 10, a Torso one of 5, a Seat one of 20).
+fn root_rank(state: &State, reflection: &Reflection, setup: &Setup, part: InstanceId) -> (bool, i64, f32) {
     let massless = state.dom.boolean(part, setup.massless) == Some(true);
     let priority = state.dom.number(part, setup.root_priority).unwrap_or(0.0) as i64;
-    let size = match state.dom.raw_get(part, setup.size) {
-        Some(Value::Vector3(v)) => (v.x as f64, v.y as f64, v.z as f64),
+    let (x, y, z) = match state.dom.raw_get(part, setup.size) {
+        Some(Value::Vector3(v)) => (v.x, v.y, v.z),
         _ => (0.0, 0.0, 0.0),
     };
-    let face = (size.0 * size.1).max(size.1 * size.2).max(size.2 * size.0);
+    let face = (x * y).max(y * z).max(z * x);
     let instance = state.dom.at(part);
     let multiplier = if setup.seats.iter().any(|&seat| reflection.class(instance.class).is_a(seat)) {
         20.0
@@ -388,7 +402,24 @@ fn root_rank(state: &State, reflection: &Reflection, setup: &Setup, part: Instan
     } else {
         1.0
     };
-    (!massless, priority, (face * 50.0).floor() * multiplier)
+    (!massless, priority, face * multiplier)
+}
+
+/// BasePart.AssemblyRootPart: nil for a part outside a WorldRoot (the Workspace or a WorldModel), an anchored part
+/// itself, else the root of the assembly the part is in, as [`assemblies`] picks it (measured in a Studio 0.746 playing
+/// client: the joints' kind and direction, the parts' names and the order they were parented in do not matter; of equal
+/// parts the later made one is the root).
+pub fn root_part(state: &mut State, reflection: &Reflection, part: InstanceId) -> Option<InstanceId> {
+    let setup = state.joints.setup.clone()?;
+    world_of(state, reflection, &setup, part)?;
+    if state.joints.created == 0 || anchored(state, &setup, part) {
+        return Some(part);
+    }
+    ensure_scanned(state, &setup);
+    assemblies(state, reflection, &setup, part)
+        .into_iter()
+        .find(|assembly| assembly.nodes.iter().any(|node| node.part == part))
+        .map(|assembly| assembly.nodes[0].part)
 }
 
 /// The assemblies of the parts linked to `start` (several when more than one is anchored).
@@ -435,7 +466,7 @@ fn assemblies(state: &mut State, reflection: &Reflection, setup: &Setup, start: 
         for &part in &component[1..] {
             let rank = root_rank(state, reflection, setup, part);
             let better = rank.0 != best_rank.0 && rank.0
-                || rank.0 == best_rank.0 && (rank.1 > best_rank.1 || rank.1 == best_rank.1 && (rank.2 > best_rank.2 || rank.2 == best_rank.2 && serial(state, part) < serial(state, best)));
+                || rank.0 == best_rank.0 && (rank.1 > best_rank.1 || rank.1 == best_rank.1 && (rank.2 > best_rank.2 || rank.2 == best_rank.2 && serial(state, part) > serial(state, best)));
             if better {
                 best = part;
                 best_rank = rank;
@@ -535,12 +566,14 @@ fn settle(state: &mut State, reflection: &Reflection, hooks: &Hooks, setup: &Set
         });
     }
     // The root is never placed through the joints: a Motor6D.Transform set since the parts were
-    // last placed would swing it (an anchored root too) about the moved part
+    // last placed would swing it (an anchored root too) about the moved part. It is stored as a
+    // client stores a part's CFrame: `before`'s transposed inverse squares any stretch the root
+    // carries, so unstored it doubled its error with each part a BulkMoveTo wrote
     let (fixed, root) = match anchor {
         Anchor::Root => (0, cframe_of(state, setup, assembly.nodes[0].part)),
         Anchor::Moved(index, before) => {
             let moved = cframe_of(state, setup, assembly.nodes[index].part) * inverse(&before);
-            (index, moved * cframe_of(state, setup, assembly.nodes[0].part))
+            (index, frame::stored_transform(&(moved * cframe_of(state, setup, assembly.nodes[0].part))))
         }
     };
     for (index, node) in assembly.nodes.iter().enumerate() {

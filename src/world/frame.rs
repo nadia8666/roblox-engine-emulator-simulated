@@ -46,6 +46,41 @@ pub fn cframe_value(transform: &Affine3A) -> Value {
     Value::Dom(Rc::new(Variant::CFrame(from_affine(transform))))
 }
 
+/// A rotation (rows) as a client stores it in a part's CFrame or a joint's C0 / C1: as written while every entry of RᵀR - I is
+/// within 1e-5, else orthonormalized as `CFrame:Orthonormalize()` does it (lune_roblox's float32 Gram-Schmidt), and identity where
+/// that is not a number (a zero column). Measured in a playing client (roblox-sim, Studio 0.746, 2026-11-07): a column
+/// stretched by 2e-6 or leaning 1e-5 toward another reads back as written, by 5e-6 or 2e-5 orthonormalized; a skewed
+/// rotation reads back to the bit as Orthonormalize gives it, written to a part, through BulkMoveTo or as a Motor6D's C0; a
+/// mirror stays one; a rotation with a zero column reads identity. (An Attachment's CFrame is orthonormalized too, but its
+/// last bits differ from Gram-Schmidt's: not modelled.)
+pub fn stored_rotation(rows: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    use lune_roblox::datatypes::types::float32;
+    let column = |i: usize| [rows[0][i], rows[1][i], rows[2][i]];
+    let (c0, c1, c2) = (column(0), column(1), column(2));
+    let off = |a: [f32; 3], b: [f32; 3], want: f32| (float32::dot3(a, b) - want).abs() > 1e-5;
+    if !(off(c0, c0, 1.0) || off(c1, c1, 1.0) || off(c2, c2, 1.0) || off(c0, c1, 0.0) || off(c0, c2, 0.0) || off(c1, c2, 0.0)) {
+        return rows;
+    }
+    let normal = float32::orthonormalize(&rows);
+    if normal.iter().flatten().all(|value| value.is_finite()) { normal } else { float32::IDENTITY }
+}
+
+/// A transform's rotation as [`stored_rotation`] stores it
+pub fn stored_transform(transform: &Affine3A) -> Affine3A {
+    let m = transform.matrix3;
+    let rows = [[m.x_axis.x, m.y_axis.x, m.z_axis.x], [m.x_axis.y, m.y_axis.y, m.z_axis.y], [m.x_axis.z, m.y_axis.z, m.z_axis.z]];
+    let stored = stored_rotation(rows);
+    if stored == rows {
+        return *transform;
+    }
+    let matrix = Mat3::from_cols(
+        Vec3::new(stored[0][0], stored[1][0], stored[2][0]),
+        Vec3::new(stored[0][1], stored[1][1], stored[2][1]),
+        Vec3::new(stored[0][2], stored[1][2], stored[2][2]),
+    );
+    Affine3A::from_mat3_translation(matrix, transform.translation.into())
+}
+
 pub fn vector_value(vector: Vec3) -> Value {
     Value::Vector3(dom::Vector3::new(vector.x, vector.y, vector.z))
 }

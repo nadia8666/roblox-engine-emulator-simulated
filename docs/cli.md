@@ -248,7 +248,10 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   - `caches`: Luau's inline caches per call site (a table key's or a global's predicted slot, a method's
     slot, a resolved import, a builtin's fast path: hit, miss, slow path) and ree's own caches (member
     atoms and dispatch, datatype values, Instance userdata, require results, module bytecode, spatial
-    query solids, bundle plans), with hits, misses and evictions.
+    query solids, bundle plans), with hits, misses and evictions. These are software caches, counted
+    exactly by the patched VM: before each instruction with an inline cache runs, it makes the check the
+    interpreter is about to make (patches/luau/12-profiling.patch). They are not the CPU's caches, and no
+    CPU counter is involved: the CPU's cache misses are the `hw` kind's (Hardware counters, below).
   - `alloc`: bytes and counts allocated, by type (table, its storage, function, string, userdata by
     Instance class or datatype, thread and its stack, buffer, function prototypes) and by the Luau stack
     that allocated them. Every allocation is counted by type; stacks are taken for every allocation unless
@@ -356,16 +359,24 @@ Windows service reads them on a profile's behalf (tools/hw-counters):
   folder traversal. It starts on demand and stops itself after a minute with no client. The account it was installed
   for may start it and read its status, nothing else. Its pipe opens only for that account (and SYSTEM), from this
   machine; the client process must run as that account and gets counts for its own threads only, never another
-  process's. While a profile counts (30 minutes at most) it runs one kernel trace session of context switches that
-  carry the counters' values. On AMD Family 1Ah processors it registers four events with Windows until the next
-  restart, through Windows Performance Recorder (`wpr.exe`, part of Windows). No driver is installed and no protection
-  is turned off.
+  process's. While any client counts (each 30 minutes at most) it runs one kernel trace session of context switches
+  that carry the counters' values. Only one session at a time may hold the CPU's counters, so up to eight clients
+  share it: a ree profile, roblox-sim's frame logs, two arms of an A/B side by side. The first client starts it with
+  its counters, later ones count those or some of them (one that asks for others is told the service is busy, with
+  what it counts), each gets only its own process's threads, and the last one out stops it. A client that leaves while
+  others count waits a little over a second for the trace's last buffers. On AMD Family 1Ah processors it registers
+  four events with Windows until the next restart, through Windows Performance Recorder (`wpr.exe`, part of Windows).
+  No driver is installed and no protection is turned off.
 - **The counters**: `instructions` (retired), `cycles` (core clock cycles while the thread ran), `branches`,
   `branch-misses` (mispredicted), `l1d-accesses` (loads and stores dispatched to the L1 data cache), `l1d-misses`
   (lines the L1 data cache filled for demand loads and stores), `l2-misses` (of those, lines filled from beyond the
   core's L2) and `llc-misses` (of those, lines filled from beyond the core complex's L3: another complex's cache or
   memory). The four cache counters are AMD Family 1Ah events (event 0x29, and the demand fills by source, event 0x43,
-  unit masks 0xFF, 0xFE and 0xDC); the rest are the CPU's built-in sources. Any other name is taken for a Windows
+  unit masks 0xFF, 0xFE and 0xDC); the rest are the CPU's built-in sources. In AMD's Processor Programming Reference
+  for Family 1Ah, and in Linux perf's Zen 5 event list, they are `ls_dispatch.all` and `ls_dmnd_fills_from_sys`:
+  `all`; every source but `local_l2`; and `near_cache`, `dram_io_near`, `far_cache`, `dram_io_far` and
+  `alternate_memories`, the sources beyond the core complex. They count demand data fills, one a line: prefetches and
+  instruction fetches are not in them, and a dispatched load or store may be one the CPU later discards. Any other name is taken for a Windows
   profile source as `ree-hw-counters sources` (or `wpr -pmcsources`) lists it. The CPU counts six at once:
   `--profile-counters a,b,...` chooses them (default `instructions,cycles,l1d-misses,l2-misses,llc-misses,branch-misses`;
   `l1d-accesses` in place of one of them gives the L1 miss rate). The profile adds IPC, the miss rates the counts allow

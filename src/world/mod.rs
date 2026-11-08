@@ -131,6 +131,68 @@ pub fn cframe_of(value: &Value) -> Option<Affine3A> {
     }
 }
 
+/// BulkMoveTo's part and frame lists, checked as a Studio 0.746 playing client checks them before any part moves (each message
+/// measured):
+/// - The arguments, the frame list's first: "Argument 2 missing or nil", "Unable to cast CoordinateFrame to Array".
+/// - The lengths: "Length of part list (2) and length of CFrame list (1) do not match."
+/// - Each part: "Unable to cast value to Object" for a value that is no Instance, "Can only call BulkMoveTo on BaseParts,
+///   partList[1] is a Folder."
+/// - Each frame: "CFrame list must only contain CFrames, cframeList[1] is a Vector3."
+///
+/// A nil in the part list leaves its frame unused, and the lists still pair by index. Destroyed parts, parts with no parent
+/// and parts outside the Workspace move.
+fn bulk_moves(engine: &Engine, args: &Args, base_part: Option<crate::ClassId>) -> Result<Vec<(InstanceId, Affine3A)>, Flow> {
+    let cframes = array_arg(engine, args.get(2), 2)?;
+    let parts = array_arg(engine, args.get(1), 1)?;
+    let (count, frames) = (parts.raw_len(), cframes.raw_len());
+    if count != frames {
+        return raise(format!("Length of part list ({count}) and length of CFrame list ({frames}) do not match."));
+    }
+    let mut moves = Vec::with_capacity(count);
+    for index in 1..=count {
+        let part: LuaValue = parts.raw_get(index).map_err(Flow::from)?;
+        if part.is_nil() {
+            continue;
+        }
+        let Some(id) = super::lua::instance_id(&part) else {
+            return raise("Unable to cast value to Object");
+        };
+        // (an instance the engine has already freed has nothing to move)
+        let Some(class) = engine.state.borrow().dom.get(id).map(|instance| instance.class) else { continue };
+        let info = engine.reflection.class(class);
+        if !base_part.is_some_and(|base| info.is_a(base)) {
+            return raise(format!("Can only call BulkMoveTo on BaseParts, partList[{index}] is a {}.", info.name));
+        }
+        let frame: LuaValue = cframes.raw_get(index).map_err(Flow::from)?;
+        let Some(target) = cframe_arg(&frame) else {
+            return raise(format!("CFrame list must only contain CFrames, cframeList[{index}] is a {}.", super::lua::typeof_value(engine, &frame)));
+        };
+        moves.push((id, target));
+    }
+    Ok(moves)
+}
+
+/// An argument a method takes as an Array: a table keyed 1..n only, or an empty one. Measured: nil "Argument 2 missing or nil", a
+/// CFrame "Unable to cast CoordinateFrame to Array", a table with other keys "Unable to cast Dictionary to Array" (other values
+/// are named as the engine names their type in its other casts, not measured here).
+fn array_arg(engine: &Engine, value: &LuaValue, index: usize) -> Result<LuaTable, Flow> {
+    match value {
+        LuaValue::Nil => raise(format!("Argument {index} missing or nil")),
+        LuaValue::Table(table) if table.raw_len() > 0 || table.clone().pairs::<LuaValue, LuaValue>().next().is_none() => Ok(table.clone()),
+        LuaValue::Table(_) => raise("Unable to cast Dictionary to Array"),
+        other => {
+            let name = match super::lua::typeof_value(engine, other).as_str() {
+                "CFrame" => "CoordinateFrame".to_string(),
+                "number" => "double".to_string(),
+                "boolean" => "bool".to_string(),
+                "Instance" => "Object".to_string(),
+                kind => kind.to_string(),
+            };
+            raise(format!("Unable to cast {name} to Array"))
+        }
+    }
+}
+
 /// The interned name "CFrame" (not one of reflection.rs's pre-interned names).
 pub fn cframe_name(engine: &Engine) -> NameId {
     engine.reflection.name_id("CFrame").expect("the reflection names CFrame")
@@ -447,12 +509,12 @@ pub fn install(engine: &Rc<Engine>) {
         }));
     }
 
-    // Workspace:BulkMoveTo(parts, cframes, mode): each part's CFrame, with its events
+    // Workspace:BulkMoveTo(parts, cframes, mode): each part's CFrame, with its events, once the lists pass a client's checks
+    // (bulk_moves)
     if let (Some(world_root), Some(bulk)) = (reflection.class_id("WorldRoot"), name(engine, "BulkMoveTo")) {
-        behaviors.add_method(world_root, bulk, method(|_, engine, _, args| {
-            let (LuaValue::Table(parts), LuaValue::Table(cframes)) = (args.get(1), args.get(2)) else {
-                return raise("BulkMoveTo: parts and cframes must be tables");
-            };
+        let base_part = reflection.class_id("BasePart");
+        behaviors.add_method(world_root, bulk, method(move |_, engine, _, args| {
+            let moves = bulk_moves(engine, args, base_part)?;
             // (the default mode fires every event; Studio: 1.03 us a part, FireCFrameChanged 0.42)
             let each = match convert::from_lua(args.get(3)) {
                 Value::EnumItem(item) if &*engine.reflection.enum_item_info(item).name == "FireCFrameChanged" => crate::cost::BULK_MOVED,
@@ -461,28 +523,25 @@ pub fn install(engine: &Rc<Engine>) {
             // (the frame's first BulkMoveTo runs the engine's code for it cold, and a part the frame had not touched is read cold with
             // the emitters it carries: cost.rs Path::BulkMove, BULK_COLD_PART, BULK_COLD_EMITTER)
             let mut cold = engine.state.borrow().sched.touched.borrow_mut().first_path(crate::cost::Path::BulkMove);
-            for (index, part) in parts.sequence_values::<LuaValue>().enumerate() {
-                let Some(id) = part.ok().as_ref().and_then(super::lua::instance_id) else { continue };
-                let target = cframes.raw_get::<LuaValue>(index + 1).ok().as_ref().and_then(cframe_arg);
-                if let Some(target) = target {
-                    {
-                        let state = engine.state.borrow();
-                        let mut touched = state.sched.touched.borrow_mut();
-                        touched.count(|ops| ops.bulk_moved += 1);
-                        if touched.mark_moved(id.index) {
-                            cold += crate::cost::BULK_COLD_PART;
-                            for node in state.dom.descendants(id) {
-                                if touched.is_emitter(state.dom.at(node).class) {
-                                    cold += crate::cost::BULK_COLD_EMITTER;
-                                }
+            for (id, target) in moves {
+                {
+                    let state = engine.state.borrow();
+                    let mut touched = state.sched.touched.borrow_mut();
+                    touched.count(|ops| ops.bulk_moved += 1);
+                    if touched.mark_moved(id.index) {
+                        cold += crate::cost::BULK_COLD_PART;
+                        for node in state.dom.descendants(id) {
+                            if touched.is_emitter(state.dom.at(node).class) {
+                                cold += crate::cost::BULK_COLD_EMITTER;
                             }
                         }
                     }
-                    set_cframe(engine, id, &target);
-                    engine.state.borrow().sched.charge(each);
-                    // (booked to the call, so a boundary profile shows what BulkMoveTo's parts cost)
-                    crate::boundary::add_cost(each);
                 }
+                // (a part stores the rotation as a client does: frame::stored_rotation, measured through BulkMoveTo too)
+                set_cframe(engine, id, &frame::stored_transform(&target));
+                engine.state.borrow().sched.charge(each);
+                // (booked to the call, so a boundary profile shows what BulkMoveTo's parts cost)
+                crate::boundary::add_cost(each);
             }
             if cold > 0.0 {
                 engine.state.borrow().sched.charge(cold);

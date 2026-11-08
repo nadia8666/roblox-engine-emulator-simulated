@@ -225,6 +225,53 @@ fn lighting_additions_play_in_the_lighting() {
     assert_eq!(values, [2.0, 0.0]);
 }
 
+/// The engine's Lighting before the run stands in for the place's, which the renderer's stage draws, so
+/// every write of the run plays: what the harness writes before frame 0 (its setup) plays from frame 0,
+/// a write of the value the engine held plays too, and a tween holds
+/// the stage's value (`{"initial": true}`) until the run first changes the property. GlobalShadows and
+/// ShadowSoftness play as the other Lighting properties do.
+#[test]
+fn lighting_writes_before_the_first_frame_play_from_it() {
+    let (playback, _, _, summary) = record(
+        r#"
+        local Lighting = game:GetService("Lighting")
+        local Held = Lighting.GlobalShadows
+        Lighting.GlobalShadows = Held
+        Lighting.Brightness = 0.5
+        Lighting.ShadowSoftness = 0.6
+        task.delay(0.1, function()
+            Lighting.GlobalShadows = not Held
+            Lighting.ShadowSoftness = 1
+            Lighting.Brightness = 0.5
+            game:GetService("TweenService"):Create(Lighting, TweenInfo.new(0.05, Enum.EasingStyle.Linear), {ExposureCompensation = 1}):Play()
+        end)
+        "#,
+        16,
+    );
+    let sets = |property: &str| -> Vec<(f64, Json)> {
+        find(&playback["actions"], |a| a["target"] == "Lighting" && !a["set"][property].is_null()).iter().map(|a| (a["at"].as_f64().unwrap(), a["set"][property].clone())).collect()
+    };
+    let shadows = sets("GlobalShadows");
+    assert_eq!(shadows.len(), 2, "the held value written back, then its opposite: {shadows:?}");
+    assert!(shadows[0].1.is_boolean() && shadows[1].1.is_boolean() && shadows[0].1 != shadows[1].1, "{shadows:?}");
+    assert!(shadows[0].0 == 0.0 && shadows[1].0 > 0.0, "{shadows:?}");
+    let brightness = sets("Brightness");
+    assert_eq!(brightness.len(), 1, "a write of the value the run last wrote plays nothing: {brightness:?}");
+    assert_eq!((brightness[0].0, brightness[0].1.as_f64().unwrap()), (0.0, 0.5));
+    let softness: Vec<(f64, f64)> = sets("ShadowSoftness").iter().map(|(at, value)| (*at, value.as_f64().unwrap())).collect();
+    assert_eq!(softness.len(), 2, "{softness:?}");
+    assert_eq!(softness[0].0, 0.0);
+    assert!((softness[0].1 - 0.6).abs() < 1e-5 && (softness[1].1 - 1.0).abs() < 1e-5, "{softness:?}");
+    let tweens = find(&playback["tweens"], |t| t["target"] == "Lighting");
+    assert_eq!(tweens.len(), 1, "{tweens:?}");
+    let keys = tweens[0]["keys"].as_array().unwrap();
+    assert_eq!(tweens[0]["property"], "ExposureCompensation");
+    assert_eq!(keys[0]["value"], serde_json::json!({ "initial": true }), "{keys:?}");
+    assert!(keys[0]["at"].as_f64().unwrap() > 0.0, "{keys:?}");
+    assert_eq!(keys.last().unwrap()["value"].as_f64(), Some(1.0), "{keys:?}");
+    assert!(summary["unsupported"].as_array().unwrap().is_empty(), "{summary}");
+}
+
 /// A Glass part still draws at Transparency 1 when a Highlight is under it (ror's notes, glass-quirks),
 /// so one that appears later and is destroyed leaves the world before and after instead of turning
 /// Transparency 1: the house's distortion bubbles (a disabled Highlight under each) otherwise hung on

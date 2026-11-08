@@ -964,6 +964,195 @@ fn an_anchored_root_stays_and_anchored_parts_do_not_link() {
 /// A pose landing while the rig moves leaves its anchored root where the moves put it: follower
 /// rigs (anchored HumanoidRootPart, Model:PivotTo each frame) whose idle pose was set
 /// a defer after they were built lay on their side.
+/// BasePart.AssemblyRootPart picks the root as a Studio 0.746 playing client does (each line its answer): an anchored part,
+/// else not Massless, the higher RootPriority, the larger largest face (not rounded) times a Seat's, a HumanoidRootPart's
+/// or a Torso's weight, then the later made part; nil outside a WorldRoot.
+#[test]
+fn assembly_root_part_is_the_root_a_playing_client_picks() {
+    check(
+        r#"
+        local Folder = Instance.new("Folder")
+        Folder.Parent = workspace
+        local function Part(Name, Size, Props, Parent)
+            local P = Instance.new((Props and Props.Class) or "Part")
+            P.Name = Name
+            P.Size = Size
+            P.CanCollide = false
+            for Key, Value in Props or {} do
+                if Key ~= "Class" then
+                    P[Key] = Value
+                end
+            end
+            P.Parent = Parent or Folder
+            return P
+        end
+        local function Join(Kind, A, B)
+            local J = Instance.new(Kind)
+            J.Part0, J.Part1 = A, B
+            J.Parent = A
+            return J
+        end
+        local function Root(P)
+            local R = P.AssemblyRootPart
+            return R and R.Name or "nil"
+        end
+        local function Is(Case, A, B, Want)
+            local Got = Root(A) .. " " .. Root(B)
+            assert(Got == Want .. " " .. Want, `{Case}: {Got}, the client's {Want}`)
+        end
+        local Two = Vector3.new(2, 2, 2)
+        -- equal parts: the later made one, whatever the joint's kind and direction
+        for _, Kind in { "Weld", "WeldConstraint", "Motor6D" } do
+            local A, B = Part("A", Two), Part("B", Two)
+            Join(Kind, A, B)
+            Is(Kind, A, B, "B")
+            local C, D = Part("C", Two), Part("D", Two)
+            Join(Kind, D, C)
+            Is(Kind .. " the other way", C, D, "D")
+        end
+        -- the size: the largest face's area, not rounded
+        do
+            local A, B = Part("Cube4", Vector3.new(4, 4, 4)), Part("Rod10", Vector3.new(10, 1, 1))
+            Join("Weld", B, A)
+            Is("a cube and a longer rod", A, B, "Cube4")
+            local C, D = Part("Cube3", Vector3.new(3, 3, 3)), Part("Slab", Vector3.new(4, 4, 0.5))
+            Join("Weld", C, D)
+            Is("a cube and a wider slab", C, D, "Slab")
+            local E, F = Part("Older", Vector3.new(4, 4.0001, 1)), Part("Newer", Vector3.new(4, 4, 1))
+            Join("Weld", E, F)
+            Is("a face 0.0004 larger", E, F, "Older")
+        end
+        -- Massless, RootPriority, then the names' and seats' weights (each at the plate it beats and the one it ties)
+        do
+            local A, B = Part("Big", Vector3.new(6, 6, 6), { Massless = true }), Part("Small", Two)
+            Join("Weld", A, B)
+            Is("massless", A, B, "Small")
+            local C, D = Part("Big", Vector3.new(6, 6, 6)), Part("Small", Two, { RootPriority = 1 })
+            Join("Weld", C, D)
+            Is("root priority", C, D, "Small")
+        end
+        for _, Case in {
+            { "HumanoidRootPart", "Part", 9.9, "HumanoidRootPart" },
+            { "HumanoidRootPart", "Part", 10, "Plate" },
+            { "Torso", "Part", 4.9, "Torso" },
+            { "Torso", "Part", 5, "Plate" },
+            { "Seat", "Seat", 19.9, "Seat" },
+            { "VehicleSeat", "VehicleSeat", 20, "Plate" },
+            { "Head", "Part", 1.1, "Plate" },
+        } do
+            local A, B = Part(Case[1], Vector3.new(1, 1, 1), { Class = Case[2] }), Part("Plate", Vector3.new(Case[3], 1, 0.1))
+            Join("Weld", A, B)
+            Is(`{Case[1]} and a plate of {Case[3]}`, A, B, Case[4])
+        end
+        -- anchored parts are their own roots
+        do
+            local A, B = Part("Big", Vector3.new(6, 6, 6)), Part("Small", Two, { Anchored = true })
+            Join("Weld", A, B)
+            Is("an anchored part", A, B, "Small")
+            local C, D = Part("C", Two, { Anchored = true }), Part("D", Vector3.new(4, 4, 4), { Anchored = true })
+            Join("Weld", C, D)
+            assert(Root(C) == "C" and Root(D) == "D", "two anchored parts")
+        end
+        -- a thrown rock and the glow cloned onto it: the glow while free, the rock while held
+        do
+            local Rock = Part("Rock", Vector3.new(1, 1, 1))
+            local Glow = Rock:Clone()
+            Glow.Name = "Glow"
+            local W = Instance.new("Weld")
+            W.Part0, W.Part1 = Glow, Rock
+            W.Parent = Glow
+            Glow.Parent = Rock
+            Is("the glow", Rock, Glow, "Glow")
+            Rock.Anchored = true
+            Is("the rock held", Rock, Glow, "Rock")
+            Rock.Anchored = false
+            Is("the rock let go", Rock, Glow, "Glow")
+        end
+        -- outside a WorldRoot: nil; a disabled weld joins nothing
+        do
+            local Storage = game:GetService("ReplicatedStorage")
+            local A, B = Part("A", Two, nil, Storage), Part("B", Vector3.new(4, 4, 4), nil, Storage)
+            Join("Weld", A, B)
+            assert(A.AssemblyRootPart == nil and B.AssemblyRootPart == nil and Instance.new("Part").AssemblyRootPart == nil, "outside the Workspace")
+            local C, D = Part("C", Two), Part("D", Vector3.new(4, 4, 4))
+            Join("Weld", C, D).Enabled = false
+            assert(Root(C) == "C" and Root(D) == "D", "a disabled weld")
+        end
+        "#,
+    );
+}
+
+/// WorldRoot:BulkMoveTo checks its lists as a Studio 0.746 playing client does, with its messages, before any part moves; a
+/// nil in the part list keeps the lists paired by index; destroyed, parentless and stored parts move.
+#[test]
+fn bulk_move_to_checks_its_lists_as_a_playing_client_does() {
+    check(
+        r#"
+        local Folder = Instance.new("Folder")
+        Folder.Parent = workspace
+        local function Part(X, Parent)
+            local P = Instance.new("Part")
+            P.Anchored = true
+            P.CFrame = CFrame.new(X, 50, 0)
+            P.Parent = Parent or Folder
+            return P
+        end
+        local function Fails(Want, Function)
+            local Ok, Message = pcall(Function)
+            assert(not Ok and Message == Want, `{Want}: got {Ok} {Message}`)
+        end
+        local A, B, C = Part(0), Part(10), Part(20)
+        -- lists of different lengths throw before any part moves
+        Fails("Length of part list (2) and length of CFrame list (1) do not match.", function()
+            workspace:BulkMoveTo({ A, B }, { CFrame.new(1, 60, 0) })
+        end)
+        assert(A.Position == Vector3.new(0, 50, 0) and B.Position == Vector3.new(10, 50, 0), "a part moved before the error")
+        Fails("Length of part list (1) and length of CFrame list (2) do not match.", function()
+            workspace:BulkMoveTo({ A }, { CFrame.new(2, 60, 0), CFrame.new(3, 60, 0) })
+        end)
+        Fails("Length of part list (3) and length of CFrame list (2) do not match.", function()
+            workspace:BulkMoveTo({ A, B, C }, { CFrame.new(), CFrame.new() }, Enum.BulkMoveMode.FireCFrameChanged)
+        end)
+        Fails("Length of part list (0) and length of CFrame list (1) do not match.", function()
+            workspace:BulkMoveTo({}, { CFrame.new() })
+        end)
+        workspace:BulkMoveTo({}, {})
+        -- the entries and the arguments
+        Fails("Can only call BulkMoveTo on BaseParts, partList[1] is a Folder.", function()
+            workspace:BulkMoveTo({ Folder }, { CFrame.new() })
+        end)
+        Fails("Unable to cast value to Object", function()
+            workspace:BulkMoveTo({ 5 } :: any, { CFrame.new() })
+        end)
+        Fails("CFrame list must only contain CFrames, cframeList[1] is a Vector3.", function()
+            workspace:BulkMoveTo({ A }, { Vector3.new() } :: any)
+        end)
+        Fails("Unable to cast CoordinateFrame to Array", function()
+            workspace:BulkMoveTo(A :: any, CFrame.new() :: any)
+        end)
+        Fails("Argument 2 missing or nil", function()
+            (workspace :: any):BulkMoveTo({ A })
+        end)
+        Fails("Unable to cast Dictionary to Array", function()
+            workspace:BulkMoveTo({ x = A } :: any, { x = CFrame.new() } :: any)
+        end)
+        -- a nil in the part list leaves its frame unused: the lists pair by index
+        workspace:BulkMoveTo({ A, nil, B }, { CFrame.new(14, 60, 0), CFrame.new(15, 60, 0), CFrame.new(16, 60, 0) })
+        assert(A.Position == Vector3.new(14, 60, 0) and B.Position == Vector3.new(16, 60, 0), "the lists did not pair by index")
+        -- destroyed parts, parts with no parent and parts outside the Workspace move
+        local Gone = Part(30)
+        Gone:Destroy()
+        local Loose = Instance.new("Part")
+        local Stored = Part(50, game:GetService("ReplicatedStorage"))
+        workspace:BulkMoveTo({ Gone, Loose, Stored, A }, { CFrame.new(9, 60, 0), CFrame.new(10, 60, 0), CFrame.new(11, 60, 0), CFrame.new(13, 60, 0) })
+        assert(Gone.Position == Vector3.new(9, 60, 0), "the destroyed part did not move")
+        assert(Loose.Position == Vector3.new(10, 60, 0), "the part with no parent did not move")
+        assert(Stored.Position == Vector3.new(11, 60, 0), "the part outside the Workspace did not move")
+        assert(A.Position == Vector3.new(13, 60, 0), "the part beside them did not move")
+        "#,
+    );
+}
+
 #[test]
 fn an_anchored_root_stays_when_a_pose_lands_while_it_moves() {
     check_running(
@@ -1357,5 +1546,212 @@ fn a_streaming_place_holds_an_assembly_to_its_focus_reach() {
         assert(Beyond.Position.Y == 0, "a part past the character's reach fell")
         "#,
         2.0,
+    );
+}
+
+/// A model pivoted every frame, as an attack effect's spin pivots one (`PivotTo(originalPivot * CFrame.fromOrientation(0, yaw, 0))`),
+/// keeps its rotation: the pivot is the target after each PivotTo, as a client keeps it. ree stored `Delta * Stored`, whose float
+/// error the transposed inverse squared each call, and such an effect lost its rotation in about 25 frames: its start part read
+/// [0 0 0; 0 1 0; 0 0 0] and the bezier parts it emits went NaN. Measured in a playing client (roblox-sim, Studio 0.746,
+/// 2026-11-07): the pivot equals the target after all 120 steps, the parts stay orthonormal within 1.2e-7.
+#[test]
+fn a_model_pivoted_every_frame_keeps_its_rotation() {
+    check(
+        r#"
+        local Model = Instance.new("Model")
+        -- the effect's start part as its bundle stores it (rotation id 0: a quarter turn about Y in floats)
+        local Start = Instance.new("Part")
+        Start.Anchored = true
+        Start.CFrame = CFrame.new(-9.346, 0.5, -121.796, -4.37113883e-08, 0, 1, 0, 1, 0, -1, 0, -4.37113883e-08)
+        Start.Parent = Model
+        local Other = Instance.new("Part")
+        Other.Anchored = true
+        Other.CFrame = CFrame.new(-9.346, 0.5, -121.796)
+        Other.Parent = Model
+        Model.WorldPivot = CFrame.new(-9.346, 0.5, -121.796)
+        Model.Parent = workspace
+        local Origin = Model:GetPivot()
+        for Step = 1, 120 do
+            local Target = Origin * CFrame.fromOrientation(0, math.rad(720) * Step / 60, 0)
+            Model:PivotTo(Target)
+            assert(Model:GetPivot() == Target, `step {Step}: the pivot is not the target`)
+            local Right = Start.CFrame.RightVector.Magnitude
+            assert(math.abs(Right - 1) < 1e-6, `step {Step}: Start's rotation scaled to {Right}`)
+        end
+        assert(math.abs(Start.Position.Y - 0.5) < 1e-3, `Start moved to {Start.Position}`)
+        -- a part pivoted every frame: its pivot is the target, its rotation stays one
+        local Part = Instance.new("Part")
+        Part.PivotOffset = CFrame.new(0, 1, 0)
+        Part.Parent = workspace
+        for Step = 1, 120 do
+            local Target = CFrame.new(1, 2, 3) * CFrame.fromOrientation(0, math.rad(720) * Step / 60, 0)
+            Part:PivotTo(Target)
+            assert((Part:GetPivot().Position - Target.Position).Magnitude < 1e-4, `step {Step}: {Part:GetPivot()}`)
+            assert(math.abs(Part.CFrame.RightVector.Magnitude - 1) < 1e-6, `step {Step}: the part's rotation scaled`)
+        end
+        "#,
+    );
+}
+
+/// A jointed rig moved by BulkMoveTo, every part given its CFrame times one rigid move (a scene moved from one spot to
+/// another), keeps its root's rotation and its shape. Each part's write moves the root as that part moved, `Target *
+/// Before:Inverse()`; the inverse is the transpose, so a root scaled by s came back scaled by s squared and the error
+/// doubled with each part written. A 15-part rig's root read |RightVector| 0.978 after one such move and a rotation of
+/// determinant 0 after the second, and the parts welded to it collapsed with it; a move and a move back left a rig NaN.
+/// The root is stored as a client stores a part's CFrame (`frame::stored_rotation`), so it stays orthonormal.
+#[test]
+fn a_jointed_rig_moved_part_by_part_keeps_its_roots_rotation() {
+    check(
+        r#"
+        local Rig = Instance.new("Model")
+        local Root = Instance.new("Part")
+        Root.Name = "Root"
+        Root.Anchored = true
+        Root.Size = Vector3.new(2, 2, 1)
+        Root.CFrame = CFrame.new(-24, 3, -132) * CFrame.fromOrientation(0.3, math.rad(40), -0.2)
+        Root.Parent = Rig
+        local Parts = { Root }
+        for Index = 1, 14 do
+            local Part = Instance.new("Part")
+            Part.Name = `Part{Index}`
+            Part.Size = Vector3.new(1, 1, 1)
+            Part.Massless = true
+            Part.Parent = Rig
+            local Joint = Instance.new(if Index % 2 == 0 then "Motor6D" else "Weld")
+            Joint.Part0, Joint.Part1 = Parts[(Index + 1) // 2], Part
+            Joint.C0 = CFrame.new(0.5, 1, -0.25 * Index) * CFrame.fromOrientation(0.1 * Index, 0.7, -0.2 * Index)
+            Joint.C1 = CFrame.fromOrientation(0, -0.3 * Index, 0.4)
+            Joint.Parent = Part
+            table.insert(Parts, Part)
+        end
+        Rig.Parent = workspace
+        local Start = Root.CFrame
+        local Offsets = {}
+        for Index, Part in Parts do
+            Offsets[Index] = Root.CFrame:ToObjectSpace(Part.CFrame)
+        end
+        local function Off(A, B)
+            local a, b = { A:GetComponents() }, { B:GetComponents() }
+            local Worst = 0
+            for Index = 1, 12 do
+                Worst = math.max(Worst, math.abs(a[Index] - b[Index]))
+            end
+            return Worst
+        end
+        local function Check(What, Want)
+            local At = Root.CFrame
+            local X, Y, Z = At.XVector, At.YVector, At.ZVector
+            local Worst = math.max(math.abs(X:Dot(X) - 1), math.abs(Y:Dot(Y) - 1), math.abs(Z:Dot(Z) - 1), math.abs(X:Dot(Y)), math.abs(X:Dot(Z)), math.abs(Y:Dot(Z)))
+            assert(Worst < 1e-5, `{What}: the root's rotation is {Worst} off orthonormal (|RightVector| {X.Magnitude})`)
+            assert(Off(At, Want) < 1e-3, `{What}: the root is at {At}, the move puts it at {Want}`)
+            for Index, Part in Parts do
+                assert(Off(At:ToObjectSpace(Part.CFrame), Offsets[Index]) < 1e-3, `{What}: {Part.Name} left its joints`)
+            end
+        end
+        local function Move(Delta)
+            local Targets = {}
+            for Index, Part in Parts do
+                Targets[Index] = Delta * Part.CFrame
+            end
+            workspace:BulkMoveTo(Parts, Targets, Enum.BulkMoveMode.FireCFrameChanged)
+        end
+        local There = CFrame.new(2, 0, -108) * CFrame.fromOrientation(0, math.rad(240), 0) * (CFrame.new(-24, 0, -132) * CFrame.fromOrientation(0, math.rad(40), 0)):Inverse()
+        Move(There)
+        Check("the first move", There * Start)
+        local Again = CFrame.new(30, 0, 5) * CFrame.fromOrientation(0, math.rad(-75), 0)
+        Move(Again)
+        Check("the second move", Again * There * Start)
+        Move((Again * There):Inverse())
+        Check("the move back", Start)
+        "#,
+    );
+}
+
+/// What a script writes is stored as a client stores it: Vector3s and CFrames exactly (lune's own conversion rounded each
+/// fraction to 1/65536), and a part's CFrame, a joint's C0 and a BulkMoveTo orthonormalized as `CFrame:Orthonormalize()` gives
+/// it once it is off by more than 1e-5 (a mirror kept), identity for a rotation with a zero column; a model's WorldPivot keeps
+/// what is written. The expected values are what a playing client read back (roblox-sim, Studio 0.746, 2026-11-07).
+#[test]
+fn a_parts_cframe_is_orthonormalized_as_a_client_stores_it() {
+    check(
+        r#"
+        local Part = Instance.new("Part")
+        Part.Anchored = true
+        Part.Parent = workspace
+        local function rows(cf)
+            local c = { cf:GetComponents() }
+            return { table.unpack(c, 4, 12) }
+        end
+        local function near(a, b)
+            for i = 1, 9 do
+                if math.abs(a[i] - b[i]) > 2e-7 then
+                    return false
+                end
+            end
+            return true
+        end
+        -- written exactly: a Vector3, and a CFrame already orthonormal (to the bit, its position too)
+        Part.Size = Vector3.new(0.123456789, 1.987654321, 2.3)
+        assert(Part.Size == Vector3.new(0.123456789, 1.987654321, 2.3), `size {Part.Size}`)
+        local Exact = CFrame.new(0.123456789, 0.987654321, -3.1) * CFrame.fromOrientation(0.3, 1.1, -0.7)
+        Part.CFrame = Exact
+        assert(Part.CFrame == Exact, `a written CFrame read back {Part.CFrame}`)
+        -- the tolerance: a column stretched by 2e-6 or leaning 5e-6 is kept, by 5e-6 or 2e-5 orthonormalized
+        local r = { CFrame.fromOrientation(0.3, 1.1, -0.7):GetComponents() }
+        local function kept(m)
+            local cf = CFrame.new(1, 2, 3, table.unpack(m))
+            Part.CFrame = cf
+            return Part.CFrame == cf
+        end
+        local function stretched(d)
+            return { r[4] * (1 + d), r[5], r[6], r[7] * (1 + d), r[8], r[9], r[10] * (1 + d), r[11], r[12] }
+        end
+        local function leaning(d)
+            return { r[4], r[5] + d * r[4], r[6], r[7], r[8] + d * r[7], r[9], r[10], r[11] + d * r[10], r[12] }
+        end
+        assert(kept(stretched(2e-6)) and not kept(stretched(5e-6)), "a stretched column")
+        assert(kept(leaning(5e-6)) and not kept(leaning(2e-5)), "a leaning column")
+        local function written(...)
+            Part.CFrame = CFrame.new(1, 2, 3, ...)
+            assert(Part.CFrame.Position == Vector3.new(1, 2, 3), "the position moved")
+            return rows(Part.CFrame)
+        end
+        local function expect(got, want, what)
+            assert(near(got, want), `{what}: {table.concat(got, " ")}`)
+        end
+        expect(written(0.5, 0, 0, 0, 0.5, 0, 0, 0, 0.5), { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, "scaled")
+        expect(written(0.9, 0.3, -0.2, 0.1, 1.2, 0.4, -0.3, 0.2, 0.8), {
+            0.9434563517570496, -0.0218996349722147, 0.3307726979255676,
+            0.10482849180698395, 0.9663204550743103, -0.23502254486083984,
+            -0.31448549032211304, 0.2564079761505127, 0.9139769673347473,
+        }, "skewed")
+        expect(written(1, 0, 0, 0, 1, 0, 0.5, 0.5, 1), {
+            0.8944271802902222, -0.18257418274879456, -0.40824827551841736,
+            0, 0.9128710031509399, -0.4082483649253845,
+            0.4472135901451111, 0.3651483952999115, 0.8164965510368347,
+        }, "sheared")
+        expect(written(1, 0, 0, 0, 1, 0, 0, 0, -2), { 1, 0, 0, 0, 1, 0, 0, 0, -1 }, "mirrored")
+        expect(written(0, 0, 0, 0, 1, 0, 0, 0, 0), { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, "degenerate")
+        expect(written(0, 0, 1, 0, 1, 0, 0, 0, 0), { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, "no right vector")
+        -- a Motor6D's C0 and a BulkMoveTo store it as the part does
+        local Skewed = CFrame.new(1, 2, 3, 0.9, 0.3, -0.2, 0.1, 1.2, 0.4, -0.3, 0.2, 0.8)
+        local Client = {
+            0.9434563517570496, -0.0218996349722147, 0.3307726979255676,
+            0.10482849180698395, 0.9663204550743103, -0.23502254486083984,
+            -0.31448549032211304, 0.2564079761505127, 0.9139769673347473,
+        }
+        local Motor = Instance.new("Motor6D")
+        Motor.C0 = Skewed
+        expect(rows(Motor.C0), Client, "a Motor6D's C0")
+        local Other = Instance.new("Part")
+        Other.Anchored = true
+        Other.Parent = workspace
+        workspace:BulkMoveTo({ Other }, { Skewed }, Enum.BulkMoveMode.FireCFrameChanged)
+        expect(rows(Other.CFrame), Client, "BulkMoveTo")
+        -- a model's pivot keeps a scaled rotation
+        local Model = Instance.new("Model")
+        Model.WorldPivot = CFrame.new(0, 0, 0, 0.5, 0, 0, 0, 0.5, 0, 0, 0, 0.5)
+        expect(rows(Model:GetPivot()), { 0.5, 0, 0, 0, 0.5, 0, 0, 0, 0.5 }, "the pivot")
+        "#,
     );
 }

@@ -222,8 +222,11 @@ pub struct Scheduler {
     pub captured: bool,
     pub clock_call_allowance: u32,
     pub clock_call_quantum: f64,
-    /// Clock reads in a row that found the clock where the last one left it (this phase)
+    /// Clock reads in a row that found the clock where the last one left it (this phase; with a frozen clock, this outermost
+    /// resumption)
     phase_clock_calls: u32,
+    /// How many scheduler resumptions are running, nested (scheduler::resume)
+    resume_depth: u32,
     /// What those reads past the allowance added (this phase) and the last clock they saw, without it
     clock_drift: f64,
     last_clock: f64,
@@ -253,7 +256,10 @@ pub struct Scheduler {
     /// Whether work is charged: from the first frame on
     charging: bool,
     /// REE_FROZEN_CLOCK=1: os.clock and elapsedTime follow the frames only, as before the first frame. Work moves no clock reading,
-    /// so a code change that is faster or slower leaves what a script writes from the time it reads as it was
+    /// so a code change that is faster or slower leaves what a script writes from the time it reads as it was. Nor do the reads:
+    /// they count against the allowance only in a row within one resumption, so only a busy loop moves the clock, and a frame's
+    /// threads that each read it (copies timed on os.clock) all read the frame's time, as the bench's frame-locked clock gives
+    /// them however many there are
     pub frozen_clock: bool,
     /// Roblox's script execution timeout for this VM's resumptions (watchdog.rs; installed by `ree run` / `ree record`)
     pub timeout: Option<crate::watchdog::ScriptTimeout>,
@@ -380,6 +386,7 @@ impl Scheduler {
             clock_call_allowance: 256,
             clock_call_quantum: 1e-5,
             phase_clock_calls: 0,
+            resume_depth: 0,
             clock_drift: 0.0,
             last_clock: f64::NEG_INFINITY,
             work: Rc::new(std::cell::Cell::new(0.0)),
@@ -479,7 +486,8 @@ impl Scheduler {
     // virtual time. A clock that stands still (a loop that only reads it, a clock that takes no
     // charges: before the first frame, a recorded replay) advances by `clock_call_quantum` for each
     // read past `clock_call_allowance` in a row, so a busy loop ends; a clock that moves between reads
-    // needs none. A recorded clock replays Studio's values and takes no charges.
+    // needs none. A frozen clock counts the reads in a row of one outermost resumption, not of the phase
+    // (frozen_clock). A recorded clock replays Studio's values and takes no charges.
 
     fn begin_phase(&mut self) {
         self.phase_clock_calls = 0;
@@ -1062,6 +1070,11 @@ pub fn resume(lua: &Lua, engine: &Rc<Engine>, thread: &LuaThread, args: LuaMulti
         if top_level && !sched.build_start_explicit {
             sched.build_work_start = Some(sched.build_work);
         }
+        // (a frozen clock counts the reads in a row of one outermost resumption: Scheduler::frozen_clock)
+        if sched.frozen_clock && sched.resume_depth == 0 {
+            sched.phase_clock_calls = 0;
+        }
+        sched.resume_depth += 1;
         // (the script timeout times the outermost resumption of a nest: watchdog.rs)
         (top_level, crate::watchdog::enter(sched.timeout.as_ref()))
     };
@@ -1070,6 +1083,7 @@ pub fn resume(lua: &Lua, engine: &Rc<Engine>, thread: &LuaThread, args: LuaMulti
         let _resuming = super::lua::refs::Resuming::enter();
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| thread.resume::<LuaMultiValue>(args)))
     };
+    engine.state.borrow_mut().sched.resume_depth -= 1;
     let ok = match resumed {
         Ok(Ok(_)) => true,
         Ok(Err(error)) => {

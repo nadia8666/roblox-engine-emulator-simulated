@@ -349,9 +349,15 @@ pub mod float32 {
         ]
     }
 
-    /// CFrame:Lerp's rotation: the first at t == 0 and the goal at t == 1 exactly, else the slerp of their quaternions
-    /// (the goal's negated when the dot is negative; `sinf((1 - t) w) / sin w` and `sinf(t w) / sin w`, sin w as
-    /// `sqrtf(1 - c*c)`), made a matrix again
+    /// CFrame:Lerp blends two rotations' quaternions when their dot is above this, rotations within about 2.2 degrees
+    /// (measured in Studio 0.746: a dot of 0.99981022 blended, 0.99980998 slerped)
+    const BLEND_ABOVE: f32 = 0.99981;
+
+    /// CFrame:Lerp's rotation: the first at t == 0 and the goal at t == 1 exactly, else from their quaternions (the
+    /// goal's negated when the dot c is negative): above BLEND_ABOVE the blend `q0 (1 - t) + q1 t` made a unit quaternion
+    /// (`q * (1 / sqrtf(dot(q, q)))`), else the slerp (`sinf((1 - t) w) / sin w` and `sinf(t w) / sin w`, sin w as
+    /// `sqrtf(1 - c*c)`), made a matrix again. Equal rotations blend: their dot can round to a float step past 1, where
+    /// the slerp's sin w is not-a-number.
     pub fn lerp_rotation(a: &Rot, b: &Rot, t: f32) -> Rot {
         if t == 0.0 {
             return *a;
@@ -365,6 +371,12 @@ pub mod float32 {
         if c < 0.0 {
             q1 = q1.map(|v| -v);
             c = -c;
+        }
+        if c > BLEND_ABOVE {
+            let s = 1.0 - t;
+            let blend = [0, 1, 2, 3].map(|i| q0[i] * s + q1[i] * t);
+            let k = 1.0 / quat_dot(blend, blend).sqrt();
+            return rot_from_quat(blend.map(|v| v * k));
         }
         let sin_omega = (1.0 - c * c).sqrt();
         let omega = c.acos();

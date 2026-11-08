@@ -414,6 +414,10 @@ pub struct State {
 pub struct Hooks {
     /// A property of an instance changed (layout invalidation; after signals are queued)
     pub property_changed: Vec<Box<dyn Fn(&mut State, InstanceId, NameId)>>,
+    /// A write (instance::raw_set) stored the value the property already held: no Changed fires and
+    /// `property_changed` does not run (the recorder keeps a run's writes to Lighting, whose values
+    /// before the run stand in for a place's it does not have)
+    pub property_unchanged: Vec<Box<dyn Fn(&mut State, InstanceId, NameId)>>,
     /// A script's SetAttribute changed an attribute (set, changed or removed): (instance, attribute name)
     pub attribute_changed: Vec<Box<dyn Fn(&mut State, InstanceId, &str)>>,
     /// An instance's parent changed: (instance, old parent, new parent)

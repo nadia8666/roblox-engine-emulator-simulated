@@ -127,7 +127,10 @@ there).
 
 - **Rojo roots**: `<root>/<Service>/...` with `init.luau`, `*.server.luau`, `*.client.luau`,
   `init.meta.json`, JSON modules and `*.model.json` models. A root's folder is the project folder that
-  the conventions below are read from.
+  the conventions below are read from. A link to a directory (a symlink or a Windows junction) mounts
+  what it leads to, unless it leads back to a directory on the way down to it: that directory would
+  hold itself without end, so the link is left out with a warning (place content's folders, below, are
+  walked the same way).
 - **Project settings**: `rur.json` at the project folder, keyed by the root folder's name (the first
   root with a value wins): `placeIds`, `modelAssets` (`mount`, `prefixes`), `clientGui`,
   `streamingTargetRadius`. The name is kept from rur, which wrote these files first.
@@ -183,6 +186,7 @@ Luau module returning a table with one bundle a line,
 return {
 	["Models/Props"] = { AssetId = 1234567890, Version = 3 },
 	["Models/Props/_Loose"] = { AssetId = 2345678901, Version = 1 },
+	["Models/Props/Tall Lamp"] = { AliasOf = "Models/Props/Lamp" },
 }
 ```
 
@@ -193,6 +197,11 @@ placeholder or looks inside it: the placeholder becomes the bundle's one instanc
 properties, attributes, tags and children; its name stays the path's last segment), so a script that
 holds it holds the instance. A `_Loose` bundle's members go into its parent folder. A bundle file
 without exactly one instance at its top mounts its instances in a folder at its path, with a warning.
+An `AliasOf` line (an alias of an alias followed) is a copy of the Model at the path it names, made the first
+time a script asks for the alias's path by name (FindFirstChild, WaitForChild or an index, its folders too):
+the bundle holding the model imports, and the copy, named as the alias's last segment, goes into the alias's
+folders (a bundle's own folders when the path runs through one). A listing makes no alias, and an alias of
+anything but a Model, or of a path no bundle holds, is not made, with a warning.
 
 Bundles come from a `BundleSource` (`catalog`, `bundle`, `cached`, `shape`), which a host sets with
 `engine.set_bundle_source`. The default is `AssetWorker`: a child process (`REE_ASSET_WORKER` names the
@@ -250,7 +259,8 @@ scheduler.rs    Scheduler data and the Luau-running steps (flush_deferred, resum
   Changed / GetPropertyChangedSignal (deferred); `raw_set_silent` stores without events. Both bump
   `Instance.version`.
 - **Invalidation**: `engine.hooks.borrow_mut().property_changed` and `hierarchy_changed` (instance, old
-  parent, new parent) run after a change's signals are queued. `Instance.version` changes with every own
+  parent, new parent) run after a change's signals are queued; `property_unchanged` runs for a `raw_set`
+  that stored the value the property already held (no signals). `Instance.version` changes with every own
   property, attribute or tag change, `child_version` with its child list, `Dom::structure_version` with
   any parenting. A hook receives `&mut State` and must not borrow `engine.state`.
 - **Frame phases**: `state.sched.add_hook(Phase::Render | PreRender | Tween | RenderStep | Heartbeat |
@@ -268,7 +278,21 @@ scheduler.rs    Scheduler data and the Luau-running steps (flush_deferred, resum
   string as Luau reads a number and anything else as 0; `int` properties truncate (the minimum when out
   of range or not finite), `int64` ones round half away from zero (0 when out of range); a boolean
   property takes Lua truth; a string property takes strings and numbers. A Vector3 or CFrame property keeps
-  the script value's float32s as they are (a client reads back `CFrame.Angles(0.001, 0, 0)` exactly).
+  the script value's float32s as they are (a client reads back `CFrame.Angles(0.001, 0, 0)` exactly). A part's
+  CFrame, a joint's C0 / C1 and a BulkMoveTo keep the rotation while every entry of RᵀR - I is within 1e-5, and
+  otherwise store it as `CFrame:Orthonormalize()` gives it (identity for a zero column); a model's WorldPivot keeps
+  any rotation (`world::frame::stored_rotation`, measured in a playing client).
+- **Models as a client receives them** (`project::received`). A playing client gets models, snapshots and bundles
+  from the server, so ree loads every stored rotation as the client reads it after the server's load and the
+  network. This was measured in a playing client on 2,347 rotations of the game's bundles: 2,328 come out to the
+  bit, 18 bones within 5e-7, and one pivot whose quaternion had near-equal components 1.7e-4 off.
+  - **The server's load.** It stores a part's CFrame as a script's write does (orthonormalized past 1e-5), and
+    orthonormalizes a joint's C0 / C1 and an attachment's or bone's CFrame. It keeps a PivotOffset or a model's
+    pivot as stored.
+  - **The network.** A rotation that is not axis-aligned then crosses as a 15-bit quaternion: the largest
+    component is dropped, and the other three, times √2, cross in steps of 1/16383. So the client's rotation is
+    orthonormal to float precision, and within about 1e-4 of the server's.
+  - **What crosses exactly.** Positions and axis-aligned rotations. A `Clone` also copies a rotation exactly.
 - **Scripts' chunk names**: a script or module compiles as a chunk named by its full name, as Roblox
   names it: error positions, tracebacks and `debug.info(f, "s")` read `ReplicatedStorage.Module:3:`
   (measured in a playing client; tools/parity/probes/chunknames.luau). Roblox keeps one compiled chunk per
@@ -519,7 +543,8 @@ in speed write the same values; a client's os.clock is real time, so a script th
 frame can draw differently there when its real work moves (`ree record --timing-check` says when a recording
 hinges on that: docs/cli.md). The clock never runs backwards and never falls behind the frame's time.
 A recorded clock (`RUR_CLOCK`) takes no charges; the busy-loop allowance still ends a loop that only reads
-the clock.
+the clock. A frozen clock counts those reads within one resumption only, so every thread that reads it in a
+frame, however many there are, reads the frame's time, as a frame-locked benchmark clock gives them.
 
 The same script is charged the same in every run. Luau's garbage collector paces its cycles by how long
 they took, and on the wall clock it stepped at other points in each run on a loaded machine: an allocating
@@ -677,12 +702,23 @@ record/prepare.rs runs prepared ahead by `ree serve`
   or a model, past Folders, Configurations and Accessories; a model's frame is its pivot, a WorldModel's
   or the Workspace's the identity. An attachment under a bone follows the bone's
   TransformedWorldCFrame.
-- **Rigid assemblies** (Roblox's documentation, not measured): Weld, Snap, ManualWeld, Motor, Motor6D
-  (Part0 * C0 * Transform = Part1 * C1) and WeldConstraint carry the parts they join. Each assembly hangs
-  from its root (an anchored part, else by Massless, RootPriority, then the documented size formula). A
-  part's CFrame write moves its whole assembly rigidly; Position / Orientation / Rotation move the part
-  alone and rewrite its joints. Model:PivotTo and ScaleTo write their parts as one batch.
+- **Rigid assemblies** (Roblox's documentation; the root measured in a playing client): Weld, Snap, ManualWeld,
+  Motor, Motor6D (Part0 * C0 * Transform = Part1 * C1) and WeldConstraint carry the parts they join. Each assembly
+  hangs from its root, which `BasePart.AssemblyRootPart` reads (nil outside a WorldRoot): an anchored part, else a
+  part that is not Massless, then the higher RootPriority, then the larger largest face (its area, not rounded)
+  times 20 for a Seat or VehicleSeat, 10 for a part named HumanoidRootPart and 5 for one named Torso, then the
+  later made part. A
+  part's CFrame write moves its whole assembly rigidly, the root's rotation stored as a part's CFrame write stores
+  it, so a rig whose parts are written one by one (a BulkMoveTo of all of them) keeps its shape; Position / Orientation / Rotation move the part
+  alone and rewrite its joints. Model:PivotTo and ScaleTo write their parts as one batch. After PivotTo a
+  model whose pivot is its own (no PrimaryPart) has the target as its pivot exactly, every call, as in a client;
+  composing the move onto the old pivot compounded float error until a model pivoted every frame lost its rotation.
   Motor6D.Transform applies after PreSimulation (edit mode: at each Heartbeat's start).
+- **BulkMoveTo** (measured in a playing client): `WorldRoot:BulkMoveTo` checks its lists before any part moves, with a
+  client's messages: lists of different lengths ("Length of part list (2) and length of CFrame list (1) do not match."),
+  a part list entry that is no BasePart, a frame list entry that is no CFrame, and arguments that are no arrays. A nil in
+  the part list leaves its frame unused, so the lists still pair by index. Destroyed parts, parts with no parent and
+  parts outside the Workspace move.
 - **Free flight** (measured in playing clients): in play mode an assembly in the Workspace with no
   anchored part, nothing that can collide, no Humanoid and no constraint flies from its first simulation
   step under Workspace.Gravity, at the velocity and with the spin a script gave any of its parts
@@ -710,7 +746,10 @@ record/prepare.rs runs prepared ahead by `ree serve`
   draws what a client parents there), Lighting's own properties and the skies, atmospheres and post
   effects a run parents to Lighting or the camera, SurfaceGuis and BillboardGuis in the PlayerGui under
   their adornees, and the PlayerGui's ScreenGuis in the scene's `PlayerGui`. Each instance gets one copy
-  in `scene.rbxm` as it appeared, hidden before and after; `playback.json` holds `set` actions, keyed
+  in `scene.rbxm` as it appeared, hidden before and after. Lighting's values before the run stand in for the
+  place's, which the renderer's stage draws: every write the run makes to a tracked Lighting property plays
+  (one before frame 0 at frame 0, one of the value the engine held too), and a keyed tween holds
+  `{"initial": true}` (the stage's value) until the run first changes the property. `playback.json` holds `set` actions, keyed
   tweens for properties that change frame after frame, motion tracks, emits and clears, reparenting and
   references written later; `events.json` holds prints, warnings, errors and sounds with their times.
   Values are rounded to 1e-5, motion keys within 2e-4, and keys a straight line reproduces are dropped.

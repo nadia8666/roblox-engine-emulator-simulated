@@ -11,7 +11,19 @@ use std::{
 };
 
 /// The files and directories (every file below) a conversion depends on.
-const INPUTS: &[&str] = &["build.rs", "Cargo.lock", "data", "src/lib.rs", "src/reflection.rs", "src/value.rs", "src/project.rs", "src/project"];
+/// (src/world/frame.rs and lune-roblox's float32 module store a received part's or joint's rotation: project/received.rs)
+const INPUTS: &[&str] = &[
+    "build.rs",
+    "Cargo.lock",
+    "data",
+    "src/lib.rs",
+    "src/reflection.rs",
+    "src/value.rs",
+    "src/project.rs",
+    "src/project",
+    "src/world/frame.rs",
+    "vendor/lune-roblox/src/datatypes/types/mod.rs",
+];
 
 fn files(path: &Path, out: &mut Vec<PathBuf>) {
     if path.is_dir() {

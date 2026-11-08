@@ -279,6 +279,7 @@ pub const EVENT_TRACE_FLAG_THREAD: u32 = 0x0000_0002;
 pub const EVENT_TRACE_FLAG_CSWITCH: u32 = 0x0000_0010;
 pub const EVENT_TRACE_CONTROL_QUERY: u32 = 0;
 pub const EVENT_TRACE_CONTROL_STOP: u32 = 1;
+pub const EVENT_TRACE_CONTROL_FLUSH: u32 = 3;
 pub const PROCESS_TRACE_MODE_REAL_TIME: u32 = 0x0000_0100;
 pub const PROCESS_TRACE_MODE_RAW_TIMESTAMP: u32 = 0x0000_1000;
 pub const PROCESS_TRACE_MODE_EVENT_RECORD: u32 = 0x1000_0000;
@@ -448,6 +449,9 @@ pub unsafe fn from_wide(text: *const u16) -> String {
 
 /// A handle closed when dropped
 pub struct Owned(pub Handle);
+
+// (a kernel handle is the process's, not a thread's: a client's pipe and thread handles move to the thread serving it)
+unsafe impl Send for Owned {}
 
 impl Drop for Owned {
     fn drop(&mut self) {

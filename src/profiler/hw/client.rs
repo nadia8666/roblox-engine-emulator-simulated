@@ -196,14 +196,14 @@ impl Client {
             // (no pipe in a console means nobody serves it; the service's appears once it has started)
             if std::time::Instant::now() >= deadline || (error == sys::ERROR_FILE_NOT_FOUND && endpoint == Endpoint::Console) {
                 return Err(match error {
-                    sys::ERROR_PIPE_BUSY => "the counter service is counting for another profile; try again when it ends".into(),
+                    sys::ERROR_PIPE_BUSY => "the counter service is counting for as many clients as it serves at once (eight); try again when one ends".into(),
                     sys::ERROR_FILE_NOT_FOUND if endpoint == Endpoint::Console => "no `ree-hw-counters serve` is listening".into(),
                     sys::ERROR_ACCESS_DENIED => "the counter service's pipe refused this account (setup.ps1 gives it to the account that installs it)".into(),
                     error => format!("the counter service's pipe: error {error}"),
                 });
             }
             match error {
-                // (busy with another client: wait for its turn; not there yet: the service is starting)
+                // (every instance of its pipe holds a client: wait for one to end; not there yet: the service is starting)
                 sys::ERROR_PIPE_BUSY => unsafe {
                     sys::WaitNamedPipeW(name.as_ptr(), 2000);
                 },

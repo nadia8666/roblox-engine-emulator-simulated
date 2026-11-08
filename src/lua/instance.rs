@@ -163,6 +163,18 @@ pub fn reveal_bundle(engine: &Engine, id: InstanceId) {
     let _ = (engine, id);
 }
 
+/// A child a script looked up by name and did not find that a bundle mount makes when asked for: a manifest alias's copy
+/// (project::model_assets::requested).
+fn made_on_request(engine: &Engine, id: InstanceId, name: &[u8]) -> Option<InstanceId> {
+    #[cfg(feature = "bundles")]
+    return project::model_assets::requested(engine, id, name);
+    #[cfg(not(feature = "bundles"))]
+    {
+        let _ = (engine, id, name);
+        None
+    }
+}
+
 /// Reached: a script found `child` by name (a bundle's placeholder becomes the bundle's instance;
 /// script access to Studio-only placeholders is noted).
 pub(super) fn reached(engine: &Engine, child: InstanceId) -> InstanceId {
@@ -224,6 +236,9 @@ pub fn get(lua: &Lua, engine: &Rc<Engine>, id: InstanceId, key: &LuaValue) -> Re
     let child = engine.state.borrow().dom.find_child(id, &key_bytes);
     if let Some(child) = child {
         reached(engine, child);
+        return Ok(instance_value(lua, engine, child)?);
+    }
+    if let Some(child) = made_on_request(engine, id, &key_bytes) {
         return Ok(instance_value(lua, engine, child)?);
     }
     if let Some(child) = super::globals::missing_child(lua, engine, id, &key_bytes)? {
@@ -380,9 +395,34 @@ fn write_touch(state: &State, id: InstanceId, name: NameId, property: &str, chan
     }
 }
 
+/// A CFrame a script writes to a part's CFrame or a joint's C0 / C1, as a client stores it: its rotation orthonormalized once it
+/// is off by more than the client lets pass (world::frame::stored_rotation). Other values, and CFrames written elsewhere (a
+/// model's WorldPivot keeps a scaled rotation, measured), pass as they are.
+fn cframe_as_stored(engine: &Engine, id: InstanceId, name: NameId, value: Value) -> Value {
+    use rbx_dom_weak::types::{self as dom, Variant};
+    let Value::Dom(variant) = &value else { return value };
+    let Variant::CFrame(cframe) = &**variant else { return value };
+    let class = engine.state.borrow().dom.at(id).class;
+    let property = engine.reflection.name(name);
+    let held = (name == crate::world::cframe_name(engine) && engine.reflection.is_a(class, "BasePart"))
+        || (matches!(property, "C0" | "C1") && engine.reflection.is_a(class, "JointInstance"));
+    if !held {
+        return value;
+    }
+    let o = &cframe.orientation;
+    let rows = [[o.x.x, o.x.y, o.x.z], [o.y.x, o.y.y, o.y.z], [o.z.x, o.z.y, o.z.z]];
+    let stored = crate::world::frame::stored_rotation(rows);
+    if stored == rows {
+        return value;
+    }
+    let row = |r: [f32; 3]| dom::Vector3::new(r[0], r[1], r[2]);
+    Value::Dom(Rc::new(Variant::CFrame(dom::CFrame::new(cframe.position, dom::Matrix3::new(row(stored[0]), row(stored[1]), row(stored[2]))))))
+}
+
 /// A script's property write: [`set_property`], charged to the work clock by what Studio spends on it
 /// (crate::cost::write: the property, whether it changed, whether the instance is in the workspace).
 pub fn script_set_property(engine: &Engine, id: InstanceId, name: NameId, value: Value) -> bool {
+    let value = cframe_as_stored(engine, id, name, value);
     // (a client looks a Text write up for translation: AutoLocalize on and a letter in it)
     let client = !engine.options.edit_mode() && !engine.options.server();
     let looked_up = match &value {
@@ -686,6 +726,9 @@ pub fn find_first_child_counting(engine: &Engine, id: InstanceId, name: Option<&
     };
     if let Some(child) = found {
         return Some(reached(engine, child));
+    }
+    if !recursive && let Some(name) = name && let Some(made) = made_on_request(engine, id, name) {
+        return Some(made);
     }
     if recursive {
         let children = engine.state.borrow().dom.at(id).children.clone();

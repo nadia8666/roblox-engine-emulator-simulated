@@ -10,7 +10,9 @@
 //! instance), and a `_Loose` bundle's members go into its parent folder. The bundles come from a
 //! [`BundleSource`]: an asset worker process ([`AssetWorker`]) unless the host sets another
 //! ([`Engine::set_bundle_source`]); a source whose files hold only the children of a bundle's
-//! instance ([`BundleShape::Members`]) mounts each bundle's children in a folder, as before.
+//! instance ([`BundleShape::Members`]) mounts each bundle's children in a folder, as before. A
+//! manifest line `["<key>"] = { AliasOf = "<path>" }` is a copy of the Model at that path, made when
+//! a script asks for the alias's path by name ([`requested`]).
 //!
 //! The bundles a run imported are remembered ([`remember`]; `recent-<mount>.txt` beside the bundle
 //! files): the next mount of the same bundles decodes those of them its source already holds on
@@ -93,6 +95,11 @@ pub struct ModelAssets {
     scene: Option<(PathBuf, Option<Vec<String>>)>,
     /// The keys imported so far, in order
     imported: Vec<String>,
+    /// The instance the bundles' paths start at
+    root: Option<InstanceId>,
+    /// The manifest's aliases of this mount not asked for yet: each key with the path of the model it copies ([`aliases_in`],
+    /// [`requested`])
+    aliases: FxHashMap<String, String>,
 }
 
 fn folder(engine: &Engine, parent: InstanceId, name: &str) -> InstanceId {
@@ -134,11 +141,12 @@ pub fn mount(engine: &Engine, roots: &[String], chosen: &ModelAssetsOverride) {
     let Some(service) = segments.next() else { return };
     let Ok(mut parent) = services::get_service(engine, engine.world().game, service) else { return };
     for name in segments { parent = folder(engine, parent, name); }
-    let selected = catalog.iter().map(String::as_str).filter(|key| {
-        prefixes.iter().any(|prefix| prefix == "*" || key == prefix || key.strip_prefix(prefix.as_str()).is_some_and(|rest| rest.starts_with('/')))
-    });
+    let chosen_key = |key: &str| prefixes.iter().any(|prefix| prefix == "*" || key == prefix || key.strip_prefix(prefix.as_str()).is_some_and(|rest| rest.starts_with('/')));
+    let mut aliases = aliases_in(project);
+    let selected = catalog.iter().map(String::as_str).filter(|key| chosen_key(key) && !aliases.contains_key(*key));
     let shape = source.shape();
     let pending = place_all(engine, parent, selected, shape);
+    aliases.retain(|key, _| chosen_key(key));
     let (recent, scene) = recent_lists(&engine.options.repo, project, mount, &prefixes, chosen.scene.as_deref());
     let reflection = engine.reflection.clone();
     let decoding = ahead(&recent, &scene).and_then(|keys| {
@@ -151,7 +159,7 @@ pub fn mount(engine: &Engine, roots: &[String], chosen: &ModelAssetsOverride) {
             .collect();
         Decoding::start(files, reflection)
     });
-    engine.state.borrow_mut().project.model_assets = ModelAssets { source: Some(source), shape, project: project.into(), pending, decoding, recent, scene, imported: Vec::new() };
+    engine.state.borrow_mut().project.model_assets = ModelAssets { source: Some(source), shape, project: project.into(), pending, decoding, recent, scene, imported: Vec::new(), root: Some(parent), aliases };
 }
 
 /// The folders of bundles `keys` below `parent` (as a game's installer makes a path's folders), with
@@ -343,6 +351,95 @@ fn install(engine: &Engine, id: InstanceId, key: &str, plan: &Arc<ModelPlan>, sh
     });
 }
 
+/// A child `name` of `parent` a script looked up by name (FindFirstChild, WaitForChild, an index) and did not find, below
+/// the mount: when that path is a manifest alias's, the alias is made now, once, as the game's installer makes it when a
+/// client asks for the path ([`install_alias`]); a folder on the way to an alias is made as the installer makes the
+/// alias's folders. What is at the path then, if anything. An alias nothing asks for is never made, and a listing does not
+/// make one.
+pub fn requested(engine: &Engine, parent: InstanceId, name: &[u8]) -> Option<InstanceId> {
+    let alias = {
+        let mut state = engine.state.borrow_mut();
+        let state = &mut *state;
+        let assets = &mut state.project.model_assets;
+        let root = assets.root.filter(|_| !assets.aliases.is_empty())?;
+        // (a lookup that missed outside the mount allocates nothing)
+        let mut at = parent;
+        while at != root {
+            at = state.dom.at(at).parent?;
+        }
+        let mut path = vec![String::from_utf8_lossy(name).into_owned()];
+        let mut at = parent;
+        while at != root {
+            let node = state.dom.at(at);
+            path.push(String::from_utf8_lossy(node.name.as_bytes()).into_owned());
+            at = node.parent?;
+        }
+        path.reverse();
+        let wanted = path.join("/");
+        match assets.aliases.remove(&wanted) {
+            Some(model) => Some((wanted, model)),
+            None => {
+                let below = format!("{wanted}/");
+                assets.aliases.keys().any(|key| key.starts_with(&below)).then_some(())?;
+                None
+            }
+        }
+    };
+    match alias {
+        Some((key, model)) => install_alias(engine, &key, &model),
+        None => {
+            folder(engine, parent, &String::from_utf8_lossy(name));
+        }
+    }
+    engine.state.borrow().dom.find_child(parent, name)
+}
+
+/// Alias `key` of the model at path `model`, as the game's installer makes one: a copy of that model (its bundle imported
+/// first), named as the key's last segment, in the key's folders (made where missing); none when the key's path holds an
+/// instance already.
+fn install_alias(engine: &Engine, key: &str, model: &str) {
+    let Some(root) = engine.state.borrow().project.model_assets.root else { return };
+    let Some(found) = model.split('/').try_fold(root, |at, name| child_of(engine, at, name)) else {
+        engine.warn(format!("modelAssets {key}: its AliasOf {model} is not among the bundles"));
+        return;
+    };
+    let class = engine.state.borrow().dom.at(found).class;
+    if !engine.reflection.class_id("Model").is_some_and(|wanted| engine.reflection.class(class).is_a(wanted)) {
+        engine.warn(format!("modelAssets {key}: its AliasOf {model} is a {}, and an alias copies a Model", engine.reflection.class(class).name));
+        return;
+    }
+    let names: Vec<&str> = key.split('/').collect();
+    let (name, folders) = names.split_last().expect("a key has a segment");
+    let parent = folders.iter().fold(root, |at, folder_name| child_of(engine, at, folder_name).unwrap_or_else(|| folder(engine, at, folder_name)));
+    if child_of(engine, parent, name).is_some() {
+        return;
+    }
+    super::materialize_deep(engine, found);
+    let copy = {
+        let mut state = engine.state.borrow_mut();
+        let copy = core::clone_instance(&mut state, &engine.reflection, found);
+        if let Some(copy) = copy {
+            core::raw_set_silent(&mut state, &engine.reflection, copy, K::Name as NameId, Value::String(Str::from(*name)));
+            state.dom.attach(copy, parent);
+        }
+        copy
+    };
+    if copy.is_none() {
+        engine.warn(format!("modelAssets {key}: its AliasOf {model} is not Archivable"));
+    }
+}
+
+/// The child `name` of `at` as a script finds it: what waits there imported first, and a bundle's placeholder made the
+/// bundle's instance.
+fn child_of(engine: &Engine, at: InstanceId, name: &str) -> Option<InstanceId> {
+    crate::lua::instance::materialize(engine, at);
+    let child = engine.state.borrow().dom.find_child(at, name.as_bytes())?;
+    if engine.state.borrow().dom.at(child).has(flags::BUNDLE_ROOT) {
+        reveal(engine, child);
+    }
+    Some(child)
+}
+
 /// Remembers the bundles this engine imported, for the next mount of the same bundles to decode
 /// ahead (a guess: a bundle imported differently is fetched and decoded as usual): the mount's list
 /// (what `ree serve --warm` and a scene's first run read) and the scene's, which an empty list
@@ -501,8 +598,10 @@ fn convert_file(reflection: &Reflection, path: &Path) -> Result<ModelPlan, Strin
     }
     crate::profiler::caches::miss(crate::profiler::caches::Cache::BundlePlans);
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let dom = decode_model(&bytes)?;
+    let mut dom = decode_model(&bytes)?;
     drop(bytes);
+    // (the server loads a bundle and sends it: its rotations as a client receives them)
+    super::received::as_received(&mut dom);
     let plan = ModelPlan::new(reflection, &dom, dom.root().children());
     drop(dom);
     if let Some(key) = &key {
@@ -892,6 +991,52 @@ fn number_field(table: &str, name: &str) -> Option<u64> {
     None
 }
 
+/// The string in field `name = "<text>"` of a table's text (not a field whose name ends with it).
+fn string_field(table: &str, name: &str) -> Option<String> {
+    let mut from = 0;
+    while let Some(found) = table[from..].find(name) {
+        let at = from + found;
+        from = at + name.len();
+        if table[..at].chars().next_back().is_some_and(|before| before.is_ascii_alphanumeric() || before == '_') {
+            continue;
+        }
+        let Some(value) = table[from..].trim_start().strip_prefix('=') else { continue };
+        let Some(text) = value.trim_start().strip_prefix('"') else { continue };
+        let text = &text[..text.find('"')?];
+        return (!text.contains('\\')).then(|| text.to_string());
+    }
+    None
+}
+
+/// The manifest's aliases, `["<key>"] = { AliasOf = "<path>", ... },`: the model at that path, copied to the key's path
+/// as the game's installer copies it. Each key comes with the path its aliases end at: an alias of an alias is followed,
+/// and a loop stops where it closes.
+fn aliases_in(project: &Path) -> FxHashMap<String, String> {
+    let Ok(text) = std::fs::read_to_string(project.join(MANIFEST)) else { return FxHashMap::default() };
+    let direct: FxHashMap<String, String> = text
+        .lines()
+        .filter_map(|line| {
+            let (key, table) = line.trim().strip_prefix("[\"").and_then(|rest| rest.split_once("\"] = "))?;
+            (!key.contains('\\')).then_some(())?;
+            Some((key.to_string(), string_field(table, "AliasOf")?))
+        })
+        .collect();
+    direct
+        .keys()
+        .map(|key| {
+            let mut at = key.as_str();
+            let mut seen: FxHashSet<&str> = FxHashSet::default();
+            while let Some(next) = direct.get(at) {
+                if !seen.insert(at) {
+                    break;
+                }
+                at = next;
+            }
+            (key.clone(), at.to_string())
+        })
+        .collect()
+}
+
 fn short_digest(text: &str) -> String {
     use sha2::{Digest, Sha256};
     Sha256::digest(text.as_bytes()).iter().take(8).map(|byte| format!("{byte:02x}")).collect()
@@ -1151,6 +1296,108 @@ mod tests {
         assert_eq!(assets.pending.get(&untouched).map(Vec::as_slice), Some(&["Models/Machines/Untouched".to_string()][..]));
         let placeholder = state.dom.at(untouched);
         assert!(placeholder.has(flags::BUNDLE_ROOT) && &*engine.reflection.class(placeholder.class).name == "Folder");
+        state.project.model_assets.source = None;
+        drop(state);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    /// An alias line (`AliasOf`) is a copy of the model it names, made at the alias's path when a script asks for that path,
+    /// as the game's installer makes it: found, waited for or indexed by name (its folders too), named as its path's last
+    /// segment, its model's bundle imported for it and left in place. An alias of a model inside a folder bundle lands in
+    /// that bundle's own folder, an alias of an alias is followed, an alias nothing asked for is not made (a listing does
+    /// not make it), and an alias of a part, of a path no bundle holds or of itself is not made.
+    #[test]
+    fn an_alias_is_a_copy_of_the_model_it_names() {
+        use crate::{Options, lua};
+        use rbx_dom_weak::{InstanceBuilder, types::Variant};
+        let directory = scratch("aliases");
+        let file = directory.join(MANIFEST);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, r#"return {
+	["Models/Racing/Steed"] = { AliasOf = "Models/Stables/Horse", ModelHash = "1:2" },
+	["Models/Racing/Pony"] = { AliasOf = "Models/Racing/Steed" },
+	["Models/Racing/Shield"] = { AliasOf = "Models/Arena/Hall/Shield" },
+	["Models/Racing/Missing"] = { AliasOf = "Models/Stables/Nothing" },
+	["Models/Arena/Hall/Copy"] = { AliasOf = "Models/Arena/Hall/Giant" },
+	["Models/Arena/Hall/Spare"] = { AliasOf = "Models/Arena/Hall/Giant" },
+	["Models/Loop/A"] = { AliasOf = "Models/Loop/B" },
+	["Models/Loop/B"] = { AliasOf = "Models/Loop/A" },
+	["Models/Stables/Horse"] = { AssetId = 1, Version = 1 },
+	["Models/Arena"] = { AssetId = 2, Version = 1 },
+}
+"#).unwrap();
+        let aliases = aliases_in(&directory);
+        assert_eq!(aliases.len(), 8);
+        assert_eq!(aliases["Models/Racing/Pony"], "Models/Stables/Horse");
+        assert_eq!(aliases["Models/Loop/A"], "Models/Loop/A");
+        assert!(!aliases.contains_key("Models/Stables/Horse"));
+        let horse_file = directory.join("horse.rbxm");
+        write_model(&horse_file, &machine("Horse File"));
+        let arena_file = directory.join("arena.rbxm");
+        {
+            let mut dom = WeakDom::new(InstanceBuilder::new("DataModel"));
+            let arena = dom.insert(dom.root_ref(), InstanceBuilder::new("Folder").with_name("Arena"));
+            let hall = dom.insert(arena, InstanceBuilder::new("Folder").with_name("Hall"));
+            let giant = dom.insert(hall, InstanceBuilder::new("Model").with_name("Giant"));
+            let torso = dom.insert(giant, InstanceBuilder::new("Part").with_name("Torso"));
+            dom.get_by_ref_mut(giant).unwrap().properties.insert("PrimaryPart".into(), Variant::Ref(torso));
+            dom.insert(hall, InstanceBuilder::new("Part").with_name("Shield"));
+            write_model(&arena_file, &dom);
+        }
+        let mut files: FxHashMap<String, PathBuf> = FxHashMap::default();
+        files.insert("Models/Stables/Horse".into(), horse_file);
+        files.insert("Models/Arena".into(), arena_file);
+        let mut keys: Vec<String> = files.keys().cloned().collect();
+        keys.sort();
+
+        let engine = Engine::new(Options::default()).unwrap();
+        let vm = mlua::Lua::new();
+        lua::start(&vm, &engine).unwrap();
+        let root = folder(&engine, engine.world().game, "Assets");
+        let pending = place_all(&engine, root, keys.iter().map(String::as_str), BundleShape::Uploaded);
+        let fetched = Rc::new(RefCell::new(Vec::new()));
+        engine.state.borrow_mut().project.model_assets = ModelAssets {
+            source: Some(Box::new(Uploaded(files, fetched.clone()))),
+            shape: BundleShape::Uploaded,
+            project: directory.clone(),
+            pending,
+            root: Some(root),
+            aliases,
+            ..Default::default()
+        };
+        let module = {
+            let mut state = engine.state.borrow_mut();
+            core::create_named(&mut state, &engine.reflection, engine.reflection.class_id("ModuleScript").unwrap(), "Test")
+        };
+        let env = lua::modules::environment(&vm, &engine, module).unwrap();
+        env.set("Assets", lua::instance_value(&vm, &engine, root).unwrap()).unwrap();
+        vm.load(r#"
+            assert(#Assets.Models:GetChildren() == 2, "a listing makes no alias or alias folder")
+            local Racing = Assets.Models:FindFirstChild("Racing")
+            assert(Racing and Racing.ClassName == "Folder", "the aliases' folder, asked for")
+            local Steed = Racing:FindFirstChild("Steed")
+            assert(Steed and Steed.ClassName == "Model" and Steed.Name == "Steed" and Steed.Parent == Racing, "the alias")
+            assert(Steed.PrimaryPart == Steed.Body and Steed:GetAttribute("Reach") == 5 and Steed:HasTag("Machine"), "a copy of the horse")
+            assert(Racing:FindFirstChild("Steed") == Steed, "made once")
+            local Horse = Assets.Models.Stables.Horse
+            assert(Horse ~= Steed and Horse.Name == "Horse" and Horse.PrimaryPart == Horse.Body, "the horse stays where it is")
+            assert(Racing:WaitForChild("Pony").PrimaryPart.Name == "Body", "an alias of an alias")
+            assert(Racing:FindFirstChild("Shield") == nil and Racing:FindFirstChild("Missing") == nil, "an alias of a part or of nothing")
+            assert(#Racing:GetChildren() == 2, "the aliases asked for")
+            local Arena = Assets.Models.Arena
+            assert(Arena.ClassName == "Folder" and #Arena:GetChildren() == 1, "the bundle has its one hall")
+            assert(#Arena.Hall:GetChildren() == 2, "the hall as the bundle holds it")
+            local Copy = Arena.Hall.Copy
+            assert(Copy.ClassName == "Model" and Copy.PrimaryPart == Copy.Torso and Copy ~= Arena.Hall.Giant, "an alias inside a folder bundle")
+            assert(#Arena.Hall:GetChildren() == 3, "the hall holds the giant, the shield and the copy, not the spare")
+            assert(Assets.Models.Loop:FindFirstChild("A") == nil and Assets.Models.Loop:FindFirstChild("B") == nil, "a loop")
+        "#).set_environment(env.clone()).exec().unwrap();
+
+        let mut fetched = fetched.borrow().clone();
+        fetched.sort();
+        assert_eq!(fetched, ["Models/Arena", "Models/Stables/Horse"], "each bundle fetched once");
+        let mut state = engine.state.borrow_mut();
+        assert!(state.project.model_assets.pending.is_empty());
         state.project.model_assets.source = None;
         drop(state);
         let _ = std::fs::remove_dir_all(directory);

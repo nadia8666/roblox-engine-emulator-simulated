@@ -280,6 +280,9 @@ pub fn raw_set(
     } else {
         // Model:PivotTo writing a part where it is still moves its assembly (world/joints.rs)
         super::world::joints::written_unchanged(state, reflection, id, name);
+        for hook in &hooks.property_unchanged {
+            hook(state, id, name);
+        }
     }
     changed
 }
