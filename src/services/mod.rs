@@ -619,8 +619,13 @@ pub fn install(engine: &Rc<Engine>) {
             if server {
                 return Ok(());
             }
+            crate::scheduler::trace_scheduler(engine, "RenderStepped begin");
             fire_frame_event(lua, engine, K::RenderStepped as NameId, &[Value::Number(delta)])?;
-            fire_frame_event(lua, engine, K::PreRender as NameId, &[Value::Number(delta)])
+            crate::scheduler::trace_scheduler(engine, "RenderStepped end");
+            crate::scheduler::trace_scheduler(engine, "PreRender begin");
+            fire_frame_event(lua, engine, K::PreRender as NameId, &[Value::Number(delta)])?;
+            crate::scheduler::trace_scheduler(engine, "PreRender end");
+            Ok(())
         }));
         state.sched.add_hook(Phase::Simulation, Rc::new(|lua, engine, _| crate::lua::actors::start_scripts(lua, engine)));
         state.sched.add_hook(Phase::Simulation, Rc::new(|lua, engine, delta| {
