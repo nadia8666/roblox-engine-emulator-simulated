@@ -1318,7 +1318,7 @@ fn flush_deferred_upto(lua: &Lua, engine: &Rc<Engine>, processed: &mut usize, up
         };
         let target_label = match &job.target {
             JobTarget::Handler(connection) => {
-                let signal = engine.state.borrow().signals.get(job.signal).label.to_string_lossy().into_owned();
+                let signal = engine.state.borrow().signals.get(job.signal).label.to_str_lossy().into_owned();
                 format!("handler signal={signal} connection={}", connection.slot())
             }
             JobTarget::Thread(_) => "thread".to_string(),
