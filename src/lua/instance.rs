@@ -573,14 +573,17 @@ pub fn fire_immediate_costing(lua: &Lua, engine: &Rc<Engine>, signal: SignalId, 
                         parallel.push((lua.create_thread(callback)?, values));
                         continue;
                     }
+                    let label = scheduler::handler_label(engine, signal, &callback);
                     let sample = scheduler::sample_handler(engine, signal, &callback);
                     let _scope = crate::microprofile::enabled()
-                        .then(|| crate::microprofile::scope(scheduler::handler_label(engine, signal, &callback)));
+                        .then(|| crate::microprofile::scope(label));
                     let thread = lua.create_thread(callback)?;
                     if let Some(site) = census {
                         crate::census::handler_ran(site, &thread);
                     }
+                    scheduler::trace_scheduler(engine, &format!("immediate callback {label} begin"));
                     scheduler::resume(lua, engine, &thread, values);
+                    scheduler::trace_scheduler(engine, &format!("immediate callback {label} end"));
                     scheduler::end_handler_sample(sample, &thread);
                 }
             }
