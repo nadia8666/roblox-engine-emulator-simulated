@@ -466,10 +466,11 @@ fn restore_streamed_out(
     foci: &[Focus],
     radius: f32,
 ) {
-    let entries: Vec<(InstanceId, InstanceId, usize)> = streamed_out
+    let mut entries: Vec<(InstanceId, InstanceId, usize)> = streamed_out
         .iter()
         .map(|(&root, &(parent, index))| (root, parent, index))
         .collect();
+    entries.sort_by_key(|(_, parent, index)| (parent.index, *index));
     for (root, parent, index) in entries {
         let alive = state.dom.get(root).is_some() && state.dom.get(parent).is_some();
         let destroyed = state.dom.get(root).is_some_and(|instance| instance.has(crate::dom::flags::DESTROYED));
@@ -554,17 +555,22 @@ fn stream_instances(
     }) {
         candidates.push((part, vec![part]));
     }
-    for (root, parts) in candidates {
+    let candidates: Vec<(InstanceId, Vec<InstanceId>, InstanceId, usize)> = candidates
+        .into_iter()
+        .filter_map(|(root, parts)| {
+            let parent = state.dom.parent_of(root)?;
+            let index = state.dom.at(parent).children.iter().position(|&child| child == root)?;
+            Some((root, parts, parent, index))
+        })
+        .collect();
+    for (root, parts, parent, index) in candidates {
         if state.gravity.streamed_out.contains_key(&root)
             || state.dom.get(root).is_none()
-            || state.dom.parent_of(root).is_none()
             || state.dom.at(root).has(crate::dom::flags::SCRIPT_CREATED)
             || !far_from_foci(&parts, state, setup, foci, target, minimum)
         {
             continue;
         }
-        let Some(parent) = state.dom.parent_of(root) else { continue };
-        let index = state.dom.at(parent).children.iter().position(|&child| child == root).unwrap_or(state.dom.at(parent).children.len());
         state.dom.pin(root);
         if core::set_parent(state, reflection, hooks, root, None).is_ok() {
             state.gravity.streamed_out.insert(root, (parent, index));
