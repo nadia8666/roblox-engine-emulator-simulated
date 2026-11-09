@@ -200,7 +200,7 @@ local function NewRay(Origin, Direction)
 	if type(Direction) ~= "vector" then
 		error(`invalid argument #2 to 'new' (Vector3 expected, got {typeof(Direction)})`, 2)
 	end
-	return table.freeze(setmetatable({ Origin = Origin, Direction = Direction }, RayMeta))
+	return setmetatable({ Origin = Origin, Direction = Direction }, RayMeta)
 end
 local function RayClosestPoint(Self, Point)
 	local Unit = Self.Direction.Unit
