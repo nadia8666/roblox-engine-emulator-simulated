@@ -257,6 +257,7 @@ struct CachedSolids {
     filter: Filter,
     stamp: (u64, u64),
     solids: Rc<[Solid]>,
+    members: HashMap<InstanceId, usize>,
     index: SpatialIndex,
 }
 #[derive(Clone, Copy)]
@@ -275,30 +276,46 @@ impl Aabb {
     fn intersects(self,b:Self)->bool { self.min.cmple(b.max).all() && self.max.cmpge(b.min).all() }
     fn valid(self)->bool { self.min.is_finite() && self.max.is_finite() && self.min.cmple(self.max).all() }
 }
-struct BvhNode { bounds:Aabb,children:Option<(usize,usize)>,range:std::ops::Range<usize> }
-struct SpatialIndex { nodes:Vec<BvhNode>,order:Vec<usize>,fallback:bool }
+struct BvhNode { bounds:Aabb,parent:usize,children:Option<(usize,usize)>,range:std::ops::Range<usize> }
+struct SpatialIndex { nodes:Vec<BvhNode>,order:Vec<usize>,boxes:Vec<Aabb>,leaf_of:Vec<usize>,fallback:bool }
 impl SpatialIndex {
     fn new(solids:&[Solid])->Self {
-        let fallback=solids.iter().any(|s| !Aabb::solid(s).valid());
-        let mut index=Self { nodes:Vec::new(),order:(0..solids.len()).collect(),fallback };
-        if !solids.is_empty() && !fallback { let len=index.order.len(); Self::build(&mut index.nodes,&mut index.order,0,solids,0,len); }
+        let boxes:Vec<Aabb>=solids.iter().map(Aabb::solid).collect();
+        let fallback=boxes.iter().any(|b| !b.valid());
+        let mut index=Self { nodes:Vec::new(),order:(0..solids.len()).collect(),leaf_of:vec![0;solids.len()],boxes,fallback };
+        if !solids.is_empty() && !fallback {
+            Self::build(&mut index.nodes,&mut index.order,&index.boxes,0,usize::MAX);
+            for (n,node) in index.nodes.iter().enumerate() { if node.children.is_none() { for p in node.range.clone() { index.leaf_of[index.order[p]]=n; } } }
+        }
         index
     }
-    fn build(nodes:&mut Vec<BvhNode>,order:&mut [usize],offset:usize,solids:&[Solid],start:usize,end:usize)->usize {
-        let bounds=order[start..end].iter().map(|i|Aabb::solid(&solids[*i])).reduce(Aabb::union).unwrap();
-        let node=nodes.len(); nodes.push(BvhNode { bounds,children:None,range:offset+start..offset+end });
-        if end-start<=8 { return node; }
+    fn build(nodes:&mut Vec<BvhNode>,order:&mut [usize],boxes:&[Aabb],offset:usize,parent:usize)->usize {
+        let bounds=order.iter().map(|i|boxes[*i]).reduce(Aabb::union).unwrap();
+        let node=nodes.len(); nodes.push(BvhNode { bounds,parent,children:None,range:offset..offset+order.len() });
+        if order.len()<=8 { return node; }
         let e=bounds.max-bounds.min; let axis=if e.x>=e.y && e.x>=e.z {0} else if e.y>=e.z {1} else {2};
-        let middle=(start+end)/2;
-        order[start..end].select_nth_unstable_by(middle-start,|a,b| {
-            let aa=Aabb::solid(&solids[*a]); let bb=Aabb::solid(&solids[*b]);
+        let middle=order.len()/2;
+        order.select_nth_unstable_by(middle,|a,b| {
+            let aa=boxes[*a]; let bb=boxes[*b];
             ((aa.min+aa.max)*0.5)[axis].total_cmp(&((bb.min+bb.max)*0.5)[axis])
         });
         let (left,right)=order.split_at_mut(middle);
-        let left_len=left.len();
-        let l=Self::build(nodes,left,offset,solids,start,left_len);
-        let r=Self::build(nodes,right,offset+middle,solids,0,end-middle);
+        let l=Self::build(nodes,left,boxes,offset,node);
+        let r=Self::build(nodes,right,boxes,offset+middle,node);
         nodes[node].children=Some((l,r)); nodes[node].range=0..0; node
+    }
+    fn refit(&mut self,solid:usize,bounds:Aabb) {
+        self.boxes[solid]=bounds;
+        if self.fallback { return; }
+        let mut n=self.leaf_of[solid];
+        loop {
+            let b=match self.nodes[n].children {
+                None=>self.order[self.nodes[n].range.clone()].iter().map(|i|self.boxes[*i]).reduce(Aabb::union).unwrap(),
+                Some((l,r))=>self.nodes[l].bounds.union(self.nodes[r].bounds),
+            };
+            self.nodes[n].bounds=b;
+            let p=self.nodes[n].parent; if p==usize::MAX { break; } n=p;
+        }
     }
     fn candidates(&self,b:Aabb)->Vec<usize> {
         if self.fallback || !b.valid() { return self.all(); }
@@ -310,6 +327,22 @@ impl SpatialIndex {
             else { found.extend_from_slice(&self.order[n.range.clone()]); }
         }
         found.sort_unstable(); found
+    }
+    fn walk_ray(&self,o:Vec3,d:Vec3,g:f32,mut visit:impl FnMut(usize)->Option<f32>) {
+        if self.fallback { for i in 0..self.order.len() { visit(i); } return; }
+        if self.nodes.is_empty() { return; }
+        let inv=Vec3::new(1.0/d.x,1.0/d.y,1.0/d.z); let grow=Vec3::splat(g+1e-4);
+        let mut limit=1.0f32; let mut stack=[0usize;64]; let mut top=1;
+        while top>0 {
+            top-=1; let n=&self.nodes[stack[top]];
+            let lo=(n.bounds.min-grow-o)*inv; let hi=(n.bounds.max+grow-o)*inv;
+            let near=lo.min(hi).max_element().max(0.0); let far=lo.max(hi).min_element().min(limit);
+            if near>far { continue; }
+            match n.children {
+                Some((l,r))=>{ stack[top]=r; stack[top+1]=l; top+=2; }
+                None=>for &i in &self.order[n.range.clone()] { if let Some(t)=visit(i) { limit=limit.min(t); } }
+            }
+        }
     }
     fn all(&self)->Vec<usize> { (0..self.order.len()).collect() }
 }
@@ -346,7 +379,8 @@ fn query_trace_format(engine: &Engine, label: impl FnOnce() -> String) {
 }
 
 fn query_trace_call(lua: &Lua, engine: &Engine, method: &'static str) {
-    if std::env::var("REE_TRACE_QUERY_STACKS").as_deref() != Ok("1") {
+    static STACKS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*STACKS.get_or_init(|| std::env::var("REE_TRACE_QUERY_STACKS").as_deref() == Ok("1")) {
         return;
     }
     let (frame, now) = {
@@ -397,6 +431,52 @@ fn keep_filter(engine: &Engine, filter: Filter) {
 /// How many filters' solids the cache keeps at once (the most recent)
 const CACHED_FILTERS: usize = 8;
 
+fn part_admitted(state: &State, engine: &Engine, filter: &Filter, id: InstanceId) -> bool {
+    let reflection = &engine.reflection;
+    let (Some(base_part), Some(terrain)) = (reflection.class_id("BasePart"), reflection.class_id("Terrain")) else { return false };
+    let info = reflection.class(state.dom.at(id).class);
+    if !info.is_a(base_part) || info.is_a(terrain) {
+        return false;
+    }
+    if reflection.name_id("CanQuery").and_then(|n| state.dom.boolean(id, n)) == Some(false) {
+        return false;
+    }
+    if filter.respect_can_collide && reflection.name_id("CanCollide").and_then(|n| state.dom.boolean(id, n)) == Some(false) {
+        return false;
+    }
+    filter.admits(state, id)
+}
+
+fn refresh(engine: &Engine, cached: &mut CachedSolids, stamp: (u64, u64)) -> bool {
+    let state = engine.state.borrow();
+    let Some(dirty) = state.dom.dirty_since(cached.stamp.1) else { return false };
+    let Some(list) = Rc::get_mut(&mut cached.solids) else { return false };
+    let workspace = engine.world().workspace;
+    let mut seen = std::collections::HashSet::new();
+    for &id in dirty {
+        if !seen.insert(id) || state.dom.get(id).is_none() {
+            continue;
+        }
+        let was = cached.members.get(&id).copied();
+        let now = part_admitted(&state, engine, &cached.filter, id) && state.dom.is_descendant_of(id, workspace);
+        match (was, now) {
+            (Some(i), true) => {
+                let fresh = solid(&state, engine, id);
+                let bounds = Aabb::solid(&fresh);
+                if !bounds.valid() {
+                    return false;
+                }
+                list[i] = fresh;
+                cached.index.refit(i, bounds);
+            }
+            (None, false) => {}
+            _ => return false,
+        }
+    }
+    cached.stamp = stamp;
+    true
+}
+
 /// [`solids`] through the engine's [`QueryCache`].
 fn cached_solids(engine: &Engine, filter: &Filter) -> Rc<CachedSolids> {
     let stamp = {
@@ -404,23 +484,46 @@ fn cached_solids(engine: &Engine, filter: &Filter) -> Rc<CachedSolids> {
         (state.dom.structure_version, state.dom.write_version)
     };
     let cache = query_cache(engine);
-    if let Some(found) = cache.entries.borrow().iter().find(|entry| entry.stamp == stamp && entry.filter.sees_as(filter)) {
-        crate::profiler::caches::hit(crate::profiler::caches::Cache::Queries);
-        return found.clone();
+    {
+        let mut entries = cache.entries.borrow_mut();
+        let mut stale = None;
+        for (n, entry) in entries.iter_mut().enumerate() {
+            if !entry.filter.sees_as(filter) {
+                continue;
+            }
+            if entry.stamp == stamp {
+                crate::profiler::caches::hit(crate::profiler::caches::Cache::Queries);
+                return entry.clone();
+            }
+            if entry.stamp.0 == stamp.0 {
+                if let Some(inner) = Rc::get_mut(entry) {
+                    if refresh(engine, inner, stamp) {
+                        crate::profiler::caches::hit(crate::profiler::caches::Cache::Queries);
+                        return entry.clone();
+                    }
+                }
+            }
+            stale = Some(n);
+            break;
+        }
+        if let Some(n) = stale {
+            entries.remove(n);
+        }
     }
     crate::profiler::caches::miss(crate::profiler::caches::Cache::Queries);
     query_trace(engine, "solids build begin");
     let made: Rc<[Solid]> = solids(engine, filter).into();
+    let members = made.iter().enumerate().map(|(i, s)| (s.part, i)).collect();
     let index = SpatialIndex::new(&made);
     query_trace_format(engine, || format!("solids build end count={}", made.len()));
     let mut entries = cache.entries.borrow_mut();
     let before = entries.len();
-    entries.retain(|entry| entry.stamp == stamp);
+    entries.retain(|entry| entry.stamp.0 == stamp.0);
     if entries.len() >= CACHED_FILTERS {
         entries.remove(0);
     }
     crate::profiler::caches::evicted(crate::profiler::caches::Cache::Queries, (before - entries.len()) as u64);
-    let cached = Rc::new(CachedSolids { filter: filter.clone(), stamp, solids: made, index });
+    let cached = Rc::new(CachedSolids { filter: filter.clone(), stamp, solids: made, members, index });
     entries.push(cached.clone());
     cached
 }
@@ -436,9 +539,9 @@ fn ray_solid(solid: &Solid, origin: Vec3, direction: Vec3, grow: f32) -> Option<
     if (origin + direction * along - center).length_squared() > reach * reach {
         return None;
     }
-    let inverse = solid.frame.inverse();
-    let o = inverse.transform_point3(origin);
-    let d = inverse.transform_vector3(direction);
+    let rotation = solid.frame.matrix3.transpose();
+    let o = rotation.mul_vec3(origin - center);
+    let d = rotation.mul_vec3(direction);
     match solid.shape {
         Shape::Box(half) => ray_box(o, d, half + Vec3::splat(grow)),
         Shape::Ball(radius) => ray_sphere(o, d, radius + grow),
@@ -673,7 +776,17 @@ fn swept_box_bounds(f:&Affine3A,size:Vec3,d:Vec3)->Aabb {
 }
 fn indexed_solids(c:&CachedSolids,b:Aabb)->Vec<Solid> { c.index.candidates(b).into_iter().map(|i|c.solids[i]).collect() }
 fn cast_ray_indexed(c:&CachedSolids,o:Vec3,d:Vec3,g:f32,x:Option<InstanceId>)->Option<Hit> {
-    let candidates=indexed_solids(c,ray_bounds(o,d,g)); cast_ray(&candidates,o,d,g,x)
+    let len=d.length(); let mut best:Option<(usize,f32,Vec3)>=None;
+    c.index.walk_ray(o,d,g,|i| {
+        let solid=&c.solids[i]; if x==Some(solid.part) { return None; }
+        let (t,n)=ray_solid(solid,o,d,g)?;
+        if let Some((bi,bt,_))=best { if bt<t || (bt==t && bi<i) { return None; } }
+        best=Some((i,t,n)); Some(t)
+    });
+    best.map(|(i,t,local)| {
+        let s=&c.solids[i]; let normal=s.frame.transform_vector3(local).normalize_or(Vec3::Y);
+        Hit { part:s.part,position:o+d*t-normal*g,normal,distance:len*t }
+    })
 }
 fn cast_box_indexed(c:&CachedSolids,f:&Affine3A,size:Vec3,d:Vec3,x:Option<InstanceId>)->Option<Hit> {
     let candidates=indexed_solids(c,swept_box_bounds(f,size,d)); cast_box(&candidates,f,size,d,x)
@@ -833,12 +946,17 @@ fn limited(max_parts: usize, parts: Vec<InstanceId>) -> Vec<InstanceId> {
 fn charge_cast(engine: &Engine, origin: Vec3, direction: Vec3, grow: f32) {
     query_trace(engine, "cast cost begin");
     let solids = cached_solids(engine, &Filter::default());
-    let candidates = indexed_solids(&solids, ray_bounds(origin, direction, grow));
-    let crossed = candidates.iter().filter(|solid| ray_solid(solid, origin, direction, grow).is_some()).count();
+    let mut crossed = 0usize;
+    solids.index.walk_ray(origin, direction, grow, |i| {
+        if ray_solid(&solids.solids[i], origin, direction, grow).is_some() {
+            crossed += 1;
+        }
+        None
+    });
     if crossed > 0 {
         charge_query(engine, crate::cost::RAY_MET + (crossed - 1) as f64 * crate::cost::RAY_CROSSED);
     }
-    query_trace_format(engine, || format!("cast cost end solids={} candidates={} crossed={crossed}", solids.solids.len(), candidates.len()));
+    query_trace_format(engine, || format!("cast cost end solids={} crossed={crossed}", solids.solids.len()));
 }
 
 /// A spatial query's charge beyond its call's price (cost.rs QUERY_BOX_PART, RAY_CROSSED)

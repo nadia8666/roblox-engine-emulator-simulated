@@ -600,6 +600,8 @@ fn compute_default(reflection: &Reflection, class: ClassId, name: NameId) -> Opt
 /// them)
 const UNPINNED_CAP: usize = 1 << 16;
 
+const DIRTY_LOG_CAP: usize = 1 << 16;
+
 #[derive(Default)]
 pub struct Dom {
     slots: Vec<Slot>,
@@ -617,6 +619,8 @@ pub struct Dom {
     /// Bumped on every property, attribute or tag change anywhere (what the world's query cache
     /// checks, with the structure version)
     pub write_version: u64,
+    dirty_log: Vec<InstanceId>,
+    dirty_base: u64,
     /// Models whose rig animation caches (animation::pose), with a version a change inside one bumps: a child
     /// attached or detached below it, or a Name / Part0 / Part1 / Scale written on it or below it
     rig_watch: FxHashMap<InstanceId, u32>,
@@ -1126,7 +1130,24 @@ impl Dom {
     pub fn bump_version(&mut self, id: InstanceId) {
         let instance = self.at_mut(id);
         instance.version = instance.version.wrapping_add(1);
+        if self.dirty_base + self.dirty_log.len() as u64 == self.write_version {
+            if self.dirty_log.len() >= DIRTY_LOG_CAP {
+                self.dirty_log.clear();
+                self.dirty_base = self.write_version;
+            }
+            self.dirty_log.push(id);
+        } else {
+            self.dirty_log.clear();
+            self.dirty_base = self.write_version.wrapping_add(1);
+        }
         self.write_version = self.write_version.wrapping_add(1);
+    }
+
+    pub fn dirty_since(&self, since: u64) -> Option<&[InstanceId]> {
+        if self.dirty_base + self.dirty_log.len() as u64 != self.write_version || since < self.dirty_base {
+            return None;
+        }
+        self.dirty_log.get((since - self.dirty_base) as usize..)
     }
 }
 
