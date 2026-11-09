@@ -117,6 +117,7 @@ pub struct Options {
     pub local_player_display_name: Option<String>,
     pub verbose: bool,
     pub offline: bool,
+    pub loopback: bool,
     /// The place's Workspace.StreamingTargetRadius when it streams (StreamingEnabled), as its place
     /// file holds it (the project's rur.json `streamingTargetRadius`, or --streaming)
     pub streaming_target_radius: Option<f64>,
@@ -159,6 +160,7 @@ impl Default for Options {
             local_player_display_name: None,
             verbose: false,
             offline: false,
+            loopback: false,
             streaming_target_radius: None,
             repo: default_repo(),
             project: None,
@@ -175,6 +177,10 @@ impl Options {
 
     pub fn server(&self) -> bool {
         self.run_context == RunContext::Server
+    }
+
+    pub fn server_services(&self) -> bool {
+        self.server() || self.loopback
     }
 
     /// The file content `uri` names on disk, by ror's rules (its ror-assets uri.rs): `file://<path>`
