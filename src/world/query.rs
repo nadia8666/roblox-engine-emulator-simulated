@@ -340,7 +340,12 @@ impl SpatialIndex {
             if near>far { continue; }
             match n.children {
                 Some((l,r))=>{ stack[top]=r; stack[top+1]=l; top+=2; }
-                None=>for &i in &self.order[n.range.clone()] { if let Some(t)=visit(i) { limit=limit.min(t); } }
+                None=>for &i in &self.order[n.range.clone()] {
+                    let b=&self.boxes[i];
+                    let lo=(b.min-grow-o)*inv; let hi=(b.max+grow-o)*inv;
+                    if lo.min(hi).max_element().max(0.0)>lo.max(hi).min_element().min(limit) { continue; }
+                    if let Some(t)=visit(i) { limit=limit.min(t); }
+                }
             }
         }
     }
@@ -940,6 +945,35 @@ fn limited(max_parts: usize, parts: Vec<InstanceId>) -> Vec<InstanceId> {
     if max_parts > 0 { parts.into_iter().take(max_parts).collect() } else { parts }
 }
 
+static RAYCAST_NS: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+static RAYCAST_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static RAYCAST_CROSSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn timing_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("REE_TIME_QUERIES").as_deref() == Ok("1"))
+}
+
+fn lap(last: &mut Option<std::time::Instant>, stage: usize) {
+    if let Some(previous) = *last {
+        let now = std::time::Instant::now();
+        RAYCAST_NS[stage].fetch_add((now - previous).as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        *last = Some(now);
+    }
+}
+
+fn report_raycast_timing() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let calls = RAYCAST_CALLS.fetch_add(1, Relaxed) + 1;
+    if calls % 500_000 == 0 {
+        let per = |n: usize| RAYCAST_NS[n].load(Relaxed) / calls;
+        eprintln!(
+            "ree raycast host ns/call over {calls}: filter+cache {} cast {} charge {} result {} | crossed/call {:.1}",
+            per(0), per(1), per(2), per(3), RAYCAST_CROSSED.load(Relaxed) as f64 / calls as f64
+        );
+    }
+}
+
 /// What a cast pays for the parts its path crosses, whatever its filter admits (cost.rs RAY_MET, RAY_CROSSED): the engine's
 /// broadphase meets them all before the filter is asked
 fn charge_cast(engine: &Engine, origin: Vec3, direction: Vec3, grow: f32) {
@@ -953,6 +987,7 @@ fn charge_cast(engine: &Engine, origin: Vec3, direction: Vec3, grow: f32) {
         None
     });
     if crossed > 0 {
+        RAYCAST_CROSSED.fetch_add(crossed as u64, std::sync::atomic::Ordering::Relaxed);
         charge_query(engine, crate::cost::RAY_MET + (crossed - 1) as f64 * crate::cost::RAY_CROSSED);
     }
     query_trace_format(engine, || format!("cast cost end solids={} crossed={crossed}", solids.solids.len()));
@@ -980,15 +1015,24 @@ pub fn install(engine: &Rc<Engine>) {
     let mut members: Vec<(&str, MethodFn)> = Vec::new();
     members.push(("Raycast", method(|lua, engine, _, args| {
         query_trace_call(lua, engine, "Raycast");
+        let mut clock = timing_on().then(std::time::Instant::now);
         let (Some(origin), Some(direction)) = (vector_arg(args.get(1)), vector_arg(args.get(2))) else {
             return raise("Raycast: origin and direction must be Vector3s");
         };
         let filter = take_filter(engine, args.get(3));
         let cached = cached_solids(engine, &filter);
+        lap(&mut clock, 0);
         let hit = cast_ray_indexed(&cached, origin, direction, 0.0, None);
+        lap(&mut clock, 1);
         keep_filter(engine, filter);
         charge_cast(engine, origin, direction, 0.0);
-        hit_values(lua, engine, hit)
+        lap(&mut clock, 2);
+        let result = hit_values(lua, engine, hit);
+        if clock.is_some() {
+            lap(&mut clock, 3);
+            report_raycast_timing();
+        }
+        result
     })));
     members.push(("Spherecast", method(|lua, engine, _, args| {
         query_trace_call(lua, engine, "Spherecast");
