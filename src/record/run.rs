@@ -58,6 +58,7 @@ pub struct RecordArgs {
     pub harness: String,
     /// The output directory (`record`; `run` writes nothing)
     pub out: Option<PathBuf>,
+    pub output_log: Option<PathBuf>,
     pub seconds: f64,
     pub fps: f64,
     pub context: Option<Json>,
@@ -252,6 +253,7 @@ pub fn parse(args: &[String], record: bool) -> Result<RecordArgs, String> {
     let value = |key: &str| args.iter().position(|a| a == key).and_then(|i| args.get(i + 1)).cloned();
     let harness = value("--harness").ok_or("--harness <file.luau> is required")?;
     let out = value("--dir").or_else(|| value("--out")).or_else(|| value("--dump-scene")).map(PathBuf::from);
+    let output_log = value("--output-log").map(PathBuf::from);
     if record && out.is_none() {
         return Err("--out <dir> is required".into());
     }
@@ -294,7 +296,7 @@ pub fn parse(args: &[String], record: bool) -> Result<RecordArgs, String> {
         .transpose()?;
     let script_timeouts = value("--max-script-timeouts").map(|text| text.parse::<u32>().map_err(|_| "--max-script-timeouts: not a count")).transpose()?;
     let timing_check = record && (args.iter().any(|arg| arg == "--timing-check") || std::env::var("REE_TIMING_CHECK").as_deref() == Ok("1"));
-    Ok(RecordArgs { engine, harness, out, seconds, fps, context, model_assets, animations, frame_times, script_timeout, script_timeouts, timing_check, clock_moved: false })
+    Ok(RecordArgs { engine, harness, out, output_log, seconds, fps, context, model_assets, animations, frame_times, script_timeout, script_timeouts, timing_check, clock_moved: false })
 }
 
 /// What a command produced: the summary (printed on stdout) and its status line (stderr).
@@ -355,6 +357,9 @@ pub fn execute(args: &RecordArgs, host: &Host, record: bool) -> Result<(Done, Em
 /// ([`Recorder::write`]).
 pub(crate) fn execute_with(args: &RecordArgs, host: &Host, record: bool, spool: bool) -> Result<(Done, Emulator), String> {
     let (emulator, history) = start(args, host, false)?;
+    if let Some(path) = &args.output_log {
+        emulator.engine.state.borrow_mut().output.set_log(path)?;
+    }
     if spool {
         let mut state = emulator.engine.state.borrow_mut();
         if record {
@@ -516,6 +521,9 @@ pub(crate) fn run_done(emulator: &Emulator, args: &RecordArgs, host: &Host, ran:
         // (none are kept beside a spool: `output` is empty)
         errors += spool.errors();
         lines += spool.lines();
+    }
+    if let Some(error) = state.output.log_error() {
+        return Err(format!("output log: {error}"));
     }
     let line = format!("{}: run {}; {} frames; {lines} output lines; {errors} errors; {:.2}s", host.name, ran.status, ran.frames + 1, started.elapsed().as_secs_f64());
     let mut summary = json!({
