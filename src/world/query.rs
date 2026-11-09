@@ -247,7 +247,7 @@ pub fn solids(engine: &Engine, filter: &Filter) -> Vec<Solid> {
 /// a mounted map of 28k instances.
 #[derive(Default)]
 struct QueryCache {
-    entries: RefCell<Vec<CachedSolids>>,
+    entries: RefCell<Vec<Rc<CachedSolids>>>,
     trace_calls: RefCell<QueryTraceCalls>,
     /// The last query's filter, whose lists the next query reads its params into ([`take_filter`])
     spare: RefCell<Filter>,
@@ -257,7 +257,62 @@ struct CachedSolids {
     filter: Filter,
     stamp: (u64, u64),
     solids: Rc<[Solid]>,
+    index: SpatialIndex,
 }
+#[derive(Clone, Copy)]
+struct Aabb { min: Vec3, max: Vec3 }
+impl Aabb {
+    fn solid(s:&Solid)->Self {
+        let h=s.half_extents(); let m=s.frame.matrix3;
+        let e=Vec3::from(m.x_axis).abs()*h.x+Vec3::from(m.y_axis).abs()*h.y+Vec3::from(m.z_axis).abs()*h.z;
+        let c=frame::translation(&s.frame); Self { min:c-e,max:c+e }
+    }
+    fn oriented(o:&Oriented)->Self {
+        let e=o.axes[0].abs()*o.half.x+o.axes[1].abs()*o.half.y+o.axes[2].abs()*o.half.z;
+        Self { min:o.center-e,max:o.center+e }
+    }
+    fn union(self,b:Self)->Self { Self { min:self.min.min(b.min),max:self.max.max(b.max) } }
+    fn intersects(self,b:Self)->bool { self.min.cmple(b.max).all() && self.max.cmpge(b.min).all() }
+    fn valid(self)->bool { self.min.is_finite() && self.max.is_finite() && self.min.cmple(self.max).all() }
+}
+struct BvhNode { bounds:Aabb,children:Option<(usize,usize)>,range:std::ops::Range<usize> }
+struct SpatialIndex { nodes:Vec<BvhNode>,order:Vec<usize>,fallback:bool }
+impl SpatialIndex {
+    fn new(solids:&[Solid])->Self {
+        let fallback=solids.iter().any(|s| !Aabb::solid(s).valid());
+        let mut index=Self { nodes:Vec::new(),order:(0..solids.len()).collect(),fallback };
+        if !solids.is_empty() && !fallback { let len=index.order.len(); Self::build(&mut index.nodes,&mut index.order,0,solids,0,len); }
+        index
+    }
+    fn build(nodes:&mut Vec<BvhNode>,order:&mut [usize],offset:usize,solids:&[Solid],start:usize,end:usize)->usize {
+        let bounds=order[start..end].iter().map(|i|Aabb::solid(&solids[*i])).reduce(Aabb::union).unwrap();
+        let node=nodes.len(); nodes.push(BvhNode { bounds,children:None,range:offset+start..offset+end });
+        if end-start<=8 { return node; }
+        let e=bounds.max-bounds.min; let axis=if e.x>=e.y && e.x>=e.z {0} else if e.y>=e.z {1} else {2};
+        let middle=(start+end)/2;
+        order[start..end].select_nth_unstable_by(middle-start,|a,b| {
+            let aa=Aabb::solid(&solids[*a]); let bb=Aabb::solid(&solids[*b]);
+            ((aa.min+aa.max)*0.5)[axis].total_cmp(&((bb.min+bb.max)*0.5)[axis])
+        });
+        let (left,right)=order.split_at_mut(middle);
+        let l=Self::build(nodes,left,offset,solids,start,left.len());
+        let r=Self::build(nodes,right,offset+middle,solids,0,end-middle);
+        nodes[node].children=Some((l,r)); nodes[node].range=0..0; node
+    }
+    fn candidates(&self,b:Aabb)->Vec<usize> {
+        if self.fallback || !b.valid() { return self.all(); }
+        let mut found=Vec::new(); let mut stack=Vec::with_capacity(32);
+        if !self.nodes.is_empty() { stack.push(0); }
+        while let Some(i)=stack.pop() {
+            let n=&self.nodes[i]; if !n.bounds.intersects(b) { continue; }
+            if let Some((l,r))=n.children { stack.push(r); stack.push(l); }
+            else { found.extend_from_slice(&self.order[n.range.clone()]); }
+        }
+        found.sort_unstable(); found
+    }
+    fn all(&self)->Vec<usize> { (0..self.order.len()).collect() }
+}
+
 
 impl crate::Extension for QueryCache {}
 
@@ -342,7 +397,7 @@ fn keep_filter(engine: &Engine, filter: Filter) {
 const CACHED_FILTERS: usize = 8;
 
 /// [`solids`] through the engine's [`QueryCache`].
-fn cached_solids(engine: &Engine, filter: &Filter) -> Rc<[Solid]> {
+fn cached_solids(engine: &Engine, filter: &Filter) -> Rc<CachedSolids> {
     let stamp = {
         let state = engine.state.borrow();
         (state.dom.structure_version, state.dom.write_version)
@@ -350,11 +405,12 @@ fn cached_solids(engine: &Engine, filter: &Filter) -> Rc<[Solid]> {
     let cache = query_cache(engine);
     if let Some(found) = cache.entries.borrow().iter().find(|entry| entry.stamp == stamp && entry.filter.sees_as(filter)) {
         crate::profiler::caches::hit(crate::profiler::caches::Cache::Queries);
-        return found.solids.clone();
+        return found.clone();
     }
     crate::profiler::caches::miss(crate::profiler::caches::Cache::Queries);
     query_trace(engine, "solids build begin");
     let made: Rc<[Solid]> = solids(engine, filter).into();
+    let index = SpatialIndex::new(&made);
     query_trace_format(engine, || format!("solids build end count={}", made.len()));
     let mut entries = cache.entries.borrow_mut();
     let before = entries.len();
@@ -363,8 +419,9 @@ fn cached_solids(engine: &Engine, filter: &Filter) -> Rc<[Solid]> {
         entries.remove(0);
     }
     crate::profiler::caches::evicted(crate::profiler::caches::Cache::Queries, (before - entries.len()) as u64);
-    entries.push(CachedSolids { filter: filter.clone(), stamp, solids: made.clone() });
-    made
+    let cached = Rc::new(CachedSolids { filter: filter.clone(), stamp, solids: made, index });
+    entries.push(cached.clone());
+    cached
 }
 
 /// Where a ray from `origin` along `direction` (its length the reach) first enters `solid`:
@@ -607,6 +664,20 @@ fn unit_frame(frame: &Affine3A) -> Affine3A {
     Affine3A::from_mat3_translation(Mat3::from_cols(m.x_axis.normalize_or(Vec3::X), m.y_axis.normalize_or(Vec3::Y), m.z_axis.normalize_or(Vec3::Z)), frame::translation(frame))
 }
 
+
+fn ray_bounds(o:Vec3,d:Vec3,g:f32)->Aabb { let end=o+d; let e=Vec3::splat(g); Aabb { min:o.min(end)-e,max:o.max(end)+e } }
+fn swept_box_bounds(f:&Affine3A,size:Vec3,d:Vec3)->Aabb {
+    let moving=Oriented::of(&unit_frame(f),size*0.5); let start=Aabb::oriented(&moving);
+    start.union(Aabb { min:start.min+d,max:start.max+d })
+}
+fn indexed_solids(c:&CachedSolids,b:Aabb)->Vec<Solid> { c.index.candidates(b).into_iter().map(|i|c.solids[i]).collect() }
+fn cast_ray_indexed(c:&CachedSolids,o:Vec3,d:Vec3,g:f32,x:Option<InstanceId>)->Option<Hit> {
+    let candidates=indexed_solids(c,ray_bounds(o,d,g)); cast_ray(&candidates,o,d,g,x)
+}
+fn cast_box_indexed(c:&CachedSolids,f:&Affine3A,size:Vec3,d:Vec3,x:Option<InstanceId>)->Option<Hit> {
+    let candidates=indexed_solids(c,swept_box_bounds(f,size,d)); cast_box(&candidates,f,size,d,x)
+}
+
 /// Whether `solid` overlaps the box (`frame`, `size`).
 pub fn overlaps_box(solid: &Solid, frame: &Affine3A, size: Vec3) -> bool {
     let query = Oriented::of(&unit_frame(frame), size * 0.5);
@@ -727,7 +798,8 @@ fn find_part_on_ray(lua: &Lua, engine: &Rc<Engine>, ray: &LuaValue, list: &LuaVa
     let direction = Vec3::new(ray.direction.x, ray.direction.y, ray.direction.z);
     let mut filter = query_cache(engine).spare.take();
     filter.read_list(list, include);
-    let hit = cast_ray(&cached_solids(engine, &filter), origin, direction, 0.0, None);
+    let cached = cached_solids(engine, &filter);
+    let hit = cast_ray_indexed(&cached, origin, direction, 0.0, None);
     keep_filter(engine, filter);
     let air = engine.reflection.enum_item("Material", "Air");
     Ok(match hit {
@@ -760,11 +832,12 @@ fn limited(max_parts: usize, parts: Vec<InstanceId>) -> Vec<InstanceId> {
 fn charge_cast(engine: &Engine, origin: Vec3, direction: Vec3, grow: f32) {
     query_trace(engine, "cast cost begin");
     let solids = cached_solids(engine, &Filter::default());
-    let crossed = solids.iter().filter(|solid| ray_solid(solid, origin, direction, grow).is_some()).count();
+    let candidates = indexed_solids(&solids, ray_bounds(origin, direction, grow));
+    let crossed = candidates.iter().filter(|solid| ray_solid(solid, origin, direction, grow).is_some()).count();
     if crossed > 0 {
         charge_query(engine, crate::cost::RAY_MET + (crossed - 1) as f64 * crate::cost::RAY_CROSSED);
     }
-    query_trace_format(engine, || format!("cast cost end solids={} crossed={crossed}", solids.len()));
+    query_trace_format(engine, || format!("cast cost end solids={} candidates={} crossed={crossed}", solids.solids.len(), candidates.len()));
 }
 
 /// A spatial query's charge beyond its call's price (cost.rs QUERY_BOX_PART, RAY_CROSSED)
@@ -776,8 +849,9 @@ fn charge_query(engine: &Engine, seconds: f64) {
 }
 
 /// The parts of `filter`'s solids `keep` holds for, at most MaxParts of them.
-fn overlapping(engine: &Engine, filter: Filter, keep: impl Fn(&Solid) -> bool) -> Vec<InstanceId> {
-    let parts = cached_solids(engine, &filter).iter().filter(|s| keep(s)).map(|s| s.part).collect();
+fn overlapping(engine: &Engine, filter: Filter, bounds: Aabb, keep: impl Fn(&Solid) -> bool) -> Vec<InstanceId> {
+    let cached = cached_solids(engine, &filter);
+    let parts = indexed_solids(&cached, bounds).iter().filter(|s| keep(s)).map(|s| s.part).collect();
     let max_parts = filter.max_parts;
     keep_filter(engine, filter);
     limited(max_parts, parts)
@@ -803,7 +877,8 @@ pub fn install(engine: &Rc<Engine>) {
             return raise("Spherecast: position, radius and direction expected");
         };
         let filter = take_filter(engine, args.get(4));
-        let hit = cast_ray(&cached_solids(engine, &filter), center, direction, radius.max(0.0) as f32, None);
+        let cached = cached_solids(engine, &filter);
+        let hit = cast_ray_indexed(&cached, center, direction, radius.max(0.0) as f32, None);
         keep_filter(engine, filter);
         charge_cast(engine, center, direction, radius.max(0.0) as f32);
         hit_values(lua, engine, hit)
@@ -816,8 +891,8 @@ pub fn install(engine: &Rc<Engine>) {
         let filter = take_filter(engine, args.get(4));
         query_trace(engine, "Blockcast begin");
         let solids = cached_solids(engine, &filter);
-        query_trace_format(engine, || format!("Blockcast cast begin solids={}", solids.len()));
-        let hit = cast_box(&solids, &frame, size, direction, None);
+        query_trace_format(engine, || format!("Blockcast cast begin solids={}", solids.solids.len()));
+        let hit = cast_box_indexed(&solids, &frame, size, direction, None);
         query_trace(engine, "Blockcast cast end");
         keep_filter(engine, filter);
         charge_cast(engine, frame::translation(&frame), direction, size.length() * 0.5);
@@ -847,8 +922,8 @@ pub fn install(engine: &Rc<Engine>) {
         keep_filter(engine, filter);
         // the part being cast is never hit (documented); what it holds can be
         let hit = match cast.shape {
-            Shape::Ball(radius) => cast_ray(&solids, frame::translation(&cast.frame), direction, radius, Some(part)),
-            _ => cast_box(&solids, &cast.frame, cast.half_extents() * 2.0, direction, Some(part)),
+            Shape::Ball(radius) => cast_ray_indexed(&solids, frame::translation(&cast.frame), direction, radius, Some(part)),
+            _ => cast_box_indexed(&solids, &cast.frame, cast.half_extents() * 2.0, direction, Some(part)),
         };
         hit_values(lua, engine, hit)
     })));
@@ -858,7 +933,8 @@ pub fn install(engine: &Rc<Engine>) {
             return raise("GetPartBoundsInBox: cframe and size expected");
         };
         let filter = take_filter(engine, args.get(3));
-        let parts = overlapping(engine, filter, |s| overlaps_box(s, &frame, size));
+        let bounds = Aabb::oriented(&Oriented::of(&unit_frame(&frame), size * 0.5));
+        let parts = overlapping(engine, filter, bounds, |s| overlaps_box(s, &frame, size));
         charge_query(engine, parts.len() as f64 * crate::cost::QUERY_BOX_PART);
         parts_table(lua, engine, parts)
     })));
@@ -868,7 +944,9 @@ pub fn install(engine: &Rc<Engine>) {
             return raise("GetPartBoundsInRadius: position and radius expected");
         };
         let filter = take_filter(engine, args.get(3));
-        let parts = overlapping(engine, filter, |s| overlaps_sphere(s, center, radius as f32));
+        let radius = radius as f32;
+        let bounds = Aabb { min:center-Vec3::splat(radius), max:center+Vec3::splat(radius) };
+        let parts = overlapping(engine, filter, bounds, |s| overlaps_sphere(s, center, radius));
         charge_query(engine, parts.len() as f64 * crate::cost::QUERY_RADIUS_PART);
         parts_table(lua, engine, parts)
     })));
@@ -877,7 +955,11 @@ pub fn install(engine: &Rc<Engine>) {
         let Some(part) = args.instance(1) else { return raise("GetPartsInPart: part expected") };
         let filter = take_filter(engine, args.get(2));
         let query = solid(&engine.state.borrow(), engine, part);
-        let parts = overlapping(engine, filter, |s| {
+        let bounds = match query.shape {
+            Shape::Ball(radius) => { let center=frame::translation(&query.frame); Aabb { min:center-Vec3::splat(radius), max:center+Vec3::splat(radius) } }
+            _ => Aabb::oriented(&Oriented::of(&unit_frame(&query.frame), query.half_extents())),
+        };
+        let parts = overlapping(engine, filter, bounds, |s| {
             s.part != part
                 && match query.shape {
                     Shape::Ball(radius) => overlaps_sphere(s, frame::translation(&query.frame), radius),
