@@ -84,6 +84,11 @@ fn header(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     if app.has_profile() {
         let p = &app.profiles[app.shown];
         let run = &p.raw.run;
+        let cut_short_at = p.raw.counters.as_ref().and_then(|counters| counters.cut_short);
+        if let Some(seconds) = cut_short_at {
+            let warning_style = Style::new().fg(theme.critical).bg(theme.raised).add_modifier(Modifier::BOLD);
+            spans.push(Span::styled(format!(" HW CUT SHORT at {seconds:.3} s  "), warning_style));
+        }
         if app.profiles.len() == 2 {
             spans.push(Span::styled(format!("{}  ", app.side_name(app.shown)), bar.add_modifier(Modifier::BOLD)));
         }
@@ -240,7 +245,7 @@ fn help(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         lines.push(Line::from(Span::styled("Metrics", heading)));
         for metric in app.metrics() {
             let current = metric == app.metric;
-            for (index, chunk) in wrap(&format!("{}{}: {}", if current { "▸ " } else { "  " }, metric.label(p), metric.about()), inner.width as usize - 4).into_iter().enumerate() {
+            for (index, chunk) in wrap(&format!("{}{}: {}", if current { "▸ " } else { "  " }, metric.label(p), metric.describe(p)), inner.width as usize - 4).into_iter().enumerate() {
                 lines.push(Line::from(Span::styled(if index == 0 { chunk } else { format!("    {chunk}") }, if current { text.add_modifier(Modifier::BOLD) } else { dim })));
             }
         }

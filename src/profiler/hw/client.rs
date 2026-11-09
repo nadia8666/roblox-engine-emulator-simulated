@@ -71,6 +71,11 @@ mod sys {
         pub fn OpenThread(access: u32, inherit: i32, thread: u32) -> Handle;
         pub fn GetThreadDescription(thread: Handle, description: *mut *mut u16) -> i32;
         pub fn LocalFree(memory: *mut c_void) -> *mut c_void;
+        pub fn GetCurrentThread() -> Handle;
+        pub fn GetCurrentProcessorNumber() -> u32;
+        pub fn SetThreadAffinityMask(thread: Handle, mask: usize) -> usize;
+        pub fn GetProcessAffinityMask(process: Handle, process_mask: *mut usize, system_mask: *mut usize) -> i32;
+        pub fn GetCurrentProcess() -> Handle;
     }
 
     #[link(name = "advapi32")]
@@ -99,6 +104,50 @@ pub fn qpc() -> i64 {
     {
         static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
         START.get_or_init(std::time::Instant::now).elapsed().as_nanos() as i64
+    }
+}
+
+/// Pins the calling thread to the CPU it runs on now, for as long as the guard lives, and gives the mask a reader's
+/// helper takes: the same CPU, so a reading switches from the thread to the helper and back on one CPU that never idles
+/// and keeps its caches. Measured on a Ryzen 9 9950X with the attribution harness (tools/hw-counters/attribution.luau):
+/// a reading took 1.6-1.8 us this way and the sampled phases ran as fast as with no readings at all; unpinned 2.2-3.7 us
+/// with the thread waking wherever a core was free, and a 1,000-iteration call that is 75,000 cycles unread read 78,000 to
+/// 92,000; the helper on another core 23-25 us, the pinned core idling while it waited. None when the CPU is unknown.
+pub fn pin_here() -> Option<(Pinned, usize)> {
+    #[cfg(windows)]
+    unsafe {
+        let (mut process, mut system) = (0usize, 0usize);
+        if sys::GetProcessAffinityMask(sys::GetCurrentProcess(), &mut process, &mut system) == 0 {
+            return None;
+        }
+        let cpu = sys::GetCurrentProcessorNumber();
+        if cpu >= usize::BITS || process & (1usize << cpu) == 0 {
+            return None;
+        }
+        let previous = sys::SetThreadAffinityMask(sys::GetCurrentThread(), 1usize << cpu);
+        if previous == 0 {
+            return None;
+        }
+        Some((Pinned { previous }, 1usize << cpu))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// The calling thread's affinity before [`pin_here`], put back when dropped (on the thread that pinned)
+pub struct Pinned {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    previous: usize,
+}
+
+impl Drop for Pinned {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        unsafe {
+            sys::SetThreadAffinityMask(sys::GetCurrentThread(), self.previous);
+        }
     }
 }
 
@@ -357,6 +406,12 @@ pub struct Reader {
 impl Reader {
     #[cfg(windows)]
     pub fn new() -> Result<Reader, String> {
+        Reader::with_helper_on(None)
+    }
+
+    /// A reader whose helper thread runs on the CPUs of `mask` ([`pin_here`]'s: the reading thread's own CPU)
+    #[cfg(windows)]
+    pub fn with_helper_on(mask: Option<usize>) -> Result<Reader, String> {
         use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
         let (go, done) = unsafe { (sys::CreateEventW(std::ptr::null_mut(), 0, 0, std::ptr::null()), sys::CreateEventW(std::ptr::null_mut(), 0, 0, std::ptr::null())) };
         if go.is_null() || done.is_null() {
@@ -367,13 +422,20 @@ impl Reader {
         let helper = std::thread::Builder::new()
             .name("ree-hw-counters-reader".into())
             .spawn(move || {
+                if let Some(mask) = mask {
+                    unsafe { sys::SetThreadAffinityMask(sys::GetCurrentThread(), mask) };
+                }
                 let (go, done) = (events.0 as sys::Handle, events.1 as sys::Handle);
+                // Each wake-up of `go` is a request. The helper answers the request it has woken for (`done`) and waits for
+                // the next one (`go`) in a single kernel call, which saves a call on every reading. A request that finds
+                // `helper_quit` set is the last: it is answered and the helper ends.
+                unsafe { sys::WaitForSingleObject(go, sys::INFINITE) };
                 loop {
-                    unsafe { sys::WaitForSingleObject(go, sys::INFINITE) };
-                    unsafe { sys::SetEvent(done) };
                     if helper_quit.load(Ordering::Relaxed) {
+                        unsafe { sys::SetEvent(done) };
                         return;
                     }
+                    unsafe { sys::SignalObjectAndWait(done, go, sys::INFINITE, 0) };
                 }
             })
             .map_err(|error| format!("the reader's thread: {error}"))?;
@@ -382,6 +444,11 @@ impl Reader {
 
     #[cfg(not(windows))]
     pub fn new() -> Result<Reader, String> {
+        Ok(Reader {})
+    }
+
+    #[cfg(not(windows))]
+    pub fn with_helper_on(_mask: Option<usize>) -> Result<Reader, String> {
         Ok(Reader {})
     }
 

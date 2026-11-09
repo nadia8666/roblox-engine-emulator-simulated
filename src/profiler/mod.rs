@@ -14,9 +14,10 @@
 //! - `timeline`: one row a frame: work, host time, instructions, heap, allocations, collector, instances, connections,
 //!   threads.
 //! - `cpu`: the run thread's CPU cycles, the process's CPU time, page faults and peak memory ([`cpu`]).
-//! - `hw`: the CPU's hardware counters (instructions, cycles, the data caches' misses, branch mispredictions) per run,
-//!   thread, phase, frame and Luau stack, through the counter service ([`hw`]). Not in `all`: the stepping kinds' own
-//!   work would be counted with the run's, so the counters are read in a run of their own.
+//! - `hw`: the CPU's hardware counters (instructions, cycles, the cycles stalled waiting for load data, the L1 data
+//!   cache's misses outstanding, branch mispredictions) per run, thread, phase and frame, and per Luau function, calling
+//!   context and call site from readings around sampled calls, through the counter service ([`hw`]). Not in `all`: the
+//!   stepping kinds' own work would be counted with the run's, so the counters are read in a run of their own.
 //! - `phases`: where the command's wall time went (the `--profile` of before, timing.rs).
 //! - `time`: host time sampled at the VM's safepoints (luau_profile.rs's ticker). Not in `all`: stepping makes the
 //!   interpreter slower than the engine's Rust, so host time is read in a run of its own.
@@ -35,7 +36,9 @@ pub mod cpu;
 pub mod diff;
 pub mod hw;
 pub mod memory;
+pub mod prices;
 pub mod report;
+pub mod time;
 pub mod vm;
 pub mod whatif;
 
@@ -77,7 +80,7 @@ impl Kinds {
         ("heap", Kinds::HEAP, "reachable-heap snapshots (garbage not swept yet apart) and the collector's work"),
         ("timeline", Kinds::TIMELINE, "one row a frame: work, host time, heap, allocations, instances, connections, threads"),
         ("cpu", Kinds::CPU, "the run thread's CPU cycles, the process's CPU time, page faults and peak memory"),
-        ("hw", Kinds::HW, "hardware counters per run, thread, phase, frame and Luau stack, through the counter service (not in all)"),
+        ("hw", Kinds::HW, "hardware counters (cycles stalled on loads, misses outstanding) per run, thread, phase, frame and Luau function, through the counter service (not in all)"),
         ("phases", Kinds::PHASES, "where the command's wall time went"),
         ("time", Kinds::TIME, "host time sampled at the VM's safepoints (a run of its own: not in all)"),
         ("boundary", Kinds::BOUNDARY, "Luau-to-engine crossings per call site (not in all)"),
@@ -127,6 +130,17 @@ impl Kinds {
     pub fn steps(self) -> bool {
         self.has(Kinds::WORK) || self.has(Kinds::CACHES)
     }
+
+    /// Whether the run's host time is not its own: a kind that slows it (stepping about 5x, the allocation and heap hooks about
+    /// 2x, host time's samples, the boundary's stack walks, the counters' readings). Its host time, its cycles and its CPU figures
+    /// are then taken in a pass of their own (`cpu`), not from this one
+    pub fn slows_the_run(self) -> bool {
+        self.steps() || self.has(Kinds::ALLOC) || self.has(Kinds::HEAP) || self.has(Kinds::TIME) || self.has(Kinds::BOUNDARY) || self.has(Kinds::HW)
+    }
+
+    pub fn without(self, kind: Kinds) -> Kinds {
+        Kinds(self.0 & !kind.0)
+    }
 }
 
 /// A profile's options
@@ -148,11 +162,14 @@ pub struct Config {
     pub print: bool,
     /// The hardware counters `hw` reads (`--profile-counters a,b`; default [`hw::protocol::DEFAULT_COUNTERS`])
     pub counters: Vec<String>,
+    /// The folder of the `cpu` pass this run's CPU figures, host time a frame and cycles come from (ran before it, as a process of
+    /// its own, when `cpu` was asked with a kind that slows the run)
+    pub cpu_pass: Option<PathBuf>,
 }
 
 impl Config {
     pub fn new(kinds: Kinds, out: PathBuf) -> Config {
-        Config { kinds, out, top: 25, phases: None, alloc_step: 1, snapshots_at_marks: true, print: true, counters: hw::protocol::DEFAULT_COUNTERS.iter().map(|name| name.to_string()).collect() }
+        Config { kinds, out, top: 25, phases: None, alloc_step: 1, snapshots_at_marks: true, print: true, counters: hw::protocol::DEFAULT_COUNTERS.iter().map(|name| name.to_string()).collect(), cpu_pass: None }
     }
 
     /// The suite's options of a command line, None when it asks for no profile of the suite: `--profile` alone (the
@@ -195,6 +212,59 @@ impl Config {
         }
         Ok(Some(config))
     }
+}
+
+/// Runs the command again as a process of its own with `--profile cpu` alone, its profile into `folder` (and its recording, if
+/// any, into `folder/out`): the CPU figures, host time a frame and cycles of a run whose asked kinds slow it come from there
+pub fn cpu_pass(args: &[String], command: &str, folder: &std::path::Path) -> Result<(), String> {
+    // (the options the pass sets itself, and the outputs it must not overwrite)
+    const VALUED: [&str; 6] = ["--profile-out", "--profile-top", "--profile-phase", "--profile-alloc-step", "--profile-counters", "--profile"];
+    const OUTPUTS: [&str; 3] = ["--out", "--dir", "--dump-scene"];
+    let mut child: Vec<String> = vec![command.to_string()];
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--profile" {
+            index += profile_arguments(args, index);
+            continue;
+        }
+        if VALUED.contains(&arg.as_str()) {
+            index += 2;
+            continue;
+        }
+        if OUTPUTS.contains(&arg.as_str()) {
+            child.push(arg.clone());
+            child.push(folder.join("out").to_string_lossy().into_owned());
+            index += 2;
+            continue;
+        }
+        child.push(arg.clone());
+        index += 1;
+    }
+    child.extend(["--profile".to_string(), "cpu".to_string(), "--profile-out".to_string(), folder.to_string_lossy().into_owned()]);
+    std::fs::create_dir_all(folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+    let log = std::fs::File::create(folder.join("stderr.txt")).map_err(|error| error.to_string())?;
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let status = std::process::Command::new(exe)
+        .args(&child)
+        .env_remove("REE_PROFILE")
+        .env_remove("REE_PROFILE_OUT")
+        .stdout(std::process::Stdio::null())
+        .stderr(log)
+        .status()
+        .map_err(|error| error.to_string())?;
+    if !folder.join("profile.json").is_file() {
+        return Err(format!("it wrote no profile (exit {}; {})", status.code().unwrap_or(-1), folder.join("stderr.txt").display()));
+    }
+    // (what the pass is for is its profile.json's CPU figures and frames: its recording, its own report page, summary and stacks go)
+    let _ = std::fs::remove_dir_all(folder.join("out"));
+    if let Ok(entries) = std::fs::read_dir(folder) {
+        for entry in entries.flatten().filter(|entry| entry.file_name() != "profile.json") {
+            let path = entry.path();
+            let _ = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+        }
+    }
+    Ok(())
 }
 
 /// The value of `--profile`: the word after it (`--profile` followed by another option or nothing is the phases of
@@ -266,6 +336,9 @@ pub struct Totals {
     pub cold_closures: u64,
     pub cold_protos: u64,
     pub cold_code: u64,
+    /// table.sort's comparisons and its calls to a script's comparison function (the work counters' sortcompares, sortcalls)
+    pub sort_compares: u64,
+    pub sort_calls: u64,
     /// The allocation profile's: every allocation's bytes and the objects, and the rehash hook's rehashes and their keys, all
     /// and those a script's own instruction made: (events, keys, script events, script keys)
     /// (`alloc` or `heap`)
@@ -274,8 +347,8 @@ pub struct Totals {
     pub rehashes: Option<(u64, u64, u64, u64)>,
     /// The collector's steps, cycles, bytes freed and host seconds (`heap` or `timeline`)
     pub gc: (u64, u64, u64, f64),
-    /// The inline caches' outcomes by kind (vm::CACHE_KINDS; `work` or `caches`)
-    pub caches: Option<[[u64; vm::CACHE_OUTCOMES]; 5]>,
+    /// The inline caches' outcomes by kind (vm::CACHE_KINDS) and the builtin calls served and declined (`caches`)
+    pub caches: Option<vm::CacheTotals>,
 }
 
 /// One frame of the timeline
@@ -284,7 +357,8 @@ pub struct Row {
     pub frame: u64,
     pub seconds: f64,
     pub phase: u32,
-    pub host_ms: f64,
+    /// The frame's host time and the run thread's cycles (None in a run a kind slows: the `cpu` pass's)
+    pub host_ms: Option<f64>,
     pub work_ms: f64,
     pub instructions: u64,
     pub heap_bytes: u64,
@@ -293,10 +367,22 @@ pub struct Row {
     pub gc_steps: u64,
     pub gc_ms: f64,
     pub gc_freed: u64,
-    pub instances: u64,
+    /// The live instances at the frame's end: in the DataModel, alive outside it, destroyed and kept until the VM collects them
+    pub instances: (u64, u64, u64),
     pub connections: u64,
-    pub threads: i64,
+    /// Threads the VM made in the frame (coroutines, task threads, handlers' threads)
+    pub threads_made: u64,
+    pub cycles: Option<u64>,
+}
+
+/// One frame of the `cpu` kind: its host time, the run thread's cycles and the working set at its end
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CpuFrame {
+    pub frame: u64,
+    pub phase: u32,
+    pub host_ms: f64,
     pub cycles: u64,
+    pub working_set: Option<u64>,
 }
 
 /// What a run of the engine was (the summary's head)
@@ -308,6 +394,10 @@ pub struct Run {
     pub frames: u64,
     pub seconds: f64,
     pub fps: f64,
+    /// Script timeouts the run had (watchdog.rs), and those host time fired alone (its backstop: a profile that slows the run
+    /// makes them likelier, so a run and its cpu pass are compared by them)
+    pub script_timeouts: u64,
+    pub host_backstop_timeouts: u64,
 }
 
 /// The engine's state the profile reads, set at [`install`]
@@ -320,6 +410,8 @@ struct Installed {
     counters: Option<*const crate::cost::VmCounters>,
     frame_started: Option<(Instant, u64)>,
     last: FrameTotals,
+    /// The threads the VM had made when the frame began
+    threads_made: u64,
 }
 
 /// Running totals a frame's row is the difference of (taken when the frame begins)
@@ -345,9 +437,13 @@ struct State {
     rows: Vec<Row>,
     snapshots: Vec<memory::Snapshot>,
     collector: memory::Collector,
-    threads: i64,
-    /// Host time samples: (phase, stack) -> ticks, with their stacks
-    time: Option<(memory::Stacks, FxHashMap<(u32, u32), u64>, u64)>,
+    /// Threads the VM made so far (the thread callback)
+    threads_made: u64,
+    /// The `cpu` kind's frames, and when the frame now running began
+    cpu_frames: Vec<CpuFrame>,
+    cpu_frame_started: Option<(Instant, u64)>,
+    /// Host time samples (`time`)
+    time: Option<time::Time>,
     /// What the VM's profile and the allocation profile held when collected
     vm: Option<vm::Results>,
     allocations: Option<memory::Allocations>,
@@ -378,6 +474,8 @@ impl State {
             totals.cold_closures = counters.coldclosures;
             totals.cold_protos = counters.coldprotos;
             totals.cold_code = counters.coldcode;
+            totals.sort_compares = counters.sortcompares;
+            totals.sort_calls = counters.sortcalls;
         }
         if kinds.has(Kinds::ALLOC) || kinds.has(Kinds::HEAP) {
             if let Some((bytes, objects, rehashes)) = memory::with(|allocations| (allocations.bytes, allocations.objects, (allocations.rehashes.events, allocations.rehashes.keys, allocations.rehashes.script_events, allocations.rehashes.script_keys))) {
@@ -397,7 +495,13 @@ impl State {
 thread_local! {
     static ON: Cell<bool> = const { Cell::new(false) };
     static STATE: RefCell<Option<Box<State>>> = const { RefCell::new(None) };
+    /// The VM's resume callbacks before the counters took them (the counters call them on, and give them back at the
+    /// collect); none while the counters hold none
+    static RESUME_CALLBACKS: Cell<Option<(Option<ResumeCallback>, Option<ResumeCallback>)>> = const { Cell::new(None) };
 }
+
+/// lua.h `lua_Callbacks::preresume` and `postresume`
+type ResumeCallback = unsafe extern "C-unwind" fn(*mut lua_State);
 
 /// Whether a profile of the suite runs on this thread
 #[inline]
@@ -463,7 +567,9 @@ impl Session {
             rows: Vec::new(),
             snapshots: Vec::new(),
             collector: memory::Collector::default(),
-            threads: 0,
+            threads_made: 0,
+            cpu_frames: Vec::new(),
+            cpu_frame_started: None,
             time: None,
             vm: None,
             allocations: None,
@@ -483,7 +589,7 @@ impl Session {
     /// the summary says) and ends it: the summary text.
     pub fn finish(self, run: Run) -> Result<String, String> {
         let boundary_text = crate::boundary::finish();
-        let phases_text = crate::timing::finish();
+        let (phases_text, phase_tree) = crate::timing::finish_tree().unzip();
         caches::set_on(false);
         ON.with(|on| on.set(false));
         let Some(mut state) = STATE.with(|cell| cell.borrow_mut().take()) else { return Err("no profile ran".into()) };
@@ -491,7 +597,9 @@ impl Session {
             state.warnings.push("the VM's profile was not collected before the VM went (a host must call profiler::collect)".into());
         }
         let caches = caches::snapshot();
+        let facts = caches::facts();
         let cpu = state.cpu.finish();
+        let _ = &state.cpu_frame_started;
         let hw = state.hw.take().map(|session| session.finish(state.phase));
         let input = report::Input {
             config: &state.config,
@@ -499,20 +607,23 @@ impl Session {
             elapsed: state.started.elapsed().as_secs_f64(),
             vm: state.vm.as_ref(),
             allocations: state.allocations.as_ref(),
-            time: state.time.as_ref().map(|(stacks, samples, ticks)| (stacks, samples, *ticks)),
+            time: state.time.as_ref(),
             phases: &state.phases,
             marks: &state.marks,
             rows: &state.rows,
             snapshots: &state.snapshots,
             collector: &state.collector,
             caches: &caches,
+            facts,
             cpu: &cpu,
+            cpu_frames: &state.cpu_frames,
             hw: hw.as_ref(),
             sources: &state.sources,
             end_work: state.end_work,
             end: state.end.as_ref(),
             boundary: boundary_text.as_deref(),
             phase_timing: phases_text.as_deref(),
+            phase_tree: phase_tree.as_deref(),
             warnings: &state.warnings,
         };
         report::write(&input)
@@ -542,27 +653,54 @@ pub fn install(lua: &Lua) {
     if !profiling_vm {
         with_state(|s| s.warnings.push("another profile of the VM already runs on this thread".into()));
     }
+    // (host time names its samples without stepping: a chunk's functions and its inlined copies are registered as it loads, which
+    // no other kind needs)
+    if profiling_vm {
+        unsafe { vm::chunks(state, kinds.has(Kinds::TIME)) };
+        // (ree's tools' code is not the game's: the marks' cache totals leave it out, as the report's tables do)
+        let mut tools = vec!["=rur.", "=ree."];
+        let harness = format!("={}.", report::HARNESS_FOLDER);
+        if std::env::var_os(report::TOOL_HARNESS_ENV).is_some_and(|value| value == "1") {
+            tools.push(&harness);
+        }
+        unsafe { vm::tool_chunks(state, &tools) };
+    }
     if kinds.has(Kinds::ALLOC) || kinds.has(Kinds::HEAP) {
         let step = with_state(|s| s.config.alloc_step).unwrap_or(1);
         memory::start(state, step, kinds.has(Kinds::HEAP), Some(memory::resolver(Rc::downgrade(&engine))));
     }
     if kinds.has(Kinds::TIMELINE) {
-        // live threads: the VM's thread callback (census.rs chains the same function)
+        // threads made: the VM's thread callback (census.rs chains the same function)
         unsafe { (*mlua::ffi::lua_callbacks(state)).userthread = Some(crate::census::userthread) };
     }
-    // (one ticker for host time's samples and the counters' readings at safepoints)
-    if kinds.has(Kinds::TIME) || kinds.has(Kinds::HW) {
+    // (the run's CPU figures start with its VM: the command's startup is not the run's)
+    with_state(|s| s.cpu.start());
+    if kinds.has(Kinds::TIME) {
+        // (the interpreter entered and left: host time between handlers is the engine's, booked when the next one starts)
+        unsafe { vm::set_vm_hook(state, Some(vm_entered), std::ptr::null_mut()) };
+        // (a sample after a C function holds its time: the VM's count of C calls says whether one ran since the last safepoint)
+        crate::luau_profile::watch_c_calls(counters.map_or(std::ptr::null(), |counters| unsafe { &raw const (*counters).ccalls }));
         let base = crate::luau_profile::start_suite_ticker();
-        with_state(|s| {
-            if kinds.has(Kinds::TIME) {
-                s.time = Some((memory::Stacks::default(), FxHashMap::default(), base));
-            }
+        with_state(|s| s.time = Some(time::Time::new(base)));
+    }
+    // the counters: a reading as the VM starts, and the VM's hook around the Luau calls it samples (hw/mod.rs)
+    if kinds.has(Kinds::HW) {
+        let counting = with_state(|s| {
             let phase = s.phase;
-            if let Some(hw) = s.hw.as_mut() {
-                hw.seen = base;
-                hw.read(hw::What::Install, phase);
-            }
-        });
+            let hw = s.hw.as_mut()?;
+            hw.read(hw::What::Install, phase);
+            Some(hw.counting())
+        })
+        .flatten()
+        .unwrap_or(false);
+        if counting && profiling_vm {
+            unsafe { vm::set_calls(state, Some(call_hook), std::ptr::null_mut()) };
+            // (and where a Luau thread holding a sampled call resumes and stops, so what it runs is booked to it)
+            let callbacks = unsafe { &mut *mlua::ffi::lua_callbacks(state) };
+            RESUME_CALLBACKS.set(Some((callbacks.preresume, callbacks.postresume)));
+            callbacks.preresume = Some(resume_hook);
+            callbacks.postresume = Some(suspend_hook);
+        }
     }
     let totals = FrameTotals { work: engine.state.borrow().sched.work_total(), instructions: counters.map(|c| instructions(unsafe { &*c })).unwrap_or(0), ..Default::default() };
     let (frame, seconds, ops) = {
@@ -571,7 +709,7 @@ pub fn install(lua: &Lua) {
         (engine_state.sched.frame, engine_state.sched.now, ops)
     };
     with_state(|s| {
-        s.installed = Some(Installed { state, engine: Rc::downgrade(&engine), _work: work, _drained: drained, counters, frame_started: None, last: totals });
+        s.installed = Some(Installed { state, engine: Rc::downgrade(&engine), _work: work, _drained: drained, counters, frame_started: None, last: totals, threads_made: 0 });
         let (host, cycles) = (s.started.elapsed().as_secs_f64(), cpu::thread_cycles());
         let counts = s.totals();
         s.marks.push(Mark { phase: s.phases[0].clone(), frame, seconds, work: totals.work, host, cycles, totals: counts, engine: Some(ops) });
@@ -584,7 +722,8 @@ pub fn install(lua: &Lua) {
 /// Whether the profile needs the VM's interrupt (time samples, collector events): luau_profile::install asks
 pub fn wants_interrupt() -> bool {
     let kinds = kinds();
-    kinds.has(Kinds::TIME) || kinds.has(Kinds::HEAP) || kinds.has(Kinds::TIMELINE) || kinds.has(Kinds::HW)
+    // (the counters read around calls through the VM's own hook: hw/mod.rs)
+    kinds.has(Kinds::TIME) || kinds.has(Kinds::HEAP) || kinds.has(Kinds::TIMELINE)
 }
 
 /// Whether the profile takes the VM's allocation callback
@@ -613,6 +752,11 @@ pub fn collect(lua: &Lua) {
         snapshot("end");
     }
     vm::stop(state);
+    if let Some((preresume, postresume)) = RESUME_CALLBACKS.take() {
+        let callbacks = unsafe { &mut *mlua::ffi::lua_callbacks(state) };
+        callbacks.preresume = preresume;
+        callbacks.postresume = postresume;
+    }
     with_state(|s| {
         let (frame, seconds, work, ops) = match s.installed.as_ref().and_then(|installed| installed.engine.upgrade()) {
             Some(engine) => {
@@ -632,7 +776,14 @@ pub fn collect(lua: &Lua) {
         // (the thread callback stays while a census uses it)
         unsafe { (*mlua::ffi::lua_callbacks(state)).userthread = None };
     }
-    if kinds.has(Kinds::TIME) || kinds.has(Kinds::HW) {
+    if kinds.has(Kinds::TIME) {
+        let ticks = crate::luau_profile::ticks();
+        with_state(|s| {
+            let phase = s.phase;
+            if let Some(time) = s.time.as_mut() {
+                time.finish(ticks, crate::luau_profile::in_vm(), phase);
+            }
+        });
         crate::luau_profile::stop_suite_ticker();
     }
     with_state(|s| {
@@ -721,12 +872,17 @@ pub fn frame_begin(engine: &Engine) {
         if let Some(hw) = s.hw.as_mut() {
             hw.read(hw::What::FrameBegin, phase);
         }
+        if s.config.kinds.has(Kinds::CPU) {
+            s.cpu_frame_started = Some((Instant::now(), cpu::thread_cycles()));
+        }
         if !s.config.kinds.has(Kinds::TIMELINE) {
             return;
         }
         let collector = (s.collector.steps, s.collector.seconds, s.collector.freed);
+        let threads_made = s.threads_made;
         let Some(installed) = s.installed.as_mut() else { return };
         installed.frame_started = Some((Instant::now(), cpu::thread_cycles()));
+        installed.threads_made = threads_made;
         let (allocated_bytes, allocations) = memory::with(|allocations| (allocations.bytes, allocations.objects)).unwrap_or((0, 0));
         installed.last = FrameTotals {
             work: engine.state.borrow().sched.work_total(),
@@ -747,9 +903,16 @@ pub fn frame_end(engine: &Engine) {
         if let Some(hw) = s.hw.as_mut() {
             hw.read(hw::What::FrameEnd(engine.state.borrow().sched.frame), phase);
         }
+        if let Some((started, cycles)) = s.cpu_frame_started.take() {
+            let working_set = s.cpu.sample();
+            s.cpu_frames.push(CpuFrame { frame: engine.state.borrow().sched.frame, phase, host_ms: started.elapsed().as_secs_f64() * 1e3, cycles: cpu::thread_cycles().saturating_sub(cycles), working_set });
+        }
         if !s.config.kinds.has(Kinds::TIMELINE) {
             return;
         }
+        // (a kind that slows the run makes its host time not the run's: the cpu pass takes it)
+        let own_host = !s.config.kinds.slows_the_run();
+        let threads_made = s.threads_made;
         let Some(installed) = s.installed.as_mut() else { return };
         let (started, cycles) = installed.frame_started.take().unwrap_or((Instant::now(), cpu::thread_cycles()));
         let engine_state = engine.state.borrow();
@@ -770,11 +933,12 @@ pub fn frame_end(engine: &Engine) {
             gc_freed: s.collector.freed,
         };
         let last = installed.last;
+        let made = threads_made.saturating_sub(installed.threads_made);
         s.rows.push(Row {
             frame: engine_state.sched.frame,
             seconds: engine_state.sched.now,
             phase: s.phase,
-            host_ms: started.elapsed().as_secs_f64() * 1e3,
+            host_ms: own_host.then(|| started.elapsed().as_secs_f64() * 1e3),
             work_ms: (totals.work - last.work) * 1e3,
             instructions: totals.instructions - last.instructions,
             heap_bytes: vm::total_bytes(installed.state) as u64,
@@ -783,46 +947,119 @@ pub fn frame_end(engine: &Engine) {
             gc_steps: totals.gc_steps - last.gc_steps,
             gc_ms: (totals.gc_seconds - last.gc_seconds) * 1e3,
             gc_freed: totals.gc_freed - last.gc_freed,
-            instances: engine_state.dom.live_count() as u64,
+            instances: engine_state.dom.census(engine_state.collection.game),
             connections: engine_state.signals.counts().1 as u64,
-            threads: s.threads,
-            cycles: cpu::thread_cycles().saturating_sub(cycles),
+            threads_made: made,
+            cycles: own_host.then(|| cpu::thread_cycles().saturating_sub(cycles)),
         });
     });
 }
 
-/// The interrupt at a non-GC safepoint: a host time sample when the ticker moved (luau_profile.rs)
+#[cfg(test)]
+thread_local! {
+    /// The tick the safepoint's work last ran for (a test's view of it)
+    pub(crate) static LAST_SAFEPOINT: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The interrupt at a non-GC safepoint where the ticker moved (luau_profile.rs compares it first): a host time sample
 pub fn safepoint(state: *mut lua_State, ticks: u64) {
+    crate::luau_profile::set_suite_seen(ticks);
+    #[cfg(test)]
+    LAST_SAFEPOINT.with(|last| last.set(ticks));
     with_state(|s| {
         let phase = s.phase;
-        // (the counters' sample: a reading, with the stack it books what came since the last one to)
-        if let Some(hw) = s.hw.as_mut().filter(|hw| hw.seen != ticks) {
-            hw.seen = ticks;
-            if hw.counting() {
-                let stack = hw.stacks.of(state);
-                hw.read(hw::What::Sample(stack), phase);
-            }
+        if let Some(time) = s.time.as_mut() {
+            crate::luau_profile::set_seen(ticks);
+            time.safepoint(state, ticks, phase);
         }
-        let Some((stacks, samples, seen)) = s.time.as_mut() else { return };
-        if ticks == *seen {
-            return;
-        }
-        let weight = ticks.saturating_sub(*seen);
-        *seen = ticks;
-        let stack = stacks.of(state);
-        *samples.entry((phase, stack)).or_default() += weight;
     });
 }
 
-/// Host time the engine's own step took (luau_profile::engine_step): booked to a frame of its own
-pub fn engine_step(name: &str, ticks: u64) {
+/// The VM's hook (lua_setprofilevm): the interpreter entered from outside it, or left back to it. Host time since the last
+/// booking was the engine's or the Luau that ran last; booked when the ticker moved.
+unsafe extern "C-unwind" fn vm_entered(_ud: *mut std::ffi::c_void, state: *mut lua_State, entered: std::ffi::c_int) {
+    let entered = entered != 0;
+    let ticks = crate::luau_profile::ticks();
+    if ticks != crate::luau_profile::seen() {
+        crate::luau_profile::set_seen(ticks);
+        with_state(|s| {
+            let phase = s.phase;
+            if let Some(time) = s.time.as_mut() {
+                time.vm(state, entered, ticks, phase);
+            }
+        });
+    }
+    crate::luau_profile::set_in_vm(entered);
+}
+
+/// One of the engine's own steps begins (`Some(name)`: the animator, joints, physics, the recorder) or the innermost ends
+/// (luau_profile::engine_step): its host time is booked to a frame of its own
+pub fn time_step(step: Option<&str>) {
+    let ticks = crate::luau_profile::ticks();
     with_state(|s| {
         let phase = s.phase;
-        let Some((stacks, samples, seen)) = s.time.as_mut() else { return };
-        let frame = (report::engine_step_function(name), -1);
-        let stack = stacks.intern(&[frame]);
-        *samples.entry((phase, stack)).or_default() += ticks;
-        *seen += ticks;
+        if let Some(time) = s.time.as_mut() {
+            crate::luau_profile::set_seen(ticks);
+            match step {
+                Some(name) => time.step_begin(name, crate::luau_profile::in_vm(), ticks, phase),
+                None => time.step_end(ticks, phase),
+            }
+        }
+    });
+}
+
+/// An Instance API call begins (`begin`) or ends, and the ticker moved (luau_profile::ApiCall): the host time since the last
+/// booking was the Luau that made the call, or the call's own (booked to its line)
+pub fn time_call(state: *mut lua_State, begin: bool, ticks: u64) {
+    with_state(|s| {
+        let phase = s.phase;
+        if let Some(time) = s.time.as_mut() {
+            // (the profile's own thread: another thread's Instance API calls see the switch, not this state)
+            crate::luau_profile::set_seen(ticks);
+            if begin {
+                time.call_begin(state, ticks, phase);
+            } else {
+                time.call_end(state, ticks, phase);
+            }
+        }
+    });
+}
+
+/// The VM's hook around a Luau call it sampled (vm::CALL_ENTER as its first instruction is about to run, vm::CALL_LEAVE as
+/// it returns): the counters' readings, so what ran inside the call is its own (hw/mod.rs)
+unsafe extern "C-unwind" fn call_hook(_ud: *mut std::ffi::c_void, state: *mut lua_State, event: std::ffi::c_int, function: std::ffi::c_int, every: std::ffi::c_int, depth: std::ffi::c_int) {
+    with_state(|s| {
+        let phase = s.phase;
+        if let Some(hw) = s.hw.as_mut() {
+            hw.call(state, event, function, every, depth, phase);
+        }
+    });
+}
+
+/// The VM's `preresume`: a Luau thread is about to run (hw/mod.rs reads there when it holds a sampled call); then the
+/// callback the counters took the place of
+unsafe extern "C-unwind" fn resume_hook(state: *mut lua_State) {
+    with_state(|s| {
+        let phase = s.phase;
+        if let Some(hw) = s.hw.as_mut() {
+            unsafe { hw.resume(state, phase) };
+        }
+    });
+    if let Some((Some(previous), _)) = RESUME_CALLBACKS.get() {
+        unsafe { previous(state) };
+    }
+}
+
+/// The VM's `postresume`: a Luau thread stopped (it yielded, returned, or an error ended it)
+unsafe extern "C-unwind" fn suspend_hook(state: *mut lua_State) {
+    if let Some((_, Some(previous))) = RESUME_CALLBACKS.get() {
+        unsafe { previous(state) };
+    }
+    with_state(|s| {
+        let phase = s.phase;
+        if let Some(hw) = s.hw.as_mut() {
+            unsafe { hw.suspend(state, phase) };
+        }
     });
 }
 
@@ -844,9 +1081,12 @@ pub fn gc_interrupt(state: *mut lua_State) {
     with_state(|s| s.collector.interrupt(state));
 }
 
-/// The VM made (`parent` set) or freed a thread (census.rs's callback)
+/// The VM made (`parent` set) or freed a thread (census.rs's callback): the threads made are counted (what the collector has
+/// freed by a frame follows its pace, not the program's)
 pub fn thread_event(made: bool) {
-    with_state(|s| s.threads += if made { 1 } else { -1 });
+    if made {
+        with_state(|s| s.threads_made += 1);
+    }
 }
 
 /// A module chunk was compiled (lua/modules.rs): its source, for the annotated listing

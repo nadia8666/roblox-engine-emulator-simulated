@@ -33,7 +33,7 @@
 │      29                                                            -- line 29                                        │
 ╰ share of Studio work ■ <0.1%  0.1% ███████ 1% ███████ 3% ███████ 10% ███████ 30%+ ───────────────────────────────────╯
 ╭ Line 21  rank  Main:20 ──────────────────────────────────────────────────────────────────────────────────────────────╮
-│ work 2.880 ms    instructions 20,000    allocated 2.56 MB, 48,000 objects    cache misses 0 of 91,000                │
+│ work 2.880 ms    instructions 20,000    allocated 2.56 MB, 48,000 objects    cache misses 0 of 89,000                │
 │ opcodes NEWTABLE 12,000 · SETTABLEKS 8,000                                                                           │
 │ code for _, item in items do records[#records + 1] = { item = item, score = item.Score } end                         │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

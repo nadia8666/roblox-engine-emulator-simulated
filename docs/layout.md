@@ -26,7 +26,8 @@ src/meshes.rs          EditableMesh: meshes scripts build or load, their MeshPar
 src/profile.rs microprofile.rs luau_profile.rs   simulation profile, MicroProfiler scopes, Luau sampler
 src/profiler/          the profiling suite (`--profile <kinds>`): the VM's instruction profile, memory, caches,
                        the timeline, the CPU, the report's files and `ree profile diff`; hw/ the hardware
-                       counters' client (the counter service's wire format, readings, how counts are booked)
+                       counters' client (the counter service's wire format, readings, the counters by name and their
+                       derived figures, the readings around sampled calls and how counts are booked)
 src/trace.rs                                     Context.TraceWrites: Luau call sites of Parent / property writes
 src/census.rs                                    Context.Census: live threads, connections, timers, instances by their Luau line
 data/                  reflection.json (Studio's dump; tools/dump-reflection.luau), font-enums.json, text metrics

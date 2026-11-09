@@ -1,13 +1,13 @@
  ◆ ree profile   ✓ run ok · Fixture.luau · 120 frames · 2.00 s                                     Studio work 13.20 ms
   1 Overview  2 Flame  3 Calls  4 Source  5 Alloc  6 Heap  7 Timeline  8 Caches  9 Issues  d Diff  c Compare
-╭ Luau inline caches  miss: predicted wrong · slow: a metatable or an unsafe environment · other: not a table ─────────╮
-│   cache              hit rate                                               lookups     misses       slow      other │
-│   table key slot      94.7% ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━      97,000      5,000          0      2,000 │
-│   import              99.0% ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━         404          0          4          0 │
+╭ Luau inline caches  hit rate: of the lookups a table serves · not hit: the rest · charged / extra: µs a frame ───────╮
+│   cache              hit rate                                               lookups    not hit    charged      extra │
+│   table key slot      94.7% ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━      95,000      5,000       0.00       0.00 │
+│   import              99.0% ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━         404          4       0.00       0.00 │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭ Call sites  1 · by miss rate, 100 lookups or more ───────────────────────────────────────────────────────────────────╮
-│   op          site                             lookups        hits     misses       slow  missed                     │
-│ ▌ GETTABLEKS  layout  Main:31                    6,000       1,000      5,000          0   83.3% ███████████████████ │
+│   op          site                            lookups        hits    not hit commonest     missed                    │
+│ ▌ GETTABLEKS  layout  Main:31                   6,000       1,000      5,000 repredicted    83.3% ██████████████████ │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

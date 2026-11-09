@@ -587,15 +587,54 @@ profile asks for; `profiler::report` writes its files and `ree profile diff` com
   profile before each instruction. It counts the instruction; it books to the previous instruction what moved
   since it: the VM's work counters (`lua_workcounters`), priced slot by slot with `cost::luau`'s own prices (the
   profile checks the model is a weighted sum of the counts), and the engine's charges (the Instance API's,
-  event dispatch), so the work booked to the lines adds up to the work clock; and it keeps a calling-context
-  tree from the frames each thread shows (call counts, inclusive figures, callers and callees). The engine's
-  own Luau books to the script instruction that called it; what is charged while no instruction runs (an
-  event's dispatch, a thread's resumption) is booked as outside any instruction. The instructions with an
-  inline cache record what the cache will do, read before the instruction runs as the interpreter reads it:
-  GETGLOBAL / SETGLOBAL, GETTABLEKS / SETTABLEKS (the predicted hash slot), NAMECALL (the method's slot, or the
-  type's own `__namecall`), GETIMPORT (the import resolved when the chunk loaded, in a safe environment) and
-  the FASTCALL family (the builtin's fast path taken, or the call it falls back to). `Context.ProfilePhase`
-  starts a phase: the frames hang from a node of the phase's. Natively compiled code keeps running natively:
+  event dispatch); a C function's own work is its calling line's self work too (`c_work_ms` beside the line's own
+  instructions'), so the lines' self work adds up to the work clock, less what is charged outside any instruction; and
+  it keeps a calling-context
+  tree from the frames each thread shows (call counts, inclusive figures, callers and callees). A C function
+  a CALL reaches gets a node of its own at that call site, named by where the globals hold it (a library's
+  table, the caller's environment read first) or by the method a NAMECALL looked up, and what is charged
+  from the call to its return, past the CALL's own dispatch, is its own (a sort's comparisons); a Luau
+  function a C function calls counts a call each time C enters it (`luaP_enter` marks the frame there as
+  another call's). A C function no global holds, with no method and no debug name, is named by the call site that
+  reached it (`? called at Module:12`), so two of them read apart. The interpreter's entries are kept with where their
+  `luau_execute` frame sits on the C stack: what runs once one is left, until the next step, is the C function's it came
+  from (a `pcall`'s, a `coroutine.resume`'s). ree builds the VM without C++ unwind semantics, so an error that unwinds
+  the interpreter skips `luaP_Execute`'s destructor: the protected call's catch (`luaD_rawrunprotected`, `luaP_unwound`)
+  drops the entries deeper than itself, so the nesting stays right after an error and the outer C function's work after
+  it is its own, not the C function the unwound frames reached last (an `error`'s). The engine's own Luau books to the
+  script instruction that called it; what is charged while no instruction runs (an event's dispatch, a thread's
+  resumption) is booked as outside any instruction. The instructions with an inline cache record what the interpreter did, read before the
+  instruction runs with the lookups it is about to make (string keys only: an object key would be given a
+  hash id and move later tables' order): the cached slot served it; the key was found elsewhere in the table
+  (a method: in its first `__index` table), so the slot is repatched; the key is absent and nothing else was
+  looked at; a new key was inserted (rehashed: the table grew to fit it, told by the rehash hook before the
+  next instruction); `__index` / `__newindex` tables walked (how many) or a function called; an unsafe
+  environment (an import looked up each time; an import not resolved at load is absent); a value that is not
+  a table, with the type whose metamethod served it; a store into a frozen table. GETGLOBAL / SETGLOBAL,
+  GETTABLEKS / SETTABLEKS, NAMECALL and GETIMPORT carry caches; Luau's loader turns GETTABLEKS, SETTABLEKS
+  and NAMECALL with a member name's key into GETUDATAKS, SETUDATAKS and NAMECALLUDATA, which fall back to the
+  table access at their first run when no direct access serves the value (the engine registers none): the
+  profile records them as the access they ran as, its copy of the code included. A builtin call (the
+  FASTCALL family) records whether its fast path served it and, when not, the first of the fast path's
+  conditions that failed (lbuiltins.cpp's, per builtin): the argument count, an argument's type, the results
+  asked for, a collector step owed (string.sub, string.char, tostring and table.create cannot run the
+  collector), an unsafe environment, else the values (out of its range). A cache or builtin site keeps a record for
+  each call-tree node and phase it ran in (`node`, `phase`), with what the clock charged the instruction past its dispatch
+  there (`charged`), so the report's tables cover the reported phases and a site can be told apart by where it ran (a
+  comparator called by `table.sort` and from a loop); the cache totals at the marks (`lua_profilecachetotals`,
+  with each kind's metatable walks by depth) leave ree's tools' chunks out (`lua_profiletoolchunks`: `rur.`, `ree.`, the
+  what-if runner's harness). What each outcome costs is below ("What an outcome costs"). With host time profiled (`lua_profilechunks`), a loaded chunk's functions are
+  registered at its load, so a function that only ever runs as inlined copies is named and its copies known without
+  stepping; stepping registers a chunk's functions when it first runs one, and no other kind needs them. Host time reads
+  the VM's count of the C calls scripts make (its work counters' `ccalls`) at each safepoint, so a sample after a C
+  function, whose time no safepoint of its caller samples, is told from one after a Luau call or a builtin call its fast
+  path served: nothing in the interpreter keeps it. The count is kept for each of the interpreter's entries open
+  (`lua_profileentries`): an interrupt from inside a C function (string.gsub's matcher sends one at each match) and the
+  safepoints of a Luau function a C function calls back consume none of the calling frame's count, so the rest of the C
+  function's time stays on the calling frame's next safepoint, after it returned; a callback's own samples are split as
+  any code's. The counters past an opcode range's last opcode (the cold first calls and rare functions' `LUA_WORK_COLDCFUNCS`,
+  `LUA_WORK_COLDHOSTFUNCS`, `LUA_WORK_RAREPROTOS`) are booked when they move, with the instruction or C function that moved
+  them. `Context.ProfilePhase` starts a phase: the frames hang from a node of the phase's. Natively compiled code keeps running natively:
   a function's entries into its native code and the work booked while it ran are its own, and its
   instructions are not counted (the summary names such functions); a call from native code into natively
   compiled code is not seen, so the callee's work stays with its caller. Luau's `-O2` (modules compile at
@@ -641,12 +680,43 @@ profile asks for; `profiler::report` writes its files and `ree profile diff` com
   stack that made it and to the stack that made the table.
 - **Marks**: each `Context.ProfilePhase` mark, and the run's end, take the counts so far (the work clock, host time, the
   run thread's cycles, instructions, the VM's work counters, the allocation profile's totals and rehashes, the collector,
-  and the inline caches' outcomes summed by kind: `lua_profilecachetotals`), so a phase's figures are differences of
-  marks. `ree profile try` (docs/cli.md "What-if comparisons") reads its phases this way.
+  the inline caches' outcomes summed by kind and the builtin calls served and declined: `lua_profilecachetotals`), so a
+  phase's figures are differences of marks. `ree profile try` (docs/cli.md "What-if comparisons") reads its phases this
+  way.
+- **What an outcome costs** (profiler/prices.rs), apart by whether the work clock charges it. Charged: a rehash (the keys it
+  moves, the new storage), an import looked up each time, a value another type's own metamethod serves (the engine's price):
+  the VM books what the host's prices charged an instruction with an inline cache past its dispatch to its site, per phase
+  (`lua_ProfileCacheSite.charged`: whatever the clock charged it there, a table's cold first touch in the frame among it),
+  and the report gives it as the site's `charged_work_us`, part of its function's work. Of it, `firsttouch` is the first
+  touch in the frame of the table the instruction reaches (its operand's, the environment's for a global: the cold touch
+  tells the profile, `luaP_coldtouch`), which any change to the instruction still pays (`first_touch_us`; the rest is
+  `outcome_charged_us`), and an insert that rehashed adds to `presized` the storage the rehash grew the table by at the
+  clock's price for storage: what a presized constructor would have charged more in its place (`presized_us`). A
+  declined builtin call is charged too: the VM books to its site what the clock charged it (`lua_ProfileBuiltinSite.charged`:
+  its fast call's dispatch, the instructions from the fast call to its CALL, and the function that CALL reached, a C
+  function's node with its cold first call in the frame or the engine's own Luau, which books to the script's CALL), the
+  report's `decline_charged_us`, and what the fast path would charge the same calls (`fastequivalent`: the fast call's
+  dispatch and the work a builtin's fast path counts, a new string and a number made a string as the call counted them, and
+  the objects and table storage the call allocated and the keys its tables' rehashes moved, which the counters leave to a C
+  function's call: `luaP_uncounted` counts them for the profile), `fast_equivalent_us`: a fix saves the difference. Uncharged: a
+  reprediction, an absent key, an insert into a table with room, `__index` tables walked, an `__index` function's call (its
+  own instructions are charged where they run): no counter sees them, so each is priced at a committed ratio to its base
+  opcode's hit, measured on ree's interpreter (profiler_prices_tests.rs's calibrate_prices, run by hand in sessions at
+  different times, each 7 processes of 21 interleaved rounds, gathered in a sessions file; the median of every process's
+  median, the least and greatest of them the spread), times the work clock's price for the base opcode: `extra_work_us`,
+  work beyond the clock's. A price whose spread reaches zero is within the noise: shown, never summed. No run measures
+  anything.
 - **The collector**: the VM's interrupt runs at each collector step's start and end (steps, cycles, bytes
-  freed, host time by the state a step began in). **The timeline**: `scheduler::step` takes a row a frame.
-  **ree's caches**: counters at each cache (`profiler::caches`, process-wide). **The CPU**: the run thread's
-  cycles (QueryThreadCycleTime: reference cycles), the process's CPU time, page faults, peak memory.
+  freed, host time by the state a step began in). **The timeline**: `scheduler::step` takes a row a frame: the live
+  instances by where they are (in the DataModel's tree, alive outside it, destroyed and kept until the VM collects the
+  userdata that holds them: only that last follows the collector) and the threads the VM made in the frame (the reachable
+  ones are the heap snapshots'); its host time and cycles only in a run no kind slows. **ree's caches**: counters at each
+  cache (`profiler::caches`, process-wide); a member name's atom misses where the VM looks a new string up by its bytes,
+  and the instances a userdata was made for, the modules run and the datatype property reads are the game's facts.
+  **The CPU**: from the run's start (the VM's install), the run thread's cycles (QueryThreadCycleTime: timestamp-counter
+  ticks while it ran) in milliseconds at the counter's rate, by phase from the marks and by frame, the process's CPU
+  time, page faults, the working set and private bytes at the start and their growth; a run a kind slows takes these in a
+  pass of its own (`profiler::cpu_pass`: the command again with `--profile cpu`).
 - **Hardware counters** (`hw`, `profiler::hw`, tools/hw-counters). User mode cannot run `rdpmc`, and a kernel trace
   session needs the system's profiling right, so a service installed once (docs/cli.md "Hardware counters") runs a
   session that records the CPU's counters at every context switch, for the asking process's threads only, and hands
@@ -654,24 +724,63 @@ profile asks for; `profiler::report` writes its files and `ree profile diff` com
   (`hw::protocol`, shared with the service). The run thread's readings make it switch out (`hw::client::Reader`), so
   the slices split exactly at them (`hw::readings::split`: a slice is the window of the first reading whose switch is
   at or after its end, the last such reading's when a switch was not seen). Readings come at the profile's start and
-  end, when the VM is installed, at each frame's start and end, at phase marks, around the engine's own steps and at
-  safepoints once the 1 ms ticker moved; a safepoint's reading books what was counted since the one before to the
-  stack it finds. What ran before the VM and after a phase's last sample gets frames of their own, so the stacks, the
-  phases and the run add up to the same counts. `REE_HW_COUNTERS=mock` takes the thread's cycle time at each reading
-  instead (tests).
-- **Host time** (`time`, luau_profile.rs): a 1 ms ticker, sampled at the VM's calls, returns and loop edges;
-  the engine's own steps (the Animator, joints, physics) get frames of their own.
+  end, when the VM is installed, at each frame's start and end, at phase marks, around the engine's own steps, around
+  the Luau calls the VM samples, and where a Luau thread holding a sampled call resumes or stops (the VM's `preresume`
+  and `postresume` callbacks). The call hook (`lua_setprofilecalls`, patches/luau/17-profile-calls.patch) runs as a
+  sampled call's first instruction is about to run and as it returns or an error unwinds it to a protected call; each
+  call is drawn on its own with a chance of one in `every` (`lua_setprofilecallevery`), and a call inside a sampled
+  call of its own function on the same thread is sampled with it (up to 64 from each recursion's outermost sampled
+  call), so a recursion is read as a whole; a thread an error ends, or one reset, leaves its sampled calls, and a freed
+  one gives them up (each thread's open sampled calls are tracked). The
+  profile sets `every` from the function's mean call (each measured call weighed by the calls it stood for) against a
+  threshold between 20 us and 1 ms that keeps call readings near 10,000 a second (frame, engine-step and thread readings
+  cannot raise it), after reading a function's first 4 calls; under 10 us, none
+  (stopping only under 7.5 us), with one call read for its length after 64, 128, ... 65,536 calls. A stretch between
+  readings goes, as the reading that opened it left things, to the innermost open sampled call of the innermost
+  running thread that holds one (else the engine step, else the profile's own frames), booked to its stack (its
+  callers at their call sites, itself without a line) weighted by its `every`; at its end `every - 1` times its net
+  comes off what it ran in (still, when that call ended first), so each function's own counts are an unbiased estimate
+  and every booking adds up to the run's counts; a line's figures are the calls made from it. Calls read for their
+  length alone, and a function's first calls when its fourth found it too short (decided then), are their callers'. A reading's own
+  counts (the median of back-to-back readings) come out of every stretch between readings, and the run thread and the
+  reader's helper are pinned to one CPU while the service counts. The counters' names, the AMD events they read and
+  the figures derived from them (the share of cycles stalled on loads, a miss's latency) are `hw::counters`, shared
+  with the service and the profile viewer, which also maps the names profiles used before. What ran before the VM and
+  outside the sampled calls gets frames of their own. `REE_HW_COUNTERS=mock` takes the thread's cycle time at each
+  reading instead (tests). When the service reaches its limit of two million slices, ree books only the run up to the
+  last complete reading; `counters.cut_short` gives the host seconds captured, and the summary and the viewer's header
+  mark the profile CUT SHORT. Each reading makes two slices, so 10,000 readings a second allow about 100 s, and fewer
+  with extra frame and thread readings. A thin wrapper between a caller and a heavy callee (such as a `pcall`) can have
+  a noisy self estimate, with the opposite error in its caller; measured, it was up to 11 % of the callee's
+  instructions. Read the callee's own figure for its work.
+- **Host time** (`time`, luau_profile.rs, `profiler::time`): a 1 ms ticker; where it moved, what ran since the last
+  booking is booked to the Luau stack at a safepoint (a call, a return, a loop edge), to the Luau that ran last when the
+  interpreter is left, to the engine's step open when it is entered (`lua_setprofilevm`: the Animator, joints, physics,
+  the recorder's sampling), else to `(ree engine: outside scripts)`, and to an Instance API call on its own line (its C
+  metamethod's entry and return). Each booking point compares the ticker with the tick last booked first (an atomic load
+  each), before any thread-local work. A sample's weight is the run thread's CPU time since the one before (its cycles at
+  the counter's rate, measured at the start), with the wall clock's beside it; the innermost Luau line of a sample inside
+  a copy `-O2` inlined is that function's time too.
 
-Off, a profiler costs a thread-local read where it hooks in (the interpreter: one per entry; a table's rehash: one), a
-thread-local store where the VM allocates table storage, and a bit test where the collector frees an object. A profile's
+Off, a profiler costs a thread-local read where it hooks in (the interpreter: one per entry; a table's rehash: one, and one
+more where C or the host rehashed it; an object or table storage C or the host allocates: one; a table's counted first
+touch in a frame: one; a chunk's load and an error a protected call catches: one), a thread-local store where the VM
+allocates table storage, and a bit test where the collector frees an object. A read costs about a quarter of a
+nanosecond: at most 0.6 % of a loop of the library's allocating calls (string.split passes nine a call), 1.4 % of one
+that does nothing but touch tables first in a frame (docs/engine.md). A profile's
 hooks are written straight into the VM's callbacks, allocating nothing on its heap (a protected call to set them made a
 closure there, and the collector's later cycles then began elsewhere: what a script read of memory moved). The hardware
-counters add no hook of their own: their readings sit behind the frame hook's read, the interrupt a profile
-installs and the engine steps' check of the ticker. On, nothing a
+counters' call hook costs a Luau call nothing while off: `luau_execute` runs a copy of the interpreter that asks only
+while a hook is set, as it runs one for single-stepping, compiled in a translation unit of its own
+(lvmexecute_profiled.cpp, so the copies build side by side; a call from C or a metamethod's fast path loads
+a flag in the global state, a return tests a frame flag it loads anyway; measured, 50 million calls of a table's
+function took the same cycles as with the VM before the hook, +0.0 % the median of 15 interleaved pairs); their other
+readings sit behind the frame hook's read and the engine steps' check. On, nothing a
 script sees changes: the profile allocates nothing on the VM's heap and leaves the VM's counts as they are,
 so the work clock, os.clock and a recording are the same (a sim recorded with every kind on, a frozen clock
 and a pinned epoch is byte for byte the unprofiled recording). Stepping makes the interpreter about five
-times slower (allocation stacks about twice; the timeline and host time sampling a tenth or two).
+times slower (allocation stacks about twice; the timeline a tenth or two; host time sampling about a fifth on a
+loop-heavy run, where every loop edge calls the interrupt).
 
 What the memory figures are, beside Roblox's:
 

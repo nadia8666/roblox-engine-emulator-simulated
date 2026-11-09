@@ -29,7 +29,7 @@ use crate::Engine;
 /// A frame of a stack: (function id as vm::Node::function, line; -1 for C and native frames)
 pub type Frame = (i32, i32);
 
-const MAX_DEPTH: usize = 96;
+pub const MAX_DEPTH: usize = 96;
 
 /// Interned stacks, innermost first
 #[derive(Default)]

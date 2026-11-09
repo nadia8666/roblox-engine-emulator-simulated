@@ -1,4 +1,5 @@
-//! ree's counter service: counts the CPU's hardware events (instructions, cycles, cache and branch misses) for
+//! ree's counter service: counts the CPU's hardware events (instructions, cycles, cycles stalled on loads, the data
+//! cache's misses outstanding, branch mispredictions) for
 //! `ree ... --profile hw`, for the asking process's own threads only (docs/cli.md "Hardware counters").
 //!
 //! A process cannot read the CPU's counters on Windows, and the kernel trace session that can needs the system's
@@ -17,6 +18,9 @@
 #[path = "../../../src/profiler/hw/client.rs"]
 #[allow(dead_code)]
 mod client;
+#[path = "../../../src/profiler/hw/counters.rs"]
+#[allow(dead_code)]
+mod counters;
 #[path = "../../../src/profiler/hw/protocol.rs"]
 #[allow(dead_code)]
 mod protocol;
@@ -99,7 +103,8 @@ fn main() {
                 }
                 println!("at once: {}", etw::max_counters().map_or("?".into(), |max| max.to_string()));
                 let (vendor, family) = register::cpu();
-                println!("this CPU: {vendor} family {family:#x}; ree's cache counters (l1d-accesses, l1d-misses, l2-misses, llc-misses) {}", if register::custom_counters_fit() { "are defined for it" } else { "are defined for AMD Family 1Ah only" });
+                let custom: Vec<&str> = counters::KNOWN.iter().filter(|known| known.custom.is_some()).map(|known| known.name).collect();
+                println!("this CPU: {vendor} family {family:#x}; ree's AMD counters ({}) {}", custom.join(", "), if register::custom_counters_fit() { "are defined for it" } else { "are defined for AMD Family 1Ah only" });
                 0
             }
             Err(error) => {

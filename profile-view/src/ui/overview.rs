@@ -191,6 +191,11 @@ pub fn phase_color(order: &[u32], phase: u32, theme: &Theme) -> Color {
 
 /// A timeline column's unit
 pub fn unit_of(column: &str) -> Unit {
+    match column.strip_prefix("hw:") {
+        Some(crate::hw_counters::LOAD_STALL_SHARE) => return Unit::Share,
+        Some("IPC" | crate::hw_counters::STALL_PER_THOUSAND) => return Unit::Decimal,
+        _ => {}
+    }
     if column.ends_with("_ms") {
         Unit::Ms
     } else if column.contains("bytes") || column == "gc_freed" {
@@ -229,7 +234,8 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
     let has_timeline = p.raw.timeline.is_some();
     // (the profile's reported phases, whatever the metric: the counts are the engine's, not a function's)
     let engine = engine_line(p, &p.scope(), apart, theme);
-    let parts = kit::rows(area, &[4, u16::from(fidelity.is_some()), u16::from(engine.is_some()), if has_timeline { if engine.is_some() { 8 } else { 9 } } else { 0 }, 0]);
+    let warning = p.raw.warnings.first().cloned();
+    let parts = kit::rows(area, &[4, u16::from(fidelity.is_some()), u16::from(warning.is_some()), u16::from(engine.is_some()), if has_timeline { if engine.is_some() { 8 } else { 9 } } else { 0 }, 0]);
     cards(buf, parts[0], p, split.as_ref(), theme);
     if let Some(fidelity) = fidelity {
         let line = Line::from(vec![
@@ -239,14 +245,23 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
         ]);
         Paragraph::new(line).render(parts[1], buf);
     }
-    if let Some(line) = engine {
+    if let Some(warning) = warning {
+        let more = p.raw.warnings.len() - 1;
+        let line = Line::from(vec![
+            Span::styled(" ⚠ ", Style::new().fg(theme.warning).add_modifier(Modifier::BOLD)),
+            Span::styled(fmt::fit(&warning, parts[2].width.saturating_sub(16) as usize), Style::new().fg(theme.ink2)),
+            Span::styled(if more > 0 { format!("  +{more} more") } else { String::new() }, Style::new().fg(theme.muted)),
+        ]);
         Paragraph::new(line).render(parts[2], buf);
     }
+    if let Some(line) = engine {
+        Paragraph::new(line).render(parts[3], buf);
+    }
     if has_timeline {
-        frames(buf, parts[3], app, theme);
+        frames(buf, parts[4], app, theme);
     }
     // the issues and the hottest functions, side by side
-    let (left, right) = kit::split(parts[4], parts[4].width / 2);
+    let (left, right) = kit::split(parts[5], parts[5].width / 2);
     let (found, unchecked) = (&issues.0, &issues.1);
     let inner = kit::draw_panel(buf, left, kit::panel(theme, "Issues", &fmt::grouped(found.len() as f64), true));
     if found.is_empty() {
@@ -388,8 +403,21 @@ fn cards(buf: &mut Buffer, area: Rect, p: &Profile, split: Option<&(f64, f64, Sc
         }
         cards.push(("collector".into(), format!("{} cycles", fmt::grouped(heap.gc.cycles)), dim(format!("{} steps", fmt::grouped(heap.gc.steps))), None));
     }
+    // the CPU's counters: what memory cost the run thread (the share of its cycles stalled on loads, a miss's latency),
+    // then IPC; derived from the run's counts, so a profile from before the stall counters gets what its counts allow
     if let Some(c) = p.raw.counters.as_ref().filter(|c| c.error.is_none()) {
-        if let Some(ipc) = c.run.rates.get("IPC") {
+        let counts: Vec<f64> = c.names.iter().map(|name| c.run.counts.get(name).copied().unwrap_or(0.0)).collect();
+        let figures = c.figures(&counts);
+        let get = |key: &str| figures.iter().find(|figure| figure.key == key).map(|figure| figure.value);
+        if let Some(share) = get(crate::hw_counters::LOAD_STALL_SHARE) {
+            let per = get(crate::hw_counters::STALL_PER_THOUSAND).map_or_else(String::new, |per| format!("{} a 1000 instr", fmt::decimal(per)));
+            cards.push(("stalled on loads".into(), fmt::percent(share), dim(per.clone()), Some((share.clamp(0.0, 1.0), format!("of cycles · {per}"), theme.slot(1)))));
+        }
+        if let Some(latency) = get(crate::hw_counters::MISS_LATENCY) {
+            let overlap = get(crate::hw_counters::MISSES_OUTSTANDING).map_or_else(String::new, |outstanding| format!("{} outstanding a cycle", fmt::decimal(outstanding)));
+            cards.push(("a miss".into(), format!("{latency:.0} cycles"), dim(overlap), None));
+        }
+        if let Some(ipc) = get("IPC").or_else(|| c.run.rates.get("IPC").copied()) {
             cards.push(("IPC".into(), format!("{ipc:.2}"), dim("instructions a cycle".into()), None));
         }
     }

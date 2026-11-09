@@ -18,10 +18,16 @@
 #include "lprofile.h"
 
 #include <string.h>
-#include <type_traits>
 
+// (lvmexecute_profiled.cpp includes this file for the interpreter's copy that samples calls: everything else is
+// defined here only)
+#ifndef LUAU_EXECUTE_PROFILED_UNIT
 LUAU_FASTFLAGVARIABLE(DebugLuauUserDefinedClassesRuntime)
 LUAU_FASTFLAGVARIABLE(LuauPromoteProto)
+#else
+LUAU_FASTFLAG(DebugLuauUserDefinedClassesRuntime)
+LUAU_FASTFLAG(LuauPromoteProto)
+#endif
 LUAU_FASTFLAG(LuauFastpcall)
 LUAU_FASTFLAG(LuauRuntimeFeedback)
 
@@ -162,6 +168,7 @@ LUAU_FASTFLAG(LuauRuntimeFeedback)
 // Does VM support native execution via ExecutionCallbacks? We mostly assume it does but keep the define to make it easy to quantify the cost.
 #define VM_HAS_NATIVE 1
 
+#ifndef LUAU_EXECUTE_PROFILED_UNIT
 LUAU_NOINLINE void luau_callhook(lua_State* L, lua_Hook hook, void* userdata)
 {
     ptrdiff_t base = savestack(L, L->base);
@@ -215,6 +222,7 @@ LUAU_NOINLINE void luau_callhook(lua_State* L, lua_Hook hook, void* userdata)
         L->base = restorestack(L, base);
     }
 }
+#endif
 
 inline bool luau_skipstep(uint8_t op)
 {
@@ -250,7 +258,8 @@ static void luau_addexeccount(Proto* p, double count)
     p->execcount += count < double(space) ? uint32_t(count) : space;
 }
 
-template<bool SingleStep>
+// (ProfileCalls: a host's profile samples calls, lprofile.cpp; without it the CALL paths do not ask)
+template<bool SingleStep, bool ProfileCalls>
 static void luau_execute(lua_State* L)
 {
 #if VM_USE_CGOTO
@@ -288,9 +297,6 @@ static void luau_execute(lua_State* L)
     LUAU_ASSERT(isLua(L->ci));
     LUAU_ASSERT(L->isactive);
     LUAU_ASSERT(!isblack(obj2gco(L))); // we don't use luaC_threadbarrier because active threads never turn black
-
-    // a host's profile follows the stepping interpreter's nesting (lprofile.cpp)
-    typename std::conditional<SingleStep, luaP_Execute, luaP_NoExecute>::type profiled(L);
 
     // (a frame that starts here: luau_execute also continues a frame once a call it made returns, as the yieldable pcall and
     // the fast pcall continue their caller, which is not a call)
@@ -1152,6 +1158,10 @@ reentry:
                         setnilvalue(argi++); // complete missing arguments
                     L->top = p->is_vararg ? argi : ci->top;
 
+                    // a host's profile samples calls here (lprofile.cpp luaP_callenter)
+                    if (ProfileCalls && LUAU_UNLIKELY(L->global->profilecalls))
+                        luaP_callenter(L);
+
                     // reentry
                     // codeentry may point to NATIVECALL instruction when proto is compiled to native code
                     // this will result in execution continuing in native code, and is equivalent to if (p->execdata) but has no additional overhead
@@ -1277,6 +1287,10 @@ reentry:
                         setnilvalue(argi++); // complete missing arguments
                     L->top = p->is_vararg ? argi : ci->top;
 
+                    // a host's profile samples calls here (lprofile.cpp luaP_callenter)
+                    if (ProfileCalls && LUAU_UNLIKELY(L->global->profilecalls))
+                        luaP_callenter(L);
+
                     // reentry
                     // codeentry may point to NATIVECALL instruction when proto is compiled to native code
                     // this will result in execution continuing in native code, and is equivalent to if (p->execdata) but has no additional overhead
@@ -1348,6 +1362,10 @@ reentry:
                 // ci is our callinfo, cip is our parent
                 CallInfo* ci = L->ci;
                 CallInfo* cip = ci - 1;
+
+                // a call a host's profile sampled returns (lprofile.cpp luaP_callleave)
+                if (LUAU_UNLIKELY(ci->flags & LUA_CALLINFO_PROFILECALL))
+                    luaP_callleave(L, ci);
 
                 StkId res = ci->func; // note: we assume CALL always puts func+args and expects results to start at func
 
@@ -4069,13 +4087,34 @@ reentry:
 exit:;
 }
 
+#ifdef LUAU_EXECUTE_PROFILED_UNIT
+void luaP_executeprofiled(lua_State* L)
+{
+    luau_execute<false, true>(L);
+}
+#else
 void luau_execute(lua_State* L)
 {
-    // (a host's profile steps every thread of its VM: lprofile.cpp)
-    if (L->singlestep || (luaP_state && luaP_stepping(L)))
-        luau_execute<true>(L);
+    // A host's profile follows every entry into the interpreter, so it also sees an error that is caught outside it
+    // (luaP_Execute). Under a profile the entry picks one of three copies: the stepping one for a thread the profile
+    // steps, the call-sampling one (compiled apart: lvmexecute_profiled.cpp) while a call hook is set, else the plain one
+    if (LUAU_UNLIKELY(luaP_state != NULL))
+    {
+        luaP_Execute profiled(L);
+        if (L->singlestep || luaP_stepping(L))
+            luau_execute<true, true>(L);
+        else if (L->global->profilecalls)
+            luaP_executeprofiled(L);
+        else
+            luau_execute<false, false>(L);
+        return;
+    }
+
+    // (no profile: the plain copy, or the single-stepping one)
+    if (L->singlestep)
+        luau_execute<true, true>(L);
     else
-        luau_execute<false>(L);
+        luau_execute<false, false>(L);
 }
 
 void luau_finishop(lua_State* L)
@@ -4155,6 +4194,10 @@ int luau_precall(lua_State* L, StkId func, int nresults)
         if (p->exectarget != 0 && p->execdata)
             ci->flags = LUA_CALLINFO_NATIVE;
 #endif
+
+        // a host's profile samples calls here (lprofile.cpp luaP_callenter)
+        if (LUAU_UNLIKELY(L->global->profilecalls))
+            luaP_callenter(L);
 
         return PCRLUA;
     }
@@ -4272,3 +4315,4 @@ void luau_pospcallsuccess(lua_State* L)
     L->base = cip->base;
     L->top = (calleeresults == LUA_MULTRET) ? res : cip->top;
 }
+#endif // LUAU_EXECUTE_PROFILED_UNIT

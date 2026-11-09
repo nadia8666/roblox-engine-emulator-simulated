@@ -5,6 +5,7 @@
 │ startup 2.9% ━━ │ │ harness 27.3% ━ │ │ max 2.000 ms    │ │ scripts 98.0% ━ │ │ 49.0K objects   │ │ unswept 1.4% ━━━ │
 ╰─────────────────╯ ╰─────────────────╯ ╰─────────────────╯ ╰─────────────────╯ ╰─────────────────╯ ╰──────────────────╯
  ◇ work clock  a fixture's numbers, chosen for the tests  ? more
+ ⚠ profile version 1 (this viewer reads 2): its host time is the wall clock's, its caches' outcomes and pr…
  ◇ engine  phase steady  100 cloned · 100 destroyed · 100 into the Workspace · 3,000 writes (2,400 changed: 600 moved a
 ╭ Work a frame  120 frames · mean 0.121 ms · max 2.000 ms at frame 60 ─────────────────────────────────────────────────╮
 │                                                          █                                                           │
@@ -27,7 +28,6 @@
 │   ● warning  Collector spikes: 1 frame, worst 400 steps… │ │                                                         │
 │   ● warning  Frame spikes: 1 frame, worst 2.000 ms (fra… │ │                                                         │
 │   ● warning  Connections keep growing: +99 over the 100… │ │                                                         │
-│                                                          │ │                                                         │
 │                                                          │ │                                                         │
 │                                                          │ │                                                         │
 │                                                          │ │                                                         │

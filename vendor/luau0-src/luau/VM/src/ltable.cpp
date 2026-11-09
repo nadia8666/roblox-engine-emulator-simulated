@@ -728,6 +728,8 @@ static void countstored(lua_State* L, size_t bytes)
 {
     if (luaE_scriptinsn(L))
         L->global->work.stored += bytes;
+    else if (luaP_state)
+        luaP_uncounted(L, 0, bytes, 0); // (a profile prices it as a builtin's fast path would)
 }
 
 static void setarrayvector(lua_State* L, LuaTable* t, int size)
@@ -1008,6 +1010,8 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
         // (the keys this rehash moves: the hash part's and the new one; the array part stays)
         if (luaE_scriptinsn(L))
             L->global->work.rehashed += nh;
+        else if (luaP_state)
+            luaP_uncounted(L, 0, 0, nh); // (a profile prices it as a builtin's fast path would)
         // (the hash part's size before, for a profile's rehash hook)
         int oldnodes = t->node == dummynode ? 0 : sizenode(t);
         resize(L, t, t->sizearray, nh);
@@ -1067,6 +1071,8 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
 
     if (luaE_scriptinsn(L))
         L->global->work.rehashed += totaluse;
+    else if (luaP_state)
+        luaP_uncounted(L, 0, 0, totaluse); // (a profile prices it as a builtin's fast path would)
 
     // (the sizes before, for a profile's rehash hook)
     int oldasize = t->sizearray;

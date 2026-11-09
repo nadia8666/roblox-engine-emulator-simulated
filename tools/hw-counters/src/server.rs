@@ -6,6 +6,7 @@
 //! 30 minutes.
 
 use std::{
+    collections::HashSet,
     ffi::c_void,
     sync::{
         Mutex,
@@ -45,6 +46,7 @@ pub fn run(allowed: &Sid, pipe_name: &str, session: &str, stop: ffi::Handle, idl
     let server = Sid::of_process(unsafe { ffi::GetCurrentProcess() })?;
     let stop = Stop(stop);
     let active = AtomicUsize::new(0);
+    let connected = Mutex::new(HashSet::new());
     let last_client = Mutex::new(Instant::now());
     let idled_out = || idle.is_some_and(|idle| active.load(Ordering::SeqCst) == 0 && last_client.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).elapsed() >= idle);
     // (a scope: the service stops only once every client's thread has ended, and with it the trace session)
@@ -85,11 +87,11 @@ pub fn run(allowed: &Sid, pipe_name: &str, session: &str, stop: ffi::Handle, idl
                 }
             }
             active.fetch_add(1, Ordering::SeqCst);
-            let (counting, active, last_client) = (&counting, &active, &last_client);
+            let (counting, active, last_client, connected) = (&counting, &active, &last_client, &connected);
             scope.spawn(move || {
                 // (the wrapper whole: a closure would otherwise take just its raw handle, which may not move threads)
                 let stop = stop;
-                match serve(&pipe, allowed, counting, stop.0) {
+                match serve(&pipe, allowed, counting, connected, stop.0) {
                     Ok(summary) => log(&summary),
                     Err(error) => log(&format!("a client: {error}")),
                 }
@@ -251,14 +253,41 @@ fn client_process(pipe: &Owned, allowed: &Sid) -> Result<u32, String> {
     Ok(process)
 }
 
+/// The processes connected, one connection each: a process that opened every pipe instance would keep every other
+/// client out
+struct Connected<'a> {
+    processes: &'a Mutex<HashSet<u32>>,
+    process: u32,
+}
+
+impl Connected<'_> {
+    /// `process`'s connection, unless it has one already (the guard made only for a new one, after the lock is let go:
+    /// one made and dropped for a refused claim would take the first connection's place away)
+    fn claim(processes: &Mutex<HashSet<u32>>, process: u32) -> Option<Connected<'_>> {
+        let claimed = processes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(process);
+        claimed.then(|| Connected { processes, process })
+    }
+}
+
+impl Drop for Connected<'_> {
+    fn drop(&mut self) {
+        self.processes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&self.process);
+    }
+}
+
 /// One client: its request, its counting, its results; a summary line for the log
-fn serve(pipe: &Owned, allowed: &Sid, counting: &Counting, stop: ffi::Handle) -> Result<String, String> {
+fn serve(pipe: &Owned, allowed: &Sid, counting: &Counting, connected: &Mutex<HashSet<u32>>, stop: ffi::Handle) -> Result<String, String> {
     let process = match client_process(pipe, allowed) {
         Ok(process) => process,
         Err(error) => {
             let _ = reply(pipe, stop, &Reply::Error(format!("the counter service refused the client: {error}")));
             return Err(error);
         }
+    };
+    let Some(_connection) = Connected::claim(connected, process) else {
+        let error = format!("process {process} already has a connection to the counter service");
+        let _ = reply(pipe, stop, &Reply::Error(error.clone()));
+        return Err(error);
     };
     let mut reader = Reader { pipe, stop, deadline: Instant::now() + REQUEST_TIMEOUT };
     let (kind, body) = protocol::read_message(&mut reader, protocol::MAX_REQUEST_BYTES)?;
@@ -463,6 +492,19 @@ mod tests {
         assert_eq!(admit(&session, &names(&["ReeL1dMisses"])), Ok(vec![2]));
         let refused = admit(&names(&["InstructionRetired", "TotalCycles"]), &names(&["InstructionRetired", "BranchMispredictions"])).unwrap_err();
         assert!(refused.starts_with("busy: the counter service counts InstructionRetired, TotalCycles for another client, and not BranchMispredictions"), "{refused}");
+    }
+
+    /// A process holds one connection at a time: a second is refused while the first is open, allowed once it closed
+    #[test]
+    fn a_process_holds_one_connection_at_a_time() {
+        let connected = Mutex::new(HashSet::new());
+        let first = Connected::claim(&connected, 42);
+        assert!(first.is_some());
+        assert!(Connected::claim(&connected, 42).is_none(), "a second connection of the same process");
+        assert!(connected.lock().unwrap().contains(&42), "and the first keeps its place");
+        assert!(Connected::claim(&connected, 43).is_some(), "another process's");
+        drop(first);
+        assert!(Connected::claim(&connected, 42).is_some(), "once the first closed");
     }
 
     /// The counts a client gets are in its counters' order, the rest zero

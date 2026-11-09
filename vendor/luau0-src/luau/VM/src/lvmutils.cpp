@@ -3,6 +3,7 @@
 #include "lclass.h"
 #include "lfunc.h"
 #include "lvm.h"
+#include "lprofile.h"
 
 #include "lstate.h"
 #include "lstring.h"
@@ -93,6 +94,10 @@ static LUAU_FORCEINLINE void callTMluau(lua_State* L, StkId top, Closure* ccl, i
 
     if (p->exectarget != 0 && p->execdata)
         ci->flags |= LUA_CALLINFO_NATIVE;
+
+    // a host's profile samples calls here (lprofile.cpp luaP_callenter)
+    if (LUAU_UNLIKELY(L->global->profilecalls))
+        luaP_callenter(L);
 
     luau_execute(L);
 

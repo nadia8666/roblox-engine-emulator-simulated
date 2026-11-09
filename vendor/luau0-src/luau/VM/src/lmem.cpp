@@ -660,7 +660,12 @@ static LUAU_FORCEINLINE void freegcoblock(lua_State* L, int sizeClass, void* blo
 static void countallocated(lua_State* L, size_t nsize)
 {
     if (!luaE_scriptinsn(L))
+    {
+        // (a profile prices it as a builtin's fast path, which counts its allocations, would)
+        if (luaP_state)
+            luaP_uncounted(L, 1, 0, 0);
         return;
+    }
     L->global->work.allocated += nsize;
     L->global->work.objects++;
 }

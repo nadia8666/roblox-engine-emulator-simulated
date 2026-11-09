@@ -85,6 +85,9 @@ pub struct Watch {
     stop_after: u32,
     /// Script timeouts so far
     timeouts: AtomicU32,
+    /// Those of them host time fired alone ([`HOST_BACKSTOP`]: the work clock had not reached the limit), which a profile that
+    /// slows the run makes likelier: its passes are compared by them
+    host_timeouts: AtomicU32,
     /// The run stops: `stop_after` timeouts happened ([`ScriptTimeout::stopped`])
     stopped: AtomicBool,
     /// Where the last of them ran
@@ -167,6 +170,7 @@ impl ScriptTimeout {
             limit,
             stop_after,
             timeouts: AtomicU32::new(0),
+            host_timeouts: AtomicU32::new(0),
             stopped: AtomicBool::new(false),
             last: Mutex::new(String::new()),
         });
@@ -207,6 +211,11 @@ impl ScriptTimeout {
     /// Script timeouts so far
     pub fn timeouts(&self) -> u32 {
         self.0.timeouts.load(Ordering::Relaxed)
+    }
+
+    /// Those of them host time fired alone, past [`HOST_BACKSTOP`] times the limit with the work clock short of it
+    pub fn host_timeouts(&self) -> u32 {
+        self.0.host_timeouts.load(Ordering::Relaxed)
     }
 
     /// Why the run must stop, once `stop_after` script timeouts happened: every script safepoint raises from then on, and the
@@ -365,12 +374,14 @@ pub unsafe fn check(state: *mut lua_State) {
         TIMING.with(|cell| cell.set(Timing { serial: watch.serial, epoch: due, work: work(state), host: Some(Instant::now()), raised: false }));
         return;
     }
+    let mut by_host = false;
     if !timing.raised {
         let over_work = work(state) - timing.work >= watch.limit;
         let over_host = timing.host.is_some_and(|host| host.elapsed().as_secs_f64() >= watch.limit * HOST_BACKSTOP);
         if !(over_work || over_host) {
             return;
         }
+        by_host = !over_work;
     }
     // due (or raised already and still running: a pcall caught it): raised at the first safepoint in a script's own code
     EAGER.with(|eager| eager.set(true));
@@ -380,6 +391,9 @@ pub unsafe fn check(state: *mut lua_State) {
     if !timing.raised {
         TIMING.with(|cell| cell.set(Timing { raised: true, ..timing }));
         let count = watch.timeouts.fetch_add(1, Ordering::Relaxed) + 1;
+        if by_host {
+            watch.host_timeouts.fetch_add(1, Ordering::Relaxed);
+        }
         let place = script_stack(state);
         crate::output::diagnostic(&format!("ree: script timeout {count} at {place}"));
         if watch.stop_after > 0 && count >= watch.stop_after {

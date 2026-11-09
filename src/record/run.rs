@@ -58,7 +58,6 @@ pub struct RecordArgs {
     pub harness: String,
     /// The output directory (`record`; `run` writes nothing)
     pub out: Option<PathBuf>,
-    pub output_log: Option<PathBuf>,
     pub seconds: f64,
     pub fps: f64,
     pub context: Option<Json>,
@@ -135,6 +134,17 @@ pub fn cli(args: &[String], host: &Host, record: bool) -> i32 {
             return 2;
         }
     };
+    // (the CPU figures, host time a frame and cycles of a run a kind slows are not the run's: a pass of their own, first)
+    let suite = suite.map(|mut config| {
+        if config.kinds.has(crate::profiler::Kinds::CPU) && config.kinds.slows_the_run() {
+            let folder = config.out.join("cpu-pass");
+            match crate::profiler::cpu_pass(&args, command, &folder) {
+                Ok(()) => config.cpu_pass = Some(folder),
+                Err(error) => eprintln!("{} {command}: the cpu pass: {error}", host.name),
+            }
+        }
+        config
+    });
     if suite.is_none() {
         if crate::profiler::phases_requested(&args) {
             crate::timing::begin(std::time::Instant::now());
@@ -159,6 +169,8 @@ pub fn cli(args: &[String], host: &Host, record: bool) -> i32 {
         if let Ok(done) = &result {
             profiled_run.status = done.summary["status"].as_str().unwrap_or("?").to_string();
             profiled_run.frames = done.summary["frames"].as_u64().unwrap_or(0);
+            profiled_run.script_timeouts = done.summary["script_timeouts"].as_u64().unwrap_or(0);
+            profiled_run.host_backstop_timeouts = done.summary["host_backstop_timeouts"].as_u64().unwrap_or(0);
             if let Some(frames) = done.summary["frames"].as_u64().filter(|_| profiled_run.fps > 0.0) {
                 profiled_run.seconds = profiled_run.seconds.min(frames.saturating_sub(1) as f64 / profiled_run.fps).max(0.0);
             }
@@ -240,7 +252,6 @@ pub fn parse(args: &[String], record: bool) -> Result<RecordArgs, String> {
     let value = |key: &str| args.iter().position(|a| a == key).and_then(|i| args.get(i + 1)).cloned();
     let harness = value("--harness").ok_or("--harness <file.luau> is required")?;
     let out = value("--dir").or_else(|| value("--out")).or_else(|| value("--dump-scene")).map(PathBuf::from);
-    let output_log = value("--output-log").map(PathBuf::from);
     if record && out.is_none() {
         return Err("--out <dir> is required".into());
     }
@@ -283,7 +294,7 @@ pub fn parse(args: &[String], record: bool) -> Result<RecordArgs, String> {
         .transpose()?;
     let script_timeouts = value("--max-script-timeouts").map(|text| text.parse::<u32>().map_err(|_| "--max-script-timeouts: not a count")).transpose()?;
     let timing_check = record && (args.iter().any(|arg| arg == "--timing-check") || std::env::var("REE_TIMING_CHECK").as_deref() == Ok("1"));
-    Ok(RecordArgs { engine, harness, out, output_log, seconds, fps, context, model_assets, animations, frame_times, script_timeout, script_timeouts, timing_check, clock_moved: false })
+    Ok(RecordArgs { engine, harness, out, seconds, fps, context, model_assets, animations, frame_times, script_timeout, script_timeouts, timing_check, clock_moved: false })
 }
 
 /// What a command produced: the summary (printed on stdout) and its status line (stderr).
@@ -344,9 +355,6 @@ pub fn execute(args: &RecordArgs, host: &Host, record: bool) -> Result<(Done, Em
 /// ([`Recorder::write`]).
 pub(crate) fn execute_with(args: &RecordArgs, host: &Host, record: bool, spool: bool) -> Result<(Done, Emulator), String> {
     let (emulator, history) = start(args, host, false)?;
-    if let Some(path) = &args.output_log {
-        emulator.engine.state.borrow_mut().output.set_log(path)?;
-    }
     if spool {
         let mut state = emulator.engine.state.borrow_mut();
         if record {
@@ -355,7 +363,12 @@ pub(crate) fn execute_with(args: &RecordArgs, host: &Host, record: bool, spool: 
             state.output.spool();
         }
     }
-    let done = if record { record_in(&emulator, args, host)? } else { run_in(&emulator, args, host)? };
+    let mut done = if record { record_in(&emulator, args, host)? } else { run_in(&emulator, args, host)? };
+    // (the script timeouts the run had, and those host time fired alone: a profile's two passes are compared by them)
+    if let Some(timeout) = emulator.engine.state.borrow().sched.timeout.as_ref().filter(|timeout| timeout.timeouts() > 0) {
+        done.summary["script_timeouts"] = json!(timeout.timeouts());
+        done.summary["host_backstop_timeouts"] = json!(timeout.host_timeouts());
+    }
     finished(&emulator, &history);
     // (a profile reads the VM while it still runs)
     crate::profiler::collect(&emulator.lua);
@@ -503,9 +516,6 @@ pub(crate) fn run_done(emulator: &Emulator, args: &RecordArgs, host: &Host, ran:
         // (none are kept beside a spool: `output` is empty)
         errors += spool.errors();
         lines += spool.lines();
-    }
-    if let Some(error) = state.output.log_error() {
-        return Err(format!("output log: {error}"));
     }
     let line = format!("{}: run {}; {} frames; {lines} output lines; {errors} errors; {:.2}s", host.name, ran.status, ran.frames + 1, started.elapsed().as_secs_f64());
     let mut summary = json!({
@@ -827,7 +837,7 @@ pub(crate) fn finish_run(lua: &Lua, engine: &Rc<Engine>, args: &RecordArgs, reco
         }
         scheduler::flush_deferred(lua, engine).map_err(lua_error)?;
         if let Some(recorder) = recorder {
-            recorder.sample(engine, 0);
+            crate::timing::time("recorder: first walk", || crate::luau_profile::engine_step("recorder", || recorder.sample(engine, 0)));
         }
     }
     starting.stop();
@@ -934,7 +944,7 @@ fn step_frames(lua: &Lua, engine: &Rc<Engine>, args: &RecordArgs, recorder: Opti
             return Ok(false);
         }
         if let Some(recorder) = recorder {
-            crate::timing::time("frames: sample", || recorder.sample(engine, frame));
+            crate::timing::time("frames: sample", || crate::luau_profile::engine_step("recorder", || recorder.sample(engine, frame)));
         }
         steps.stepped = frame;
     }

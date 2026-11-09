@@ -25,6 +25,10 @@ pub enum Unit {
     Ms,
     Count,
     Bytes,
+    /// A part of a whole, 0 to 1, shown as a percentage (the share of cycles stalled on loads)
+    Share,
+    /// A ratio with its decimals (IPC, cycles per thousand instructions)
+    Decimal,
 }
 
 impl Metric {
@@ -95,6 +99,20 @@ impl Metric {
         }
     }
 
+    /// What the metric is, one line, for this profile: a hardware counter's own words (what it counts, and how its
+    /// counts reached functions and lines)
+    pub fn describe(self, p: &Profile) -> String {
+        let Metric::Counter(index) = self else { return self.about().to_string() };
+        let Some(counters) = p.raw.counters.as_ref() else { return self.about().to_string() };
+        let what = counters.about_of(index as usize).unwrap_or_else(|| "a CPU counter".into());
+        let how = if counters.by_calls() {
+            "on the run thread, read around sampled Luau calls (a function's own, estimated where one call in several was read, a short one a little high; an estimate below zero is not listed here, summary.txt lists it; a line shows what the calls made from it cost); varies run to run"
+        } else {
+            "on the run thread, booked to the stack of the 1 ms sample after it; varies run to run"
+        };
+        format!("{what}; {how}")
+    }
+
     /// The name `--metric` takes
     pub fn cli_name(self, p: &Profile) -> String {
         match self {
@@ -124,7 +142,8 @@ impl Metric {
         if named.is_some() {
             return named;
         }
-        let counter = name.strip_prefix("hw:").unwrap_or(&name);
+        // (an old counter name is its name now: hw_counters::OLD_NAMES)
+        let counter = crate::hw_counters::canonical(name.strip_prefix("hw:").unwrap_or(&name));
         p.raw.counters.as_ref()?.names.iter().position(|n| n.eq_ignore_ascii_case(counter)).map(|index| Metric::Counter(index as u8))
     }
 
@@ -179,7 +198,7 @@ impl Metric {
             Metric::Insns => p.raw.work.as_ref().map(|w| w.script_insns + w.engine_insns).filter(|t| *t > 0.0).unwrap_or_else(|| p.funcs.iter().map(|f| f.own.insns).sum()),
             Metric::AllocBytes => p.raw.alloc.as_ref().map_or(0.0, |a| a.bytes),
             Metric::AllocCount => p.raw.alloc.as_ref().map_or(0.0, |a| a.objects),
-            Metric::CacheMisses => p.raw.luau_caches.as_ref().map_or(0.0, |c| c.by_kind.iter().map(|k| k.misses + k.slow).sum()),
+            Metric::CacheMisses => p.raw.luau_caches.as_ref().map_or(0.0, |c| c.by_kind.iter().map(|k| k.lookups() - k.hit_count()).sum()),
             Metric::Counter(index) => p.raw.counters.as_ref().and_then(|c| c.names.get(index as usize).and_then(|name| c.run.counts.get(name))).copied().unwrap_or(0.0),
         }
     }

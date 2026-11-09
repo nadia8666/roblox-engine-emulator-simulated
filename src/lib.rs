@@ -60,6 +60,10 @@ mod server_tests;
 mod luau_profile_tests;
 #[cfg(test)]
 mod profiler_tests;
+#[cfg(test)]
+mod profiler_prices_tests;
+#[cfg(test)]
+mod profiler_vm_tests;
 
 use std::{
     any::Any,
@@ -126,10 +130,6 @@ pub struct Options {
     /// The places whose clients pay more than ree's default prices (a Text write's localization lookup, a match place's
     /// geometry writes): cost.rs's list, plus `REE_LOCALIZED_PLACES` / `REE_MATCH_PLACES` on a command line (launch.rs)
     pub place_prices: cost::PlacePrices,
-    /// `--loopback` (a client run): one VM plays both sides. The server-only services load beside the client's, a client's
-    /// FireServer reaches OnServerEvent (the local player in front), FireClient / FireAllClients reach OnClientEvent, Invoke*
-    /// call the other side's callback, and the local player fires PlayerAdded / PlayerRemoving like any joining player
-    pub loopback: bool,
     /// A sub-frame timing check's second run (`ree record --timing-check`, record/run.rs): the in-frame clock moves, on twice
     /// the modelled work and never frozen (a frozen run's wall clock stays pinned), so a recording that changes with it hinges
     /// on when within a frame a script reads os.clock
@@ -163,7 +163,6 @@ impl Default for Options {
             repo: default_repo(),
             project: None,
             place_prices: cost::PlacePrices::default(),
-            loopback: false,
             clock_moved: false,
         }
     }
@@ -176,11 +175,6 @@ impl Options {
 
     pub fn server(&self) -> bool {
         self.run_context == RunContext::Server
-    }
-
-    /// Whether the server-only services are installed: a server's, or a loopback client's
-    pub fn server_services(&self) -> bool {
-        self.server() || self.loopback
     }
 
     /// The file content `uri` names on disk, by ror's rules (its ror-assets uri.rs): `file://<path>`

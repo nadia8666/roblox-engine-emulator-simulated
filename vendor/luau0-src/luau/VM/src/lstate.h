@@ -79,6 +79,7 @@ typedef struct CallInfo
 #define LUA_CALLINFO_HANDLE (1 << 1) // should the error thrown during execution get handled by continuation from this callinfo? func must be C
 #define LUA_CALLINFO_NATIVE (1 << 2) // should this function be executed using execution callback for native code
 #define LUA_CALLINFO_OPYIELD (1 << 3) // call frame has yielded on a non-call opcode and requires luau_finishop
+#define LUA_CALLINFO_PROFILECALL (1 << 8) // a host's profile sampled this call: its return calls the profile's call hook (lprofile.cpp)
 #define LUA_CALLINFO_PCALL (1 << 4)   // call frame was setup by a synthetic protected call and requires luau_pospcallsuccess
 
 #define TAGGED_PAGESET_BASE (LUA_TSTRING)
@@ -217,6 +218,7 @@ typedef struct global_State
     uint8_t gcstate; // state of garbage collector
     uint8_t gcdisabled;
     uint8_t coldon; // cold touches are tracked (lua_coldtracking; in the padding before gray: the state keeps its size)
+    uint8_t profilecalls; // a profile's call hook is set (lua_setprofilecalls; in the same padding)
 
     GCObject* gray;      // list of gray objects
     GCObject* grayagain; // list of objects to be traversed atomically

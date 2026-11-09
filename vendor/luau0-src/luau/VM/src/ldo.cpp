@@ -58,6 +58,8 @@ int luaD_rawrunprotected(lua_State* L, Pfunc f, void* ud)
 
     if (LUAU_SETJMP(jb.buf) == 0)
         f(L, ud);
+    else if (luaP_state)
+        luaP_unwound(L, &jb);
 
     L->global->errorjmp = jb.prev;
     return jb.status;
@@ -141,9 +143,15 @@ int luaD_rawrunprotected(lua_State* L, Pfunc f, void* ud)
         LUAU_ASSERT(e.getThread() == L);
 
         status = e.getStatus();
+        // (the interpreter's entries the error unwound: a profile's nesting of them)
+        if (luaP_state)
+            luaP_unwound(L, &status);
     }
     catch (std::exception& e)
     {
+        // (the interpreter's entries the exception unwound, as for a Luau error)
+        if (luaP_state)
+            luaP_unwound(L, &status);
         // Luau will never throw this, but this can catch exceptions that escape from C++ implementations of external functions
         try
         {
@@ -723,6 +731,10 @@ static void resume_handle(lua_State* L, void* ud)
     // restore nCcalls to base for the continuation
     L->nCcalls = L->baseCcalls;
 
+    // (a profile's sampled calls the error unwound leave: lprofile.cpp)
+    if (LUAU_UNLIKELY(L->global->profilecalls))
+        luaP_callsunwound(L, ci);
+
     // restore the stack frame to the frame with continuation
     L->ci = ci;
 
@@ -847,6 +859,10 @@ int lua_resume(lua_State* L, lua_State* from, int nargs)
 
     int result = resume_finish(L, status, oldnCcalls);
 
+    // (an error ended the thread: its sampled calls leave, lprofile.cpp)
+    if (LUAU_UNLIKELY(L->global->profilecalls) && result >= LUA_ERRRUN && result <= LUA_ERRERR)
+        luaP_callsunwound(L, L->base_ci);
+
     if (LUAU_UNLIKELY(!!L->global->cb.postresume))
         L->global->cb.postresume(L);
 
@@ -872,6 +888,10 @@ int lua_resumeerror(lua_State* L, lua_State* from)
     }
 
     int result = resume_finish(L, status, oldnCcalls);
+
+    // (an error ended the thread: its sampled calls leave, lprofile.cpp)
+    if (LUAU_UNLIKELY(L->global->profilecalls) && result >= LUA_ERRRUN && result <= LUA_ERRERR)
+        luaP_callsunwound(L, L->base_ci);
 
     if (LUAU_UNLIKELY(!!L->global->cb.postresume))
         L->global->cb.postresume(L);
@@ -962,6 +982,9 @@ int luaD_pcall(lua_State* L, Pfunc func, void* u, ptrdiff_t old_top, ptrdiff_t e
         StkId oldtop = restorestack(L, old_top);
         luaF_close(L, oldtop); // close eventual pending closures
         luaD_seterrorobj(L, errstatus, oldtop);
+        // (a profile's sampled calls the error unwound leave: lprofile.cpp)
+        if (LUAU_UNLIKELY(L->global->profilecalls))
+            luaP_callsunwound(L, restoreci(L, old_ci));
         L->ci = restoreci(L, old_ci);
         L->base = L->ci->base;
         restore_stack_limit(L);

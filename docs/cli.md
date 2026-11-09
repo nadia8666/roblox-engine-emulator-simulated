@@ -11,7 +11,7 @@ ree record --harness path/to/Harness.luau --out out/scene --roots "game/shared;g
     [--animations <dir>]                             # pre-fetched KeyframeSequences, <id>.rbxm
     [--timing-check]                                 # record again with the in-frame clock moved (What a recording holds)
 ror video out/scene/scene.rbxm --playback out/scene/playback.json --duration 3
-ree run --harness path/to/Probe.luau --seconds 1 --output-log out/run.jsonl
+ree run --harness path/to/Probe.luau --seconds 1     # no recording: the status and every output line as JSON
 ree run --harness path/to/Server.luau --run-context server --seconds 60   # a Play-mode server; `@done` ends it early
 ree record --service ...                             # the same, run by the warm service (started when missing)
 ree record ... --profile                             # where the time went, on stderr
@@ -79,10 +79,6 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   render step per frame, `Stepped` fires; `--mode edit` runs the edit-mode clock). A script that prints a
   line that is exactly `@done` ends the run at the end of that frame: the summary's `frames` are the
   frames that ran, and it says `"done": true`.
-
-## Output logs
-
-- ree run --output-log <file.jsonl> writes each script output entry as one JSON object per line as soon as it is emitted. The file remains available if the run hangs or is stopped. The final JSON summary on stdout is unchanged.
 
 ## Run context
 
@@ -245,17 +241,58 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
     what the work clock charges (the instruction's own cost, the engine calls it makes, what it allocates)
     is booked to the instruction that caused it. Per function and per line, self and total: instructions,
     work in milliseconds of Studio time, calls, by opcode; callers and callees; the hottest functions'
-    source annotated. Exact, and the same every run of the same code. ree compiles modules at `-O2`, which
+    source annotated. Exact, and the same every run of the same code. A C function a call reaches is a
+    function of its own at that call site (`table.sort`, `string.byte`, `Instance:GetAttribute`: named by
+    where the globals hold it, or by the method a method call looked up), with its calls and what was charged
+    between the call and its return, whether or not it calls Luau; a Luau function a C function calls (a sort's
+    comparison function) counts a call each time it is entered. ree compiles modules at `-O2`, which
     inlines small local functions into their callers: such a function has no frame of its own there, so its
     calls are counted where its inlined copies run, listed under "inlined functions" (docs/engine.md
     "Profiling").
-  - `caches`: Luau's inline caches per call site (a table key's or a global's predicted slot, a method's
-    slot, a resolved import, a builtin's fast path: hit, miss, slow path) and ree's own caches (member
-    atoms and dispatch, datatype values, Instance userdata, require results, module bytecode, spatial
-    query solids, bundle plans), with hits, misses and evictions. These are software caches, counted
-    exactly by the patched VM: before each instruction with an inline cache runs, it makes the check the
-    interpreter is about to make (patches/luau/12-profiling.patch). They are not the CPU's caches, and no
-    CPU counter is involved: the CPU's cache misses are the `hw` kind's (Hardware counters, below).
+  - `caches`: what each of Luau's inline caches did per call site, as the interpreter did it: the cached slot
+    served it (hit), the key was at another slot (repredicted), the key is absent (a full lookup for nil), a
+    new key was inserted (and whether the table rehashed to fit it), metatables were walked (how many, a table
+    or a function at the end), the environment is unsafe, or the value is not a table (and which type's
+    metamethod served it). The VM keeps a site's counts for each phase it ran in, and the tables cover the reported
+    phases (`--profile-phase`). What the outcomes cost is apart by whether the work clock charges them
+    (`luau_caches.prices.kinds`, each outcome `charged` or not). Charged (a rehash's keys and storage, an import looked up
+    each time, an Instance member's engine price) is the clock's own charge at the site, as the VM booked it
+    (`charged_work_us`, which holds whatever else the clock charged the instruction past its dispatch, a table's cold first
+    touch in the frame among it): part of its function's work, never added to it. It splits exactly into `first_touch_us`,
+    the first touch in a frame of the table the site reaches (its operand's, the environment's for a global), which any change
+    to the site still pays, and `outcome_charged_us`, the rest. At a site whose inserts rehashed, `presized_us` is what
+    allocating those tables' storage at the size each rehash made, up front, would have charged beyond the storage they were
+    built with (a presized constructor's or `table.create`'s cost in their place, at the clock's price for storage), so
+    `outcome_charged_us - presized_us` is what building them presized saves (each with a `_per_frame` figure, and summed by
+    kind). A site that did more than hit (a charge, another outcome) lists its records apart by the call-tree node it ran in
+    too (`nodes`: each with `node`, its index in `tree`, its outcomes and the same figures, which add up exactly to the
+    site's; the per-frame ones are those over `luau_caches.frames`), so a function called from two places, a comparator under
+    `table.sort` and from a loop, has its charge in each; a site that only hit has none. Uncharged (a reprediction, an absent key, an insert
+    into a table with room, a metatable walk, an `__index` function's call) is priced at committed prices
+    (profiler/prices.rs, the same in every profile): a ratio measured on ree's interpreter (a module's safe environment,
+    values passed as arguments, interleaved rounds, in several processes in each of several sessions at different times:
+    the median of every process's median, the least and greatest of them the spread; the CPU, the sessions and their dates
+    are its provenance) times the work clock's price for the base opcode (a global read's, a keyed read's for a table key and
+    a method's lookup). A site's `extra_work_us` is those, work beyond the clock's; a price whose spread reaches zero (the
+    outcome might cost nothing over a hit) is within the noise, shown and left out of every sum (`within_noise` counts the
+    outcomes). The builtin calls the compiler made fast calls of (`builtins`): per builtin, the
+    calls its fast path served and the ones it declined, by reason (the argument count, a type, the results asked for, a
+    collector step owed, an unsafe environment, values out of its range), with what the work clock charged the declines
+    (`decline_charged_us`, and each site's: what the VM booked for a declined call, its fast call's dispatch, its fallback's
+    instructions and the function their CALL reached, a C function's work with its cold first call in the frame or the
+    engine's own Luau, as Vector3.new's constructor; part of the function's work), what the fast path would charge the same
+    calls (`fast_equivalent_us`: its dispatch and the builtin's own counted work there, a new string's interning, the
+    objects and table storage it allocates and the keys its tables' rehashes move, which a fix still pays, so
+    `decline_charged_us - fast_equivalent_us` is what it saves), a site that declined apart by call-tree node (`nodes`, adding up exactly to it), and advice where an equivalent
+    call takes the fast path. ree's own tool code (`rur.record`, a harness
+    one of ree's tools ran) is counted apart (`luau_caches.tool`, `builtins_tool`), out of the tables and the advice, and
+    out of the marks' cache totals. ree's own caches (member atoms and dispatch, datatype values, Instance userdata, require results,
+    module bytecode, spatial query solids, bundle plans: hits, misses and evictions) are listed under
+    `emulator`: they say how fast ree runs, not what the game costs; what three of them say of the game is
+    listed as its facts (`game`: the instances its scripts touched, the modules that ran, the datatype property
+    reads). These are software caches, counted exactly by the patched VM (patches/luau/12-profiling.patch).
+    They are not the CPU's caches, and no CPU counter is involved: the CPU's cache misses are the `hw` kind's
+    (Hardware counters, below).
   - `alloc`: bytes and counts allocated, by type (table, its storage, function, string, userdata by
     Instance class or datatype, thread and its stack, buffer, function prototypes) and by the Luau stack
     that allocated them. Every allocation is counted by type; stacks are taken for every allocation unless
@@ -274,20 +311,54 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
     parts apart), their array and hash parts as distributions (slots, those holding a value, least, median, greatest, a
     power-of-two histogram), how many levels of tables each is with the tables it holds, and the rehashes that grew them;
     the summary lists the biggest sites. And the collector's work (steps, cycles, bytes freed, host time).
-  - `timeline`: a row a frame: work, host time, instructions, the heap, allocations, the collector,
-    live instances, connections and threads.
-  - `cpu`: the run thread's CPU cycles, the process's CPU time, page faults and peak memory. Nothing is
-    estimated. The CPU's hardware counters are `hw`'s.
+  - `timeline`: a row a frame: work, host time and the run thread's cycles, instructions, the heap,
+    allocations, the collector, the live instances in the DataModel, alive outside it and destroyed (kept until
+    the VM collects them), connections and the threads made. A kind that slows the run (stepping, the
+    allocation and heap hooks, host time, the boundary) leaves the frame's host time and cycles out: `cpu` takes
+    them in a pass of its own.
+  - `cpu`: from the run's start (its VM's) to the profile's end: the run thread's CPU time (its cycles at the
+    timestamp counter's rate) by phase and by frame, the process's CPU time and page faults, the working set
+    and private bytes at the run's start and their growth, the most working set a frame's end saw. Nothing is
+    estimated. Asked with a kind that slows the run (`all` is), the command runs again first, as a process of
+    its own with `cpu` alone, into `<profile>/cpu-pass`, which keeps only its `profile.json` (its recording, if any, and
+    its own report go): the CPU figures and the timeline's host time a frame come from there. Each run records its script
+    timeouts and those host time fired alone (the timeout's host-time backstop, which the profiling's slowdown makes
+    likelier); when the pass went another way (other timeouts, frames or status), the summary and `cpu.pass_differs` say
+    so. `ree profile try`'s profiled runs leave `cpu` out (its timed runs take host time and cycles). The CPU's hardware
+    counters are `hw`'s.
   - `hw`: the CPU's hardware counters on the run thread ("Hardware counters" below): instructions, cycles
-    and IPC, the L1 data cache's misses, the L2's and the last-level cache's, branch mispredictions and
-    their rates; for the run, each thread, each phase and frame, and each Luau function and line.
-  - `phases`: the wall-time phases of plain `--profile`.
-  - `time`: host time sampled every millisecond at the VM's calls, returns and loop edges (a line's time
-    lands on its next safepoint). `boundary`: the boundary profiler, its report in the summary and its data
-    in `boundary.json` in the profile's folder.
+    and IPC, the cycles stalled waiting for load data, the L1 data cache's misses outstanding and how long they
+    took, branch mispredictions; for the run, each thread, each phase and frame, and each Luau function,
+    calling context and call site, from readings around sampled calls.
+  - `phases`: the wall-time phases of plain `--profile`, as a tree: a phase timed inside another is its child
+    (the recorder's first walk inside the harness's start), each with its own time beside its total, the
+    command's own the time no phase covers; the own times add up to the command's (`phase_tree` in
+    profile.json).
+  - `time`: host time, sampled each millisecond the ticker moved and booked to what ran since the sample
+    before: the Luau stack at a call, return or loop edge; the Luau that ran last when the interpreter is left;
+    the engine's step that was open when it is entered (the recorder, the animator, joints, physics), else
+    `(ree engine: outside scripts)`; an Instance API call on its own line. A sample is weighted by the run
+    thread's CPU time (wall time beside it), so time the thread was not running is not booked. A line's time lands on
+    its next safepoint: a line with no call, return or loop edge of its own has its time on the line of the one after it.
+    An inlined function's host time is an estimate (`inlined.estimated_time_ms`): a sample stands for the instructions
+    since the safepoint before it, and a copy `-O2` inlined gets its share of them by the work clock's prices of their
+    opcodes, a leaf's with no safepoint of its own too; a sample right after a call that reached a C function is not split,
+    as it holds the call's own time, while one after a call to a Luau function, which that function's own safepoints
+    sampled, is: each sample says whether a C function ran since its frame's safepoint before it (the VM's count of the C
+    calls scripts make, read at each safepoint while host time is sampled, kept for each entry into the interpreter: an
+    interrupt from inside a C function, as string.gsub's matcher sends at a match, and the safepoints of a Luau function it
+    calls back leave the count to the calling frame's next safepoint, after the call returned), so a call site that reaches
+    both is split after its Luau calls, and a builtin call its fast path served is no C call. About 1.2 times slower on a
+    loop-heavy run.
+    `boundary`: the boundary profiler, its report in the summary and its data in `boundary.json` in the
+    profile's folder: a repeat read is a value read again in the frame while it was unchanged, split by where
+    a cache would go (the same call: a local; a later call: read it once in the caller; another function), and
+    a write that stored what the property held is an unchanged write.
   - `all`: `work`, `caches`, `alloc`, `heap`, `timeline`, `cpu` and `phases`. `time`, `hw` and `boundary`
     are asked for apart: counting every instruction slows the interpreter several times over, so host time
-    and the CPU's counters are read in runs of their own.
+    and the CPU's counters are read in runs of their own (`cpu` takes its own pass). The cpu pass is the command run a
+    second time, so `all` takes longer in wall time than its kinds without `cpu` (about 1.3 times on a recording): the price
+    of CPU figures a slowed run cannot give.
 - A profile writes, in `--profile-out` (default `<out>/profile` for `record`, `ree-profile` for `run`):
   `summary.txt` (also printed on stderr), `profile.json` (everything), folded stacks for flame graph tools
   (`work.folded` in microseconds, `instructions.folded`, `time.folded`, `alloc.folded` and
@@ -302,7 +373,11 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   summary's `reported below:` line and their top functions in a table of their own. Lines are counted for
   the whole run, not per phase. In profile.json each function has `harness` and its figures per phase
   (`phases`, with `harness_self_work_ms`, the part done for the harness's code), and `scope` names the
-  reported phases with each side's self work.
+  reported phases with each side's self work. A function's `tool` marks ree's own code (the engine's chunks
+  that drive a harness, and the harness of a run `ree profile try` made), never the game's nor a user's
+  harness; `short` is its module's last segment, qualified where two modules would share one. A C function's
+  `call_sites` give its callers and the lines that called it; a tree node's last element is the line that
+  called it.
   The summary's `engine operations` line counts what the reported phases' scripts asked the engine to do, whatever the
   work clock prices it at (the engine's side of a cast, which the work clock reads lower than a client pays): instances
   cloned (each of a copy), made with Instance.new, destroyed (each of the subtree) and taken into the Workspace; property
@@ -326,7 +401,15 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   harness's functions in a table of their own: a harness's work moves with what it scans, not with the
   game. The headline's `engine:` rows compare the engine operations in the same phases (the whole run when
   the profiles share none): instances made, instances destroyed, property writes, parts moved (by a write
-  or BulkMoveTo), pivots and emits. Profiles from before the split are compared whole. `ree profile report <dir>` prints a profile's summary again and
+  or BulkMoveTo), pivots and emits. Profiles from before the split are compared whole. profile.json carries a
+  `version` (2), which keeps every row's shape, so an older reader still parses it: a `tree` node is `[parent, function,
+  calls, self work in us, self instructions, label]`, and its calling line is in `tree_lines`, one a node (-1 for none);
+  two profiles of different versions are compared without what changed meaning between them (a function's and
+  a line's self work, the game's and the harness's code: a C function's work is its own row since version 2, not its
+  caller's; a function's calls and instructions: version 1 counted a module's main chunk at none; host time, the wall
+  clock's before; Luau's inline caches, builtin calls and ree's own caches), and the diff says so (`diff.json` gives those
+  figures as null, the text as `-`). The viewer refuses a newer version and says on its Overview when it reads an older one, and its Diff leaves the same
+  figures out across versions; the page says when its profile's version is not the one it reads. `ree profile report <dir>` prints a profile's summary again and
   rewrites its page from its profile.json. `ree profile view` explores one in the terminal and `ree profile render`
   draws its screens to files ("The profile viewer").
 - With no profile the engine pays nothing measurable (a thread-local read where each profiler hooks in),
@@ -350,69 +433,315 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
 
 ## Hardware counters
 
-`--profile hw` reads what the CPU counted while the run thread ran. A process cannot read the CPU's counters on
-Windows (`rdpmc` faults in user mode), and the kernel trace session that can record them needs the system's profiling
-right, which an account's ordinary processes never hold (User Account Control takes it out of their token). So a small
-Windows service reads them on a profile's behalf (tools/hw-counters):
+`--profile hw` reads what the CPU counted while the run thread ran, and how much of that went to waiting for memory:
+per run, thread, phase and frame, and per Luau function, calling context and call site. The counters measure ree's
+own process running the game's Luau: a guide to where memory costs and why (which function waits, how long a miss
+takes), not what a client's frame costs, which the work clock estimates (`work`).
 
-- **Install it once**, from an elevated PowerShell: `& <checkout>\tools\hw-counters\setup.ps1`. It builds the service
-  (a Rust program with no dependencies) in a temporary folder, installs it in `%ProgramFiles%\ree-hw-counters` and
-  checks every counter (the probe, below). `-User <name>` installs it for another account, `-Binary <exe>` installs a
-  built one, `-Uninstall` removes it.
+A process cannot read the CPU's counters on Windows (`rdpmc` faults in user mode), and the kernel trace session that
+can record them needs the system's profiling right, which an account's ordinary processes never hold (User Account
+Control takes it out of their token). So a small Windows service reads them on a profile's behalf (tools/hw-counters):
+
+- **Install it once**, in two steps, so that no program the account can change runs elevated. First, from an
+  ordinary PowerShell: `powershell -NoProfile -ExecutionPolicy Bypass -File <checkout>\tools\hw-counters\setup.ps1`.
+  It builds the service (a Rust program with no dependencies; cargo on PATH) in `%LOCALAPPDATA%\ree-hw-counters-build`
+  and prints the build's SHA-256, the script's, how to open an elevated PowerShell that runs no profile
+  (`Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoProfile -ExecutionPolicy Bypass'`: right-click, Run as
+  administrator, would run the account's PowerShell profile as administrator), and the command to run there:
+  `setup.ps1 -Binary <exe> -Sha256 <hash>`, behind a check of the script's SHA-256 that reads the script once, checks
+  those bytes and runs those bytes (a script block, told the script's path), so nothing written to the file after the
+  check runs. It warns when PSReadLine sits in the account's own module folder, from which an interactive PowerShell
+  loads it, `-NoProfile` too. That second step builds nothing
+  and runs no program from the account's folders, only Windows' own (PowerShell's modules, imported from PowerShell's
+  folder before any of their commands runs, so a script of the same name on PATH cannot stand in; sc.exe by its full
+  path) and the installed copy. It gives the Program Files folder `ree-hw-counters` (the folder from Windows, not from
+  an environment variable; a link there is refused) an ACL of its own (Administrators and SYSTEM full control, Users
+  read and run, nothing inherited, owned by Administrators), reads the build into memory and checks its hash (a build
+  changed after it was hashed is refused before anything is written), writes those bytes there as a file owned by
+  Administrators with the same ACL, checks the file, removes everything else in the folder (an older program, its
+  counters' profile, which the service writes again), only then registers it, and runs the installed copy's probe
+  (below), its lines shown as they come. A service the Services console holds open stays marked for deletion: the
+  step stops and says to close it (or to end a ree run starting it again). The script itself comes from the checkout,
+  which the account can change: run it from a checkout you have read; its hash check keeps it from changing between
+  the two steps, not before step 1. The command it prints to remove the service later is guarded the same way.
+  When the hash check refuses, the script cannot be read or the setup fails, `$LASTEXITCODE` is left nonzero and the
+  shell stays open, so the message can be read. If the old service does not stop, it is neither deleted nor replaced;
+  the protected folder and the staged build may already have been prepared.
+  `-User <name>` installs it for another account, `-Uninstall` removes it. A service installed before a change to
+  tools/hw-counters keeps its own counter list: run setup.ps1 again after one (until then a profile that names a
+  counter it lacks says so, and says to run setup.ps1 again).
 - **What it grants.** The service runs as LocalSystem holding two privileges only: the system's profiling right and
-  folder traversal. It starts on demand and stops itself after a minute with no client. The account it was installed
+  folder traversal. The one exception: when the installed copy's probe fails for want of a right and counts only with
+  LocalSystem's own privileges, setup.ps1 leaves the service those and says so (when it fails either way, the two come
+  back). It starts on demand and stops itself after a minute with no client. The account it was installed
   for may start it and read its status, nothing else. Its pipe opens only for that account (and SYSTEM), from this
-  machine; the client process must run as that account and gets counts for its own threads only, never another
-  process's. While any client counts (each 30 minutes at most) it runs one kernel trace session of context switches
+  machine, one connection a process; the client process must run as that account and gets counts for its own threads
+  only, never another process's, and at most two million slices of them (about 180 MB in the service: past them its
+  results say how many more it dropped). Each reading makes two slices, and frame, engine-step and thread readings
+  count toward the limit too, so how long a capture lasts depends on the workload. Measured on a Ryzen 9 9950X: heavy
+  frames made about 7,000 slices a second (a limit of about 280 s), ordinary runs 31,000-87,000 (23-64 s), and a run
+  whose threads idle in `task.wait()` loops about 640,000 (about 3 s). When the limit is reached, ree books only the
+  run up to the last complete reading. The
+  summary and the profile viewer's header mark the hardware-counter profile **CUT SHORT**, with the host time captured,
+  and the rest of the run has no counter figures: count a shorter run when that mark appears.
+  While any client counts (each 30 minutes at most) it runs one kernel trace session of context switches
   that carry the counters' values. Only one session at a time may hold the CPU's counters, so up to eight clients
   share it: a ree profile, roblox-sim's frame logs, two arms of an A/B side by side. The first client starts it with
   its counters, later ones count those or some of them (one that asks for others is told the service is busy, with
   what it counts), each gets only its own process's threads, and the last one out stops it. A client that leaves while
   others count waits a little over a second for the trace's last buffers. On AMD Family 1Ah processors it registers
-  four events with Windows until the next restart, through Windows Performance Recorder (`wpr.exe`, part of Windows).
-  No driver is installed and no protection is turned off.
-- **The counters**: `instructions` (retired), `cycles` (core clock cycles while the thread ran), `branches`,
-  `branch-misses` (mispredicted), `l1d-accesses` (loads and stores dispatched to the L1 data cache), `l1d-misses`
-  (lines the L1 data cache filled for demand loads and stores), `l2-misses` (of those, lines filled from beyond the
-  core's L2) and `llc-misses` (of those, lines filled from beyond the core complex's L3: another complex's cache or
-  memory). The four cache counters are AMD Family 1Ah events (event 0x29, and the demand fills by source, event 0x43,
-  unit masks 0xFF, 0xFE and 0xDC); the rest are the CPU's built-in sources. In AMD's Processor Programming Reference
-  for Family 1Ah, and in Linux perf's Zen 5 event list, they are `ls_dispatch.all` and `ls_dmnd_fills_from_sys`:
-  `all`; every source but `local_l2`; and `near_cache`, `dram_io_near`, `far_cache`, `dram_io_far` and
-  `alternate_memories`, the sources beyond the core complex. They count demand data fills, one a line: prefetches and
-  instruction fetches are not in them, and a dispatched load or store may be one the CPU later discards. Any other name is taken for a Windows
-  profile source as `ree-hw-counters sources` (or `wpr -pmcsources`) lists it. The CPU counts six at once:
-  `--profile-counters a,b,...` chooses them (default `instructions,cycles,l1d-misses,l2-misses,llc-misses,branch-misses`;
-  `l1d-accesses` in place of one of them gives the L1 miss rate). The profile adds IPC, the miss rates the counts allow
-  (L2 misses of L1 misses, last-level misses of L2 misses, branch misses of branches) and misses per thousand
-  instructions.
-- **How it counts.** The kernel records the counters at every context switch, so the service hands back each of the
-  process's threads' stretches on a CPU with what was counted in each. The run thread takes a reading (it makes itself
-  switch out, about 3 us) at the profile's start and end, when the VM starts, at each frame's start and end, at each
-  phase mark, around the engine's own steps (Animator, joints, physics) and at the VM's safepoints once a millisecond:
-  the counts between two readings are exact, so the run, its phases and its frames add up. A safepoint's reading books
-  what was counted since the one before to the Luau stack it finds, as `time` books host time, so a function's and a
-  line's figures are a sample in the same way; what ran before the VM (the mount) and after a phase's last sample get
-  frames of their own. A reading's own cost (a few thousand cycles) is counted with the run's: the profile measures it
-  at its start and says what share of the run the readings took. The process's other threads are totalled per thread.
-  The counters count in user and kernel mode (the interrupts the thread's CPU took meanwhile included), as Windows
-  Performance Analyzer's counter tables do.
-- **Where it shows**: the summary's hardware counter lines and its top functions and lines by self counts,
-  profile.json's `counters` (the run, rates, readings, threads, phases, frames, functions, lines), a folded file a
-  counter, the report's CPU tab, and `ree profile diff`'s headline. With `work`, `caches`, `alloc` or `heap` in the
-  same run the counts include those profilers' own work (the profile warns).
-- **Checking it**: `ree-hw-counters probe` (`%ProgramFiles%\ree-hw-counters\ree-hw-counters.exe probe`) counts
-  kernels whose counts are known through the service: a loop of four instructions and a branch an iteration, random
-  branches half of which mispredict, loads that hit the L1 data cache, and chases through random cycles of cache lines
-  that fit the L1, the L2 and the L3, and fit none. Each counter must count what its name says (exit 0). The L3 chase
-  runs three times and its last-level misses are read against the fastest try's own speed: on a busy machine other
-  programs push the buffer out of the shared L3, and at memory speed nearly every step must miss it (between L3 and
-  memory speed it is not checked). The probe is the client's: a build's own (`cargo build --release --manifest-path
-  tools/hw-counters/Cargo.toml`) checks the installed service; a change to the service itself takes effect when
-  setup.ps1 runs again.
-- Without the service (not installed, counting for another profile, the CPU's counters held by another tool) the run
-  goes on and the profile says why. `REE_HW_COUNTERS=mock` counts without it (the run thread's cycle count at each
-  reading and fixed shares of it: for tests, never a measurement); `REE_HW_COUNTERS=console` reads from
+  the AMD events below with Windows until the next restart, through Windows Performance Recorder (`wpr.exe`, part of
+  Windows), each once. No driver is installed and no protection is turned off.
+
+### What the counters count
+
+Zen 5 counts the L1 data cache's misses only per line: its miss buffer (MAB) allocates one entry a line, and its fills
+count a line once, however many loads missed it while it was on its way, and a line a prefetch was already fetching
+not at all. So no counter there says how often a load missed, and a count of lines is no measure of what the misses
+cost. What Zen 5 does count is the cost: the cycles nothing retired because the oldest op waited for load data, and
+the misses outstanding each cycle. Those are the default set. The events are AMD's, as its Processor Programming
+Reference for Family 1Ah and Linux perf's Zen 5 tables (`tools/perf/pmu-events/arch/x86/amdzen5`) give them:
+
+| counter | counts | AMD event (event, unit mask) |
+|---|---|---|
+| `instructions` | instructions retired | the CPU's built-in source |
+| `cycles` | core clock cycles while the thread ran | the CPU's built-in source |
+| `load-stall-cycles` | cycles nothing retired because the oldest op waited for load data: nearly all of a miss's wait, part of an L1 hit's in a chain of dependent loads (measured below) | `ex_no_retire.load_not_complete` (0xD6, 0xA2) |
+| `op-stall-cycles` | cycles nothing retired while the oldest op had not completed, as AMD counts it: every long wait (load stalls among them), short ones only in part (measured below) | `ex_no_retire.not_complete` (0xD6, 0x02) |
+| `no-retire-cycles` | cycles nothing retired, for any reason | `ex_no_retire.all` (0xD6, 0x1B) |
+| `miss-buffer-occupancy` | L1 data cache misses outstanding, summed every cycle (it counts more than one a cycle: up to about 20 when misses overlap) | `ls_alloc_mab_count` (0x5F) |
+| `miss-buffer-allocs` | miss-buffer entries allocated: one a line the L1 data cache fetched, for loads and stores, the hardware prefetcher and page walks | `ls_mab_alloc.all_allocations` (0x41, 0x0F) |
+| `miss-buffer-allocs-ls` | of those, the load-store pipes' (page walks' requests are among them) | `ls_mab_alloc.load_store_allocations` (0x41, 0x07) |
+| `miss-buffer-allocs-prefetch` | of those, the hardware prefetcher's | `ls_mab_alloc.hardware_prefetcher_allocations` (0x41, 0x08) |
+| `demand-fills` | lines filled into the L1 data cache for demand loads and stores, from any source: one a line; a load that missed a line already outstanding is not counted again, and a line a prefetch brought is not counted | `ls_dmnd_fills_from_sys.all` (0x43, 0xFF) |
+| `demand-fills-beyond-l2` | of those, lines from beyond the core's L2 | `ls_dmnd_fills_from_sys`, every source but `local_l2` (0x43, 0xFE) |
+| `demand-fills-beyond-l3` | of those, lines from beyond the core complex's L3 (another complex's cache, memory) | `ls_dmnd_fills_from_sys` `near_cache`, `dram_io_near`, `far_cache`, `dram_io_far`, `alternate_memories` (0x43, 0xDC) |
+| `ls-dispatched` | load and store ops dispatched to the load-store unit (some later discarded) | `ls_dispatch.all` (0x29, 0x07) |
+| `branches`, `branch-misses` | branches retired, and those mispredicted | the CPU's built-in sources |
+
+What the stall counters count, measured with Linux perf's raw events on the same CPU (a Ryzen 9 9950X, WSL2), for
+loops of dependent ops, a cycle of each op: a chain of multiplies (3.0 cycles each) counted 0.90 to 0.96 of each
+multiply under `op-stall-cycles`, 1.5 under `ex_no_retire.other` and none under `load-stall-cycles`; a chain of loads
+that hit the L1 (4.0 cycles each) 1.2 under both `op-stall-cycles` and `load-stall-cycles` and 1.9 under `other`; a
+chase through 256 MB (690 to 760 cycles a load) 99 % of its cycles under both, nearly none under `other`. So the stall
+counters hold the long waits whole and the short ones in part: `op-stall-cycles` is not every cycle an op spent
+executing, and `memory share of op stalls` is Linux perf's split of what it does hold.
+
+The fills were called `l1d-misses`, `l2-misses` and `llc-misses`, and `ls-dispatched` `l1d-accesses`: a profile.json
+with the old names still opens in the viewer and in `ree profile diff`, `--profile-counters` still takes them, and
+their Windows profile sources keep their first names (`ReeL1dMisses` is the demand fills), so a service installed
+before the rename still counts them. Any other name is taken for a Windows profile source as `ree-hw-counters sources`
+(or `wpr -pmcsources`) lists it.
+
+The figures that measure what memory cost (the profile derives them wherever its counts allow, for the run, each
+phase, frame, function and call site):
+
+- **load stall share**: `load-stall-cycles` over `cycles`, the share of the run thread's cycles spent waiting for load
+  data. The measure of impact: it rises with every miss that held up retirement, whether its line was counted as a fill
+  or not.
+- **load stall cycles per 1000 instructions**: the same cycles against the work done.
+- **L1D miss latency**: `miss-buffer-occupancy` over `miss-buffer-allocs`, the cycles a miss stayed outstanding on
+  average: about 12 to 16 from the L2, 50 to 70 from the L3, hundreds from memory. It says where misses were served
+  from, not what they cost (fewer misses from farther away read a higher latency and may cost less), so the viewer and
+  `ree profile diff` do not color it better or worse. The allocations include the
+  prefetcher's and page walks' entries, whose lines the occupancy holds too (with load and store allocations alone a
+  stream the prefetcher feeds read 8,300 cycles); page walks' entries are short, so a run that walks pages on most
+  misses (a random walk through more memory than the TLB covers) reads a lower latency than its misses' own.
+- **L1D misses outstanding per cycle**: `miss-buffer-occupancy` over `cycles`, averaged over every cycle (cycles with
+  none outstanding count as zero): how busy the miss buffer was, not how many misses overlapped while any was
+  outstanding, which would need a count of the cycles with one or more. Above one, misses overlapped; a high stall
+  share with a low figure is a chain of dependent loads (each waits for the one before), with a high one a stream.
+- Event rates beside them: miss buffers, demand fills and branch misses per 1000 instructions, the fills' sources as
+  shares, IPC, and `memory share of op stalls` (`load-stall-cycles` over `op-stall-cycles`, Linux perf's
+  `backend_bound_by_memory` split).
+
+The default set is `instructions,cycles,load-stall-cycles,miss-buffer-occupancy,miss-buffer-allocs,branch-misses`
+(the CPU counts six at once): IPC needs the first two; the stall cycles are the impact; occupancy and allocations give
+a miss's latency, which says where the misses were served from, and how busy the miss buffer was;
+and branch mispredictions are the other common way an interpreter loses cycles, which none of the others shows. The
+fills are left out: a miss's latency says on average where misses were served from, and the fills undercount (a line
+once, prefetched lines never). `--profile-counters a,b,...` chooses others: `demand-fills,demand-fills-beyond-l2,
+demand-fills-beyond-l3` say where lines came from line by line, `ls-dispatched` beside `demand-fills` how few lines
+the loads and stores needed fetched.
+
+### How the counts reach functions
+
+- **Readings.** The kernel records the counters at every context switch, so the service hands back each of the
+  process's threads' stretches on a CPU with what was counted in each. The run thread takes a reading by switching out
+  (it signals a helper thread and waits for its answer): at the profile's start and end, when the VM starts, at each
+  frame's start and end, at each phase mark, around the engine's own steps (Animator, joints, physics), around the
+  Luau calls it samples, and where a Luau thread that holds a sampled call resumes or stops. The counts between two
+  readings are exact. A reading's own counts (the median of 64
+  back-to-back readings at the start) are taken out of every stretch between two readings, and the summary says what
+  share of the run's cycles the readings took. For the profile's length the run thread is pinned to its CPU and the
+  reader's helper with it, so a reading switches between them on one CPU that never idles and the run thread keeps its
+  caches (`REE_HW_PIN=0` leaves both free).
+- **Calls.** The VM calls the profile's hook as a sampled Luau call's first instruction is about to run and as it
+  returns (or an error unwinds it to a `pcall` or a coroutine's handler), and the profile takes a reading at each:
+  everything counted between them ran inside that call, and what was counted while it was the innermost call read
+  around is its own (its callees' apart). Each call is drawn on its own: every call of a function whose calls take at
+  least the threshold (100 us at first), one in `threshold / its mean call` of a shorter one. A call inside a sampled
+  call of its own function on the same thread is read too (up to 64 a sampled call, then drawn again), so a recursion
+  is read as a whole: drawn level by level, the corrections multiply, and a function recursing four deep at one in six
+  read 12 % off in a run of 3,000 calls (simulated), against 2 % read whole. The 64 are counted from each recursion's
+  outermost sampled call on its thread, whatever other threads hold. A function's first 4 calls are all read, to learn
+  its length; one whose calls take under 10 us on average is then not sampled (its counts are its callers', those
+  first calls' too: decided when the fourth is measured, so a function long at first and short later keeps its long
+  calls), but one of its calls is read for its length after 64 calls, then 128, up to 65,536, and it is sampled again
+  once its calls grow; a sampled function stops only below 7.5 us, so one near the line does not flip.
+  The mean weighs each measured call by the calls it stood for (a recursion's inner calls read with their outer one do
+  not pull it down). The threshold rises when **call readings** come faster than 10,000 a second and falls when they
+  come slower, staying between 20 us and 1 ms. Frame, engine-step and thread readings do not raise it, because sampling
+  fewer calls cannot reduce them (they can still make the profiler expensive).
+  A sampled call's own counts stand for the calls of its function that were
+  not read around (times its `every`), and come off the call they ran in, which held those calls' counts: so each
+  function's own counts are an unbiased estimate of what was counted while it ran (exact when every call is read
+  around), its total and a call site's too, and the functions' figures add up to the run's exactly. An estimate can
+  fall below zero (sampling noise, where what came off a function for its callees' unsampled calls outweighed what its
+  sampled calls read): the summary lists those, the folded files leave them out and profile.json says how much.
+  A thin wrapper between a caller and a heavy callee (a `pcall`, a sort comparator, a `coroutine.wrap` closure) does
+  almost no work of its own, but its **self** estimate can be far off: measured values ran from -2,785 M to +1,755 M
+  instructions, up to 11 % of the callee's, and its caller's figure is off by the opposite amount. The callee's own
+  figure stayed within 1-2 %. Read the callee's figure for the work, and do not take the wrapper's self estimate,
+  positive or negative, as work done or work saved.
+- **Threads.** The VM's resume callbacks say where a Luau thread resumes and stops; one that holds an open sampled
+  call takes a reading there. A stretch goes to the innermost open sampled call of the innermost running thread that
+  holds one, else to the engine step running, else to the profile's own frames; a thread that holds none switches
+  without a reading, since what it runs is booked where its resumer's is (a coroutine resumed from a function inside
+  that function, a thread the engine resumes outside every call). A thread an error ends, or one that is reset (a
+  coroutine closed, a thread reused), gives its sampled calls up there, as an unwound call leaves, and a thread the
+  collector frees gives them up silently: no function keeps a call open for a thread that is gone. A sampled call that
+  outlives the call it began in (a coroutine resumed later from elsewhere) still passes its correction to where it
+  began, so the bookings still add up.
+- **The limit, measured.** A reading's switch costs the code after it part of its caches and branch history, which a
+  sampled call pays at its start and its caller after its return, and which the estimate does not take out: a short
+  sampled function reads high and its callers low. On a Zen 5 CPU (Ryzen 9 9950X): a 1.2 us call (75,000 cycles for
+  1,000 iterations unread, so 6,000 for 80) read around took 9,000 to 12,600 cycles and fetched 44 to 100 lines again;
+  a 14 us call read around took 1 to 9 % more cycles for its instructions than the same loop run inline between its
+  calls (700 to 5,800 cycles a call, four runs of 20 rounds of 300 calls and 300 inline passes); calls of 300,000
+  cycles paid the same few thousand, about 1 %. Hence the 10 us floor. A
+  reading took 1.6-1.8 us pinned (2.2-3.7 us unpinned; 23-25 us with the helper on another core, whose idle CPU was
+  slow to wake); the harness's readings took 0.24-0.29 % of the run thread's cycles, and its phases took as long as
+  with no readings at all, within their spread from run to run (`--profile cpu`: long calls 42.5-43.5 ms against
+  42.9-45.0, short calls 97-108 against 95-102).
+- **Lines.** A line's own code is its function's: the readings come microseconds apart, lines run in nanoseconds, so a
+  stretch between readings spans many lines and no reading can tell them apart. A line's figures are what the calls
+  made from it cost (the summary's "top call sites", profile.json's `lines`, with `"calls": true`; the viewer's
+  Source view).
+- **What else falls to the caller.** A call Luau's `-O2` inlined has no frame to read around (call a function through
+  a table field to keep it apart), nor does a call into native code (`--!native`) or into a C function (a builtin, an
+  engine method): their counts are the calling function's. A coroutine resumed from Luau counts as a stack of its own
+  (its calls' stacks start at its body).
+- **The script watchdog.** A resumption that runs longer than 0.1 s gets ree's script-timeout interrupt at every
+  safepoint until it yields (watchdog.rs), whose work counts with the code it interrupts: measured, a loop retired up to
+  20 % more instructions in the runs it armed. `--script-timeout 0` (or `REE_SCRIPT_TIMEOUT=0`) turns it off for a
+  measurement; the numbers on this page were taken so.
+- The counters count in user and kernel mode (the interrupts the thread's CPU took meanwhile included), as Windows
+  Performance Analyzer's counter tables do. The process's other threads are totalled per thread.
+
+### Where it shows
+
+- **The summary**: the counts and every figure; a `memory:` line (the stall share, the stall cycles per 1000
+  instructions, a miss's latency, the misses outstanding); the readings' own cost, the calls read (and those booked
+  to their callers) and the readings at thread switches; by phase, thread and frame (with the frames' stall shares);
+  the top functions by their own stall cycles (with each one's stall share and IPC), then those estimated below zero
+  and what the folded files left out; and the top call sites.
+- **profile.json** `counters`: `names`, `about`, `amd` (each event's AMD name), `attribution` (`method` `calls`,
+  `version` 2: each call drawn on its own and the threads' switches read, a profile without one drew one call of each
+  run and read no switch; the calls read and `calls_booked_to_callers`, `switch_readings`, the threshold, the readings'
+  share of the run's cycles, `folded_left_out` a counter), `cut_short` (null, or the host seconds captured before the
+  slice limit), `run` and `phases` with `rates` (the derived figures), `frames` (a row a frame: the counts, then
+  `load stall share`, `load stall cycles per 1000 instructions`, `L1D miss latency`, `IPC`),
+  `functions` (`self`, `total`, `self_rates`, `total_rates`), `lines` (call sites: `total`, `total_rates`), and a
+  folded file a counter (`counters.<name>.folded`, each stack a sampled call's: below zero left out).
+- **The report** (report.html): the stall share among the tiles, and the CPU tab's counter tables with the stall share
+  of each phase, function and call site, and the frames' stall share and miss latency charted.
+- **The profile viewer**: the stall share and a miss's latency among the Overview's cards; every counter in the metric
+  switch (`m`), the stall cycles among them, which the flame graph, Calls and Source then show (a line: its calls); the
+  Timeline's series of each counter and of the derived figures a frame; the Diff's headline; and an Issues entry,
+  "Waits on memory", for a function holding at least 5 % of the run's stall cycles with at least 30 % of its own cycles
+  stalled (from the counters only).
+- **`ree profile diff`**: the counts both profiles read, the stall share, stall cycles per 1000 instructions, a miss's
+  latency and IPC, and the functions whose stall cycles moved most (with their stall shares). When the two profiles'
+  counters reached functions in other ways (1 ms samples, the first readings around calls, or these), it says so: the
+  run's counts compare, the functions' only roughly. The viewer's Compare says the same.
+- **`ree profile try`**: `hw_load_stall_cycles`, `hw_load_stall_share`, `hw_miss_latency`, `hw_miss_buffers` and the
+  others below from its counter rounds.
+- With `work`, `caches`, `alloc` or `heap` in the same run the counts include those profilers' own work (the profile
+  warns).
+
+### Checking it
+
+- **The probe**: `ree-hw-counters probe` (`%ProgramFiles%\ree-hw-counters\ree-hw-counters.exe probe`; setup.ps1 runs
+  it) counts kernels whose counts are known, through the service: a loop of four instructions and a branch an
+  iteration, random branches half of which mispredict, loads that hit the L1 data cache, chases through random cycles
+  of cache lines that fit the L1, the L2 and the L3 and fit none, arithmetic with no loads, and streams of lines read
+  eight loads a line, in an order the prefetcher cannot follow and in order. Each counter must count what its name
+  says (exit 0; 48 checks on a Zen 5 CPU, 47 when the L3 chase's speed is between the L3's and memory's and it is not
+  checked): the arithmetic stalls on no loads; the memory chase (each step a load waiting on the one before) is at
+  least 85 % stalled on loads, and its miss latency (occupancy over allocations) is 60 to 105 % of a step's cycles (its
+  lines visited in 2 MB groups, so a step pays the cache's miss and not a page walk too); the random stream keeps more
+  than one miss outstanding a cycle. The L3 chase's fills from beyond the L3 are read against the fastest of three
+  tries' own speed (on a busy machine other programs push the buffer out of the shared L3). Then the readings
+  themselves: a function chasing pointers through memory (each call going on where the last stopped, so every load
+  misses to memory) called between calls of one doing arithmetic, 800 calls each, every call read around and then each
+  drawn with a chance of one in four: the chase must hold at least 90 % of the two functions' stall cycles, the
+  arithmetic at most 5 % of its own cycles, and one in four (times four) must read the chase's stall cycles within 20 %
+  of every call's.
+- **The undercount, as the probe measures it.** Eight loads to each line of a stream: through the service on a Zen 5
+  CPU (Ryzen 9 9950X), lines in a random order read 9.30 loads and stores dispatched a line and 1.018 demand fills a
+  line (a count of misses per load would read 8); in order, 9.44 dispatched and 0.037 fills a line, the prefetcher
+  having fetched the lines first. The cycles they cost (Linux perf on the same CPU): in a random order 1.002 fills and
+  65 cycles stalled on loads a line (87 % of the loop's cycles), in order 0.010 fills and 8.2 stalled cycles a line
+  (53 %): the stalls go on where the fills read nothing. The probe prints both for the machine it runs on.
+- **Attribution in Luau**: tools/hw-counters/attribution.luau calls a function chasing a random cycle through 64 MB
+  of array slots between calls of one doing multiply-adds, first in calls of 100 us and more (every call read around),
+  then of 15 to 20 us (one in several). `tools/hw-counters/attribution.ps1`, from an ordinary (not elevated) shell,
+  runs it through this checkout's ree (with `--script-timeout 0`) and checks that the chases hold at least 90 % of the
+  four functions' stall cycles (setup.ps1 prints the command; it never runs ree, which the account can rebuild, from
+  its elevated shell). It runs in Windows PowerShell 5.1 (ree's output goes to a file, never through PowerShell's
+  error stream) and removes its profile folder whatever happens.
+- **Sampling under frame and thread load**: tools/hw-counters/sampling.luau plants a known number of identical loop
+  iterations in 60 simulated seconds at 60 fps. Run it with `--script-timeout 0 --profile hw --profile-counters
+  cycles,instructions`. The harness's context fields choose the variant: `Steps` is the iterations in each call,
+  `Background` adds that many idle `task.wait` loops, `Recursive` runs four coroutines that each recurse four calls
+  deep, and `Bridge` calls through a thin `pcall` wrapper. At the end it prints `MEASURE` with the number of calls and
+  the steps in each. The reference function runs a million iterations, so the callee's own instructions should match
+  the reference's own instructions times `calls * steps / 1000000`.
+- **The install itself**: `powershell -NoProfile -ExecutionPolicy Bypass -File tools\hw-counters\setup-test.ps1`,
+  from an ordinary shell, checks what setup.ps1's second step does that needs no elevation, in temporary folders: a
+  build with its own hash is staged with the protected ACL, a changed one is refused before anything is written, a
+  malformed hash is refused, the folder's ACL comes out as Administrators and SYSTEM full control, Users read and run,
+  nothing inherited, with an ordinary account unable to write into it, an owner other than Administrators is caught, a
+  folder that is a link elsewhere is refused, scripts on PATH named like the cmdlets setup.ps1 uses run in their place
+  in a fresh Windows PowerShell but not after setup.ps1's import, setup.ps1 is ASCII without a BOM (so the hash of its
+  text as it runs is its file's), a quote in a printed path is doubled, PSReadLine in the account's module folder is
+  found, and the printed step-2 command, for a copy in a folder whose name holds a quote, runs the bytes it checked and
+  leaves the shell running, reports failure when the copy changed or cannot be read, and keeps a nonzero status after
+  a mocked install exception or missing Cargo (23 checks). The PATH checks require the child shell to exit successfully.
+  Measured through the service with the fill counters (before the stall counters were installed there), three runs:
+  the chases held 99.2-100.0 % of the four functions' fills from beyond the L3 (`chaseLong`, every call read around,
+  315,000-320,000 for its 320,000 steps; `chaseShort`, one call in several, 612,000-615,000 for its 600,000).
+- **The booking, measured.** The review's harnesses, through the service, three runs each (cycles, `--script-timeout
+  0`): a function recursing four deep, 6,000 calls of `f(3, 700)`, kept 99.6-103.1 % of its own and its caller's
+  cycles, the caller -3.1 to +0.4 % (instructions: -1.9 to -0.8 %); a coroutine's body running an 8,000-iteration loop
+  between yields, beside the same loop in a function, 600 rounds: the body 49.6-49.8 % of the three functions' cycles,
+  the function 49.7-49.8 %, the code resuming it 0.4-0.7 % (1,199 readings where it resumed and yielded); two threads
+  the engine resumes each frame, one running a 30,000-iteration loop inline and one calling a function with it: the
+  inline loop 48.2-50.1 %, the called one 49.8-51.6 %, the calling thread's own 0.0-0.2 %; a function whose first call
+  is short and the next 1,000 long: 99.3-99.7 % its own (its caller 0.3-0.7 %); one whose first ten calls are short:
+  92.0-93.8 % (its 57 calls before its first re-measure are its caller's); a tiny function called 200,000 times: none
+  of its own, every count its caller's, 22 calls read. Two 600,000-iteration calls of a function, then 20,000 tiny
+  ones: the function keeps 100.1-100.2 % of the two long calls' instructions (eight runs; when the run's end decided,
+  it kept none). The recursion after a coroutine died by an error inside `f`: the caller -2.4 to +0.4 % of `f` and
+  its caller (instructions, five runs) and 6,267-6,562 calls read, as without it (-1.7 to +0.6 %, 6,233-6,452); after
+  one closed while suspended inside `f`: -1.7 to +0.1 %, 5,522-6,295 calls read.
+- The probe is the client's: a build's own (`cargo build --release --manifest-path tools/hw-counters/Cargo.toml`)
+  checks the installed service; a change to the service itself, its counter list included, takes effect when setup.ps1
+  runs again.
+- Without the service (not installed, counting other counters for another client, the CPU's counters held by another
+  tool) the run goes on and the profile says why. `REE_HW_COUNTERS=mock` counts without it (the run thread's cycle
+  count at each reading and fixed shares of it: for tests, never a measurement); `REE_HW_COUNTERS=console` reads from
   `ree-hw-counters serve` run in a console (a pipe of its own; it counts only with the profiling right, so from an
   elevated shell). Windows only.
 
@@ -553,11 +882,16 @@ reused, ways to iterate, Vector3 or numbers) and what they show.
     together lies between the two); `insns` instructions; `alloc_bytes` and `allocs` what the VM allocated (bytes of
     objects, table parts and stacks; collectable objects); `heap_bytes` the reachable heap at the phase's end beyond its
     start (what the phase still holds); `gc_steps`, `gc_freed` (bytes) and `gc_ms` the collector's work; `cache_hits`,
-    `cache_misses` (misses and slow paths) and `cache_hit_rate` Luau's inline caches; `cold_tables` and `cold_ms` the
+    `cache_lookups` (those a table serves) and `cache_hit_rate` Luau's inline caches, and `cache_uncharged_ms` what their
+    outcomes the work clock does not charge cost over hits at the committed prices (a reprediction, an absent key, an insert
+    with room, a metatable walk by its depth), beyond `work_ms`, which holds what the clock charges (a rehash, a looked-up
+    import); prices within the noise are left out; `cold_tables` and `cold_ms` the
     frame's first touches of tables made before it and the work they were charged; `rehashes` and `rehash_keys` the
     rehashes a script's own instructions made tables do to grow, and the keys they moved; `host_ms` (the fastest round),
     `host_ms_median` and `host_cycles` (the fastest round, the run thread's reference cycles) from the timed runs; `hw_instructions`, `hw_cycles`,
-    `hw_ipc`, `hw_l1d_misses`, `hw_l2_misses`, `hw_llc_misses` and `hw_branch_misses` from the hw run.
+    `hw_ipc`, `hw_load_stall_cycles`, `hw_load_stall_share`, `hw_miss_latency`, `hw_miss_buffers`, `hw_demand_fills`,
+    `hw_demand_fills_beyond_l2`, `hw_demand_fills_beyond_l3` and `hw_branch_misses` from the hw run (each from the
+    counters it read).
   - `host`: the timed runs' figures a call, one per round whose run finished (`rounds` names those rounds: a failed run
     leaves its round out), the calls a timed run made (`reps`) and how many it prepared and ran at a time (`group`).
     `hw`: each counter's figure a call, one per round of the counters' runs that finished, and `rounds` (empty when they

@@ -1,4 +1,5 @@
-//! Caches: Luau's inline caches by kind and by call site (hit, repredicted, slow path), and ree's own caches.
+//! Caches: Luau's inline caches by kind and by call site (the hit rate of the lookups a table serves, what the rest did, what
+//! the work clock charged and what the uncharged outcomes cost), and ree's own caches.
 
 use ratatui::{
     buffer::Buffer,
@@ -27,7 +28,7 @@ pub fn order(app: &App) -> Vec<usize> {
             // (the miss rankings leave out sites that never missed; the rate's, sites with under 100 lookups)
             let ranked = match app.caches.sort {
                 CacheSort::Misses => site.missed() > 0.0,
-                CacheSort::Rate => site.missed() > 0.0 && site.runs() >= 100.0,
+                CacheSort::Rate => site.missed() > 0.0 && site.lookups() >= 100.0,
                 CacheSort::Runs => true,
             };
             ranked && kind != Some(Kind::Engine) && (!app.scripts_only || kind == Some(Kind::Script))
@@ -38,8 +39,8 @@ pub fn order(app: &App) -> Vec<usize> {
         match app.caches.sort {
             CacheSort::Misses => site.missed(),
             CacheSort::Rate => {
-                if site.runs() > 0.0 {
-                    site.missed() / site.runs()
+                if site.lookups() > 0.0 {
+                    site.missed() / site.lookups()
                 } else {
                     0.0
                 }
@@ -77,15 +78,15 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
     let ree_height = if ree.is_empty() { 0 } else { (ree.len() as u16 + 3).min(area.height / 3) };
     let parts = kit::rows(area, &[kinds_height, area.height.saturating_sub(kinds_height + ree_height), ree_height]);
     // Luau's inline caches by kind: each one's hit rate as a gauge
-    let inner = kit::draw_panel(buf, parts[0], kit::panel(theme, "Luau inline caches", "miss: predicted wrong · slow: a metatable or an unsafe environment · other: not a table", false));
-    let cols = [col("cache", 18), col_fill("hit rate", 2), col_r("lookups", 11), col_r("misses", 10), col_r("slow", 10), col_r("other", 10)];
+    let inner = kit::draw_panel(buf, parts[0], kit::panel(theme, "Luau inline caches", "hit rate: of the lookups a table serves · not hit: the rest · charged / extra: µs a frame", false));
+    let cols = [col("cache", 18), col_fill("hit rate", 2), col_r("lookups", 11), col_r("not hit", 10), col_r("charged", 10), col_r("extra", 10)];
     let gauge_col = kit::widths(&cols, inner.width)[1];
     let rows = caches
         .by_kind
         .iter()
         .map(|kind| {
-            let table = kind.hits + kind.misses + kind.slow;
-            let rate = if table > 0.0 { kind.hits / table } else { 0.0 };
+            let table = kind.lookups();
+            let rate = if table > 0.0 { kind.hit_count() / table } else { 0.0 };
             let filled = ((rate * (gauge_col.saturating_sub(7)) as f64).round() as usize).min(gauge_col.saturating_sub(7) as usize);
             let rate_cell = if table > 0.0 {
                 Item::Spans(Line::from(vec![
@@ -99,10 +100,10 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
             vec![
                 Item::text(kind.kind.clone(), Style::new().fg(theme.ink)),
                 rate_cell,
-                Item::text(fmt::grouped(kind.hits + kind.misses + kind.slow + kind.other), Style::new().fg(theme.ink2)),
-                Item::text(fmt::grouped(kind.misses), Style::new().fg(theme.ink2)),
-                Item::text(fmt::grouped(kind.slow), Style::new().fg(theme.ink2)),
-                Item::text(fmt::grouped(kind.other), Style::new().fg(theme.ink2)),
+                Item::text(fmt::grouped(table), Style::new().fg(theme.ink2)),
+                Item::text(fmt::grouped(table - kind.hit_count()), Style::new().fg(theme.ink2)),
+                Item::text(format!("{:.2}", kind.charged_work_us_per_frame), Style::new().fg(theme.ink2)),
+                Item::text(format!("{:.2}", kind.extra_work_us_per_frame), Style::new().fg(theme.ink2)),
             ]
         })
         .collect();
@@ -122,7 +123,7 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
     if order.is_empty() {
         kit::empty(buf, inner, theme, if app.caches.sort == CacheSort::Runs { "none" } else { "no misses (s: by lookups)" });
     } else {
-        let cols = [col("op", 11), col_fill("site", 3), col_r("lookups", 11), col_r("hits", 11), col_r("misses", 10), col_r("slow", 10), col_r("missed", 7), col_fill("", 2)];
+        let cols = [col("op", 11), col_fill("site", 3), col_r("lookups", 11), col_r("hits", 11), col_r("not hit", 10), col("commonest", 12), col_r("missed", 7), col_fill("", 2)];
         let bar_width = kit::widths(&cols, inner.width)[7];
         let max = order.first().map_or(0.0, |&i| caches.sites[i].missed());
         let rows = order
@@ -135,11 +136,11 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
                 vec![
                     Item::text(site.op.clone(), Style::new().fg(theme.ink2)),
                     Item::label(site_label(app, index), style),
-                    Item::text(fmt::grouped(site.runs()), Style::new().fg(theme.ink2)),
-                    Item::text(fmt::grouped(site.hits), Style::new().fg(theme.ink2)),
-                    Item::text(fmt::grouped(site.misses), style),
-                    Item::text(fmt::grouped(site.slow), style),
-                    Item::text(fmt::share(missed, site.runs()), style),
+                    Item::text(fmt::grouped(site.lookups()), Style::new().fg(theme.ink2)),
+                    Item::text(fmt::grouped(site.hit_count()), Style::new().fg(theme.ink2)),
+                    Item::text(fmt::grouped(missed), style),
+                    Item::text(site.commonest_miss().map_or_else(|| if site.slow > site.misses { "slow".to_string() } else if missed > 0.0 { "repredicted".to_string() } else { String::new() }, |(name, _)| name.replace('_', " ")), style),
+                    Item::text(fmt::share(missed, site.lookups()), style),
                     Item::Spans(kit::bar(if max > 0.0 { missed / max } else { 0.0 }, bar_width, theme.heat_of(share))),
                 ]
             })

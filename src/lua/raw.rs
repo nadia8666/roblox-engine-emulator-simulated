@@ -389,12 +389,29 @@ impl Api {
     }
 
     /// A crossing for the boundary profiler (src/boundary.rs): nothing unless profiling, and nothing inside the engine's own
-    /// Luau pricing a whole call (muted); `name` None is a child looked up by name.
+    /// Luau pricing a whole call (muted); `name` None, or `child`, is a child looked up by name.
     #[inline]
-    fn cross(&self, kind: crate::boundary::Kind, class: ClassId, name: Option<NameId>, id: InstanceId, cost: f64, changed: bool) {
+    #[allow(clippy::too_many_arguments)]
+    fn cross(&self, kind: crate::boundary::Kind, class: ClassId, name: Option<NameId>, child: bool, id: InstanceId, cost: f64, changed: bool) {
         if crate::boundary::active() && self.muted.get() == 0 {
-            let reflection = &self.engine().reflection;
-            crate::boundary::record(kind, class, name.unwrap_or(crate::boundary::NO_MEMBER), id.index, cost, changed, || {
+            let engine = self.engine();
+            let reflection = &engine.reflection;
+            // (a read's stamp: its instance's version, which a change of its own properties by a script or the engine bumps, so the next
+            // read is a new value; Parent's value is the parent, which a reparent (Destroy's too) changes without touching the
+            // instance's own properties; a child looked up by name reads the child list, whose own version a child added or removed
+            // bumps, and the children's names, which any rename changes)
+            let version = (kind == crate::boundary::Kind::Get)
+                .then(|| {
+                    engine.state.try_borrow().ok().and_then(|state| {
+                        state.dom.get(id).map(|instance| match name {
+                            Some(member) if !child && member == K::Parent as NameId => instance.version ^ instance.parent.map_or(u32::MAX, |parent| parent.index).rotate_left(16),
+                            Some(_) if !child => instance.version,
+                            _ => instance.child_version ^ state.dom.name_version.rotate_left(16),
+                        })
+                    })
+                })
+                .flatten();
+            crate::boundary::record(kind, class, name.unwrap_or(crate::boundary::NO_MEMBER), id.index, version, cost, changed, || {
                 let owner = name.map_or(class, |name| reflection.declaring_class(class, name));
                 (reflection.class(owner).name.to_string(), name.map_or_else(|| "[child]".to_string(), |name| reflection.name(name).to_string()))
             });
@@ -442,9 +459,11 @@ impl Api {
 
 static ATOM_REFLECTION: OnceLock<Arc<Reflection>> = OnceLock::new();
 
-/// `useratom`: a string's atom is its member NameId (-1: not a member name, -2: look it up).
+/// `useratom`: a string's atom is its member NameId (-1: not a member name, -2: look it up). The VM asks once per new string,
+/// and the answer is a lookup by its bytes: the member atoms cache's miss (a later read off the string is its hit).
 unsafe extern "C-unwind" fn user_atom(_state: *mut ffi::lua_State, s: *const c_char, len: usize) -> i16 {
     let Some(reflection) = ATOM_REFLECTION.get() else { return -2 };
+    crate::profiler::caches::miss(crate::profiler::caches::Cache::Atoms);
     let bytes = unsafe { std::slice::from_raw_parts(s as *const u8, len) };
     match reflection.name_id_bytes(bytes) {
         Some(id) if id < i16::MAX as NameId => id as i16,
@@ -720,6 +739,7 @@ pub fn instance_value(lua: &Lua, engine: &Engine, id: InstanceId) -> LuaResult<L
         }
     }
     crate::profiler::caches::miss(crate::profiler::caches::Cache::Wrappers);
+    crate::profiler::caches::instance_touched(id.index, id.generation);
     let create = api.create.borrow().clone().expect("instance factory");
     create.call::<LuaValue>((id.index, id.generation))
 }
@@ -918,6 +938,7 @@ unsafe fn push_instance_with(state: *mut ffi::lua_State, api: &Api, dom_state: O
             }
         }
         crate::profiler::caches::miss(crate::profiler::caches::Cache::Wrappers);
+        crate::profiler::caches::instance_touched(id.index, id.generation);
         ffi::lua_pop(state, 1);
         let payload = ffi::lua_newuserdatataggedwithmetatable(state, PAYLOAD_SIZE, INSTANCE_TAG) as *mut Payload;
         let serial = match dom_state {
@@ -951,6 +972,8 @@ unsafe fn push_instance_with(state: *mut ffi::lua_State, api: &Api, dom_state: O
 /// `Instance.new(className, parent)` (InstanceModule.New) as a C function.
 unsafe extern "C-unwind" fn instance_new(state: *mut ffi::lua_State) -> c_int {
     crate::boundary::enter(state);
+    // (host time: the call's time is its line's)
+    let _time = crate::luau_profile::ApiCall::new(state);
     let out = guard(|| unsafe {
         let api = &*(ffi::lua_touserdata(state, ffi::lua_upvalueindex(1)) as *const Api);
         let engine = api.engine();
@@ -1092,6 +1115,8 @@ unsafe fn push_value(state: *mut ffi::lua_State, api: &Api, dom_state: &State, i
 
 unsafe extern "C-unwind" fn meta_index(state: *mut ffi::lua_State) -> c_int {
     crate::boundary::enter(state);
+    // (host time: the call's time is its line's)
+    let _time = crate::luau_profile::ApiCall::new(state);
     let out = guard(|| unsafe { index_fast(state) });
     match out {
         Out::Ret(count) => count,
@@ -1167,7 +1192,7 @@ unsafe fn index_fast(state: *mut ffi::lua_State) -> Out {
         if first > 0.0 {
             api.charge(first);
         }
-        api.cross(crate::boundary::Kind::Get, class, name, id, cost + lower_first + first, true);
+        api.cross(crate::boundary::Kind::Get, class, name, matches!(read.read, Read::Child), id, cost + lower_first + first, true);
         match read.read {
             Read::Plain => {
                 let name = read.name;
@@ -1259,6 +1284,8 @@ unsafe fn index_slow(state: *mut ffi::lua_State) -> c_int {
 unsafe extern "C-unwind" fn meta_newindex(state: *mut ffi::lua_State) -> c_int {
     crate::trace::enter(state);
     crate::boundary::enter(state);
+    // (host time: the call's time is its line's)
+    let _time = crate::luau_profile::ApiCall::new(state);
     let out = guard(|| unsafe { newindex_fast(state) });
     match out {
         Out::Ret(_) => {}
@@ -1336,8 +1363,6 @@ unsafe fn newindex_fast(state: *mut ffi::lua_State) -> Out {
                 if super::actors::any_actor(engine) {
                     return Out::Slow;
                 }
-                // (priced by the reparenting itself: instance.rs set_parent adds its charge to this crossing)
-                api.cross(crate::boundary::Kind::Set, class, Some(K::Parent as NameId), id, 0.0, true);
                 let parent = match kind {
                     ffi::LUA_TNIL => None,
                     _ => match arg_instance(state, 3) {
@@ -1345,6 +1370,10 @@ unsafe fn newindex_fast(state: *mut ffi::lua_State) -> Out {
                         None => return Out::Slow,
                     },
                 };
+                // (priced by the reparenting itself: instance.rs set_parent adds its charge to this crossing; a write of the
+                // parent it has changes nothing)
+                let changed = engine.state.borrow().dom.get(id).is_none_or(|instance| instance.parent != parent);
+                api.cross(crate::boundary::Kind::Set, class, Some(K::Parent as NameId), false, id, 0.0, changed);
                 match linstance::set_parent(engine, id, parent) {
                     Ok(()) => Out::Ret(0),
                     Err(Flow::Error(error)) => Out::Raise(error.message, error.level),
@@ -1407,6 +1436,8 @@ unsafe fn newindex_slow(state: *mut ffi::lua_State) {
 unsafe extern "C-unwind" fn meta_namecall(state: *mut ffi::lua_State) -> c_int {
     crate::trace::enter(state);
     crate::boundary::enter(state);
+    // (host time: the call's time is its line's)
+    let _time = crate::luau_profile::ApiCall::new(state);
     let out = guard(|| unsafe { namecall_fast(state) });
     match out {
         Out::Ret(count) => count,
@@ -1572,7 +1603,7 @@ unsafe fn namecall_fast(state: *mut ffi::lua_State) -> Out {
         // Path::Pivot, priced here so the engine's Luau body is unchanged)
         let cost = if api.touched.borrow().pivot_to == Some(name) { cost + linstance::pivot_cold(engine, id) } else { cost };
         api.charge(cost);
-        api.cross(crate::boundary::Kind::Method, class, Some(name), id, cost, true);
+        api.cross(crate::boundary::Kind::Method, class, Some(name), false, id, cost, true);
         match member.call {
             Call::Base(base) => base_call(state, api, engine, id, class, base),
             Call::Function => Out::General,

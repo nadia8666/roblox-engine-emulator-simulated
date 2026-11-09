@@ -59,6 +59,7 @@ impl Figure {
             "ms" => format!("{value:.3} ms"),
             "%" => format!("{value:.1} %"),
             "ratio" => format!("{value:.2}"),
+            "share" => format!("{:.1} %", value * 100.0),
             _ => format!("{value:.0}"),
         }
     }
@@ -185,6 +186,43 @@ fn lines(profile: &Json, same: &BTreeSet<String>) -> BTreeMap<(String, i64), (f6
     out
 }
 
+/// A hardware counters' counts object by the counters' names now (counters.rs `canonical`)
+fn counter_counts(counts: &Json) -> Option<BTreeMap<String, f64>> {
+    Some(counts.as_object()?.iter().map(|(name, value)| (super::hw::counters::canonical(name).to_string(), num(value))).collect())
+}
+
+/// The hardware counters' functions: key -> (label, self counts by the counters' names now)
+fn counter_functions(profile: &Json) -> BTreeMap<String, (String, BTreeMap<String, f64>)> {
+    profile["counters"]["functions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let key = row["key"].as_str()?.to_string();
+            let name = row["name"].as_str().unwrap_or("?");
+            let label = match (row["module"].as_str(), row["line"].as_i64()) {
+                (Some(module), Some(line)) => format!("{} {}:{line}", if name.is_empty() { "anonymous" } else { name }, module.rsplit(['.', '/', '\\']).next().unwrap_or(module)),
+                _ => name.to_string(),
+            };
+            Some((key, (label, counter_counts(&row["self"]).unwrap_or_default())))
+        })
+        .collect()
+}
+
+/// `1.23G`, `45.6M`, `789K`: a count in a few characters
+fn compact(value: f64) -> String {
+    let (sign, value) = if value < 0.0 { ("-", -value) } else { ("", value) };
+    if value >= 1e9 {
+        format!("{sign}{:.2}G", value / 1e9)
+    } else if value >= 1e6 {
+        format!("{sign}{:.1}M", value / 1e6)
+    } else if value >= 1e4 {
+        format!("{sign}{:.0}K", value / 1e3)
+    } else {
+        format!("{sign}{value:.0}")
+    }
+}
+
 fn last_snapshot(profile: &Json) -> Option<&Json> {
     profile["heap"]["snapshots"].as_array().and_then(|snapshots| snapshots.last())
 }
@@ -200,7 +238,9 @@ fn heap_split(snapshot: &Json) -> (f64, f64, f64, bool) {
     (num(&snapshot["object_bytes"]) - num(&unreachable["bytes"]), num(&snapshot["objects"]) - num(&unreachable["count"]), num(&unreachable["bytes"]), false)
 }
 
-fn timeline_stats(profile: &Json) -> Option<(f64, f64, f64, f64)> {
+/// A timeline's work a frame (mean, worst), host time a frame (mean; None when a kind slowed the run and no cpu pass filled it in)
+/// and the VM heap at its last frame
+fn timeline_stats(profile: &Json) -> Option<(f64, f64, Option<f64>, f64)> {
     let timeline = &profile["timeline"];
     let columns: Vec<&str> = timeline["columns"].as_array()?.iter().filter_map(Json::as_str).collect();
     let rows = timeline["rows"].as_array()?;
@@ -210,21 +250,25 @@ fn timeline_stats(profile: &Json) -> Option<(f64, f64, f64, f64)> {
     let column = |name: &str| columns.iter().position(|c| *c == name);
     let values = |name: &str| -> Vec<f64> { column(name).map(|index| rows.iter().map(|row| num(&row[index])).collect()).unwrap_or_default() };
     let work = values("work_ms");
-    let host = values("host_ms");
     let mean = |values: &[f64]| if values.is_empty() { 0.0 } else { values.iter().sum::<f64>() / values.len() as f64 };
+    // (null in a run a kind slowed: not the run's own)
+    let host: Option<Vec<f64>> = column("host_ms").and_then(|index| rows.iter().map(|row| row[index].as_f64()).collect());
     let max = work.iter().copied().fold(0.0, f64::max);
-    Some((mean(&work), max, mean(&host), values("heap_bytes").last().copied().unwrap_or(0.0)))
+    Some((mean(&work), max, host.map(|host| mean(&host)), values("heap_bytes").last().copied().unwrap_or(0.0)))
 }
 
 /// Compares two profiles; the text (printed by the command) and the JSON
 pub fn compare(before: &Json, after: &Json, top: usize) -> (String, Json) {
+    // (profiles of two versions: what changed meaning between them is left out, rather than read as a change)
+    let versions = (before["version"].as_u64().unwrap_or(1), after["version"].as_u64().unwrap_or(1));
+    let same_version = versions.0 == versions.1;
     let mut figures: Vec<Figure> = Vec::new();
     let mut add = |name: &str, b: f64, a: f64, unit: &'static str| figures.push(Figure { name: name.into(), before: b, after: a, unit });
     // the headline: the game's code in the phases both report, apart from the harness's (whose work moves with what it
     // scans, not with the game)
     let scope = shared_scope(before, after);
     let scope_label = scope.as_ref().map(|phases| format!("{} {}", if phases.len() == 1 { "phase" } else { "phases" }, phases.join(", ")));
-    if let (Some(phases), Some(label)) = (&scope, &scope_label) {
+    if let (Some(phases), Some(label), true) = (&scope, &scope_label, same_version) {
         let (b, a) = (side_totals(before, phases), side_totals(after, phases));
         add(&format!("the game's code, {label}"), b.0, a.0, "ms");
         add(&format!("the harness's code, {label}"), b.1, a.1, "ms");
@@ -254,6 +298,12 @@ pub fn compare(before: &Json, after: &Json, top: usize) -> (String, Json) {
         add("allocations", num(&before["alloc"]["objects"]), num(&after["alloc"]["objects"]), "");
     }
     let mut notes: Vec<String> = Vec::new();
+    if !same_version {
+        notes.push(format!(
+            "the profiles are of two versions ({} and {}): left out is what changed meaning between them: a function's and a line's self work (a C function's work is its own row since version 2, not its caller's), a function's calls and instructions (version 1 counted a module's main chunk at none), the game's and the harness's code, host time (the wall clock's before version 2, the run thread's CPU time since), Luau's inline caches and builtin calls (outcomes as the interpreter ran them, builtins apart, since version 2), ree's own caches (what each counts)",
+            versions.0, versions.1
+        ));
+    }
     if let Some(label) = &scope_label {
         notes.push(format!("the first two figures and the function tables cover {label} (work, calls, instructions); allocations, host time and lines cover the whole run"));
     }
@@ -273,24 +323,46 @@ pub fn compare(before: &Json, after: &Json, top: usize) -> (String, Json) {
         add("collector cycles", num(&before["heap"]["gc"]["cycles"]), num(&after["heap"]["gc"]["cycles"]), "");
         add("collector freed", num(&before["heap"]["gc"]["freed"]), num(&after["heap"]["gc"]["freed"]), "bytes");
     }
-    if before["time"].is_object() || after["time"].is_object() {
+    if (before["time"].is_object() || after["time"].is_object()) && same_version {
         add("host time sampled (noisy)", num(&before["time"]["sampled_ms"]), num(&after["time"]["sampled_ms"]), "ms");
     }
-    // the hardware counters both profiles read (the run thread's; the CPU's own, so they move a little run to run)
-    if let (Some(b), Some(a)) = (before["counters"]["run"]["counts"].as_object(), after["counters"]["run"]["counts"].as_object()) {
+    // the hardware counters both profiles read (the run thread's; the CPU's own, so they move a little run to run), by
+    // their names now (a profile from before the fills were named for what they count matches a newer one), then what
+    // memory cost the run thread in each: the share of its cycles stalled on loads, those cycles a thousand
+    // instructions, a miss's latency, and IPC
+    let (counts_before, counts_after) = (counter_counts(&before["counters"]["run"]["counts"]), counter_counts(&after["counters"]["run"]["counts"]));
+    if let (Some(b), Some(a)) = (&counts_before, &counts_after) {
         for (name, value) in b {
             if let Some(after_value) = a.get(name) {
-                add(&format!("{name} (hardware counter)"), num(value), num(after_value), "");
+                add(&format!("{name} (hardware counter)"), *value, *after_value, "");
             }
         }
-        if let (Some(b), Some(a)) = (before["counters"]["run"]["rates"]["IPC"].as_f64(), after["counters"]["run"]["rates"]["IPC"].as_f64()) {
-            add("IPC (hardware counters)", b, a, "ratio");
+        let figures = |counts: &BTreeMap<String, f64>| {
+            let names: Vec<String> = counts.keys().cloned().collect();
+            let values: Vec<f64> = counts.values().copied().collect();
+            super::hw::counters::figures(&names, &values)
+        };
+        let (fb, fa) = (figures(b), figures(a));
+        for (key, unit) in [(super::hw::counters::LOAD_STALL_SHARE, "share"), (super::hw::counters::STALL_PER_THOUSAND, "ratio"), (super::hw::counters::MISS_LATENCY, "cycles"), ("IPC", "ratio")] {
+            let get = |figures: &[super::hw::counters::Figure]| figures.iter().find(|figure| figure.key == key).map(|figure| figure.value);
+            if let (Some(x), Some(y)) = (get(&fb), get(&fa)) {
+                add(&format!("{key} (hardware counters)"), x, y, unit);
+            }
+        }
+    }
+    // (the functions' counter figures compare only between profiles whose counters reached functions the same way)
+    if before["counters"]["run"].is_object() && after["counters"]["run"].is_object() {
+        let (b, a) = (super::report::attribution_of(&before["counters"]), super::report::attribution_of(&after["counters"]));
+        if b != a {
+            notes.push(format!("the hardware counters reached functions in other ways (before: {b}; after: {a}): the run's counts compare, the functions' counter figures only roughly"));
         }
     }
     if let (Some(b), Some(a)) = (timeline_stats(before), timeline_stats(after)) {
         add("work a frame, mean", b.0, a.0, "ms");
         add("work a frame, worst", b.1, a.1, "ms");
-        add("host a frame, mean (noisy)", b.2, a.2, "ms");
+        if let (Some(before_host), Some(after_host), true) = (b.2, a.2, same_version) {
+            add("host a frame, mean (noisy)", before_host, after_host, "ms");
+        }
         add("VM heap at the last frame, with garbage", b.3, a.3, "bytes");
     }
     add("frames", num(&before["run"]["frames"]), num(&after["run"]["frames"]), "");
@@ -310,7 +382,18 @@ pub fn compare(before: &Json, after: &Json, top: usize) -> (String, Json) {
     }
 
     // functions: the game's first, the harness's apart
-    let (fb, fa) = (functions(before, scope.as_deref()), functions(after, scope.as_deref()));
+    let (mut fb, mut fa) = (functions(before, scope.as_deref()), functions(after, scope.as_deref()));
+    // (a function's self work holds its C calls' before version 2, not since, its host time was the wall clock's, and version 1
+    // counted a module's main chunk at no call and no instruction: none of those is compared across them; allocations are)
+    if !same_version {
+        for (_, _, figures) in fb.values_mut().chain(fa.values_mut()) {
+            figures.time = 0.0;
+            figures.self_work = 0.0;
+            figures.total_work = 0.0;
+            figures.calls = 0.0;
+            figures.insns = 0.0;
+        }
+    }
     let keys: BTreeSet<&String> = fb.keys().chain(fa.keys()).collect();
     let mut rows: Vec<(String, bool, FunctionFigures, FunctionFigures)> = keys
         .into_iter()
@@ -336,20 +419,56 @@ pub fn compare(before: &Json, after: &Json, top: usize) -> (String, Json) {
             continue;
         }
         let _ = writeln!(text, "\n{title}");
+        let work = |figures: &FunctionFigures| if same_version { format!("{:.3}", figures.self_work) } else { "-".to_string() };
+        let count_of = |value: f64| if same_version { (value as u64).to_string() } else { "-".to_string() };
         for (label, _, b, a) in side.iter().take(count) {
             let _ = writeln!(
                 text,
-                "{:>9.3} -> {:<9.3} {:>9} -> {:<9} {:>10} -> {:<10} {:>9} -> {:<9}  {}",
-                b.self_work,
-                a.self_work,
-                b.calls as u64,
-                a.calls as u64,
-                b.insns as u64,
-                a.insns as u64,
+                "{:>9} -> {:<9} {:>9} -> {:<9} {:>10} -> {:<10} {:>9} -> {:<9}  {}",
+                work(b),
+                work(a),
+                count_of(b.calls),
+                count_of(a.calls),
+                count_of(b.insns),
+                count_of(a.insns),
                 bytes(b.alloc),
                 bytes(a.alloc),
                 label
             );
+        }
+    }
+
+    // the functions whose cycles stalled on loads moved most (the hardware counters' self counts, by function key)
+    let mut counter_rows: Vec<Json> = Vec::new();
+    let (cfb, cfa) = (counter_functions(before), counter_functions(after));
+    let stall_key = ["load-stall-cycles", "cycles"].into_iter().find(|name| cfb.values().chain(cfa.values()).any(|(_, counts)| counts.contains_key(*name)));
+    if let Some(lead) = stall_key {
+        let keys: BTreeSet<&String> = cfb.keys().chain(cfa.keys()).collect();
+        let empty = (String::new(), BTreeMap::new());
+        let mut moved: Vec<(&String, f64, f64, f64, f64)> = keys
+            .into_iter()
+            .map(|key| {
+                let (b, a) = (cfb.get(key).unwrap_or(&empty), cfa.get(key).unwrap_or(&empty));
+                let get = |counts: &BTreeMap<String, f64>, name: &str| counts.get(name).copied().unwrap_or(0.0);
+                (key, get(&b.1, lead), get(&a.1, lead), get(&b.1, "cycles"), get(&a.1, "cycles"))
+            })
+            .filter(|(_, b, a, _, _)| (a - b).abs() > 0.0)
+            .collect();
+        moved.sort_by(|x, y| (y.2 - y.1).abs().total_cmp(&(x.2 - x.1).abs()).then_with(|| x.0.cmp(y.0)));
+        if !moved.is_empty() {
+            let stalls = lead == "load-stall-cycles";
+            let _ = writeln!(text, "
+functions whose {} moved most (hardware counters, self: before -> after{}; they vary run to run)", if stalls { "cycles stalled on loads" } else { "cycles" }, if stalls { ", and the share of their own cycles stalled" } else { "" });
+            let share = |stalled: f64, cycles: f64| if cycles > 0.0 { format!("{:.1} %", stalled / cycles * 100.0) } else { "-".into() };
+            for (key, b, a, cb, ca) in moved.iter().take(top) {
+                let label = cfa.get(*key).or_else(|| cfb.get(*key)).map_or(key.as_str(), |(label, _)| label.as_str());
+                if stalls {
+                    let _ = writeln!(text, "{:>12} -> {:<12} {:>9} -> {:<9} {:>10}  {}", compact(*b), compact(*a), share(*b, *cb), share(*a, *ca), change(*b, *a), label);
+                } else {
+                    let _ = writeln!(text, "{:>12} -> {:<12} {:>10}  {}", compact(*b), compact(*a), change(*b, *a), label);
+                }
+                counter_rows.push(json!({"function": label, "key": key, "counter": lead, "before": b, "after": a, "before_cycles": cb, "after_cycles": ca}));
+            }
         }
     }
 
@@ -358,7 +477,8 @@ pub fn compare(before: &Json, after: &Json, top: usize) -> (String, Json) {
     let (hb, ha) = (hashes(before), hashes(after));
     let same: BTreeSet<String> = hb.iter().filter(|(module, hash)| ha.get(*module) == Some(*hash)).map(|(module, _)| module.clone()).collect();
     let changed: Vec<&String> = hb.keys().filter(|module| ha.get(*module).is_some_and(|hash| Some(hash) != hb.get(*module))).collect();
-    let (lb, la) = (lines(before, &same), lines(after, &same));
+    // (a line's self work holds its C calls' before version 2 and not since: lines are compared within a version only)
+    let (lb, la) = if same_version { (lines(before, &same), lines(after, &same)) } else { (BTreeMap::new(), BTreeMap::new()) };
     let line_keys: BTreeSet<&(String, i64)> = lb.keys().chain(la.keys()).collect();
     let mut line_rows: Vec<(&(String, i64), (f64, f64, f64), (f64, f64, f64))> =
         line_keys.into_iter().map(|key| (key, lb.get(key).copied().unwrap_or_default(), la.get(key).copied().unwrap_or_default())).filter(|(_, b, a)| (a.0 - b.0).abs() > 1e-9 || (a.1 - b.1).abs() > 0.0 || (a.2 - b.2).abs() > 0.0).collect();
@@ -374,14 +494,21 @@ pub fn compare(before: &Json, after: &Json, top: usize) -> (String, Json) {
     }
 
     // caches
+    // (ree's own caches are profile.json's emulator.caches; a profile before that has them as ree_caches)
     let rates = |profile: &Json, path: &str| -> BTreeMap<String, (f64, f64)> {
-        profile[path]
-            .as_array()
-            .or_else(|| profile[path]["by_kind"].as_array())
+        let rows = if path == "ree_caches" && profile["emulator"]["caches"].is_array() { &profile["emulator"]["caches"] } else { &profile[path] };
+        rows.as_array()
+            .or_else(|| rows["by_kind"].as_array())
             .into_iter()
             .flatten()
             .map(|row| {
                 let name = row["name"].as_str().or_else(|| row["kind"].as_str()).unwrap_or("?").to_string();
+                // (a Luau cache's outcomes: every lookup but a value another type serves; a profile before them had hits, misses, slow)
+                if let Some(outcomes) = row["outcomes"].as_object() {
+                    let hits = outcomes.get("hit").map_or(0.0, num);
+                    let lookups = outcomes.iter().filter(|(outcome, _)| *outcome != "not_table").map(|(_, count)| num(count)).sum::<f64>();
+                    return (name, (hits, lookups));
+                }
                 let hits = num(&row["hits"]);
                 let lookups = hits + num(&row["misses"]) + num(&row["slow"]);
                 (name, (hits, lookups))
@@ -389,7 +516,8 @@ pub fn compare(before: &Json, after: &Json, top: usize) -> (String, Json) {
             .collect()
     };
     let mut cache_rows = Vec::new();
-    for (title, path) in [("Luau inline caches", "luau_caches"), ("ree caches", "ree_caches")] {
+    let cache_groups: &[(&str, &str)] = if same_version { &[("Luau inline caches", "luau_caches"), ("ree's own caches (the emulator's)", "ree_caches")] } else { &[] };
+    for &(title, path) in cache_groups {
         let (b, a) = (rates(before, path), rates(after, path));
         let names: BTreeSet<&String> = b.keys().chain(a.keys()).collect();
         let mut wrote = false;
@@ -434,14 +562,21 @@ pub fn compare(before: &Json, after: &Json, top: usize) -> (String, Json) {
         }
     }
 
+    // a function's figures on one side: across versions what changed meaning between them is not compared (null)
+    let side_json = |f: &FunctionFigures| -> Json {
+        if same_version {
+            json!({"self_work_ms": f.self_work, "total_work_ms": f.total_work, "calls": f.calls, "insns": f.insns, "alloc_bytes": f.alloc, "time_ms": f.time})
+        } else {
+            json!({"self_work_ms": null, "total_work_ms": null, "calls": null, "insns": null, "alloc_bytes": f.alloc, "time_ms": null})
+        }
+    };
     let json = json!({
         "version": 1,
         "figures": figures.iter().map(|f| json!({"name": f.name, "before": f.before, "after": f.after, "unit": f.unit})).collect::<Vec<_>>(),
         "scope": scope,
-        "functions": rows.iter().take(500).map(|(label, harness, b, a)| json!({"function": label, "harness": harness,
-            "before": {"self_work_ms": b.self_work, "total_work_ms": b.total_work, "calls": b.calls, "insns": b.insns, "alloc_bytes": b.alloc, "time_ms": b.time},
-            "after": {"self_work_ms": a.self_work, "total_work_ms": a.total_work, "calls": a.calls, "insns": a.insns, "alloc_bytes": a.alloc, "time_ms": a.time}})).collect::<Vec<_>>(),
+        "functions": rows.iter().take(500).map(|(label, harness, b, a)| json!({"function": label, "harness": harness, "before": side_json(b), "after": side_json(a)})).collect::<Vec<_>>(),
         "lines": line_rows.iter().take(500).map(|((module, line), b, a)| json!({"module": module, "line": line, "before": {"work_ms": b.0, "insns": b.1, "alloc_bytes": b.2}, "after": {"work_ms": a.0, "insns": a.1, "alloc_bytes": a.2}})).collect::<Vec<_>>(),
+        "counter_functions": counter_rows,
         "changed_modules": changed,
         "notes": notes,
         "caches": cache_rows,

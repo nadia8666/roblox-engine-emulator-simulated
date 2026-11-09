@@ -122,9 +122,10 @@ pub struct Edge {
     pub insns: f64,
 }
 
-/// A node of the calling-context tree: `[parent, function, calls, self work in us, self instructions, label]`
+/// A node of the calling-context tree: `[parent, function, calls, self work in us, self instructions, label, the calling line]`
+/// (the calling line is a newer ree's: -1 when not known)
 #[derive(Clone, Debug, Default, Deserialize)]
-pub struct TreeNode(pub i64, pub i64, pub u64, pub f64, pub f64, #[serde(default)] pub Option<String>);
+pub struct TreeNode(pub i64, pub i64, pub u64, pub f64, pub f64, #[serde(default)] pub Option<String>, #[serde(default)] pub Option<i64>);
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
@@ -162,10 +163,40 @@ pub struct Work {
 #[serde(default)]
 pub struct CacheKind {
     pub kind: String,
+    /// The counts profiles had before the outcomes (a version 1 profile's only ones)
     pub hits: f64,
     pub misses: f64,
     pub slow: f64,
     pub other: f64,
+    /// What each lookup did as the interpreter ran it, by outcome (version 2)
+    pub outcomes: BTreeMap<String, f64>,
+    /// The work clock's charge at the sites past their dispatch, and the uncharged outcomes' work at the committed prices, in
+    /// microseconds a frame of the reported phases (version 2)
+    pub charged_work_us_per_frame: f64,
+    pub extra_work_us_per_frame: f64,
+}
+
+/// The lookups a table serves (every outcome but not_table) and the hits among them: one definition, as ree's summary and
+/// `ree profile diff` read it; a profile before the outcomes counts hits, misses and slow paths
+fn lookups_and_hits(outcomes: &BTreeMap<String, f64>, legacy: (f64, f64, f64)) -> (f64, f64) {
+    if outcomes.is_empty() {
+        let (hits, misses, slow) = legacy;
+        return (hits + misses + slow, hits);
+    }
+    let all: f64 = outcomes.values().sum();
+    (all - outcomes.get("not_table").copied().unwrap_or(0.0), outcomes.get("hit").copied().unwrap_or(0.0))
+}
+
+impl CacheKind {
+    /// The lookups a table serves
+    pub fn lookups(&self) -> f64 {
+        lookups_and_hits(&self.outcomes, (self.hits, self.misses, self.slow)).0
+    }
+
+    /// The hits among them
+    pub fn hit_count(&self) -> f64 {
+        lookups_and_hits(&self.outcomes, (self.hits, self.misses, self.slow)).1
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -175,21 +206,56 @@ pub struct CacheSite {
     pub line: i64,
     pub pc: i64,
     pub op: String,
+    pub key: Option<String>,
+    /// The counts profiles had before the outcomes (a version 1 profile's only ones)
     pub hits: f64,
     pub misses: f64,
     pub slow: f64,
     pub other: f64,
+    /// What it did as the interpreter ran it, by outcome (version 2)
+    pub outcomes: BTreeMap<String, f64>,
+    /// The work clock's charge at the site past its dispatch (part of its function's work) and the uncharged outcomes' work at
+    /// the committed prices (beyond it), in microseconds a frame of the reported phases; outcomes priced within the noise (left
+    /// out of the extra)
+    pub charged_work_us_per_frame: f64,
+    pub extra_work_us_per_frame: f64,
+    pub within_noise: f64,
 }
 
 impl CacheSite {
-    /// What missed: repredicted slots and slow paths (a value that is not a table is neither)
-    pub fn missed(&self) -> f64 {
-        self.misses + self.slow
+    /// The lookups a table serves (a value another type's metamethod serves is no cache's lookup)
+    pub fn lookups(&self) -> f64 {
+        lookups_and_hits(&self.outcomes, (self.hits, self.misses, self.slow)).0
     }
 
-    pub fn runs(&self) -> f64 {
-        self.hits + self.misses + self.slow + self.other
+    /// The hits among them
+    pub fn hit_count(&self) -> f64 {
+        lookups_and_hits(&self.outcomes, (self.hits, self.misses, self.slow)).1
     }
+
+    /// What the cached slot did not serve: the lookups but the hits (a reprediction, an absent key, an insert, a rehash, a
+    /// metatable walk; before the outcomes, repredictions and slow paths)
+    pub fn missed(&self) -> f64 {
+        self.lookups() - self.hit_count()
+    }
+
+    /// Every run, a value another type serves too
+    pub fn runs(&self) -> f64 {
+        if self.outcomes.is_empty() { self.hits + self.misses + self.slow + self.other } else { self.outcomes.values().sum() }
+    }
+
+    /// Its commonest outcome but a hit, and how many (version 2)
+    pub fn commonest_miss(&self) -> Option<(&str, f64)> {
+        self.outcomes.iter().filter(|(name, n)| name.as_str() != "hit" && name.as_str() != "not_table" && **n > 0.0).max_by(|a, b| a.1.total_cmp(b.1).then(b.0.cmp(a.0))).map(|(name, n)| (name.as_str(), *n))
+    }
+}
+
+/// What an outcome means and what helps (profile.json luau_caches.outcome_info)
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct OutcomeInfo {
+    pub meaning: String,
+    pub advice: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -197,6 +263,9 @@ impl CacheSite {
 pub struct LuauCaches {
     pub by_kind: Vec<CacheKind>,
     pub sites: Vec<CacheSite>,
+    /// The frames of the reported phases the counts cover (version 2; a version 1 profile's are the run's)
+    pub frames: Option<f64>,
+    pub outcome_info: BTreeMap<String, OutcomeInfo>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -325,6 +394,12 @@ pub struct Heap {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
+pub struct Emulator {
+    pub caches: Vec<ReeCache>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
 pub struct ReeCache {
     pub name: String,
     pub about: String,
@@ -346,9 +421,13 @@ impl Columns {
         self.columns.iter().position(|column| column == name)
     }
 
-    /// A column's values, row by row (0 where a row lacks it)
+    /// A column's values, row by row (0 where a row lacks it); None for a column no row has a figure in (a run a profiling kind
+    /// slowed has no host time a frame: its host_ms are null, never 0)
     pub fn values(&self, name: &str) -> Option<Vec<f64>> {
         let index = self.index(name)?;
+        if self.rows.iter().all(|row| row.get(index).is_none_or(serde_json::Value::is_null)) {
+            return None;
+        }
         Some(self.rows.iter().map(|row| row.get(index).and_then(serde_json::Value::as_f64).unwrap_or(0.0)).collect())
     }
 
@@ -392,12 +471,70 @@ pub struct CounterLine {
 pub struct Counters {
     pub source: String,
     pub names: Vec<String>,
+    /// What each counter counts (a profile from before the field: none)
+    pub about: Vec<Option<String>>,
     pub error: Option<String>,
     pub notes: Vec<String>,
+    /// Seconds captured before the service reached its slice limit
+    pub cut_short: Option<f64>,
+    /// How counts reached functions: `{"method": "calls", "version": 2, ...}` from readings around sampled calls (a
+    /// line's figures are then what the calls made from it cost; no version: one call drawn of each run of calls, and
+    /// threads' switches not read); none for a profile from before, whose stacks are 1 ms samples'
+    pub attribution: Option<serde_json::Value>,
     pub run: CounterRun,
     pub frames: Columns,
     pub functions: Vec<CounterFunction>,
     pub lines: Vec<CounterLine>,
+}
+
+impl Counters {
+    /// Old counter names as the names they have now (hw_counters::OLD_NAMES): a profile from before the fill counters
+    /// were named for what they count opens with the names a new one has, so the views, the metric switch and a diff
+    /// between the two match them
+    pub fn normalize(&mut self) {
+        let renamed = |name: &str| crate::hw_counters::canonical(name).to_string();
+        let map = |map: &mut BTreeMap<String, f64>| *map = std::mem::take(map).into_iter().map(|(name, value)| (renamed(&name), value)).collect();
+        for name in &mut self.names {
+            *name = renamed(name);
+        }
+        map(&mut self.run.counts);
+        for column in &mut self.frames.columns {
+            *column = renamed(column);
+        }
+        for row in &mut self.functions {
+            map(&mut row.own);
+            map(&mut row.total);
+        }
+        for row in &mut self.lines {
+            map(&mut row.own);
+            map(&mut row.total);
+        }
+    }
+
+    /// Whether counts reached functions from readings around sampled calls (a line's figures then being its calls')
+    pub fn by_calls(&self) -> bool {
+        self.attribution.as_ref().is_some_and(|attribution| attribution["method"] == "calls")
+    }
+
+    /// How counts reached functions, in words (the Compare view says when two profiles differ)
+    pub fn attribution_text(&self) -> &'static str {
+        let attribution = self.attribution.as_ref();
+        match (attribution.and_then(|a| a["method"].as_str()), attribution.and_then(|a| a["version"].as_u64())) {
+            (Some("calls"), Some(2..)) => "readings around sampled calls, each drawn on its own, and where threads switch",
+            (Some("calls"), _) => "readings around sampled calls, one drawn of each run of calls, threads' switches not read",
+            _ => "1 ms samples, each booked to the stack the next reading found",
+        }
+    }
+
+    /// What a counter counts, one line
+    pub fn about_of(&self, index: usize) -> Option<String> {
+        self.about.get(index).cloned().flatten().or_else(|| self.names.get(index).and_then(|name| crate::hw_counters::known(name)).map(|known| known.about.to_string()))
+    }
+
+    /// The derived figures of a function's or a stretch's counts, in `names` order (hw_counters::figures)
+    pub fn figures(&self, counts: &[f64]) -> Vec<crate::hw_counters::Figure> {
+        crate::hw_counters::figures(&self.names, counts)
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -428,6 +565,8 @@ pub struct Raw {
     pub alloc: Option<Alloc>,
     pub heap: Option<Heap>,
     pub ree_caches: Option<Vec<ReeCache>>,
+    /// ree's own caches in a newer profile (`emulator.caches`; read into `ree_caches`)
+    pub emulator: Option<Emulator>,
     pub timeline: Option<Columns>,
     pub cpu: Option<serde_json::Value>,
     pub counters: Option<Counters>,
@@ -620,7 +759,7 @@ pub struct Profile {
     pub lines: BTreeMap<(usize, i64), LineFig>,
     /// Hardware counters by function index: (self, total), in `counters.names` order
     pub counter_funcs: FxHashMap<usize, (Vec<f64>, Vec<f64>)>,
-    /// Luau inline cache misses (repredicted and slow) and runs by function index
+    /// Luau inline cache misses (the lookups a table serves but the hits) and those lookups, by function index
     pub miss_funcs: FxHashMap<usize, (f64, f64)>,
 }
 
@@ -641,12 +780,21 @@ pub struct LineFig {
     pub ops: BTreeMap<String, u64>,
 }
 
+/// The profile.json version this viewer reads (ree's report.rs PROFILE_VERSION); an older one reads with what it has, and says so
+pub const READS_VERSION: u32 = 2;
+
 impl Profile {
-    /// Reads a profile directory (or its profile.json)
+    /// Reads a profile directory (or its profile.json): one of a newer version than [`READS_VERSION`] is an error
     pub fn load(path: &Path) -> Result<Profile, String> {
         let (dir, file) = if path.is_file() { (path.parent().unwrap_or(Path::new(".")).to_path_buf(), path.to_path_buf()) } else { (path.to_path_buf(), path.join("profile.json")) };
         let text = std::fs::read(&file).map_err(|error| format!("{}: {error}", file.display()))?;
-        let raw: Raw = serde_json::from_slice(&text).map_err(|error| format!("{}: {error}", file.display()))?;
+        let mut raw: Raw = serde_json::from_slice(&text).map_err(|error| format!("{}: {error}", file.display()))?;
+        if raw.version > READS_VERSION {
+            return Err(format!("{}: profile version {} is newer than this viewer reads ({READS_VERSION}): build the viewer of the ree that wrote it", file.display(), raw.version));
+        }
+        if raw.version < READS_VERSION {
+            raw.warnings.push(format!("profile version {} (this viewer reads {READS_VERSION}): its host time is the wall clock's, its caches' outcomes and prices are as that version counted them", raw.version.max(1)));
+        }
         let mut profile = Profile::from_raw(dir.clone(), raw);
         // folded stacks the JSON does not carry
         if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -659,7 +807,12 @@ impl Profile {
                 }
                 if let Ok(text) = std::fs::read_to_string(dir.join(&name)) {
                     let folded = profile.parse_folded(&text);
-                    profile.folded.insert(stem.to_string(), folded);
+                    // (a counter's file under its old name is its new name's: Counters::normalize)
+                    let stem = match stem.strip_prefix("counters.") {
+                        Some(counter) => format!("counters.{}", crate::hw_counters::canonical(counter)),
+                        None => stem.to_string(),
+                    };
+                    profile.folded.insert(stem, folded);
                 }
             }
         }
@@ -672,7 +825,13 @@ impl Profile {
     }
 
     /// A profile from its parsed JSON (tests build them this way)
-    pub fn from_raw(dir: PathBuf, raw: Raw) -> Profile {
+    pub fn from_raw(dir: PathBuf, mut raw: Raw) -> Profile {
+        if raw.ree_caches.is_none() {
+            raw.ree_caches = raw.emulator.as_ref().map(|emulator| emulator.caches.clone());
+        }
+        if let Some(counters) = raw.counters.as_mut() {
+            counters.normalize();
+        }
         let mut profile = Profile {
             dir,
             label: None,
@@ -768,10 +927,10 @@ impl Profile {
                 let Some(func) = self.func_of_id(site.function) else { continue };
                 let fig = lines.entry((func, site.line)).or_insert_with(blank);
                 fig.misses += site.missed();
-                fig.cache_runs += site.runs();
+                fig.cache_runs += site.lookups();
                 let entry = miss_funcs.entry(func).or_default();
                 entry.0 += site.missed();
-                entry.1 += site.runs();
+                entry.1 += site.lookups();
             }
         }
         let mut counter_funcs: FxHashMap<usize, (Vec<f64>, Vec<f64>)> = FxHashMap::default();
@@ -782,10 +941,13 @@ impl Profile {
                     counter_funcs.insert(func, (read(&row.own), read(&row.total)));
                 }
             }
+            // (from readings around sampled calls a line's own code is its function's: its figure is what the calls made
+            // from it cost; from 1 ms samples, what the samples there booked)
+            let by_calls = c.by_calls();
             for row in &c.lines {
                 let Some(func) = self.func_of_id(row.function) else { continue };
                 let fig = lines.entry((func, row.line)).or_insert_with(blank);
-                for (slot, value) in fig.counters.iter_mut().zip(read(&row.own)) {
+                for (slot, value) in fig.counters.iter_mut().zip(read(if by_calls { &row.total } else { &row.own })) {
                     *slot += value;
                 }
             }

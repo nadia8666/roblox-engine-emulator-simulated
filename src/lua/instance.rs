@@ -219,18 +219,8 @@ pub fn find_child_where(engine: &Engine, id: InstanceId, matches: impl Fn(&State
 /// `instance[key]` (InstanceMeta.__index): a member by its exact name, else a child by that name, else (a client's rule,
 /// docs/engine.md "Member names") the member the key names with its first letter upper-cased.
 pub fn get(lua: &Lua, engine: &Rc<Engine>, id: InstanceId, key: &LuaValue) -> Result<LuaValue, Flow> {
-    // (a number key reads as its text, as every string argument of Roblox's does: `pages[1]` finds the child named "1")
-    let coerced;
-    let key_string = match key {
-        LuaValue::String(key_string) => key_string,
-        LuaValue::Integer(_) | LuaValue::Number(_) => match lua.coerce_string(key.clone())? {
-            Some(text) => {
-                coerced = text;
-                &coerced
-            }
-            None => return raise_at_caller(format!("invalid argument #2 (string expected, got {})", typeof_value(engine, key))),
-        },
-        _ => return raise_at_caller(format!("invalid argument #2 (string expected, got {})", typeof_value(engine, key))),
+    let LuaValue::String(key_string) = key else {
+        return raise_at_caller(format!("invalid argument #2 (string expected, got {})", typeof_value(engine, key)));
     };
     let key_bytes = key_string.as_bytes();
     if engine.state.borrow().dom.at(id).has(flags::BUNDLE_ROOT) {
@@ -253,17 +243,6 @@ pub fn get(lua: &Lua, engine: &Rc<Engine>, id: InstanceId, key: &LuaValue) -> Re
     }
     if let Some(child) = super::globals::missing_child(lua, engine, id, &key_bytes)? {
         return Ok(instance_value(lua, engine, child)?);
-    }
-    if engine.world().game == id {
-        let service_name = key_string.to_string_lossy();
-        if engine
-            .reflection
-            .class_id(&service_name)
-            .is_some_and(|service| engine.reflection.class(service).service)
-        {
-            let service = crate::services::get_service(engine, id, &service_name)?;
-            return Ok(instance_value(lua, engine, service)?);
-        }
     }
     if let Some(name) = engine.reflection.upper_first_id(&key_bytes)
         && let Some(value) = get_member(lua, engine, id, class, name)
@@ -497,7 +476,7 @@ fn cross_set(engine: &Engine, state: &State, id: InstanceId, name: NameId, cost:
     if crate::boundary::active() && !state.sched.is_muted() {
         let class = state.dom.at(id).class;
         let reflection = &engine.reflection;
-        crate::boundary::record(crate::boundary::Kind::Set, class, name, id.index, cost, changed, || {
+        crate::boundary::record(crate::boundary::Kind::Set, class, name, id.index, None, cost, changed, || {
             (reflection.class(reflection.declaring_class(class, name)).name.to_string(), reflection.name(name).to_string())
         });
     }
@@ -573,17 +552,14 @@ pub fn fire_immediate_costing(lua: &Lua, engine: &Rc<Engine>, signal: SignalId, 
                         parallel.push((lua.create_thread(callback)?, values));
                         continue;
                     }
-                    let label = scheduler::handler_label(engine, signal, &callback);
                     let sample = scheduler::sample_handler(engine, signal, &callback);
                     let _scope = crate::microprofile::enabled()
-                        .then(|| crate::microprofile::scope(label));
+                        .then(|| crate::microprofile::scope(scheduler::handler_label(engine, signal, &callback)));
                     let thread = lua.create_thread(callback)?;
                     if let Some(site) = census {
                         crate::census::handler_ran(site, &thread);
                     }
-                    scheduler::trace_scheduler(engine, &format!("immediate callback {label} begin"));
                     scheduler::resume(lua, engine, &thread, values);
-                    scheduler::trace_scheduler(engine, &format!("immediate callback {label} end"));
                     scheduler::end_handler_sample(sample, &thread);
                 }
             }

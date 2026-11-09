@@ -621,6 +621,9 @@ pub struct Dom {
     pub write_version: u64,
     dirty_log: Vec<InstanceId>,
     dirty_base: u64,
+    /// Bumped on every name change anywhere (a child looked up by name reads its parent's child list and its children's names:
+    /// the boundary profiler stamps such a read with both)
+    pub name_version: u32,
     /// Models whose rig animation caches (animation::pose), with a version a change inside one bumps: a child
     /// attached or detached below it, or a Name / Part0 / Part1 / Scale written on it or below it
     rig_watch: FxHashMap<InstanceId, u32>,
@@ -725,10 +728,14 @@ impl Dom {
         };
         let instance = self.at_mut(id);
         instance.class = class;
+        let renamed = instance.stored(K::Name as NameId).is_none() && instance.name != default_name;
         if instance.stored(K::Name as NameId).is_none() {
             instance.name = default_name;
         }
         instance.version = instance.version.wrapping_add(1);
+        if renamed {
+            self.name_version = self.name_version.wrapping_add(1);
+        }
         self.structure_version += 1;
         self.write_version += 1;
     }
@@ -811,6 +818,44 @@ impl Dom {
     /// Number of live instances.
     pub fn live_count(&self) -> usize {
         self.slots.len() - self.free_slots.len()
+    }
+
+    /// The live instances by where they are: (in the tree under `root`, the DataModel, itself included; alive outside it;
+    /// destroyed, kept until the VM collects the last userdata that holds them)
+    pub fn census(&self, root: Option<InstanceId>) -> (u64, u64, u64) {
+        // (per slot: 0 not known yet, 1 under root, 2 not; a walk up stops at the first known ancestor and marks its path)
+        let mut under = vec![0u8; self.slots.len()];
+        if let Some(slot) = root.filter(|root| self.get(*root).is_some()).and_then(|root| under.get_mut(root.index as usize)) {
+            *slot = 1;
+        }
+        let (mut inside, mut outside, mut destroyed) = (0, 0, 0);
+        let mut path: Vec<usize> = Vec::new();
+        for (index, slot) in self.slots.iter().enumerate() {
+            let Some(instance) = slot.instance.as_ref() else { continue };
+            if instance.has(flags::DESTROYED) {
+                destroyed += 1;
+                continue;
+            }
+            if under[index] == 0 {
+                path.clear();
+                path.push(index);
+                let mut parent = instance.parent;
+                let found = loop {
+                    let Some(id) = parent else { break 2 };
+                    let at = id.index as usize;
+                    if under.get(at).copied().unwrap_or(2) != 0 {
+                        break under[at];
+                    }
+                    path.push(at);
+                    parent = self.get(id).and_then(|instance| instance.parent);
+                };
+                for &at in &path {
+                    under[at] = found;
+                }
+            }
+            if under[index] == 1 { inside += 1 } else { outside += 1 }
+        }
+        (inside, outside, destroyed)
     }
 
     /// Number of instances ever created (the last serial).
@@ -1090,6 +1135,7 @@ impl Dom {
             },
         };
         self.at_mut(id).name = name;
+        self.name_version = self.name_version.wrapping_add(1);
     }
 
     /// Stores `value` as RawSet does with one property lookup: (whether RawGet's value changed,
@@ -1192,5 +1238,27 @@ mod tests {
         // BindableFunction's recorded Name default differs from its class name
         let function = dom.create(&reflection, reflection.class_id("BindableFunction").unwrap());
         assert_eq!(dom.at(function).name.as_bytes(), b"Function");
+    }
+
+    /// A class change that renames an instance (its name was the old class's default) moves the names' version, which a child
+    /// lookup's cached answer is stamped with; one that keeps its name (stored, or the same default) does not
+    #[test]
+    fn a_class_change_that_renames_moves_the_names_version() {
+        let reflection = Reflection::shared().unwrap();
+        let mut dom = Dom::new();
+        let (folder, frame) = (reflection.class_id("Folder").unwrap(), reflection.class_id("Frame").unwrap());
+        let unnamed = dom.create(&reflection, folder);
+        let before = dom.name_version;
+        dom.set_class(&reflection, unnamed, frame);
+        assert_eq!(dom.at(unnamed).name.as_bytes(), b"Frame");
+        assert_ne!(dom.name_version, before, "renamed from Folder to Frame");
+        let named = dom.create(&reflection, folder);
+        dom.at_mut(named).store(K::Name as NameId, Value::String(Str::from("Kept")));
+        dom.refresh_name(&reflection, named);
+        let before = dom.name_version;
+        dom.set_class(&reflection, named, frame);
+        assert_eq!((dom.at(named).name.as_bytes(), dom.name_version), (&b"Kept"[..], before), "a stored name stays");
+        dom.set_class(&reflection, unnamed, frame);
+        assert_eq!(dom.name_version, before, "the same class: the same name");
     }
 }

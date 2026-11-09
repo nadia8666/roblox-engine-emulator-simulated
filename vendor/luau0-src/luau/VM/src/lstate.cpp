@@ -157,6 +157,9 @@ void lua_resetthread(lua_State* L)
     api_check(L, !L->isactive);
     api_check(L, L->status != LUA_OK || L->ci == L->base_ci);
 
+    // (its sampled calls leave before its frames go: lprofile.cpp)
+    if (L->global->profilecalls)
+        luaP_callsunwound(L, L->base_ci);
     if (luaP_state)
         luaP_threadgone(L, L);
     // close upvalues before clearing anything
@@ -245,6 +248,7 @@ lua_State* lua_newstate(lua_Alloc allocator, void* ud)
     g->typeofnames = NULL;
     g->vectortypename = NULL;
     g->coldon = 0;
+    g->profilecalls = 0;
     g->coldslot = 0;
 
     g->lastprotoid = 1;

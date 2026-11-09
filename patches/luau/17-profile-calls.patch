@@ -1,0 +1,521 @@
+# Topic: a host's readings around the Luau calls it samples
+#
+# What it does: lua_setprofilecalls and lua_setprofilecallevery. While a profile's call hook is set, each Luau call's
+# frame set-up (an interpreted CALL, a call from C, a fast pcall, a metamethod's fast path) asks whether to sample it:
+# each call of a function is drawn on its own, with a chance of one in `every` (the host sets `every` per function; 1
+# until set; 0 for none, and then one call after every `remeasure` is read around for its length alone), except that a
+# call inside a sampled call of its own function on the same thread is sampled too (up to 64 from each recursion's
+# outermost sampled call), so a recursion's estimate does not grow noisier with each level. A sampled call's frame is
+# flagged (LUA_CALLINFO_PROFILECALL) and the hook runs as its first instruction is about to run and as its RETURN runs,
+# or as an error unwinds it to a protected call or to a coroutine's handler, or as an error ends its thread or the
+# thread is reset, the frame in place each time, so the host can read the CPU's counters around exactly the code the
+# call ran. Each thread's open sampled calls are tracked, so a thread that goes (a freed one too) gives them up. Calls
+# into native code are not sampled. Off, the interpreter does not ask: luau_execute runs a copy of its own that asks
+# only while a call hook is set (global_State::profilecalls, in padding: the state keeps its size), as it runs one for
+# single-stepping, compiled in a translation unit of its own (lvmexecute_profiled.cpp) so that both copies build side
+# by side; a call from C or a metamethod's fast path loads that flag, and a return tests a frame flag it loads anyway.
+#
+# Why upstream lacks it: Luau's hooks are per instruction (single-step) or at safepoints, neither of which marks a
+# call's entry and return; a hardware-counter profile needs both, and cheaply enough to skip most calls.
+
+diff --git a/luau/VM/include/lua.h b/luau/VM/include/lua.h
+index 17e14e8..e5a2c6c 100644
+--- a/luau/VM/include/lua.h
++++ b/luau/VM/include/lua.h
+@@ -560,6 +560,21 @@ LUA_API int lua_profileentries(lua_State* L, int* incfunction);
+ // registers a chunk's functions when it first runs one
+ LUA_API void lua_profilechunks(lua_State* L, int on);
+ 
++// a host's hook around the Luau calls it samples (a running profile's; NULL turns it off): LUA_PROFILECALL_ENTER as a
++// sampled call's first instruction is about to run (its frame in place, so lua_profilestack sees it on top), and
++// LUA_PROFILECALL_LEAVE as it returns, as an error unwinds it in a protected call, or as its thread is ended by an error
++// or reset (its frame still in place). Each
++// call of a function is drawn on its own, with a chance of one in `every` (lua_setprofilecallevery; 1 until set: every
++// call), except that a call inside a sampled call of its own function on the same thread is sampled too (up to 64 such
++// calls a sampled call, then they are drawn again), so a recursion is read as a whole; with `every` 0 none is sampled,
++// and one call after every `remeasure` calls is read around for its length alone. The hook is told the `every` its call
++// was drawn with (1 for a call sampled inside its function's, 0 for a call read for its length only) and the frame's
++// depth (lua_stackdepth). Calls into native code are not sampled.
++#define LUA_PROFILECALL_ENTER 0
++#define LUA_PROFILECALL_LEAVE 1
++LUA_API void lua_setprofilecalls(lua_State* L, void (*hook)(void* ud, lua_State* L, int event, int function, int every, int depth), void* ud);
++LUA_API void lua_setprofilecallevery(lua_State* L, int function, int every, int remeasure);
++
+ // what the memory an onallocate callback reports is for (lua_allocblock)
+ #define LUA_ALLOC_OTHER 0
+ #define LUA_ALLOC_OBJECT 1 // a collectable object: lua_allocblock returns its block
+diff --git a/luau/VM/src/ldo.cpp b/luau/VM/src/ldo.cpp
+index e15ee72..567c868 100644
+--- a/luau/VM/src/ldo.cpp
++++ b/luau/VM/src/ldo.cpp
+@@ -731,6 +731,10 @@ static void resume_handle(lua_State* L, void* ud)
+     // restore nCcalls to base for the continuation
+     L->nCcalls = L->baseCcalls;
+ 
++    // (a profile's sampled calls the error unwound leave: lprofile.cpp)
++    if (LUAU_UNLIKELY(L->global->profilecalls))
++        luaP_callsunwound(L, ci);
++
+     // restore the stack frame to the frame with continuation
+     L->ci = ci;
+ 
+@@ -855,6 +859,10 @@ int lua_resume(lua_State* L, lua_State* from, int nargs)
+ 
+     int result = resume_finish(L, status, oldnCcalls);
+ 
++    // (an error ended the thread: its sampled calls leave, lprofile.cpp)
++    if (LUAU_UNLIKELY(L->global->profilecalls) && result >= LUA_ERRRUN && result <= LUA_ERRERR)
++        luaP_callsunwound(L, L->base_ci);
++
+     if (LUAU_UNLIKELY(!!L->global->cb.postresume))
+         L->global->cb.postresume(L);
+ 
+@@ -881,6 +889,10 @@ int lua_resumeerror(lua_State* L, lua_State* from)
+ 
+     int result = resume_finish(L, status, oldnCcalls);
+ 
++    // (an error ended the thread: its sampled calls leave, lprofile.cpp)
++    if (LUAU_UNLIKELY(L->global->profilecalls) && result >= LUA_ERRRUN && result <= LUA_ERRERR)
++        luaP_callsunwound(L, L->base_ci);
++
+     if (LUAU_UNLIKELY(!!L->global->cb.postresume))
+         L->global->cb.postresume(L);
+ 
+@@ -970,6 +982,9 @@ int luaD_pcall(lua_State* L, Pfunc func, void* u, ptrdiff_t old_top, ptrdiff_t e
+         StkId oldtop = restorestack(L, old_top);
+         luaF_close(L, oldtop); // close eventual pending closures
+         luaD_seterrorobj(L, errstatus, oldtop);
++        // (a profile's sampled calls the error unwound leave: lprofile.cpp)
++        if (LUAU_UNLIKELY(L->global->profilecalls))
++            luaP_callsunwound(L, restoreci(L, old_ci));
+         L->ci = restoreci(L, old_ci);
+         L->base = L->ci->base;
+         restore_stack_limit(L);
+diff --git a/luau/VM/src/lprofile.cpp b/luau/VM/src/lprofile.cpp
+index a88b50a..b279f78 100644
+--- a/luau/VM/src/lprofile.cpp
++++ b/luau/VM/src/lprofile.cpp
+@@ -432,6 +432,31 @@ const BuiltinShape kBuiltins[] = {
+ const int kBuiltinCount = int(sizeof(kBuiltins) / sizeof(kBuiltins[0]));
+ static_assert(sizeof(kBuiltins) / sizeof(kBuiltins[0]) == LBF_TABLE_CLEAR + 1, "a builtin shape for each LBF_* id, in order");
+ 
++// a function's calls as the call hook samples them: each with a chance of one in `every`; with `every` 0 none, and one
++// call after every `remeasure` read for its length alone (`left` of those calls still to come). `open` of its sampled
++// calls have not returned (on any thread: lua_ProfileState::callopen), and `nestedleft` more calls inside the sampled
++// one a recursion began with may be sampled with it
++struct CallSample
++{
++    int every = 1;
++    int remeasure = 0;
++    int left = 0;
++    int open = 0;
++    int nestedleft = 0;
++};
++
++// the calls inside a sampled call of their own function sampled with it, at most (then they are drawn again)
++const int kNestedReads = 64;
++
++// whether a sampled call of `p` is open below `ci` on L: `ci` is a recursion's inner call
++static bool insampledcall(lua_State* L, CallInfo* ci, Proto* p)
++{
++    for (CallInfo* c = ci - 1; c >= L->base_ci; --c)
++        if ((c->flags & LUA_CALLINFO_PROFILECALL) && c->p == p)
++            return true;
++    return false;
++}
++
+ } // namespace
+ 
+ struct lua_ProfileState
+@@ -527,6 +552,14 @@ struct lua_ProfileState
+     // the interpreter entered and left (lua_setprofilevm)
+     void (*vm)(void* ud, lua_State* L, int entered) = NULL;
+     void* vmud = NULL;
++    // the host's hook around the calls it samples (lua_setprofilecalls), and each function's sampling, by function id
++    void (*callhook)(void* ud, lua_State* L, int event, int function, int every, int depth) = NULL;
++    void* callud = NULL;
++    std::vector<CallSample> callsamples;
++    uint64_t callrandom = 0x9e3779b97f4a7c15ull;
++    // each thread's open sampled calls (their functions, innermost last): a thread that goes (an error ended it, it was
++    // reset or freed) gives them up, so a function's count of open sampled calls stays true
++    std::unordered_map<lua_State*, std::vector<int>> callopen;
+ };
+ 
+ static lua_ProfileState* stateof(lua_State* L)
+@@ -2034,6 +2067,16 @@ void luaP_threadgone(lua_State* L, lua_State* L1)
+         if (s->namecalls[i].L == L1)
+             s->namecalls.erase(s->namecalls.begin() + i);
+     s->threads.erase(L1);
++    // (a freed thread's sampled calls are gone without a word: their functions' counts give them up; a reset one's left
++    // first, lua_resetthread)
++    auto open = s->callopen.find(L1);
++    if (open != s->callopen.end())
++    {
++        for (int id : open->second)
++            if (size_t(id) < s->callsamples.size() && s->callsamples[id].open > 0)
++                s->callsamples[id].open--;
++        s->callopen.erase(open);
++    }
+ }
+ 
+ void luaP_freed(lua_State* L, GCObject* o)
+@@ -2183,9 +2226,119 @@ void lua_profilefree(lua_State* L)
+     if (!s)
+         return;
+     luaP_state = NULL;
++    s->g->profilecalls = 0;
+     delete s;
+ }
+ 
++void lua_setprofilecalls(lua_State* L, void (*hook)(void* ud, lua_State* L, int event, int function, int every, int depth), void* ud)
++{
++    lua_ProfileState* s = stateof(L);
++    if (!s)
++        return;
++    s->callhook = hook;
++    s->callud = ud;
++    s->g->profilecalls = hook != NULL;
++}
++
++void lua_setprofilecallevery(lua_State* L, int function, int every, int remeasure)
++{
++    lua_ProfileState* s = stateof(L);
++    if (!s || function < 0)
++        return;
++    if (size_t(function) >= s->callsamples.size())
++        s->callsamples.resize(size_t(function) + 1);
++    CallSample& sample = s->callsamples[function];
++    sample.every = every < 0 ? 0 : every;
++    sample.remeasure = remeasure < 0 ? 0 : remeasure;
++    sample.left = sample.remeasure;
++}
++
++void luaP_callenter(lua_State* L)
++{
++    CallInfo* ci = L->ci;
++    Proto* p = ci->p;
++    lua_ProfileState* s = stateof(L);
++    // (native code returns without the interpreter's RETURN: its calls are not sampled; a call's frame has the native flag
++    // only once its NATIVECALL runs, so the function is asked)
++    if (!s || !s->callhook || (ci->flags & LUA_CALLINFO_NATIVE) || (p->exectarget != 0 && p->execdata))
++        return;
++    int id = functionof(s, p);
++    if (size_t(id) >= s->callsamples.size())
++        s->callsamples.resize(size_t(id) + 1);
++    CallSample& sample = s->callsamples[id];
++    int every = sample.every;
++    if (every > 1 && sample.open > 0 && sample.nestedleft > 0 && insampledcall(L, ci, p))
++    {
++        // inside a sampled call of its own function on this thread: sampled with it (a chance of 1, which the hook is
++        // told), so a recursion's estimate is as steady as its outermost call's instead of noisier with every level
++        sample.nestedleft--;
++        every = 1;
++    }
++    else if (every <= 0)
++    {
++        // none sampled: one call after every `remeasure` read around for its length alone
++        if (sample.remeasure <= 0 || --sample.left > 0)
++            return;
++        sample.left = sample.remeasure;
++        every = 0;
++    }
++    else if (every > 1)
++    {
++        // each call drawn on its own (xorshift64): a call nested in another of its function is as likely as any
++        uint64_t x = s->callrandom;
++        x ^= x << 13;
++        x ^= x >> 7;
++        x ^= x << 17;
++        s->callrandom = x;
++        if ((x >> 11) % uint64_t(every) != 0)
++            return;
++        // (the outermost sampled call of its function on this thread: the calls of it inside may be read with it; a
++        // call on another thread, or one a dead thread left open, does not hold the budget back)
++        if (sample.open == 0 || !insampledcall(L, ci, p))
++            sample.nestedleft = kNestedReads;
++    }
++    sample.open++;
++    s->callopen[L].push_back(id);
++    ci->flags |= LUA_CALLINFO_PROFILECALL;
++    // (the frame's first instruction: the hook may read the stack, this frame's line included)
++    ci->savedpc = p->code;
++    s->callhook(s->callud, L, LUA_PROFILECALL_ENTER, id, every, int(ci - L->base_ci));
++}
++
++void luaP_callleave(lua_State* L, CallInfo* ci)
++{
++    ci->flags &= ~LUA_CALLINFO_PROFILECALL;
++    lua_ProfileState* s = stateof(L);
++    if (!s)
++        return;
++    int id = functionof(s, ci->p);
++    // (leaves come innermost first: the thread's last open call, unless the hook was set while calls were open)
++    auto open = s->callopen.find(L);
++    if (open != s->callopen.end())
++    {
++        std::vector<int>& calls = open->second;
++        for (size_t i = calls.size(); i-- > 0;)
++            if (calls[i] == id)
++            {
++                calls.erase(calls.begin() + i);
++                if (size_t(id) < s->callsamples.size() && s->callsamples[id].open > 0)
++                    s->callsamples[id].open--;
++                break;
++            }
++        if (calls.empty())
++            s->callopen.erase(open);
++    }
++    if (s->callhook)
++        s->callhook(s->callud, L, LUA_PROFILECALL_LEAVE, id, 0, int(ci - L->base_ci));
++}
++
++void luaP_callsunwound(lua_State* L, CallInfo* to)
++{
++    for (CallInfo* ci = L->ci; ci > to; --ci)
++        if (ci->flags & LUA_CALLINFO_PROFILECALL)
++            luaP_callleave(L, ci);
++}
++
+ int lua_profilestack(lua_State* L, int* functions, int* lines, int max)
+ {
+     lua_ProfileState* s = stateof(L);
+diff --git a/luau/VM/src/lprofile.h b/luau/VM/src/lprofile.h
+index 49f8f6b..7596d40 100644
+--- a/luau/VM/src/lprofile.h
++++ b/luau/VM/src/lprofile.h
+@@ -52,6 +52,22 @@ LUAI_FUNC void luaP_freed(lua_State* L, GCObject* o);
+ // moved with the new one (what the work counters' `rehashed` counts); the profile's rehash hook (lua_setprofilerehash)
+ LUAI_FUNC void luaP_rehash(lua_State* L, LuaTable* t, int oldarray, int oldnodes, int keys);
+ 
++// while a profile's call hook is set (lua_setprofilecalls, global_State::profilecalls) the interpreter calls
++// luaP_callenter as each Luau call's frame is set up: luau_execute then runs an instantiation of its own that asks, so the
++// one that runs without a profile does not (a call from C or a metamethod's fast path loads the flag)
++struct CallInfo;
++// a Luau call's frame (L->ci, of L->ci->p) is set up and its first instruction is next: the hook when the call is
++// sampled (only L passed: the interpreter keeps nothing more live for a call it almost never makes)
++LUAI_FUNC void luaP_callenter(lua_State* L);
++// a sampled call (LUA_CALLINFO_PROFILECALL) returns, its frame still in place
++LUAI_FUNC void luaP_callleave(lua_State* L, CallInfo* ci);
++// an error unwinds L's frames above `to` (a protected call's recovery), or all of them (an error ended the thread, or it
++// is reset: L->base_ci): each sampled call among them leaves, innermost first
++LUAI_FUNC void luaP_callsunwound(lua_State* L, CallInfo* to);
++// the interpreter's copy that samples calls (lvmexecute_profiled.cpp, a translation unit of its own so it compiles beside
++// the plain one): luau_execute runs it while a call hook is set
++LUAI_FUNC void luaP_executeprofiled(lua_State* L);
++
+ // luau_execute holds one while it runs under a profile (an error that unwinds it may skip its destructor: the catch tells the
+ // profile, luaP_unwound)
+ struct luaP_Execute
+diff --git a/luau/VM/src/lstate.cpp b/luau/VM/src/lstate.cpp
+index 4c47b00..07ca91a 100644
+--- a/luau/VM/src/lstate.cpp
++++ b/luau/VM/src/lstate.cpp
+@@ -157,6 +157,9 @@ void lua_resetthread(lua_State* L)
+     api_check(L, !L->isactive);
+     api_check(L, L->status != LUA_OK || L->ci == L->base_ci);
+ 
++    // (its sampled calls leave before its frames go: lprofile.cpp)
++    if (L->global->profilecalls)
++        luaP_callsunwound(L, L->base_ci);
+     if (luaP_state)
+         luaP_threadgone(L, L);
+     // close upvalues before clearing anything
+@@ -245,6 +248,7 @@ lua_State* lua_newstate(lua_Alloc allocator, void* ud)
+     g->typeofnames = NULL;
+     g->vectortypename = NULL;
+     g->coldon = 0;
++    g->profilecalls = 0;
+     g->coldslot = 0;
+ 
+     g->lastprotoid = 1;
+diff --git a/luau/VM/src/lstate.h b/luau/VM/src/lstate.h
+index cbaaf5e..728c112 100644
+--- a/luau/VM/src/lstate.h
++++ b/luau/VM/src/lstate.h
+@@ -79,6 +79,7 @@ typedef struct CallInfo
+ #define LUA_CALLINFO_HANDLE (1 << 1) // should the error thrown during execution get handled by continuation from this callinfo? func must be C
+ #define LUA_CALLINFO_NATIVE (1 << 2) // should this function be executed using execution callback for native code
+ #define LUA_CALLINFO_OPYIELD (1 << 3) // call frame has yielded on a non-call opcode and requires luau_finishop
++#define LUA_CALLINFO_PROFILECALL (1 << 8) // a host's profile sampled this call: its return calls the profile's call hook (lprofile.cpp)
+ #define LUA_CALLINFO_PCALL (1 << 4)   // call frame was setup by a synthetic protected call and requires luau_pospcallsuccess
+ 
+ #define TAGGED_PAGESET_BASE (LUA_TSTRING)
+@@ -217,6 +218,7 @@ typedef struct global_State
+     uint8_t gcstate; // state of garbage collector
+     uint8_t gcdisabled;
+     uint8_t coldon; // cold touches are tracked (lua_coldtracking; in the padding before gray: the state keeps its size)
++    uint8_t profilecalls; // a profile's call hook is set (lua_setprofilecalls; in the same padding)
+ 
+     GCObject* gray;      // list of gray objects
+     GCObject* grayagain; // list of objects to be traversed atomically
+diff --git a/luau/VM/src/lvmexecute.cpp b/luau/VM/src/lvmexecute.cpp
+index 7a252d4..c0393fc 100644
+--- a/luau/VM/src/lvmexecute.cpp
++++ b/luau/VM/src/lvmexecute.cpp
+@@ -19,8 +19,15 @@
+ 
+ #include <string.h>
+ 
++// (lvmexecute_profiled.cpp includes this file for the interpreter's copy that samples calls: everything else is
++// defined here only)
++#ifndef LUAU_EXECUTE_PROFILED_UNIT
+ LUAU_FASTFLAGVARIABLE(DebugLuauUserDefinedClassesRuntime)
+ LUAU_FASTFLAGVARIABLE(LuauPromoteProto)
++#else
++LUAU_FASTFLAG(DebugLuauUserDefinedClassesRuntime)
++LUAU_FASTFLAG(LuauPromoteProto)
++#endif
+ LUAU_FASTFLAG(LuauFastpcall)
+ LUAU_FASTFLAG(LuauRuntimeFeedback)
+ 
+@@ -161,6 +168,7 @@ LUAU_FASTFLAG(LuauRuntimeFeedback)
+ // Does VM support native execution via ExecutionCallbacks? We mostly assume it does but keep the define to make it easy to quantify the cost.
+ #define VM_HAS_NATIVE 1
+ 
++#ifndef LUAU_EXECUTE_PROFILED_UNIT
+ LUAU_NOINLINE void luau_callhook(lua_State* L, lua_Hook hook, void* userdata)
+ {
+     ptrdiff_t base = savestack(L, L->base);
+@@ -214,6 +222,7 @@ LUAU_NOINLINE void luau_callhook(lua_State* L, lua_Hook hook, void* userdata)
+         L->base = restorestack(L, base);
+     }
+ }
++#endif
+ 
+ inline bool luau_skipstep(uint8_t op)
+ {
+@@ -249,7 +258,8 @@ static void luau_addexeccount(Proto* p, double count)
+     p->execcount += count < double(space) ? uint32_t(count) : space;
+ }
+ 
+-template<bool SingleStep>
++// (ProfileCalls: a host's profile samples calls, lprofile.cpp; without it the CALL paths do not ask)
++template<bool SingleStep, bool ProfileCalls>
+ static void luau_execute(lua_State* L)
+ {
+ #if VM_USE_CGOTO
+@@ -1148,6 +1158,10 @@ reentry:
+                         setnilvalue(argi++); // complete missing arguments
+                     L->top = p->is_vararg ? argi : ci->top;
+ 
++                    // a host's profile samples calls here (lprofile.cpp luaP_callenter)
++                    if (ProfileCalls && LUAU_UNLIKELY(L->global->profilecalls))
++                        luaP_callenter(L);
++
+                     // reentry
+                     // codeentry may point to NATIVECALL instruction when proto is compiled to native code
+                     // this will result in execution continuing in native code, and is equivalent to if (p->execdata) but has no additional overhead
+@@ -1273,6 +1287,10 @@ reentry:
+                         setnilvalue(argi++); // complete missing arguments
+                     L->top = p->is_vararg ? argi : ci->top;
+ 
++                    // a host's profile samples calls here (lprofile.cpp luaP_callenter)
++                    if (ProfileCalls && LUAU_UNLIKELY(L->global->profilecalls))
++                        luaP_callenter(L);
++
+                     // reentry
+                     // codeentry may point to NATIVECALL instruction when proto is compiled to native code
+                     // this will result in execution continuing in native code, and is equivalent to if (p->execdata) but has no additional overhead
+@@ -1345,6 +1363,10 @@ reentry:
+                 CallInfo* ci = L->ci;
+                 CallInfo* cip = ci - 1;
+ 
++                // a call a host's profile sampled returns (lprofile.cpp luaP_callleave)
++                if (LUAU_UNLIKELY(ci->flags & LUA_CALLINFO_PROFILECALL))
++                    luaP_callleave(L, ci);
++
+                 StkId res = ci->func; // note: we assume CALL always puts func+args and expects results to start at func
+ 
+                 StkId vali = ra;
+@@ -4065,23 +4087,34 @@ reentry:
+ exit:;
+ }
+ 
++#ifdef LUAU_EXECUTE_PROFILED_UNIT
++void luaP_executeprofiled(lua_State* L)
++{
++    luau_execute<false, true>(L);
++}
++#else
+ void luau_execute(lua_State* L)
+ {
+-    // a host's profile follows every entry into the interpreter, and steps every thread of its VM while it counts (lprofile.cpp)
++    // A host's profile follows every entry into the interpreter, so it also sees an error that is caught outside it
++    // (luaP_Execute). Under a profile the entry picks one of three copies: the stepping one for a thread the profile
++    // steps, the call-sampling one (compiled apart: lvmexecute_profiled.cpp) while a call hook is set, else the plain one
+     if (LUAU_UNLIKELY(luaP_state != NULL))
+     {
+         luaP_Execute profiled(L);
+         if (L->singlestep || luaP_stepping(L))
+-            luau_execute<true>(L);
++            luau_execute<true, true>(L);
++        else if (L->global->profilecalls)
++            luaP_executeprofiled(L);
+         else
+-            luau_execute<false>(L);
++            luau_execute<false, false>(L);
+         return;
+     }
+ 
++    // (no profile: the plain copy, or the single-stepping one)
+     if (L->singlestep)
+-        luau_execute<true>(L);
++        luau_execute<true, true>(L);
+     else
+-        luau_execute<false>(L);
++        luau_execute<false, false>(L);
+ }
+ 
+ void luau_finishop(lua_State* L)
+@@ -4162,6 +4195,10 @@ int luau_precall(lua_State* L, StkId func, int nresults)
+             ci->flags = LUA_CALLINFO_NATIVE;
+ #endif
+ 
++        // a host's profile samples calls here (lprofile.cpp luaP_callenter)
++        if (LUAU_UNLIKELY(L->global->profilecalls))
++            luaP_callenter(L);
++
+         return PCRLUA;
+     }
+     else
+@@ -4278,3 +4315,4 @@ void luau_pospcallsuccess(lua_State* L)
+     L->base = cip->base;
+     L->top = (calleeresults == LUA_MULTRET) ? res : cip->top;
+ }
++#endif // LUAU_EXECUTE_PROFILED_UNIT
+diff --git a/luau/VM/src/lvmexecute_profiled.cpp b/luau/VM/src/lvmexecute_profiled.cpp
+new file mode 100644
+index 0000000..b28f503
+--- /dev/null
++++ b/luau/VM/src/lvmexecute_profiled.cpp
+@@ -0,0 +1,7 @@
++// This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
++// This code is based on Lua 5.x implementation licensed under MIT License; see lua_LICENSE.txt for details
++
++// The interpreter's copy that samples calls for a host's profile (luau_execute<false, true>: lprofile.cpp), in a
++// translation unit of its own so that it compiles beside the plain copy rather than after it
++#define LUAU_EXECUTE_PROFILED_UNIT 1
++#include "lvmexecute.cpp"
+diff --git a/luau/VM/src/lvmutils.cpp b/luau/VM/src/lvmutils.cpp
+index 9c3ac18..20d6bf9 100644
+--- a/luau/VM/src/lvmutils.cpp
++++ b/luau/VM/src/lvmutils.cpp
+@@ -3,6 +3,7 @@
+ #include "lclass.h"
+ #include "lfunc.h"
+ #include "lvm.h"
++#include "lprofile.h"
+ 
+ #include "lstate.h"
+ #include "lstring.h"
+@@ -94,6 +95,10 @@ static LUAU_FORCEINLINE void callTMluau(lua_State* L, StkId top, Closure* ccl, i
+     if (p->exectarget != 0 && p->execdata)
+         ci->flags |= LUA_CALLINFO_NATIVE;
+ 
++    // a host's profile samples calls here (lprofile.cpp luaP_callenter)
++    if (LUAU_UNLIKELY(L->global->profilecalls))
++        luaP_callenter(L);
++
+     luau_execute(L);
+ 
+     // resume_continue is not handled here as metamethods are not yieldable

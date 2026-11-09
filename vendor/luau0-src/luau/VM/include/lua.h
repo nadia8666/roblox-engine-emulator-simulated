@@ -416,15 +416,72 @@ LUA_API void lua_coldframe(lua_State* L);
 LUA_API void lua_settypeofnames(lua_State* L, int idx, const char* vectorname);
 
 /*
-** profiling (lprofile.cpp): a host's profile of this thread's VM. Off, the interpreter pays one thread-local load per entry.
+** profiling (lprofile.cpp): a host's profile of this thread's VM. Off, the interpreter pays one thread-local load per entry,
+** and the VM one test of it where C allocates or rehashes, at a table's first touch in a frame, a chunk's load and a caught
+** error (lprofile.h lists them).
 ** While a profile steps, every thread runs the interpreter's single-step variant: each instruction it dispatches is counted,
 ** what the work counters (priced by `prices`, one price per 8-byte slot of lua_WorkCounters) and the host's own charges
 ** (`*hostwork + *hostdrained`) moved since the previous instruction is booked to that instruction, a calling-context tree
-** is kept, and the instructions with an inline cache record its outcome. Native code keeps running natively, unseen.
+** is kept (a C function a CALL reaches is a node of its own there, with what was booked until it returned), and the
+** instructions with an inline cache and the builtin calls record what they did. Native code keeps running natively, unseen.
 */
 #define LUA_PROFILE_EXEMPT 1 // a host's own function (lua_setworkexempt)
 #define LUA_PROFILE_NATIVE 2 // compiled to native code
-#define LUA_PROFILE_CACHES 4 // outcomes per instruction: hit, miss (repredicted), slow (metatable path, unsafe environment), other (not a table)
+
+// what an instruction with an inline cache did, as the interpreter did it (lua_ProfileCacheSite outcomes)
+#define LUA_PROFILE_HIT 0 // the cached slot served it (an import: resolved at load, in a safe environment)
+#define LUA_PROFILE_REPREDICTED 1 // the key was found elsewhere in the table (a method: in its first __index table): the slot is repatched
+#define LUA_PROFILE_ABSENT 2 // the key is absent and nothing else was looked at: it reads nil (an import: not resolved at load, looked up)
+#define LUA_PROFILE_INSERTED 3 // a new key was inserted into the table
+#define LUA_PROFILE_REHASHED 4 // a new key was inserted, and the table rehashed to fit it
+#define LUA_PROFILE_METATABLE 5 // __index / __newindex tables were walked (lua_ProfileCacheSite depths)
+#define LUA_PROFILE_METAFUNCTION 6 // an __index / __newindex function was called
+#define LUA_PROFILE_UNSAFEENV 7 // the environment is unsafe (getfenv / setfenv): the import is looked up every time
+#define LUA_PROFILE_NOTTABLE 8 // the value is not a table: its type's own metamethod served it (lua_ProfileCacheSite handlers)
+#define LUA_PROFILE_READONLY 9 // a store into a read-only table (an error)
+#define LUA_PROFILE_CACHES 10
+#define LUA_PROFILE_DEPTHS 4 // METATABLE outcomes by the __index / __newindex tables consulted: 1, 2, 3, 4 or more
+#define LUA_PROFILE_HANDLERS 4 // the types whose metamethods served NOTTABLE outcomes: three, and the rest (-2) in the last
+
+// an instruction with an inline cache that ran (GETGLOBAL, SETGLOBAL, GETIMPORT, GETTABLEKS, SETTABLEKS, NAMECALL and their
+// userdata forms GETUDATAKS, SETUDATAKS, NAMECALLUDATA)
+typedef struct lua_ProfileCacheSite
+{
+    int pc;
+    int op; // the opcode as it ran: a userdata form the interpreter rewrote to the table access it fell back to is that access
+    int key; // the key it uses (lua_profilename; -1 for none): a table key, a method, a global, an import's path (math.floor)
+    int phase; // the phase it ran in (lua_profilephase)
+    int node; // the call-tree node it ran in (lua_profilenodes' index): an instruction has a record for each node and phase it ran in
+    double charged; // what the host's prices charged the instruction past its dispatch there (a rehash's keys and storage, a looked-up import, a metamethod's engine price): part of its function's work
+    double firsttouch; // of `charged`, the first touch in a frame of the table it reaches (its operand's, the environment's for a global), which any change to it still pays
+    double presized; // its inserts' rehashes: what allocating the tables' storage at the size each rehash made, up front, would have charged beyond the storage they had (the host's price for table storage)
+    uint64_t outcomes[LUA_PROFILE_CACHES];
+    uint64_t depths[LUA_PROFILE_DEPTHS];
+    int handlers[LUA_PROFILE_HANDLERS]; // lua_profilename ids (-1: none, -2: other types)
+    uint64_t handlercounts[LUA_PROFILE_HANDLERS];
+} lua_ProfileCacheSite;
+
+// why a builtin's fast path declined a call (lua_ProfileBuiltinSite declines): the first of its conditions that failed
+#define LUA_PROFILE_DECLINE_ARGS 0 // the argument count is one the fast path does not take
+#define LUA_PROFILE_DECLINE_TYPES 1 // an argument's type is one it does not take
+#define LUA_PROFILE_DECLINE_RESULTS 2 // the call asks for results it does not give (several; a fixed count of a vararg one)
+#define LUA_PROFILE_DECLINE_GCDEBT 3 // a collector step was owed: the fast path cannot run the collector
+#define LUA_PROFILE_DECLINE_UNSAFEENV 4 // the environment is unsafe (getfenv / setfenv): no builtin takes its fast path there
+#define LUA_PROFILE_DECLINE_VALUES 5 // the argument values are out of its range (every condition listed for it held)
+#define LUA_PROFILE_DECLINES 6
+
+// a builtin call (the FASTCALL family) that ran
+typedef struct lua_ProfileBuiltinSite
+{
+    int pc;
+    int builtin; // its LBF_* id (lua_profilebuiltinname)
+    int phase; // the phase it ran in (lua_profilephase)
+    int node; // the call-tree node it ran in (lua_profilenodes' index): an instruction has a record for each node and phase it ran in
+    double charged; // what the host's prices charged its declined calls: their fast call's dispatch, their fallback's instructions and the function those reached (a C function's work and its cold first call, the host's own Luau's)
+    double fastequivalent; // what they would charge the same calls on the fast path: the fast call's dispatch and the work the builtin counts there (a new string, a number made a string, the objects and table storage it allocates, the keys its tables' rehashes move), which both paths pay
+    uint64_t fast; // calls its fast path served
+    uint64_t declines[LUA_PROFILE_DECLINES]; // calls that went the full way (the CALL after it), by reason
+} lua_ProfileBuiltinSite;
 
 // a copy of a function Luau's compiler inlined into another (-O2): the function, its instructions there, and the calls it
 // stood for (the times its frame stepped into it from outside it)
@@ -444,11 +501,14 @@ typedef struct lua_ProfileFunction
     int linedefined;
     int flags; // LUA_PROFILE_EXEMPT, LUA_PROFILE_NATIVE
     int sizecode;
-    const uint32_t* code; // its instructions as first seen
+    const uint32_t* code; // its instructions as they ran (a rewritten opcode as it ran; as first seen until it runs)
     const int* lines; // the line of each instruction
     const uint64_t* counts; // dispatches per instruction (NULL without stepping)
     const double* work; // what was booked to each instruction, in the prices' unit
-    const uint64_t* caches; // LUA_PROFILE_CACHES outcomes per instruction, NULL when none ran
+    int ncaches; // its instructions with an inline cache that ran
+    const lua_ProfileCacheSite* caches;
+    int nbuiltins; // its builtin calls that ran
+    const lua_ProfileBuiltinSite* builtins;
     uint64_t nativeentries; // entries into its native code
     double nativework; // booked while its native code ran
     int ninlines; // copies of other functions inlined into it (while stepping)
@@ -471,7 +531,17 @@ LUA_API int lua_profilestart(lua_State* L, int stepping, const double* prices, i
 LUA_API void lua_profilestop(lua_State* L);
 LUA_API int lua_profilefunctions(lua_State* L, void (*each)(void* ud, int id, const lua_ProfileFunction* f), void* ud);
 LUA_API int lua_profilenodes(lua_State* L, void (*each)(void* ud, int id, const lua_ProfileNode* n), void* ud);
+// a C function's name: where the globals hold it (table.sort, print), else the method a NAMECALL looked up (Instance:GetAttribute),
+// else its own debug name
 LUA_API const char* lua_profilecfunction(lua_State* L, int index);
+// a name a cache site's handlers give (the type whose metamethod served it)
+LUA_API const char* lua_profilename(lua_State* L, int id);
+// a builtin's name by its LBF_* id (math.floor), NULL for none
+LUA_API const char* lua_profilebuiltinname(int id);
+// told when the interpreter is entered from outside it (entered 1) and left back to it (0), while any profile runs
+LUA_API void lua_setprofilevm(lua_State* L, void (*vm)(void* ud, lua_State* L, int entered), void* ud);
+// the opcode of the instruction L's innermost frame is at (in an interrupt: the one about to run), -1 when that is not a Luau frame
+LUA_API int lua_profileop(lua_State* L);
 // the phase what follows belongs to: frames hang from a node of their own (function -1, callpc the phase; phase 0 is the root)
 LUA_API void lua_profilephase(lua_State* L, int phase);
 // what was charged while no instruction ran (between resumptions)
@@ -479,6 +549,31 @@ LUA_API double lua_profileengine(lua_State* L);
 LUA_API void lua_profilefree(lua_State* L);
 // the frames of L, innermost first: function ids as lua_ProfileNode's, and their current lines (-1 for C and native frames)
 LUA_API int lua_profilestack(lua_State* L, int* functions, int* lines, int max);
+// the instruction L's innermost Luau frame is at (in an interrupt: the one about to run) and its function's id; -1 for none
+// (no Luau frame, or a native one)
+LUA_API int lua_profilepc(lua_State* L, int* function);
+// the interpreter's entries open (C entered it for each: a script's call of a C function that calls back into Luau is one more), and
+// whether L's innermost frame is a C function's (an interrupt from inside one, as the string library's matcher sends)
+LUA_API int lua_profileentries(lua_State* L, int* incfunction);
+// whether each chunk's functions, and the copies its compiler inlined, are registered as it loads (off by default): a profile
+// that names samples without stepping needs them (a function that only ever runs as copies, a sample in a copy); stepping
+// registers a chunk's functions when it first runs one
+LUA_API void lua_profilechunks(lua_State* L, int on);
+
+// a host's hook around the Luau calls it samples (a running profile's; NULL turns it off): LUA_PROFILECALL_ENTER as a
+// sampled call's first instruction is about to run (its frame in place, so lua_profilestack sees it on top), and
+// LUA_PROFILECALL_LEAVE as it returns, as an error unwinds it in a protected call, or as its thread is ended by an error
+// or reset (its frame still in place). Each
+// call of a function is drawn on its own, with a chance of one in `every` (lua_setprofilecallevery; 1 until set: every
+// call), except that a call inside a sampled call of its own function on the same thread is sampled too (up to 64 such
+// calls a sampled call, then they are drawn again), so a recursion is read as a whole; with `every` 0 none is sampled,
+// and one call after every `remeasure` calls is read around for its length alone. The hook is told the `every` its call
+// was drawn with (1 for a call sampled inside its function's, 0 for a call read for its length only) and the frame's
+// depth (lua_stackdepth). Calls into native code are not sampled.
+#define LUA_PROFILECALL_ENTER 0
+#define LUA_PROFILECALL_LEAVE 1
+LUA_API void lua_setprofilecalls(lua_State* L, void (*hook)(void* ud, lua_State* L, int event, int function, int every, int depth), void* ud);
+LUA_API void lua_setprofilecallevery(lua_State* L, int function, int every, int remeasure);
 
 // what the memory an onallocate callback reports is for (lua_allocblock)
 #define LUA_ALLOC_OTHER 0
@@ -507,10 +602,15 @@ LUA_API void lua_setprofilerehash(lua_State* L,
 LUA_API int lua_profiletable(void* ptr, int* arrayslots, int* arrayused, int* nodes, int* nodesused);
 // the bytes of a table itself, of an array slot and of a hash node
 LUA_API void lua_profiletablebytes(size_t* header, size_t* slot, size_t* node);
-// the outcomes of the instructions with an inline cache, summed over the profile's functions (a host's own aside) by kind:
-// builtin fast path (the FASTCALL family), global slot (GETGLOBAL, SETGLOBAL), import (GETIMPORT), method slot (NAMECALL),
-// table key slot (GETTABLEKS, SETTABLEKS); LUA_PROFILE_CACHES outcomes each, into out[5 * LUA_PROFILE_CACHES]
+// what the instructions with an inline cache did, summed over the profile's functions (a host's own and its tools' aside:
+// lua_profiletoolchunks), by kind: global slot (GETGLOBAL, SETGLOBAL), import (GETIMPORT), method slot (NAMECALL,
+// NAMECALLUDATA), table key slot (GETTABLEKS, SETTABLEKS, GETUDATAKS, SETUDATAKS), LUA_PROFILE_CACHES outcomes each; then the
+// builtin calls: served by the fast path, then declined by reason (LUA_PROFILE_DECLINES); then each kind's metatable walks by
+// depth (LUA_PROFILE_DEPTHS each): into out[4 * LUA_PROFILE_CACHES + 1 + LUA_PROFILE_DECLINES + 4 * LUA_PROFILE_DEPTHS]
 LUA_API int lua_profilecachetotals(lua_State* L, uint64_t* out);
+// the chunks a host's tools run (their names begin with one of `prefixes`): their caches and builtin calls are left out of
+// lua_profilecachetotals, as the host's own functions are
+LUA_API void lua_profiletoolchunks(lua_State* L, const char* const* prefixes, int n);
 // every collectable object (as luaC_enumheap gives them, lgcdebug.cpp) and every reference the collector follows between
 // them, with the collector's roots as edges from NULL (the main thread, the registry, the basic types' metatables, the
 // fixed objects): what no edge reaches is garbage the next collection frees. Objects a sweep has yet to free go to `dead`

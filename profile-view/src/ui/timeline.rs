@@ -35,15 +35,40 @@ pub fn series(p: &Profile) -> Vec<String> {
         for name in &counters.names {
             out.push(format!("hw:{name}"));
         }
+        // the cost figures a frame, where its counts allow them (the profile's own columns, else derived here)
+        let counts: Vec<f64> = vec![1.0; counters.names.len()];
+        for key in DERIVED {
+            if counters.figures(&counts).iter().any(|figure| figure.key == key) {
+                out.push(format!("hw:{key}"));
+            }
+        }
     }
     out
 }
 
+/// The derived figures a timeline shows a frame: the share of its cycles stalled on loads, those cycles a thousand
+/// instructions, a miss's latency, IPC
+const DERIVED: [&str; 4] = [crate::hw_counters::LOAD_STALL_SHARE, crate::hw_counters::STALL_PER_THOUSAND, crate::hw_counters::MISS_LATENCY, "IPC"];
+
 /// A series' values, row by row, with each row's frame and phase
 pub fn values(p: &Profile, series: &str) -> Option<(Vec<f64>, Vec<f64>, Vec<u32>)> {
     if let Some(name) = series.strip_prefix("hw:") {
-        let frames = &p.raw.counters.as_ref()?.frames;
-        let values = frames.values(name)?;
+        let counters = p.raw.counters.as_ref()?;
+        let frames = &counters.frames;
+        // (a derived figure the frames table lacks, from each row's counts)
+        let values = frames.values(name).or_else(|| {
+            DERIVED.contains(&name).then(|| {
+                let columns: Vec<Option<usize>> = counters.names.iter().map(|counter| frames.index(counter)).collect();
+                frames
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        let counts: Vec<f64> = columns.iter().map(|column| column.and_then(|index| row.get(index)).and_then(serde_json::Value::as_f64).unwrap_or(0.0)).collect();
+                        counters.figures(&counts).into_iter().find(|figure| figure.key == name).map_or(0.0, |figure| figure.value)
+                    })
+                    .collect()
+            })
+        })?;
         let numbers = frames.values("frame").unwrap_or_default();
         // (the counters' rows name their phase)
         let phase_index = frames.index("phase");

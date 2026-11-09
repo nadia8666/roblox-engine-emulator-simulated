@@ -28,7 +28,8 @@ fn each_pattern_is_named_with_its_numbers() {
     let temp = Temp::new("detect");
     let dir = write_profile(&temp.path().join("run"), Shape::BEFORE);
     let (issues, unchecked, app) = issues_of(&dir);
-    assert!(unchecked.is_empty(), "every kind is there: {unchecked:?}");
+    // (every kind but the CPU's counters, which a run of their own reads: tests/counters.rs)
+    assert_eq!(unchecked, vec!["code that waits on memory: needs hw (the CPU's counters), in a run of its own".to_string()], "every other kind is there");
     let all = |issue: &Issue| format!("{}\n{}", issue.title, issue.evidence.join("\n"));
 
     // a sort every frame of the steady state: 100 sorts in 100 frames, 4.2 ms of the phase's 10.6 ms (39.6 %)
@@ -138,8 +139,9 @@ fn what_the_kinds_cannot_show_is_said_and_not_guessed() {
     std::fs::remove_file(dir.join("alloc.counts.folded")).unwrap();
     let (issues, unchecked, _) = issues_of(&dir);
     assert!(issues.is_empty(), "{issues:#?}");
-    assert_eq!(unchecked.len(), 4, "{unchecked:?}");
+    assert_eq!(unchecked.len(), 5, "{unchecked:?}");
     assert!(unchecked.iter().any(|note| note.contains("boundary")));
+    assert!(unchecked.iter().any(|note| note.contains("waits on memory") && note.contains("hw")));
 }
 
 #[test]
@@ -299,4 +301,114 @@ fn a_run_whose_code_is_all_the_harnesss_is_reported_whole() {
     assert!(find(&issues, "sort every frame").iter().any(|issue| issue.title.contains("rank")), "{issues:#?}");
     assert!(find(&issues, "cache misses").iter().any(|issue| issue.title.contains("Fixture:6")), "{issues:#?}");
     assert!(unchecked.iter().all(|note| !note.contains("harness's code (")), "{unchecked:?}");
+}
+
+/// A version 2 timeline: instances in the DataModel and outside it (what a frame keeps is their sum), threads made a frame (a
+/// flow: thread growth is the heap snapshots' reachable threads), host time null where a kind slowed the run (no figure, never 0)
+#[test]
+fn a_version_2_timeline_reads_its_split_columns() {
+    let temp = Temp::new("v2");
+    let dir = write_profile(&temp.path().join("run"), Shape::BEFORE);
+    let path = dir.join("profile.json");
+    let mut json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    json["version"] = serde_json::json!(2);
+    let columns = json["timeline"]["columns"].as_array_mut().unwrap();
+    columns[12] = serde_json::json!("instances_in_datamodel");
+    columns[14] = serde_json::json!("instances_outside");
+    columns.push(serde_json::json!("threads_made"));
+    for row in json["timeline"]["rows"].as_array_mut().unwrap() {
+        let frame = row[0].as_f64().unwrap();
+        let row = row.as_array_mut().unwrap();
+        row[3] = serde_json::Value::Null;
+        row[12] = serde_json::json!(100.0);
+        // (a part made outside the DataModel each frame of the steady phase, kept)
+        row[14] = serde_json::json!(if frame >= 21.0 { 10.0 + frame - 21.0 } else { 10.0 });
+        row.push(serde_json::json!(3.0));
+    }
+    // reachable threads at the steady snapshot (frame 20) and the end's (frame 120): 10, then 110
+    let snapshots = json["heap"]["snapshots"].as_array_mut().unwrap();
+    for (index, count) in [(1usize, 10.0), (2, 110.0)] {
+        snapshots[index]["by_type"].as_array_mut().unwrap().push(serde_json::json!({"type": "thread", "count": count, "bytes": 6768.0 * count}));
+    }
+    std::fs::write(&path, json.to_string()).unwrap();
+    let (issues, _, _) = issues_of(&dir);
+    let growing = find(&issues, "growth");
+    let titled = |start: &str| growing.iter().find(|issue| issue.title.starts_with(start)).unwrap_or_else(|| panic!("no {start}: {growing:#?}"));
+    assert!(titled("Instances keep growing: +99").title.contains("steady phase"), "{growing:#?}");
+    assert!(titled("Threads keep growing: +100").evidence[0].contains("10 threads reachable at frame 20 → 110 at frame 120: +1.0 a frame"), "{growing:#?}");
+    let profile = Profile::load(&dir).unwrap();
+    assert!(profile.raw.timeline.as_ref().unwrap().values("host_ms").is_none(), "a null host time is no figure, not 0");
+}
+
+/// A version 2 profile's cache sites are read by their outcomes, with one hit rate: a site that rehashes 10,000 times a frame
+/// is flagged (the counts before the outcomes put a rehash in no column), and a table-key cache at 33.3 % of its lookups reads
+/// so (the counts before read every miss but the repredictions as hits)
+#[test]
+fn cache_sites_are_read_by_their_outcomes() {
+    let temp = Temp::new("outcomes");
+    let dir = write_profile(&temp.path().join("run"), Shape::BEFORE);
+    let path = dir.join("profile.json");
+    let mut json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    json["version"] = serde_json::json!(2);
+    let frames = json["run"]["frames"].as_f64().unwrap();
+    let outcomes = |hit: f64, rehashed: f64, absent: f64| serde_json::json!({"hit": hit, "repredicted": 0, "absent": absent, "inserted": 0, "rehashed": rehashed, "metatable_table": 0, "metatable_function": 0, "unsafe_env": 0, "not_table": 6, "readonly": 0});
+    let caches = &mut json["luau_caches"];
+    caches["frames"] = serde_json::json!(frames);
+    caches["by_kind"] = serde_json::json!([{"kind": "table key slot", "outcomes": outcomes(10002.0, 10000.0, 10004.0), "lookups": 30006.0, "hits": 10002, "misses": 0, "slow": 0, "other": 6}]);
+    let site = caches["sites"][0].clone();
+    caches["sites"] = serde_json::json!([{
+        "function": site["function"], "line": site["line"], "pc": site["pc"], "op": "SETTABLEKS",
+        "outcomes": outcomes(0.0, 10000.0 * frames, 0.0), "hits": 0, "misses": 0, "slow": 0, "other": 0,
+        "charged_work_us_per_frame": 1624.0, "extra_work_us_per_frame": 0.0, "within_noise": 3000.0 * frames,
+    }]);
+    caches["outcome_info"] = serde_json::json!({"rehashed": {"meaning": "a new key was added and the table rehashed to fit it", "advice": "Build the table with its keys at once"}});
+    std::fs::write(&path, json.to_string()).unwrap();
+    let (issues, _, app) = issues_of(&dir);
+    let misses = find(&issues, "cache misses");
+    assert_eq!(misses.len(), 1, "{issues:#?}");
+    assert!(misses[0].title.contains("misses 100.0% of its lookups"), "{}", misses[0].title);
+    assert_eq!(misses[0].severity, Severity::Serious);
+    assert_eq!(misses[0].advice, "Build the table with its keys at once");
+    assert!(misses[0].evidence.iter().any(|line| line.contains("rehashed") && line.contains("10,000 a frame")), "{:?}", misses[0].evidence);
+    // (what the charge holds, a table's cold first touch among it, and what the extra leaves out: the outcomes priced within the noise)
+    let charge = misses[0].evidence.iter().find(|line| line.contains("charged 1624.00 µs a frame")).unwrap_or_else(|| panic!("{:?}", misses[0].evidence));
+    assert!(charge.contains("a table's cold first touch in the frame among it"), "{charge}");
+    assert!(charge.contains(&format!("leaving out {} outcomes priced within the noise, 3,000 a frame", ree_profile_view::fmt::grouped(3000.0 * frames))), "{charge}");
+    let kind = &app.profile().raw.luau_caches.as_ref().unwrap().by_kind[0];
+    assert_eq!((kind.lookups(), kind.hit_count()), (30006.0, 10002.0), "the lookups a table serves and the hits: 33.3 %");
+}
+
+/// Across profile versions the viewer's Diff leaves out what changed meaning: functions' and lines' self work and host time, and a
+/// function's calls and instructions (version 1 counted a module's main chunk at none)
+#[test]
+fn a_diff_across_versions_leaves_out_what_changed_meaning() {
+    let temp = Temp::new("versions");
+    let (before, after) = (write_profile(&temp.path().join("before"), Shape::BEFORE), write_profile(&temp.path().join("after"), Shape::BEFORE));
+    let path = after.join("profile.json");
+    let mut json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    json["version"] = serde_json::json!(2);
+    std::fs::write(&path, json.to_string()).unwrap();
+    let app = open(&[&before, &after]);
+    let (figures, notes) = ree_profile_view::diff::headline(&app.profiles[0], &app.profiles[1]);
+    assert!(notes.iter().any(|note| note.contains("two versions (1 and 2)")), "{notes:?}");
+    assert!(!figures.iter().any(|figure| figure.name.contains("host time") || figure.name.contains("the game's code")), "{:?}", figures.iter().map(|f| &f.name).collect::<Vec<_>>());
+    assert!(notes.iter().any(|note| note.contains("calls and instructions")), "{notes:?}");
+    use ree_profile_view::metric::Metric;
+    for metric in [Metric::Work, Metric::Time, Metric::CacheMisses, Metric::Insns] {
+        assert!(ree_profile_view::diff::functions(&app, metric).is_empty(), "{metric:?}");
+        assert!(ree_profile_view::diff::lines(&app, metric).is_empty(), "{metric:?}");
+    }
+    // (allocations compare across versions, their functions' calls do not; within a version both do)
+    let changed = |name: &str, version: u64| {
+        let dir = write_profile(&temp.path().join(name), Shape::AFTER);
+        let path = dir.join("profile.json");
+        let mut json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        json["version"] = serde_json::json!(version);
+        std::fs::write(&path, json.to_string()).unwrap();
+        dir
+    };
+    let (across, within) = (open(&[&before, &changed("after-v2", 2)]), open(&[&before, &changed("after-v1", 1)]));
+    let (across, within) = (ree_profile_view::diff::functions(&across, Metric::AllocBytes), ree_profile_view::diff::functions(&within, Metric::AllocBytes));
+    assert!(!across.is_empty() && across.iter().all(|pair| pair.calls.is_none()), "{:?}", across.iter().map(|pair| (&pair.label, pair.calls)).collect::<Vec<_>>());
+    assert!(!within.is_empty() && within.iter().all(|pair| pair.calls.is_some()), "{:?}", within.iter().map(|pair| (&pair.label, pair.calls)).collect::<Vec<_>>());
 }

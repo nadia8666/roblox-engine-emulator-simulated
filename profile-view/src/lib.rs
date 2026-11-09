@@ -15,6 +15,11 @@ pub mod compare;
 pub mod diff;
 pub mod export;
 pub mod fmt;
+/// The hardware counters by name, their old names and the figures derived from their counts: the engine's own table
+/// (src/profiler/hw/counters.rs), so the viewer names and derives them as the profile did
+#[path = "../../src/profiler/hw/counters.rs"]
+#[allow(dead_code)]
+pub mod hw_counters;
 pub mod issues;
 pub mod keys;
 pub mod metric;

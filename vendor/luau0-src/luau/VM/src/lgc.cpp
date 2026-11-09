@@ -1822,6 +1822,8 @@ void luaC_coldtouch(lua_State* L, GCObject* o)
     {
     case LUA_TTABLE:
         g->work.coldtables++;
+        if (luaP_state)
+            luaP_coldtouch(L, o);
         break;
     case LUA_TFUNCTION:
         g->work.coldclosures++;

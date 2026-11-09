@@ -72,15 +72,26 @@ struct Counted {
     tracked: HashSet<u32>,
     registered: HashSet<u32>,
     slices: HashMap<u32, Vec<Slice>>,
+    /// The slices kept, and those dropped past the collector's limit
+    kept: usize,
+    dropped: u64,
     /// The session's switches when its client joined
     switches_at_join: u64,
     /// Its threads' switches without values once their CPU was counting: stretches missing from the slices
     without_counters: u64,
 }
 
+/// The most slices the service keeps for one client (about 90 bytes each: 180 MB). A reading makes two slices, so
+/// 10,000 readings a second fill this in about 100 s; frame and thread readings can fill it sooner. Past it slices are
+/// dropped and the results say so, so a client that runs away cannot grow the service (which runs as SYSTEM) without
+/// end
+pub const MAX_SLICES: usize = 2_000_000;
+
 /// What the consumer keeps: the per-CPU switch state, and each counted process's threads' slices
 pub struct Collector {
     counters: usize,
+    /// The most slices a client keeps ([`MAX_SLICES`]; smaller in tests)
+    max_slices: usize,
     /// The counted processes by id, and each of their threads' process
     processes: HashMap<u32, Counted>,
     owners: HashMap<u32, u32>,
@@ -112,6 +123,7 @@ impl Collector {
     pub fn new(counters: usize) -> Collector {
         Collector {
             counters,
+            max_slices: MAX_SLICES,
             processes: HashMap::new(),
             owners: HashMap::new(),
             ending: HashSet::new(),
@@ -182,7 +194,12 @@ impl Collector {
             for index in 0..self.counters {
                 slice.counts[index] = delta(before[index], now[index]);
             }
-            counted.slices.entry(old).or_default().push(slice);
+            if counted.kept < self.max_slices {
+                counted.slices.entry(old).or_default().push(slice);
+                counted.kept += 1;
+            } else {
+                counted.dropped += 1;
+            }
         }
         self.cpus[cpu] = Some((new, at, now));
         self.switched_out(old);
@@ -221,6 +238,12 @@ impl Collector {
         let switches = self.switches - counted.switches_at_join;
         // (what to look at when nothing could be counted)
         let mut notes = Vec::new();
+        if counted.dropped > 0 {
+            notes.push(format!(
+                "the counter service keeps at most {} slices a client and dropped {} more: what was counted after them is missing (count a shorter run)",
+                self.max_slices, counted.dropped
+            ));
+        }
         if switches == 0 {
             notes.push("the session saw no context switch".to_string());
         } else if !self.counting.iter().any(|&counting| counting) {
@@ -610,6 +633,22 @@ mod tests {
 
     fn values(counts: &[u64]) -> Vec<u64> {
         counts.to_vec()
+    }
+
+    /// A client's slices stop at the collector's limit, and its results say how many more were dropped
+    #[test]
+    fn a_client_keeps_at_most_its_limit_of_slices_and_is_told() {
+        let mut collector = Collector::new(1);
+        collector.max_slices = 3;
+        collector.join(100, &[7], &[]);
+        for step in 0..5i64 {
+            collector.switch(0, 10 * step, 7, 0, Some(&values(&[step as u64 * 10])));
+            collector.switch(0, 10 * step + 5, 0, 7, Some(&values(&[step as u64 * 10 + 4])));
+        }
+        let results = collector.leave(100).unwrap();
+        let seven = results.threads.iter().find(|thread| thread.id == 7).unwrap();
+        assert_eq!(seven.slices.len(), 3, "the limit's worth");
+        assert!(results.notes.iter().any(|note| note.contains("at most 3 slices") && note.contains("dropped 2 more")), "{:?}", results.notes);
     }
 
     /// Switches become slices: a tracked thread's from its switch-in to its switch-out on the same CPU, counts the
