@@ -18,7 +18,7 @@
 //! announcement and reference); a part is seen when both admit it. Shapecast takes its documented
 //! cframeOverride and sizeOverride.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, collections::HashMap};
 use std::rc::Rc;
 
 use glam::{Affine3A, Mat3, Vec3};
@@ -248,6 +248,7 @@ pub fn solids(engine: &Engine, filter: &Filter) -> Vec<Solid> {
 #[derive(Default)]
 struct QueryCache {
     entries: RefCell<Vec<CachedSolids>>,
+    trace_calls: RefCell<QueryTraceCalls>,
     /// The last query's filter, whose lists the next query reads its params into ([`take_filter`])
     spare: RefCell<Filter>,
 }
@@ -259,6 +260,12 @@ struct CachedSolids {
 }
 
 impl crate::Extension for QueryCache {}
+
+#[derive(Default)]
+struct QueryTraceCalls {
+    frame: u64,
+    counts: HashMap<&'static str, u64>,
+}
 
 fn query_trace_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -280,6 +287,39 @@ fn query_trace_format(engine: &Engine, label: impl FnOnce() -> String) {
     if query_trace_enabled() {
         query_trace(engine, &label());
     }
+}
+
+fn query_trace_call(lua: &Lua, engine: &Engine, method: &'static str) {
+    if std::env::var("REE_TRACE_QUERY_STACKS").as_deref() != Ok("1") {
+        return;
+    }
+    let (frame, now) = {
+        let state = engine.state.borrow();
+        (state.sched.frame, state.sched.now)
+    };
+    let count = {
+        let mut trace = query_cache(engine).trace_calls.borrow_mut();
+        if trace.frame != frame {
+            trace.frame = frame;
+            trace.counts.clear();
+        }
+        let count = trace.counts.entry(method).or_default();
+        *count += 1;
+        *count
+    };
+    if count != 1 && count % 1000 != 0 {
+        return;
+    }
+    let traceback = lua
+        .globals()
+        .get::<LuaTable>("debug")
+        .ok()
+        .and_then(|debug| debug.get::<LuaFunction>("traceback").ok())
+        .and_then(|traceback| traceback.call::<String>(()).ok())
+        .unwrap_or_else(|| "traceback unavailable".to_owned());
+    crate::output::diagnostic(&format!(
+        "ree query caller frame={frame} time={now:.6} method={method} count={count}\\n{traceback}"
+    ));
 }
 
 fn query_cache(engine: &Engine) -> &QueryCache {
@@ -747,6 +787,7 @@ pub fn install(engine: &Rc<Engine>) {
     let Some(world_root) = engine.reflection.class_id("WorldRoot") else { return };
     let mut members: Vec<(&str, MethodFn)> = Vec::new();
     members.push(("Raycast", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "Raycast");
         let (Some(origin), Some(direction)) = (vector_arg(args.get(1)), vector_arg(args.get(2))) else {
             return raise("Raycast: origin and direction must be Vector3s");
         };
@@ -757,6 +798,7 @@ pub fn install(engine: &Rc<Engine>) {
         hit_values(lua, engine, hit)
     })));
     members.push(("Spherecast", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "Spherecast");
         let (Some(center), Some(radius), Some(direction)) = (vector_arg(args.get(1)), args.number(2), vector_arg(args.get(3))) else {
             return raise("Spherecast: position, radius and direction expected");
         };
@@ -767,6 +809,7 @@ pub fn install(engine: &Rc<Engine>) {
         hit_values(lua, engine, hit)
     })));
     members.push(("Blockcast", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "Blockcast");
         let (Some(frame), Some(size), Some(direction)) = (cframe_arg(args.get(1)), vector_arg(args.get(2)), vector_arg(args.get(3))) else {
             return raise("Blockcast: cframe, size and direction expected");
         };
@@ -782,6 +825,7 @@ pub fn install(engine: &Rc<Engine>) {
         hit_values(lua, engine, hit)
     })));
     members.push(("Shapecast", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "Shapecast");
         let (Some(part), Some(direction)) = (args.instance(1), vector_arg(args.get(2))) else {
             return raise("Shapecast: part and direction expected");
         };
@@ -809,6 +853,7 @@ pub fn install(engine: &Rc<Engine>) {
         hit_values(lua, engine, hit)
     })));
     members.push(("GetPartBoundsInBox", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "GetPartBoundsInBox");
         let (Some(frame), Some(size)) = (cframe_arg(args.get(1)), vector_arg(args.get(2))) else {
             return raise("GetPartBoundsInBox: cframe and size expected");
         };
@@ -818,6 +863,7 @@ pub fn install(engine: &Rc<Engine>) {
         parts_table(lua, engine, parts)
     })));
     members.push(("GetPartBoundsInRadius", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "GetPartBoundsInRadius");
         let (Some(center), Some(radius)) = (vector_arg(args.get(1)), args.number(2)) else {
             return raise("GetPartBoundsInRadius: position and radius expected");
         };
@@ -827,6 +873,7 @@ pub fn install(engine: &Rc<Engine>) {
         parts_table(lua, engine, parts)
     })));
     members.push(("GetPartsInPart", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "GetPartsInPart");
         let Some(part) = args.instance(1) else { return raise("GetPartsInPart: part expected") };
         let filter = take_filter(engine, args.get(2));
         let query = solid(&engine.state.borrow(), engine, part);
@@ -843,9 +890,18 @@ pub fn install(engine: &Rc<Engine>) {
         charge_query(engine, parts.len() as f64 * crate::cost::QUERY_PART_EXACT + f64::from(area.max(0.0)).sqrt() * crate::cost::QUERY_PART_SIZE);
         parts_table(lua, engine, parts)
     })));
-    members.push(("FindPartOnRay", method(|lua, engine, _, args| find_part_on_ray(lua, engine, args.get(1), args.get(2), false))));
-    members.push(("FindPartOnRayWithIgnoreList", method(|lua, engine, _, args| find_part_on_ray(lua, engine, args.get(1), args.get(2), false))));
-    members.push(("FindPartOnRayWithWhitelist", method(|lua, engine, _, args| find_part_on_ray(lua, engine, args.get(1), args.get(2), true))));
+    members.push(("FindPartOnRay", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "FindPartOnRay");
+        find_part_on_ray(lua, engine, args.get(1), args.get(2), false)
+    })));
+    members.push(("FindPartOnRayWithIgnoreList", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "FindPartOnRayWithIgnoreList");
+        find_part_on_ray(lua, engine, args.get(1), args.get(2), false)
+    })));
+    members.push(("FindPartOnRayWithWhitelist", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "FindPartOnRayWithWhitelist");
+        find_part_on_ray(lua, engine, args.get(1), args.get(2), true)
+    })));
     let mut behaviors = engine.behaviors.borrow_mut();
     for (member, function) in members {
         if let Some(name) = engine.reflection.name_id(member) {
