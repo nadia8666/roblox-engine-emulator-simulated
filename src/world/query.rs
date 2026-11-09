@@ -295,7 +295,8 @@ impl SpatialIndex {
             ((aa.min+aa.max)*0.5)[axis].total_cmp(&((bb.min+bb.max)*0.5)[axis])
         });
         let (left,right)=order.split_at_mut(middle);
-        let l=Self::build(nodes,left,offset,solids,start,left.len());
+        let left_len=left.len();
+        let l=Self::build(nodes,left,offset,solids,start,left_len);
         let r=Self::build(nodes,right,offset+middle,solids,0,end-middle);
         nodes[node].children=Some((l,r)); nodes[node].range=0..0; node
     }
@@ -866,7 +867,8 @@ pub fn install(engine: &Rc<Engine>) {
             return raise("Raycast: origin and direction must be Vector3s");
         };
         let filter = take_filter(engine, args.get(3));
-        let hit = cast_ray(&cached_solids(engine, &filter), origin, direction, 0.0, None);
+        let cached = cached_solids(engine, &filter);
+        let hit = cast_ray_indexed(&cached, origin, direction, 0.0, None);
         keep_filter(engine, filter);
         charge_cast(engine, origin, direction, 0.0);
         hit_values(lua, engine, hit)
