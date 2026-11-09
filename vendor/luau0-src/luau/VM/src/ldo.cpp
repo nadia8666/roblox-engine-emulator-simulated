@@ -828,6 +828,8 @@ static int resume_finish(lua_State* L, int status, int oldnCcalls)
 
     if (status != LUA_OK)
     {
+
+
         L->status = cast_byte(status);
         luaD_seterrorobj(L, status, L->top);
         L->ci->top = L->top;
@@ -849,6 +851,12 @@ int lua_resume(lua_State* L, lua_State* from, int nargs)
 {
     if (int starterror = resume_start(L, from, nargs))
         return starterror;
+
+    // (frames that continue when a call returns get their runs for the frame: lgc.h)
+
+    // (a profile tells readings a yield came between: lua_profileresumes)
+    if (luaP_state)
+        luaP_resumed(L);
 
     if (LUAU_UNLIKELY(!!L->global->cb.preresume))
         L->global->cb.preresume(L);
@@ -873,6 +881,12 @@ int lua_resumeerror(lua_State* L, lua_State* from)
 {
     if (int starterror = resume_start(L, from, 1))
         return starterror;
+
+    // (frames that continue when a call returns get their runs for the frame: lgc.h)
+
+    // (a profile tells readings a yield came between: lua_profileresumes)
+    if (luaP_state)
+        luaP_resumed(L);
 
     if (LUAU_UNLIKELY(!!L->global->cb.preresume))
         L->global->cb.preresume(L);

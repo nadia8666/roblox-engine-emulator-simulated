@@ -2,9 +2,12 @@
 // This code is based on Lua 5.x implementation licensed under MIT License; see lua_LICENSE.txt for details
 #include "lgc.h"
 
+#include "Luau/BytecodeUtils.h"
+
 #include <mutex>
 #include <new>
 #include <unordered_map>
+#include <vector>
 #include <stdlib.h>
 #include <stddef.h>
 
@@ -1737,6 +1740,12 @@ const char* luaC_statename(int state)
 ** heap's size, the collector's pace and every value a script reads stay the same. A collected object's page goes back to the allocator
 ** only after the marks are cleared (luaC_colddefer), so the list never points into freed memory.
 */
+struct ColdCode
+{
+    std::vector<int> ran;
+    size_t active = SIZE_MAX;
+};
+
 struct ColdState
 {
     GCObject** touched;
@@ -1748,6 +1757,8 @@ struct ColdState
     // the frames lua_coldframe began, and the last of them each function's code ran in (LUA_WORK_RAREPROTOS)
     uint32_t frame;
     std::unordered_map<const void*, uint32_t>* protolast;
+    std::unordered_map<Proto*, ColdCode> code;
+    std::vector<Proto*> active;
 };
 
 // the states that track cold touches, by global_State::coldslot (0: none); slots are taken and given back under the lock, and each
@@ -1764,6 +1775,10 @@ static_assert(offsetof(global_State, coldon) == offsetof(global_State, gcdisable
 static_assert(offsetof(global_State, coldslot) == offsetof(global_State, gcstepsize) + sizeof(int) &&
                   offsetof(global_State, freepages) == LUAI_COLDALIGNUP(offsetof(global_State, gcstepsize) + sizeof(int), alignof(lua_Page*)),
     "coldslot must sit in the padding before freepages");
+// Cold code's marker also uses padding: the prototype keeps its size, counted in the heap.
+static_assert(offsetof(Proto, coldslot) == offsetof(Proto, execflags) + 2 &&
+                  offsetof(Proto, lineinfo) == LUAI_COLDALIGNUP(offsetof(Proto, execflags) + 1, alignof(uint8_t*)),
+    "Proto::coldslot must sit in the padding after execflags");
 #undef LUAI_COLDALIGNUP
 
 static bool coldgrow(void** items, size_t* capacity, size_t itemsize)
@@ -1791,7 +1806,7 @@ static void coldpush(global_State* g, GCObject* o)
 
 // a function whose code runs first in this frame and did not run in the frame before: a client finds its code out of every cache
 // (LUA_WORK_RAREPROTOS); the stamps live outside the VM's heap
-static void coldrecent(global_State* g, GCObject* o)
+static void coldrecent(global_State* g, GCObject* o, bool charge = true)
 {
     ColdState* c = coldstates[g->coldslot];
     if (!c->protolast)
@@ -1799,9 +1814,79 @@ static void coldrecent(global_State* g, GCObject* o)
     if (!c->protolast)
         return;
     uint32_t& last = (*c->protolast)[o];
-    if (last == 0 || last + 1 < c->frame)
+    if (charge && (last == 0 || last + 1 < c->frame))
         g->work.hostops[LUA_WORK_RAREPROTOS]++;
     last = c->frame;
+}
+
+// Code is armed once, and only the instructions that actually execute are rearmed at
+// frame boundaries. No execution cursor belongs to a coroutine or to a call frame.
+static void coldunarm(Proto* p)
+{
+    for (int pc = 0; pc < p->sizecode;)
+    {
+        int op = LUAU_INSN_OP(p->code[pc]);
+        p->code[pc] &= ~Instruction(LUAU_INSN_COLD);
+        pc += Luau::getOpLength(LuauOpcode(op));
+    }
+}
+
+void luaC_coldprepare(lua_State* L, Proto* p)
+{
+    if (!L->global->coldon)
+        return;
+    // The host marks engine chunks after loading them. Revoke their markers too,
+    // so code whose operation the host prices does not trap once per frame.
+    if (p->flags & LUAU_PROTO_WORK_EXEMPT)
+    {
+        if (p->coldslot)
+        {
+            coldunarm(p);
+            luaC_coldfreed(L, p);
+        }
+        return;
+    }
+    if (p->coldslot)
+        return;
+    ColdState* c = coldstates[L->global->coldslot];
+    c->code.emplace(p, ColdCode{});
+    p->coldslot = 1;
+    for (int pc = 0; pc < p->sizecode;)
+    {
+        int op = LUAU_INSN_OP(p->code[pc]);
+        // CAPTURE is data consumed by a closure instruction, not a dispatch.
+        if (op != LOP_CAPTURE)
+            p->code[pc] |= LUAU_INSN_COLD;
+        pc += Luau::getOpLength(LuauOpcode(op));
+    }
+}
+
+void luaC_coldinstruction(lua_State* L, Closure* cl, const Instruction* pc)
+{
+    Proto* p = L->ci->p;
+    *const_cast<Instruction*>(pc) &= ~Instruction(LUAU_INSN_COLD);
+    ColdState* c = coldstates[L->global->coldslot];
+    ColdCode& code = c->code.at(p);
+    bool first = code.active == SIZE_MAX;
+    if (first)
+    {
+        code.active = c->active.size();
+        c->active.push_back(p);
+    }
+    int at = int(pc - p->code);
+    code.ran.push_back(at);
+    if (luaE_scriptwork(L))
+    {
+        luaC_touch(L, cl);
+        luaC_touch(L, p);
+        // A new prototype is already marked warm as an object. Remember that its
+        // code ran too, so its first old-object touch next frame is not rare.
+        if (first)
+            coldrecent(L->global, obj2gco(p), false);
+        L->global->work.coldcode++;
+        if (luaP_state)
+            luaP_coldcode(L, p, at);
+    }
 }
 
 void luaC_coldtouch(lua_State* L, GCObject* o)
@@ -1823,7 +1908,10 @@ void luaC_coldtouch(lua_State* L, GCObject* o)
     case LUA_TTABLE:
         g->work.coldtables++;
         if (luaP_state)
+        {
             luaP_coldtouch(L, o);
+            luaP_cold(L, o, LUA_COLD_TABLE, int(offsetof(lua_WorkCounters, coldtables) / sizeof(uint64_t)));
+        }
         break;
     case LUA_TFUNCTION:
         g->work.coldclosures++;
@@ -1831,9 +1919,24 @@ void luaC_coldtouch(lua_State* L, GCObject* o)
     case LUA_TPROTO:
         g->work.coldprotos++;
         coldrecent(g, o);
-        g->work.coldcode += uint64_t(gco2p(o)->sizecode);
+        luaC_coldprepare(L, gco2p(o));
         break;
     }
+}
+
+void luaC_coldfreed(lua_State* L, Proto* p)
+{
+    ColdState* c = coldstates[L->global->coldslot];
+    auto found = c->code.find(p);
+    if (found != c->code.end())
+    {
+        if (found->second.active != SIZE_MAX)
+            c->active[found->second.active] = NULL;
+        c->code.erase(found);
+    }
+    if (c->protolast)
+        c->protolast->erase(p);
+    p->coldslot = 0;
 }
 
 void luaC_coldcall(lua_State* L, Closure* cl, int host, const TValue* self, const Proto* caller)
@@ -1855,6 +1958,9 @@ void luaC_coldcall(lua_State* L, Closure* cl, int host, const TValue* self, cons
             return;
     }
     g->work.hostops[host ? LUA_WORK_COLDHOSTFUNCS : LUA_WORK_COLDCFUNCS]++;
+    if (luaP_state)
+        luaP_cold(L, obj2gco(cl), host ? LUA_COLD_HOSTFUNCTION : LUA_COLD_CFUNCTION,
+            int(offsetof(lua_WorkCounters, hostops) / sizeof(uint64_t)) + (host ? LUA_WORK_COLDHOSTFUNCS : LUA_WORK_COLDCFUNCS));
 }
 
 void luaC_coldmade(lua_State* L, GCObject* o)
@@ -1880,6 +1986,17 @@ bool luaC_colddefer(lua_State* L, lua_Page* page)
 // clears the marks of the objects marked since the last frame and returns the pages freed since then to the allocator
 static void coldclear(lua_State* L, ColdState* c)
 {
+    for (Proto* p : c->active)
+    {
+        if (!p)
+            continue;
+        ColdCode& code = c->code.at(p);
+        for (int pc : code.ran)
+            p->code[pc] |= LUAU_INSN_COLD;
+        code.ran.clear();
+        code.active = SIZE_MAX;
+    }
+    c->active.clear();
     // (a marked object may have been collected since: its block is still in a page of the VM's, kept by luaC_colddefer, and a mark
     // written into a free block or a new object of another kind means nothing)
     for (size_t i = 0; i < c->touchedcount; ++i)
@@ -1890,6 +2007,17 @@ static void coldclear(lua_State* L, ColdState* c)
     c->pagecount = 0;
 }
 
+static void coldrestore(ColdState* c)
+{
+    for (auto& entry : c->code)
+    {
+        Proto* p = entry.first;
+        coldunarm(p);
+        p->coldslot = 0;
+    }
+    c->code.clear();
+}
+
 void luaC_coldfree(lua_State* L)
 {
     global_State* g = L->global;
@@ -1897,10 +2025,11 @@ void luaC_coldfree(lua_State* L)
         return;
     ColdState* c = coldstates[g->coldslot];
     coldclear(L, c);
+    coldrestore(c);
     free(c->touched);
     free(c->pages);
     delete c->protolast;
-    free(c);
+    delete c;
     {
         std::lock_guard<std::mutex> guard(coldlock);
         coldstates[g->coldslot] = NULL;
@@ -1912,6 +2041,8 @@ void luaC_coldfree(lua_State* L)
 static bool coldunmark(void* context, lua_Page* page, GCObject* gco)
 {
     gco->gch.marked &= cast_byte(~bitmask(COLDBIT));
+    if (gco->gch.tt == LUA_TPROTO)
+        luaC_coldprepare(static_cast<lua_State*>(context), gco2p(gco));
     return false;
 }
 
@@ -1922,7 +2053,7 @@ LUA_API void lua_coldtracking(lua_State* L, int on)
     {
         if (!g->coldslot)
         {
-            ColdState* c = (ColdState*)calloc(1, sizeof(ColdState));
+            ColdState* c = new (std::nothrow) ColdState();
             if (!c)
                 return;
             c->frame = 1;
@@ -1936,17 +2067,18 @@ LUA_API void lua_coldtracking(lua_State* L, int on)
                 }
             if (!g->coldslot)
             {
-                free(c);
+                delete c;
                 return;
             }
         }
         // every object is cold: the marks set while tracking was off are not in the list
-        luaM_visitgco(L, NULL, coldunmark);
         g->coldon = 1;
+        luaM_visitgco(L, L, coldunmark);
     }
     else if (!on && g->coldon)
     {
         coldclear(L, coldstates[g->coldslot]);
+        coldrestore(coldstates[g->coldslot]);
         g->coldon = 0;
     }
 }
@@ -1954,6 +2086,8 @@ LUA_API void lua_coldtracking(lua_State* L, int on)
 LUA_API void lua_coldframe(lua_State* L)
 {
     global_State* g = L->global;
+    if (luaP_state)
+        luaP_coldframe(L);
     if (g->coldon)
     {
         ColdState* c = coldstates[g->coldslot];

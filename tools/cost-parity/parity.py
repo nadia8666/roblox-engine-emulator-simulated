@@ -31,10 +31,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 FAMILIES = ["loop", "read", "write", "method", "find", "attr", "create", "clone", "parent", "destroy", "signal", "task", "tween",
-            "datatype", "lib", "gc", "mem", "lang", "native"]
+            "datatype", "lib", "libsize", "json", "gc", "mem", "lang", "native"]
 # Families a sim job runs together (a job is capped at 300 s; each group stays well under it)
 GROUPS = [["loop", "read", "attr"], ["write"], ["method", "find"], ["create", "clone"], ["parent", "destroy"], ["signal", "task", "tween"],
-          ["datatype"], ["lib"], ["gc"], ["mem"], ["lang"], ["native"]]
+          ["datatype"], ["lib"], ["libsize"], ["json"], ["gc"], ["mem"], ["lang"], ["native"]]
 
 
 def held_out(name):
@@ -138,8 +138,10 @@ def value(row):
     return row.get("value", row["median"])
 
 
-def compare(ree, engines, family=None, show_all=False):
-    """Rows of (name, ree value, engine value, ratio, spread of the engine runs, held out)."""
+def compare(ree, engines, family=None, show_all=False, fastest=False):
+    """Rows of (name, ree value, engine value, ratio, spread of the engine runs, held out). The engine's value is the median of its
+    runs, or with `fastest` their least: whatever else runs on the machine only ever slows a client's session (two sessions on a
+    loaded PC read most rows 1.3-1.9x apart, nearly all of it one session slower throughout)."""
     ree_rows = by_name(ree)
     engine_rows = [by_name(e) for e in engines]
     out = []
@@ -149,7 +151,7 @@ def compare(ree, engines, family=None, show_all=False):
         seen = [value(e[name]) for e in engine_rows if name in e]
         if not seen:
             continue
-        engine_value = statistics.median(seen)
+        engine_value = min(seen) if fastest else statistics.median(seen)
         spread = (max(seen) - min(seen)) / engine_value if len(seen) > 1 and engine_value else None
         ratio = value(row) / engine_value if engine_value else None
         out.append({"name": name, "family": row["family"], "unit": row.get("unit", "ns"), "ree": value(row), "engine": engine_value,
@@ -228,6 +230,7 @@ def main():
     c.add_argument("--family")
     c.add_argument("--all", action="store_true")
     c.add_argument("--json")
+    c.add_argument("--fastest", action="store_true", help="each row's fastest engine run instead of their median")
     c.add_argument("--fit-rows", action="store_true", help="list the rows a price may be fitted on (not held out)")
     args = parser.parse_args()
     if args.selftest:
@@ -246,7 +249,7 @@ def main():
     if args.command == "compare":
         ree = load(args.ree)[0]
         engines = [run for path in args.engine for run in load(path)]
-        rows = compare(ree, engines, args.family)
+        rows = compare(ree, engines, args.family, fastest=args.fastest)
         if args.fit_rows:
             for row in rows:
                 if not row["heldOut"]:

@@ -88,6 +88,20 @@ struct RawFunction {
     nativework: f64,
     ninlines: c_int,
     inlines: *const RawInline,
+    split: *const f64,
+    exclusive: *const f64,
+    nphaselines: c_int,
+    phaselines: *const RawPhaseLines,
+    binding: c_int,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RawPhaseLines {
+    phase: c_int,
+    counts: *const u64,
+    work: *const f64,
+    cold: *const f64,
 }
 
 #[repr(C)]
@@ -138,7 +152,44 @@ struct RawNode {
     calls: u64,
     insns: u64,
     work: f64,
+    split: [f64; SPLITS],
+    exclusive: f64,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RawColdPayer {
+    function: c_int,
+    pc: c_int,
+    cost: f64,
+}
+
+#[repr(C)]
+struct RawColdObject {
+    kind: c_int,
+    function: c_int,
+    pc: c_int,
+    cost: f64,
+    frames: u64,
+    sharedframes: u64,
+    npayers: c_int,
+    payers: *const RawColdPayer,
+}
+
+/// lua.h `LUA_PROFILE_SPLITS` and the kinds of work a profile keeps apart in each booking: cold and first-use charges, the collector's,
+/// prices from a Studio-era measurement, borrowed (defaulted) prices, and the engine's dispatch of a handler or resumption of a thread.
+/// A price is of at most one kind of each axis: what it is (cold, collector, dispatch) and where it came from (Studio-era, defaulted).
+pub const SPLITS: usize = 5;
+pub const COLD: usize = 0;
+pub const COLLECTOR: usize = 1;
+pub const STUDIO: usize = 2;
+pub const DEFAULTED: usize = 3;
+pub const DISPATCH: usize = 4;
+
+/// lua.h `LUA_COLD_*`: what a cold charge's object is
+pub const COLD_TABLE: i32 = 0;
+pub const COLD_CFUNCTION: i32 = 1;
+pub const COLD_HOSTFUNCTION: i32 = 2;
 
 /// lua.h `lua_setprofilerehash`'s hook: (ud, the thread, the table, array slots and hash nodes before, after, the keys it holds
 /// with the new one, whether a script's own instruction made it)
@@ -173,6 +224,11 @@ unsafe extern "C-unwind" {
     fn lua_allocblock(state: *mut lua_State, kind: *mut c_int) -> *mut c_void;
     fn lua_profileobject(block: *mut c_void, tag: *mut c_int, data: *mut *mut c_void, type_name: *mut *const c_char) -> c_int;
     fn lua_profilemark(block: *mut c_void);
+    fn lua_profilesplit(state: *mut lua_State, kinds: *const i8, nkinds: c_int, hostkinds: *const f64);
+    fn lua_profilecoldobjects(state: *mut lua_State, each: unsafe extern "C-unwind" fn(*mut c_void, *const RawColdObject), ud: *mut c_void) -> c_int;
+    fn lua_profilebooknext(state: *mut lua_State, co: *mut lua_State);
+    fn lua_profilecurrent(function: *mut c_int, pc: *mut c_int, node: *mut c_int, calls: *mut u64) -> c_int;
+    fn lua_profileresumes(state: *mut lua_State) -> u64;
     fn lua_profileudataoffset() -> usize;
     fn lua_setprofilefreed(state: *mut lua_State, freed: Option<unsafe extern "C-unwind" fn(*mut c_void, *mut c_void)>, ud: *mut c_void);
     fn lua_setprofilerehash(state: *mut lua_State, rehash: Option<RehashHook>, ud: *mut c_void);
@@ -219,6 +275,51 @@ pub fn start(state: *mut lua_State, stepping: bool, prices: Option<&[f64]>, host
     unsafe { lua_profilestart(state, stepping as c_int, prices_ptr, count, work, drained) != 0 }
 }
 
+/// Keeps kinds of work apart in the profile's bookings ([`SPLITS`]): each 8-byte slot's kinds as a mask (bit k for kind k), and the
+/// host's running totals of its own charges by kind (`hostkinds`, [`SPLITS`] cells it keeps alive while the profile runs).
+///
+/// # Safety
+/// `state` is the VM a profile runs on, and `hostkinds` points to [`SPLITS`] cells that live until the profile stops.
+pub unsafe fn split(state: *mut lua_State, kinds: &[i8], hostkinds: *const f64) {
+    unsafe { lua_profilesplit(state, kinds.as_ptr(), kinds.len() as c_int, hostkinds) }
+}
+
+/// What the host charges next is booked to `co`'s current frame (a thread about to resume) or, when it has not started, to the Luau
+/// function on top of its stack (a handler about to run as a thread of its own)
+///
+/// # Safety
+/// `state` and `co` are live threads of the VM the profile runs on.
+pub unsafe fn book_next(state: *mut lua_State, co: *mut lua_State) {
+    unsafe { lua_profilebooknext(state, co) }
+}
+
+/// The instruction the running booking goes to
+#[derive(Clone, Copy, Debug)]
+pub struct Booking {
+    pub function: i32,
+    pub pc: i32,
+    /// Its node in the call tree
+    pub node: i32,
+    /// The calls its tree node had begun so far: two readings with the same node and calls are in one invocation
+    pub calls: u64,
+}
+
+/// The instruction the running booking goes to; None when no profile steps on this thread or no instruction is the target (the
+/// engine's own work)
+pub fn current() -> Option<Booking> {
+    let (mut function, mut pc, mut node, mut calls): (c_int, c_int, c_int, u64) = (-1, -1, -1, 0);
+    let stepping = unsafe { lua_profilecurrent(&mut function, &mut pc, &mut node, &mut calls) } != 0;
+    (stepping && function >= 0).then_some(Booking { function, pc, node, calls })
+}
+
+/// How many times `state` was resumed while the profile stepped: two of its readings with a resumption between straddle a yield
+///
+/// # Safety
+/// `state` is a live thread of the VM the profile runs on.
+pub unsafe fn resumes(state: *mut lua_State) -> u64 {
+    unsafe { lua_profileresumes(state) }
+}
+
 /// Stops stepping (the last instruction's charges are booked); the results stay until [`free`].
 pub fn stop(state: *mut lua_State) {
     unsafe { lua_profilestop(state) }
@@ -255,6 +356,23 @@ pub struct Function {
     pub native_work: f64,
     /// Copies of other functions Luau's compiler inlined into this one (`-O2`), outermost before the ones inside them
     pub inlines: Vec<Inline>,
+    /// Of each instruction's work, what was of each kind ([`SPLITS`] an instruction; empty when nothing was split), and of its cold
+    /// charges those for objects nothing but this function touched in the frame (empty when none)
+    pub split: Vec<f64>,
+    pub exclusive: Vec<f64>,
+    /// Its own instructions' dispatches, work and cold work in each phase that ran it (lines per phase)
+    pub phase_lines: Vec<PhaseLines>,
+    /// A helper chunk of the binding (mlua's "=__mlua..."): its work is booked to the script line that called it
+    pub binding: bool,
+}
+
+/// A function's instructions in one phase: dispatches, work and cold work per instruction
+#[derive(Clone, Debug, Default)]
+pub struct PhaseLines {
+    pub phase: u32,
+    pub counts: Vec<u64>,
+    pub work: Vec<f64>,
+    pub cold: Vec<f64>,
 }
 
 /// An instruction with an inline cache in one phase: what it did each time it ran there ([`CACHE_OUTCOMES`]), the metatable walks
@@ -360,6 +478,33 @@ pub struct Node {
     pub calls: u64,
     pub insns: u64,
     pub work: f64,
+    /// Of its work, what was of each kind ([`SPLITS`]), and of its cold charges those for objects nothing but its function touched
+    pub split: [f64; SPLITS],
+    pub exclusive: f64,
+}
+
+/// A cold or first-use charge's object over the profile (lua_profilecoldobjects): a table by the instruction that made it (`function`
+/// -1: made before the profile), a C function (`function` a [`Results::cfunctions`] index) or a function of the engine's Luau
+#[derive(Clone, Debug, Default)]
+pub struct ColdObject {
+    pub kind: i32,
+    pub function: i32,
+    pub pc: i32,
+    pub cost: f64,
+    pub frames: u64,
+    /// Frames in which something besides the function that paid also touched it
+    pub shared_frames: u64,
+    /// Who paid it, dearest first
+    pub payers: Vec<Payer>,
+}
+
+/// An instruction that paid cold charges for an object
+#[derive(Clone, Copy, Debug)]
+pub struct Payer {
+    pub function: i32,
+    pub pc: i32,
+    /// Seconds of the work clock
+    pub cost: f64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -369,6 +514,7 @@ pub struct Results {
     pub nodes: Vec<Node>,
     /// Work charged while no instruction ran (the engine delivering events, resuming threads)
     pub engine_work: f64,
+    pub cold_objects: Vec<ColdObject>,
 }
 
 unsafe fn text(pointer: *const c_char) -> String {
@@ -431,25 +577,48 @@ unsafe extern "C-unwind" fn each_function(ud: *mut c_void, _id: c_int, raw: *con
                 .into_iter()
                 .map(|raw| Inline { function: raw.function, first_pc: raw.firstpc, last_pc: raw.lastpc, parent: raw.parent, entries: raw.entries })
                 .collect(),
+            split: slice(raw.split, len * SPLITS),
+            exclusive: slice(raw.exclusive, len),
+            phase_lines: slice(raw.phaselines, raw.nphaselines.max(0) as usize)
+                .into_iter()
+                .map(|lines| PhaseLines { phase: lines.phase.max(0) as u32, counts: slice(lines.counts, len), work: slice(lines.work, len), cold: slice(lines.cold, len) })
+                .collect(),
+            binding: raw.binding != 0,
         }
     });
+}
+
+unsafe extern "C-unwind" fn each_cold(ud: *mut c_void, raw: *const RawColdObject) {
+    let out = unsafe { &mut *(ud as *mut Vec<ColdObject>) };
+    let raw = unsafe { &*raw };
+    let mut payers: Vec<Payer> = Vec::new();
+    for payer in unsafe { slice(raw.payers, raw.npayers.max(0) as usize) } {
+        payers.push(Payer { function: payer.function, pc: payer.pc, cost: payer.cost });
+    }
+    out.push(ColdObject { kind: raw.kind, function: raw.function, pc: raw.pc, cost: raw.cost, frames: raw.frames, shared_frames: raw.sharedframes, payers });
 }
 
 unsafe extern "C-unwind" fn each_node(ud: *mut c_void, _id: c_int, raw: *const RawNode) {
     let out = unsafe { &mut *(ud as *mut Vec<Node>) };
     let raw = unsafe { &*raw };
-    out.push(Node { parent: raw.parent, function: raw.function, callpc: raw.callpc, calls: raw.calls, insns: raw.insns, work: raw.work });
+    out.push(Node { parent: raw.parent, function: raw.function, callpc: raw.callpc, calls: raw.calls, insns: raw.insns, work: raw.work, split: raw.split, exclusive: raw.exclusive });
 }
 
 /// What the profile of `state`'s VM holds (call after [`stop`]).
-pub fn results(state: *mut lua_State) -> Results {
+///
+/// # Safety
+/// `state` is the VM the profile ran on, stopped and not yet freed ([`free`]).
+pub unsafe fn results(state: *mut lua_State) -> Results {
     let mut collected = Collected { functions: Vec::new(), state };
     let mut nodes: Vec<Node> = Vec::new();
+    let mut cold_objects: Vec<ColdObject> = Vec::new();
     unsafe {
         lua_profilefunctions(state, each_function, &mut collected as *mut _ as *mut c_void);
         lua_profilenodes(state, each_node, &mut nodes as *mut _ as *mut c_void);
+        lua_profilecoldobjects(state, each_cold, &mut cold_objects as *mut _ as *mut c_void);
     }
     let functions = collected.functions;
+    cold_objects.sort_by(|a, b| b.cost.total_cmp(&a.cost).then(a.kind.cmp(&b.kind)).then(a.function.cmp(&b.function)).then(a.pc.cmp(&b.pc)));
     let mut cfunctions = Vec::new();
     loop {
         let name = unsafe { lua_profilecfunction(state, cfunctions.len() as c_int) };
@@ -458,7 +627,116 @@ pub fn results(state: *mut lua_State) -> Results {
         }
         cfunctions.push(unsafe { text(name) });
     }
-    Results { functions, cfunctions, nodes, engine_work: unsafe { lua_profileengine(state) } }
+    Results { functions, cfunctions, nodes, engine_work: unsafe { lua_profileengine(state) }, cold_objects }
+}
+
+/// The call tree as it stands, while the profile runs: `each(node, parent, function, work in seconds)` for every node, a
+/// parent before its children (ids as [`Node`]'s; a node, once made, keeps its parent and function); the count. Reads
+/// pointers only: nothing is copied or booked.
+// (the state is the one the profile was started on, as every call here takes it)
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn walk_nodes(state: *mut lua_State, mut each: impl FnMut(usize, i32, i32, f64)) -> usize {
+    unsafe extern "C-unwind" fn visit(ud: *mut c_void, id: c_int, raw: *const RawNode) {
+        let each = unsafe { &mut *(ud as *mut &mut dyn FnMut(usize, i32, i32, f64)) };
+        let raw = unsafe { &*raw };
+        each(id.max(0) as usize, raw.parent, raw.function, raw.work);
+    }
+    let mut each: &mut dyn FnMut(usize, i32, i32, f64) = &mut each;
+    unsafe { lua_profilenodes(state, visit, &mut each as *mut &mut dyn FnMut(usize, i32, i32, f64) as *mut c_void).max(0) as usize }
+}
+
+/// The functions the profile registered from id `from` on, in id order, while it runs: `each(id, source, flags)` (a
+/// function's id never changes, so a reader keeps what it read of the ones before)
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn walk_functions(state: *mut lua_State, from: usize, mut each: impl FnMut(usize, &str, i32)) -> usize {
+    struct Visit<'a> {
+        from: usize,
+        each: &'a mut dyn FnMut(usize, &str, i32),
+    }
+    unsafe extern "C-unwind" fn visit(ud: *mut c_void, id: c_int, raw: *const RawFunction) {
+        let visit = unsafe { &mut *(ud as *mut Visit) };
+        if (id as usize) < visit.from {
+            return;
+        }
+        let raw = unsafe { &*raw };
+        let source = if raw.source.is_null() { std::borrow::Cow::Borrowed("") } else { unsafe { CStr::from_ptr(raw.source) }.to_string_lossy() };
+        (visit.each)(id as usize, &source, raw.flags);
+    }
+    let mut context = Visit { from, each: &mut each };
+    unsafe { lua_profilefunctions(state, visit, &mut context as *mut Visit as *mut c_void).max(0) as usize }
+}
+
+/// What the work clock charged one inline-cache or builtin-call site in one calling context, cumulative over the run.
+/// Reading them does not copy instruction histories.
+pub struct SiteCharges {
+    /// `cache` or `builtin`
+    pub kind: &'static str,
+    pub function: i32,
+    pub pc: usize,
+    /// The call-tree node of the context
+    pub node: usize,
+    /// All the work the clock charged at the site (seconds)
+    pub charged: f64,
+    /// The part of it a fix keeps paying (seconds): a cache's first touch and presized build, a builtin's fast-path work
+    pub retained: f64,
+    /// The builtin called, for a builtin site
+    pub builtin: Option<&'static str>,
+    /// The call instruction's opcode (for a builtin site; 0 where it cannot be read)
+    pub op: u8,
+    /// The calls the builtin's fast path declined in this context
+    pub declines: u64,
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn walk_site_charges(state: *mut lua_State, mut each: impl FnMut(SiteCharges)) {
+    unsafe extern "C-unwind" fn visit(ud: *mut c_void, function: c_int, raw: *const RawFunction) {
+        let each = unsafe { &mut *(ud as *mut &mut dyn FnMut(SiteCharges)) };
+        let raw = unsafe { &*raw };
+        if !raw.caches.is_null() {
+            let cache_sites = unsafe { std::slice::from_raw_parts(raw.caches, raw.ncaches.max(0) as usize) };
+            for site in cache_sites {
+                if site.node < 0 || site.charged == 0.0 {
+                    continue;
+                }
+                each(SiteCharges {
+                    kind: "cache",
+                    function,
+                    pc: site.pc.max(0) as usize,
+                    node: site.node as usize,
+                    charged: site.charged,
+                    retained: site.firsttouch + site.presized,
+                    builtin: None,
+                    op: site.op as u8,
+                    declines: 0,
+                });
+            }
+        }
+        if !raw.builtins.is_null() {
+            let builtin_sites = unsafe { std::slice::from_raw_parts(raw.builtins, raw.nbuiltins.max(0) as usize) };
+            for site in builtin_sites {
+                let declines = site.declines.iter().sum();
+                if site.node < 0 || declines == 0 {
+                    continue;
+                }
+                let pc = site.pc.max(0) as usize;
+                let has_code = pc < raw.sizecode.max(0) as usize && !raw.code.is_null();
+                let op = if has_code { unsafe { *raw.code.add(pc) as u8 } } else { 0 };
+                each(SiteCharges {
+                    kind: "builtin",
+                    function,
+                    pc,
+                    node: site.node as usize,
+                    charged: site.charged,
+                    retained: site.fastequivalent,
+                    builtin: builtin_name(site.builtin),
+                    op,
+                    declines,
+                });
+            }
+        }
+    }
+    let mut each: &mut dyn FnMut(SiteCharges) = &mut each;
+    unsafe { lua_profilefunctions(state, visit, &mut each as *mut &mut dyn FnMut(SiteCharges) as *mut c_void) };
 }
 
 /// The frames of `state`, innermost first, as (function id, line) pairs (ids as [`Node::function`]; line -1 for C and

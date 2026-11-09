@@ -511,7 +511,11 @@ enum LuauOpcode
 
 // Bytecode instruction header: it's always a 32-bit integer, with low byte (first byte in little endian) containing the opcode
 // Some instruction types require more data and have more 32-bit integers following the header
-#define LUAU_INSN_OP(insn) ((insn) & 0xff)
+// The interpreter disarms a cold instruction's marker before executing it. Semantic readers
+// still see its opcode, including lookahead for fast calls and the debugger's bytecode walks.
+#define LUAU_INSN_COLD 0x80
+static_assert(LOP__COUNT <= LUAU_INSN_COLD, "the cold marker needs an unused opcode bit");
+#define LUAU_INSN_OP(insn) ((insn) & 0x7f)
 
 // ABC encoding: three 8-bit values, containing registers or small numbers
 #define LUAU_INSN_A(insn) (((insn) >> 8) & 0xff)

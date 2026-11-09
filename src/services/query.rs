@@ -439,7 +439,8 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
                 let mut seconds = state.dom.descendants(id).len() as f64 * crate::cost::QUERIED + found.len() as f64 * crate::cost::QUERY_FOUND;
                 let mut touched = state.sched.touched.borrow_mut();
                 touched.count(|ops| ops.queries += 1);
-                seconds += touched.first_path(crate::cost::Path::Query) + if cold { crate::cost::QUERY_COLD } else { 0.0 };
+                seconds += touched.first_path(crate::cost::Path::Query)
+                    + if cold { touched.cold(crate::cost::QUERY_COLD, crate::cost::ColdKey::Instance(id.index, state.dom.at(id).class)) } else { 0.0 };
                 drop(touched);
                 state.sched.charge(seconds);
                 crate::boundary::add_cost(seconds);

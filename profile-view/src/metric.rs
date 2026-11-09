@@ -35,7 +35,8 @@ impl Metric {
     /// The metrics a profile has, in the order `m` cycles them
     pub fn available(p: &Profile) -> Vec<Metric> {
         let mut out = Vec::new();
-        let work = p.raw.work.is_some() || !p.raw.tree.is_empty();
+        // (a profile without the work kind keeps a call tree of one empty node: no work was measured)
+        let work = p.has_work();
         if work {
             out.push(Metric::Work);
         }
@@ -64,6 +65,8 @@ impl Metric {
     pub fn label(self, p: &Profile) -> String {
         match self {
             Metric::Work => "Studio work".into(),
+            // (a newer ree weighs host time samples by the run thread's CPU time)
+            Metric::Time if p.raw.time.as_ref().and_then(|t| t.weight.as_deref()) == Some("thread CPU") => "host CPU time".into(),
             Metric::Time => "host time".into(),
             Metric::Insns => "instructions".into(),
             Metric::AllocBytes => "allocated bytes".into(),
@@ -179,7 +182,7 @@ impl Metric {
     /// borrow work's
     pub fn has_stacks(self, p: &Profile) -> bool {
         match self {
-            Metric::Work | Metric::Insns => !p.raw.tree.is_empty(),
+            Metric::Work | Metric::Insns => p.has_work() && !p.raw.tree.is_empty(),
             Metric::CacheMisses => false,
             _ => self.folded(p).is_some_and(|name| p.folded.contains_key(&name)),
         }
@@ -257,6 +260,8 @@ impl Metric {
     /// The timeline column that holds this metric a frame (`counters.frames` for a counter)
     pub fn timeline_column(self, p: &Profile) -> Option<String> {
         match self {
+            // (the game's code a frame, the harness's apart, when the timeline splits a frame's work by side)
+            Metric::Work if p.harness_set_apart() && p.raw.timeline.as_ref().is_some_and(|t| t.index("game_ms").is_some()) => Some("game_ms".into()),
             Metric::Work => Some("work_ms".into()),
             Metric::Time => Some("host_ms".into()),
             Metric::Insns => Some("instructions".into()),

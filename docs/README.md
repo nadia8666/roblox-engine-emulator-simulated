@@ -1,6 +1,7 @@
 # Documentation
 
-- [Building](building.md): requirements, the build, cargo features, the allocator.
+- [Building](building.md): release binaries (platforms, where they keep state, verifying them), requirements, the
+  build, cargo features, the allocator.
 - [Command line](cli.md): `ree record`, `ree run` and `ree serve`; harnesses and their `Context`, engine options,
   limits and guards, what a recording holds, animation, what is not simulated, the warm service, profiles and caches,
   environment variables.

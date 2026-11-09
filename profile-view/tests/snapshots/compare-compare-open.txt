@@ -1,7 +1,7 @@
  ◆ ree profile   ✓ run ok · Fixture.luau · 120 frames · 2.00 s                                     Studio work 6.814 ms
   1 Overview  2 Flame  3 Calls  4 Source  5 Alloc  6 Heap  7 Timeline  8 Caches  9 Issues  d Diff  c Compare
-╭ Studio work ────╮ ╭ a frame, mean ──╮ ╭ instructions ───╮ ╭ allocated ──────╮ ╭ reachable at end╮ ╭ collector ───────╮
-│ 6.814 ms        │ │ 0.121 ms        │ │ 40.8K           │ │ 63.6 KB         │ │ 3.50 MB         │ │ 3 cycles         │
+╭ Studio work ────╮ ╭ work/frame ─────╮ ╭ instructions ───╮ ╭ allocated ──────╮ ╭ reachable at end╮ ╭ collector ───────╮
+│ 6.814 ms        │ │ 0.125 ms        │ │ 40.8K           │ │ 63.6 KB         │ │ 3.50 MB         │ │ 3 cycles         │
 │ startup 7.3% ━━ │ │ max 2.000 ms    │ │ scripts 98.0% ━ │ │ 973 objects     │ │ unswept 1.4% ━━ │ │ 640 steps        │
 ╰─────────────────╯ ╰─────────────────╯ ╰─────────────────╯ ╰─────────────────╯ ╰─────────────────╯ ╰──────────────────╯
  ◇ work clock  a fixture's numbers, chosen for the tests  ? more
@@ -15,18 +15,18 @@
 │ ▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂█▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂ │
 │ ■ frames            ■ steady                                                                                         │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭ Issues  10 ──────────────────────────────────────────────╮ ╭ Hottest functions  own Studio work · phase steady ──────╮
-│              issue                                       │ │   function                    own  share                │
-│ ▌ ▲ serious  Part.Size read again in the frame: 200 a f… │ │   layout  Main:30        2.000 ms  47.5% ██████████████ │
-│   ▲ serious  sortAll in t[v][k] grows as n^1.90          │ │   update  Main:10        1.000 ms  23.7% ███████        │
-│   ● warning  Reachable heap grows: +2.50 MB from steady… │ │   rank  Main:20          0.772 ms  18.3% █████▍         │
-│   ● warning  GETTABLEKS at Main:31 misses 83.3% of its … │ │   __index [C]            0.300 ms   7.1% ██▏            │
-│   ● warning  Part.Position set to its own value: 30 a f… │ │   anonymous  Main:22      40.0 µs   0.9% ▎              │
-│   ● warning  Tables regrown: layout  Main:32             │ │   sort [C]                 2.0 µs  <0.1% ▏              │
-│   ● warning  512 B a frame on average: layout  Main:32   │ │                                                         │
-│   ● warning  Collector spikes: 1 frame, worst 400 steps… │ │                                                         │
-│   ● warning  Frame spikes: 1 frame, worst 2.000 ms (fra… │ │                                                         │
-│   ● warning  Connections keep growing: +99 over the 100… │ │                                                         │
+╭ Issues  9 ───────────────────────────────────────────────╮ ╭ Hottest functions  own Studio work · phase steady ──────╮
+│                       cost issue                         │ │   function                    own  share                │
+│ ▌ ▲ serious     not priced sortAll in t[v][k] grows as … │ │   layout  Main:30        2.000 ms  47.5% ██████████████ │
+│   ● warning     not priced Reachable heap grows: +2.50 … │ │   update  Main:10        1.000 ms  23.7% ███████        │
+│   ● warning     not priced Tables regrown: lay…  Main:32 │ │   rank  Main:20          0.772 ms  18.3% █████▍         │
+│   ● warning     not priced 512 B a frame on av…  Main:32 │ │   __index [C]            0.300 ms   7.1% ██▏            │
+│   ● warning     not priced Collector spikes: 1 frame, w… │ │   anonymous  Main:22      40.0 µs   0.9% ▎              │
+│   ● warning     not priced Connections keep growing: +9… │ │   sort [C]                 2.0 µs  <0.1% ▏              │
+│   ○ info        not priced GETTABLEKS at Main:31 misses… │ │                                                         │
+│   ○ info        not priced Frame spike: frame 60 took 2… │ │                                                         │
+│   ○ info         42.1 µs/f Work below listing floor: 42… │ │                                                         │
+│                                                          │ │                                                         │
 │                                                          │ │                                                         │
 │                                                          │ │                                                         │
 │                                                          │ │                                                         │

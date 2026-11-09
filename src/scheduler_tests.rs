@@ -47,6 +47,65 @@ fn number(engine: &Engine, name: &str) -> f64 {
     }
 }
 
+/// A run with no profile books no charge by kind: the scheduler keeps no totals for it, and the work clock still advances.
+#[test]
+fn ordinary_dispatch_keeps_no_profile_kind_totals() {
+    let (lua, engine) = start();
+    let script = r#"
+        local event = Instance.new("BindableEvent")
+        event.Event:Connect(function()
+            os.clock()
+        end)
+        event:Fire()
+        task.delay(0, function()
+            os.clock()
+        end)
+    "#;
+    run(&lua, &engine, script);
+    scheduler::step(&lua, &engine, None).unwrap();
+    assert!(engine.state.borrow().sched.kinds.is_none());
+    assert!(engine.state.borrow().sched.work_total() > 0.0);
+}
+
+/// A job in the queue is the size it was on main. Where a handler's price came from (`kind`) sits in the handler variant of
+/// `JobTarget`, which has room for it; as a field of `Job` it made every queued job 8 bytes bigger.
+#[test]
+fn profiling_does_not_enlarge_queued_jobs() {
+    // The shapes main had, before the kinds existed
+    #[allow(dead_code)]
+    enum MainTarget {
+        Thread(LuaThread),
+        Handler(super::signal::ConnectionId),
+        DisconnectAll(super::InstanceId),
+    }
+    #[allow(dead_code)]
+    struct MainJob {
+        target: MainTarget,
+        args: Vec<super::Value>,
+        event_depth: u32,
+        signal: super::signal::SignalId,
+        resume_cost: f64,
+    }
+    // The shape this branch had before moving the byte into the handler variant: main's job and a byte
+    #[allow(dead_code)]
+    struct JobWithKindsByte {
+        target: MainTarget,
+        args: Vec<super::Value>,
+        event_depth: u32,
+        signal: super::signal::SignalId,
+        resume_cost: f64,
+        resume_kinds: u8,
+    }
+    let main_size = std::mem::size_of::<MainJob>();
+    let with_byte_size = std::mem::size_of::<JobWithKindsByte>();
+    let current_size = std::mem::size_of::<scheduler::Job>();
+    assert_eq!(std::mem::size_of::<scheduler::DispatchKind>(), 1);
+    println!("queued job layout: main {main_size}, previous {with_byte_size}, current {current_size}");
+    assert_eq!(std::mem::size_of::<scheduler::JobTarget>(), std::mem::size_of::<MainTarget>());
+    assert_eq!(current_size, main_size);
+    assert_eq!(std::mem::align_of::<scheduler::Job>(), std::mem::align_of::<MainJob>());
+}
+
 #[test]
 fn a_playing_clients_resumption_points_run_as_measured() {
     // Measured in a playing client (Studio 0.744, tools/parity/probes/deferred_points.luau, deferred_flush.luau): every
@@ -281,6 +340,134 @@ fn recorded_clock_capture_and_clocks() {
     let delay_at = number(&engine, "DelayAt");
     assert!((delay_at - 500.03).abs() < 1e-9, "{delay_at}");
     assert!(matches!(global(&engine, "Late"), LuaValue::Nil));
+}
+
+/// The script of the split-frame replay below. The second Heartbeat marks the phase `second` part way through, so that
+/// frame ran in two phases. The timer marks `capture-only` after the last frame, in a step that renders nothing.
+const SPLIT_FRAME_SOURCE: &str = r#"
+local First = Instance.new("Part")
+local Second = Instance.new("Part")
+local Frames = 0
+
+game:GetService("RunService").Heartbeat:Connect(function()
+    Frames += 1
+    for _ = 1, 2000 do
+        local Position = First.Position
+    end
+    if Frames == 2 then
+        _G.MarkPhase("second")
+        for _ = 1, 2000 do
+            local Position = Second.Position
+        end
+    end
+end)
+
+task.delay(0.045, function()
+    _G.MarkPhase("capture-only")
+end)
+"#;
+
+/// Two rendered frames, then a last step that resumes a timer and reaches the capture without rendering. An event is
+/// `["t", time]` (timers resume), `["h", delta, time]` (Heartbeat), `["r", delta, time]` (render) or `["c", ...]` (capture).
+fn split_frame_clock() -> serde_json::Value {
+    json!({
+        "version": 2, "time": 0.05,
+        "mount": { "start": 500.0, "end": 500.0, "instances": 0 },
+        "events": [
+            ["t", 500.012], ["h", 0.004, 500.0121], ["r", 0.016, 500.02],
+            ["t", 500.03], ["h", 0.018, 500.0301], ["r", 0.02, 500.04],
+            ["t", 500.061], ["c", 500.061, 500.0, 0.061]
+        ]
+    })
+}
+
+/// What one split-frame replay should write to boundary.json for the phase it was asked to report
+struct SplitFrameCase {
+    /// the phase named by `--profile-phase`; comma separated phases are reported together
+    reported_phase: &'static str,
+    frames: u64,
+    position_reads_per_frame: f64,
+    distinct_per_frame: f64,
+    repeats_per_frame: f64,
+}
+
+/// How many frames boundary.json counts for a phase, whichever phase is reported
+struct PhaseFrames {
+    phase: &'static str,
+    frames: u64,
+}
+
+/// Replays `split_frame_clock` to its capture with the boundary profile reporting `reported_phase`. Returns the
+/// profile's text and its boundary.json.
+fn replay_split_frame_to_capture(reported_phase: &str) -> (String, serde_json::Value) {
+    let (lua, engine) = start();
+    engine_lua::modules::interpret_all(&lua, &engine);
+    scheduler::use_recorded_clock(&engine, Some(&split_frame_clock())).unwrap();
+
+    let mark_phase = lua.create_function(|_, name: String| {
+        crate::luau_profile::set_phase(&name);
+        Ok(())
+    }).unwrap();
+    let shared = engine.lua.borrow().shared.clone().unwrap();
+    let globals: LuaTable = shared.get("_G").unwrap();
+    globals.set("MarkPhase", mark_phase).unwrap();
+
+    let unique_name = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let report_path = std::env::temp_dir().join(format!("ree-boundary-capture-{}-{unique_name}.json", std::process::id()));
+    crate::boundary::begin(crate::boundary::Config { out: report_path.clone(), top: 5, phase: Some(reported_phase.to_string()) });
+    crate::luau_profile::install(&lua);
+    crate::luau_profile::set_phase("first");
+    run(&lua, &engine, SPLIT_FRAME_SOURCE);
+    scheduler::run_until(&lua, &engine, 10.0).unwrap();
+    let text = crate::boundary::finish().expect("report");
+
+    let state = engine.state.borrow();
+    assert!(state.sched.captured);
+    let replay = state.sched.replay_status().unwrap();
+    assert_eq!(replay.events, 8);
+    assert_eq!(replay.replayed, 8);
+    assert_eq!(replay.frames, 2);
+
+    let bytes = std::fs::read(&report_path).expect("report file");
+    std::fs::remove_file(&report_path).expect("remove report file");
+    (text, serde_json::from_slice(&bytes).unwrap())
+}
+
+#[test]
+fn recorded_capture_counts_both_phases_of_a_split_frame() {
+    let cases = [
+        SplitFrameCase { reported_phase: "first", frames: 2, position_reads_per_frame: 2000.0, distinct_per_frame: 1.0, repeats_per_frame: 1999.0 },
+        SplitFrameCase { reported_phase: "second", frames: 1, position_reads_per_frame: 2000.0, distinct_per_frame: 1.0, repeats_per_frame: 1999.0 },
+        // (both phases together: 2000 reads in frame 1 and 4000 in frame 2, so 3000 a frame over the two frames)
+        SplitFrameCase { reported_phase: "first,second", frames: 2, position_reads_per_frame: 3000.0, distinct_per_frame: 1.5, repeats_per_frame: 2998.5 },
+    ];
+    // `startup` ran before any frame, and `capture-only` ran after the last one: neither is in a frame
+    let frames_per_phase = [
+        PhaseFrames { phase: "startup", frames: 0 },
+        PhaseFrames { phase: "first", frames: 2 },
+        PhaseFrames { phase: "second", frames: 1 },
+        PhaseFrames { phase: "capture-only", frames: 0 },
+    ];
+    for case in cases {
+        let wanted = case.reported_phase;
+        let (text, report) = replay_split_frame_to_capture(wanted);
+
+        assert_eq!(report["frames"], case.frames, "{wanted}: {text}");
+        let phases = report["phases"].as_array().unwrap();
+        for expected in &frames_per_phase {
+            let phase = phases.iter().find(|phase| phase["phase"] == expected.phase).unwrap();
+            assert_eq!(phase["frames"], expected.frames, "{wanted}: {}", expected.phase);
+        }
+        let members = report["by_member"].as_array().unwrap();
+        let position = members.iter().find(|member| member["member"] == "BasePart.Position").unwrap();
+        assert_eq!(position["reads_per_frame"], case.position_reads_per_frame, "{wanted}");
+        assert_eq!(position["distinct_per_frame"], case.distinct_per_frame, "{wanted}");
+        assert_eq!(position["same_call_repeats_per_frame"], case.repeats_per_frame, "{wanted}");
+        println!(
+            "recorded capture {wanted}: {} frames, {} reads, {} distinct, {} repeats/frame",
+            case.frames, case.position_reads_per_frame, case.distinct_per_frame, case.repeats_per_frame
+        );
+    }
 }
 
 /// One erroring Heartbeat handler does not stop the others, in that frame or later ones, and

@@ -12,6 +12,10 @@ use crate::{
     scheduler,
 };
 
+/// Recordings' temporary folders take a number from this as well as the process and the clock: two tests started in one
+/// tick of Windows' clock (100 ns) took the same folder and wrote each other's files into it
+static TEST_DIRS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Runs `source` in a play-mode engine for `frames` frames at 60 a second, recording; returns the
 /// output directory's files as read back.
 fn record(source: &str, frames: u32) -> (Json, Json, rbx_dom_weak::WeakDom, Json) {
@@ -60,7 +64,8 @@ fn record_in(source: &str, frames: u32, walk_always: bool, own: &[(&str, &str)])
         scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("frame");
         recorder.sample(&engine, frame);
     }
-    let out = std::env::temp_dir().join(format!("rur-record-test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let unique = TEST_DIRS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let out = std::env::temp_dir().join(format!("rur-record-test-{}-{}-{unique}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     let summary = recorder.write(&engine, &out, Map::new()).expect("write");
     let read = |name: &str| -> Json { serde_json::from_str(&std::fs::read_to_string(out.join(name)).unwrap()).unwrap() };
     let playback = read("playback.json");
@@ -690,9 +695,60 @@ fn a_spooled_run_prints_what_a_kept_one_prints() {
     assert!(kept.ends_with("}\n") && kept.matches('\n').count() == 1);
 }
 
+/// `ree record --timing-check` probes faster and slower clients: a script whose look turns on a threshold of os.clock within
+/// a frame hinges under the probe on the far side of it, whichever direction that is (the check before probed only a clock
+/// twice as slow, so a threshold a faster client misses, or one only a phone crosses, read "no change"), and the work each
+/// frame did is compared too
+#[test]
+fn a_timing_check_probes_faster_and_slower_clients() {
+    let root = std::env::temp_dir().join(format!("ree-record-probes-test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(root.join("none")).unwrap();
+    let host = crate::launch::Host::default();
+    let record = |harness: &str, name: &str, timing: bool| {
+        let path = root.join(format!("{name}.luau"));
+        std::fs::write(&path, harness).unwrap();
+        let out = root.join(name);
+        let mut args: Vec<String> = ["--harness", &path.to_string_lossy(), "--out", &out.to_string_lossy(), "--roots", &root.join("none").to_string_lossy(), "--seconds", "0.1", "--fps", "60"].iter().map(|s| s.to_string()).collect();
+        if timing {
+            args.push("--timing-check".into());
+        }
+        let parsed = super::run::parse(&args, true).expect("arguments");
+        let (done, emulator) = super::run::execute_with(&parsed, &host, true, false).expect("record");
+        drop(emulator);
+        (done, out)
+    };
+    // how long the work reads on os.clock as modelled (the work clock's prices, whatever they are)
+    let work = "local Start = os.clock() local X = 0 for I = 1, 20000 do X += I % 7 end local Elapsed = os.clock() - Start";
+    // (in a frame: work before the first frame, a harness's build, is not charged)
+    let (_, out) = record(&format!("return function(Context) task.wait() {work} print(string.format('%.9f', Elapsed)) end"), "measure", false);
+    let events: Json = serde_json::from_str(&std::fs::read_to_string(out.join("events.json")).unwrap()).unwrap();
+    let modelled: f64 = events["output"].as_array().unwrap().iter().find_map(|line| line["message"].as_str()?.parse().ok()).expect("the elapsed time printed");
+    assert!(modelled > 0.0, "the loop moves os.clock");
+    // a threshold at 1.5x the modelled work: only a slower client crosses it; at 0.9x: only a faster one falls short
+    let threshold = |name: &str, factor: f64| {
+        let harness = format!(
+            "return function(Context) local Part = Instance.new('Part') Part.Anchored = true Part.Parent = workspace task.wait() {work} Part.Transparency = if Elapsed > {:.12} then 0.5 else 0 task.wait() end",
+            modelled * factor
+        );
+        record(&harness, name, true).0
+    };
+    let slower = threshold("slower", 1.5);
+    let faster = threshold("faster", 0.9);
+    let _ = std::fs::remove_dir_all(&root);
+    let probes = |done: &super::run::Done| -> Vec<(f64, bool)> { done.summary["timing"]["probes"].as_array().unwrap().iter().map(|probe| (probe["factor"].as_f64().unwrap(), probe["hinges"] == true)).collect() };
+    // Current calibration: inverse fidelity endpoints (1/1.34, 1/0.55), then the slowest phone (4.16/0.55).
+    assert_eq!(probes(&slower).iter().map(|probe| probe.0).collect::<Vec<_>>(), vec![0.746, 1.818, 7.564]);
+    assert_eq!(probes(&slower).iter().map(|probe| probe.1).collect::<Vec<_>>(), vec![false, true, true], "{}", slower.summary["timing"]);
+    assert_eq!(probes(&faster).iter().map(|probe| probe.1).collect::<Vec<_>>(), vec![true, false, false], "{}", faster.summary["timing"]);
+    assert!(faster.line.contains("hinges on sub-frame timing under 0.75x (the fastest desktop client)") && faster.line.contains("no change at 1.82x, 7.56x"), "{}", faster.line);
+    assert_eq!(slower.summary["timing"]["range"]["factors"], serde_json::json!([0.746, 7.564]));
+    assert_eq!(faster.summary["timing"]["first"]["list"], "actions");
+}
+
 /// `ree record --timing-check`: a recording whose script budgets its work on os.clock within a frame hinges on sub-frame
-/// timing (a second recording with the in-frame clock moved differs, from the first changed key), one that does not reads
-/// no change; the verdict is in the summary and timing.json, and the second recording's files are gone.
+/// timing (a probe recording with the in-frame clock moved differs, from the first changed key, in what it draws and in the
+/// work its frames do), one that does not reads no change; the verdict is in the summary and timing.json, and the probes'
+/// files are gone.
 #[test]
 fn a_timing_check_says_whether_a_recording_hinges_on_sub_frame_timing() {
     let root = std::env::temp_dir().join(format!("ree-record-timing-test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
@@ -735,17 +791,20 @@ fn a_timing_check_says_whether_a_recording_hinges_on_sub_frame_timing() {
         drop(emulator);
         let written: Json = serde_json::from_str(&std::fs::read_to_string(out.join("timing.json")).unwrap()).unwrap();
         assert_eq!(written, done.summary["timing"]);
-        assert!(!out.join("timing-check").exists(), "the second recording's files are removed");
+        assert!((0..3).all(|index| !out.join(format!("timing-check-{index}")).exists()), "the probes' files are removed");
         done
     };
     let steady = check(&steady, "steady");
     assert_eq!(steady.summary["timing"]["hinges"], Json::Bool(false), "{}", steady.summary["timing"]);
-    assert!(steady.line.ends_with("sub-frame timing: no change"), "{}", steady.line);
+    assert!(steady.line.contains("sub-frame timing: no change (tested 0.75x to 7.56x the modelled clock"), "{}", steady.line);
     let budgeted = check(&budgeted, "budgeted");
     let _ = std::fs::remove_dir_all(&root);
     assert_eq!(budgeted.summary["timing"]["hinges"], Json::Bool(true), "{}", budgeted.summary["timing"]);
     assert_eq!(budgeted.summary["timing"]["first"]["what"], "Part");
-    assert!(budgeted.line.contains("hinges on sub-frame timing from"), "{}", budgeted.line);
+    assert!(budgeted.line.contains("hinges on sub-frame timing under"), "{}", budgeted.line);
+    // (the steps a frame does under the budget: its work moved too)
+    let probes = budgeted.summary["timing"]["probes"].as_array().unwrap();
+    assert!(probes.iter().any(|probe| probe["differing"]["frame work"].as_u64().unwrap_or(0) > 0), "{}", budgeted.summary["timing"]);
 }
 
 /// `ree record` writes the same files whether its output lines are kept or written to a temporary file
@@ -845,7 +904,7 @@ fn a_harness_requires_its_own_modules() {
             script_timeout: None,
             script_timeouts: None,
             timing_check: false,
-            clock_moved: false,
+            clock_probe: None,
         };
         let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
         assert_eq!(ran.status, "ok", "{harness}: {:?}", ran.failure);
@@ -1623,7 +1682,7 @@ fn frame_times_replay_a_take_then_go_on_at_the_frame_rate() {
         script_timeout: None,
         script_timeouts: None,
         timing_check: false,
-        clock_moved: false,
+        clock_probe: None,
     };
     let round = |times: Vec<f64>| times.into_iter().map(|t| (t * 1e4).round() / 1e4).collect::<Vec<_>>();
     assert_eq!(round(args(Some(vec![0.03, 0.05])).frame_schedule()), vec![0.03, 0.05, 0.0667, 0.0833, 0.1]);
@@ -1884,7 +1943,7 @@ fn trace_writes_names_the_line_of_each_write() {
         script_timeout: None,
         script_timeouts: None,
         timing_check: false,
-        clock_moved: false,
+        clock_probe: None,
     };
     let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
     let _ = std::fs::remove_dir_all(&root);
@@ -1944,7 +2003,7 @@ fn trace_writes_star_names_every_property_and_attribute_write() {
         script_timeout: None,
         script_timeouts: None,
         timing_check: false,
-        clock_moved: false,
+        clock_probe: None,
     };
     let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
     let _ = std::fs::remove_dir_all(&root);
@@ -2003,7 +2062,7 @@ fn profile_phase_splits_the_allocation_profile() {
         script_timeout: None,
         script_timeouts: None,
         timing_check: false,
-        clock_moved: false,
+        clock_probe: None,
     };
     let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
     drop(guard);
@@ -2068,7 +2127,7 @@ fn census_names_the_line_behind_what_accumulates() {
         script_timeout: None,
         script_timeouts: None,
         timing_check: false,
-        clock_moved: false,
+        clock_probe: None,
     };
     let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
     let _ = std::fs::remove_dir_all(&root);
@@ -2147,7 +2206,7 @@ fn holders_name_what_keeps_an_orphan_tree_alive() {
         script_timeout: None,
         script_timeouts: None,
         timing_check: false,
-        clock_moved: false,
+        clock_probe: None,
     };
     let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
     let _ = std::fs::remove_dir_all(&root);
@@ -2238,6 +2297,46 @@ fn a_harness_reseeds_its_run_and_a_server_mount_takes_studio_names() {
     assert!(!printed.iter().any(|line| line.starts_with("server error:") || line.starts_with("client error:")), "{printed:?}");
 }
 
+/// Context.FireEvent(Instance, Event, ...) fires an engine event nothing here raises (a walking Humanoid's Running) to the
+/// connections made to it, with its arguments; an unknown event or a table argument raises.
+#[test]
+fn a_harness_fires_an_engine_event_to_its_connections() {
+    let root = std::env::temp_dir().join(format!("ree-fire-event-test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(root.join("place")).unwrap();
+    std::fs::write(
+        root.join("Harness.luau"),
+        "return function(Context)\n\
+         local Model = Instance.new('Model')\n\
+         local Humanoid = Instance.new('Humanoid')\n\
+         Humanoid.Parent = Model\n\
+         Model.Parent = workspace\n\
+         local Speeds = {}\n\
+         Humanoid.Running:Connect(function(Speed) table.insert(Speeds, Speed) end)\n\
+         Context.FireEvent(Humanoid, 'Running', 22.5)\n\
+         Context.FireEvent(Humanoid, 'Running', 0)\n\
+         task.wait()\n\
+         local _, Unknown = pcall(Context.FireEvent, Humanoid, 'NoSuchEventAnywhere')\n\
+         local _, Table = pcall(Context.FireEvent, Humanoid, 'Running', {})\n\
+         print('speeds', table.concat(Speeds, ','), Unknown, Table)\n\
+         end",
+    )
+    .unwrap();
+    let place = root.join("place").to_string_lossy().into_owned();
+    let harness = root.join("Harness.luau").to_string_lossy().into_owned();
+    let args: Vec<String> = ["--harness", &harness, "--roots", &place, "--seconds", "0.1"].iter().map(|s| s.to_string()).collect();
+    let parsed = super::run::parse(&args, false).expect("arguments");
+    let (done, emulator) = super::run::execute_with(&parsed, &crate::launch::Host::default(), false, false).expect("run");
+    let mut bytes = Vec::new();
+    done.print(&mut bytes).expect("printed");
+    drop(emulator);
+    let _ = std::fs::remove_dir_all(&root);
+    let summary: Json = serde_json::from_str(&String::from_utf8(bytes).expect("UTF-8")).expect("one line of JSON");
+    let printed: Vec<String> = summary["output"].as_array().expect("output").iter().map(|line| line["message"].as_str().unwrap_or_default().to_string()).collect();
+    let line = printed.iter().find(|line| line.starts_with("speeds ")).unwrap_or_else(|| panic!("{printed:?}"));
+    assert!(line.starts_with("speeds 22.5,0 "), "{line}");
+    assert!(line.contains("no event named NoSuchEventAnywhere") && line.contains("arguments are nil, booleans"), "{line}");
+}
+
 /// A Studio-only placeholder (the place's hierarchy snapshot gives it a class and a name and no values) is built when a script
 /// first lists its parent, so a run that looks at more of the place built more of them, and recorded them appearing then: a cast
 /// that walked every service had its recording carry the place's seven Lighting effects (drawn at their default values) and two of
@@ -2299,7 +2398,8 @@ fn studio_only_placeholders_are_not_drawn_whenever_they_are_built() {
             scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("frame");
             recorder.sample(&engine, frame);
         }
-        let out = std::env::temp_dir().join(format!("rur-record-test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let unique = TEST_DIRS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let out = std::env::temp_dir().join(format!("rur-record-test-{}-{}-{unique}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         recorder.write(&engine, &out, Map::new()).expect("write");
         let playback: Json = serde_json::from_str(&std::fs::read_to_string(out.join("playback.json")).unwrap()).unwrap();
         let scene = std::fs::read(out.join("scene.rbxm")).unwrap();

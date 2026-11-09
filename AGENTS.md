@@ -49,7 +49,8 @@ nearly every file.
   `src/record/tests.rs`, `src/emulator.rs`, tests beside their modules, `tests/luau_vm.rs` (the patched VM),
   `tests/process_guards.rs` (the built `ree`).
 - `vendor/` (generated: never edit by hand), `patches/`, `tools/vendor.mjs`; `data/` (Studio's API dump and text
-  metrics, compiled in); `tools/luau-cost/` (the work clock's calibration); `docs/engine.md` (the contract).
+  metrics, compiled in); `tools/cost-parity/` (the work clock's calibration: the parity bench, its fits and its kept client
+  sessions; `tools/luau-cost/` is the older Studio-playtest fit); `docs/engine.md` (the contract).
 
 ## Rules
 

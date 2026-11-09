@@ -5,6 +5,7 @@
 #include "lstate.h"
 #include "lmem.h"
 #include "lgc.h"
+#include "Luau/BytecodeUtils.h"
 
 LUAU_FASTINTVARIABLE(LuauInlineHitsThreshold, 32)
 
@@ -30,6 +31,7 @@ Proto* luaF_newproto(lua_State* L)
     f->exectarget = 0;
     f->execcount = 0;
     f->execflags = 0;
+    f->coldslot = 0;
 
     f->lineinfo = NULL;
     f->abslineinfo = NULL;
@@ -96,12 +98,15 @@ Proto* luaF_cloneproto(lua_State* L, Proto* source)
     p->linedefined = source->linedefined;
     p->cost = source->cost;
     p->execflags = source->execflags;
+    p->coldslot = 0;
     p->bytecodeid = source->bytecodeid;
 
     p->k = copyArray<TValue>(L, source->k, source->sizek, memcat);
     p->sizek = source->sizek;
 
     p->code = copyArray<Instruction>(L, source->code, source->sizecode, memcat);
+    for (int pc = 0; pc < source->sizecode; pc += Luau::getOpLength(LuauOpcode(LUAU_INSN_OP(p->code[pc]))))
+        p->code[pc] &= ~Instruction(LUAU_INSN_COLD);
     p->sizecode = source->sizecode;
     p->codeentry = p->code;
 
@@ -140,6 +145,7 @@ Proto* luaF_cloneproto(lua_State* L, Proto* source)
         p->feedbackvecsize = source->feedbackvecsize;
     }
 
+    luaC_coldprepare(L, p);
     return p;
 }
 
@@ -255,6 +261,9 @@ void luaF_closeupval(lua_State* L, UpVal* uv, bool dead)
 
 void luaF_freeproto(lua_State* L, Proto* f, lua_Page* page)
 {
+    // (a run of its cold code this frame forgets it: lgc.cpp)
+    if (f->coldslot)
+        luaC_coldfreed(L, f);
     luaM_freearray(L, f->code, f->sizecode, Instruction, f->memcat);
     luaM_freearray(L, f->p, f->sizep, Proto*, f->memcat);
     luaM_freearray(L, f->k, f->sizek, TValue, f->memcat);

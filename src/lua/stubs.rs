@@ -252,6 +252,26 @@ pub fn load(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
             Ok(())
         })?,
     )?;
+    let e = engine.clone();
+    r.set("LogHistory", lua.create_function(move |lua, ()| {
+        let state = e.state.borrow();
+        let history = lua.create_table_with_capacity(state.log_history.len(), 0)?;
+        for (index, line) in state.log_history.iter().enumerate() {
+            let entry = lua.create_table_with_capacity(0, 3)?;
+            entry.raw_set("message", line.text.as_str())?;
+            let name = match line.kind {
+                "warn" => "MessageWarning",
+                "error" => "MessageError",
+                "info" => "MessageInfo",
+                _ => "MessageOutput",
+            };
+            let item = e.reflection.enum_item("MessageType", name).unwrap();
+            entry.raw_set("messageType", enum_item_value(lua, &e, item)?)?;
+            entry.raw_set("timestamp", line.timestamp)?;
+            history.raw_set(index + 1, entry)?;
+        }
+        Ok(history)
+    })?)?;
     // LogService's logging methods (services.luau): a line of a kind with the converted context MessageOut passes on
     let e = engine.clone();
     r.set(

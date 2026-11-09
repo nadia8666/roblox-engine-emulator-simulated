@@ -90,7 +90,7 @@ LUAU_FASTFLAG(LuauRuntimeFeedback)
 #define VM_KV(i) (LUAU_ASSERT(unsigned(i) < unsigned(L->ci->p->sizek)), &k[i])
 #define VM_UV(i) (LUAU_ASSERT(unsigned(i) < unsigned(cl->nupvalues)), &cl->l.uprefs[i])
 
-#define VM_PATCH_OP(pc, op) *const_cast<Instruction*>(pc) = (uint8_t(op) | (0xffffff00u & *(pc)))
+#define VM_PATCH_OP(pc, op) *const_cast<Instruction*>(pc) = (uint8_t(op) | (0xffffff80u & *(pc)))
 #define VM_PATCH_C(pc, slot) *const_cast<Instruction*>(pc) = ((uint8_t(slot) << 24) | (0x00ffffffu & *(pc)))
 #define VM_PATCH_E(pc, slot) *const_cast<Instruction*>(pc) = ((uint32_t(slot) << 8) | (0x000000ffu & *(pc)))
 #define VM_PATCH_AUX(pc, slot) *const_cast<Instruction*>(pc) = uint32_t(slot)
@@ -110,31 +110,29 @@ LUAU_FASTFLAG(LuauRuntimeFeedback)
         } \
     }
 
-#define VM_DISPATCH_OP(op) &&CASE_##op
+#define VM_DISPATCH_OP(op) &&CASE_##op,
+#define VM_DISPATCH_COLD_OP(op) &&coldinstruction,
 
-#define VM_DISPATCH_TABLE() \
-    VM_DISPATCH_OP(LOP_NOP), VM_DISPATCH_OP(LOP_BREAK), VM_DISPATCH_OP(LOP_LOADNIL), VM_DISPATCH_OP(LOP_LOADB), VM_DISPATCH_OP(LOP_LOADN), \
-        VM_DISPATCH_OP(LOP_LOADK), VM_DISPATCH_OP(LOP_MOVE), VM_DISPATCH_OP(LOP_GETGLOBAL), VM_DISPATCH_OP(LOP_SETGLOBAL), \
-        VM_DISPATCH_OP(LOP_GETUPVAL), VM_DISPATCH_OP(LOP_SETUPVAL), VM_DISPATCH_OP(LOP_CLOSEUPVALS), VM_DISPATCH_OP(LOP_GETIMPORT), \
-        VM_DISPATCH_OP(LOP_GETTABLE), VM_DISPATCH_OP(LOP_SETTABLE), VM_DISPATCH_OP(LOP_GETTABLEKS), VM_DISPATCH_OP(LOP_SETTABLEKS), \
-        VM_DISPATCH_OP(LOP_GETTABLEN), VM_DISPATCH_OP(LOP_SETTABLEN), VM_DISPATCH_OP(LOP_NEWCLOSURE), VM_DISPATCH_OP(LOP_NAMECALL), \
-        VM_DISPATCH_OP(LOP_CALL), VM_DISPATCH_OP(LOP_RETURN), VM_DISPATCH_OP(LOP_JUMP), VM_DISPATCH_OP(LOP_JUMPBACK), VM_DISPATCH_OP(LOP_JUMPIF), \
-        VM_DISPATCH_OP(LOP_JUMPIFNOT), VM_DISPATCH_OP(LOP_JUMPIFEQ), VM_DISPATCH_OP(LOP_JUMPIFLE), VM_DISPATCH_OP(LOP_JUMPIFLT), \
-        VM_DISPATCH_OP(LOP_JUMPIFNOTEQ), VM_DISPATCH_OP(LOP_JUMPIFNOTLE), VM_DISPATCH_OP(LOP_JUMPIFNOTLT), VM_DISPATCH_OP(LOP_ADD), \
-        VM_DISPATCH_OP(LOP_SUB), VM_DISPATCH_OP(LOP_MUL), VM_DISPATCH_OP(LOP_DIV), VM_DISPATCH_OP(LOP_MOD), VM_DISPATCH_OP(LOP_POW), \
-        VM_DISPATCH_OP(LOP_ADDK), VM_DISPATCH_OP(LOP_SUBK), VM_DISPATCH_OP(LOP_MULK), VM_DISPATCH_OP(LOP_DIVK), VM_DISPATCH_OP(LOP_MODK), \
-        VM_DISPATCH_OP(LOP_POWK), VM_DISPATCH_OP(LOP_AND), VM_DISPATCH_OP(LOP_OR), VM_DISPATCH_OP(LOP_ANDK), VM_DISPATCH_OP(LOP_ORK), \
-        VM_DISPATCH_OP(LOP_CONCAT), VM_DISPATCH_OP(LOP_NOT), VM_DISPATCH_OP(LOP_MINUS), VM_DISPATCH_OP(LOP_LENGTH), VM_DISPATCH_OP(LOP_NEWTABLE), \
-        VM_DISPATCH_OP(LOP_DUPTABLE), VM_DISPATCH_OP(LOP_SETLIST), VM_DISPATCH_OP(LOP_FORNPREP), VM_DISPATCH_OP(LOP_FORNLOOP), \
-        VM_DISPATCH_OP(LOP_FORGLOOP), VM_DISPATCH_OP(LOP_FORGPREP_INEXT), VM_DISPATCH_OP(LOP_FASTCALL3), VM_DISPATCH_OP(LOP_FORGPREP_NEXT), \
-        VM_DISPATCH_OP(LOP_NATIVECALL), VM_DISPATCH_OP(LOP_GETVARARGS), VM_DISPATCH_OP(LOP_DUPCLOSURE), VM_DISPATCH_OP(LOP_PREPVARARGS), \
-        VM_DISPATCH_OP(LOP_LOADKX), VM_DISPATCH_OP(LOP_JUMPX), VM_DISPATCH_OP(LOP_FASTCALL), VM_DISPATCH_OP(LOP_COVERAGE), \
-        VM_DISPATCH_OP(LOP_CAPTURE), VM_DISPATCH_OP(LOP_SUBRK), VM_DISPATCH_OP(LOP_DIVRK), VM_DISPATCH_OP(LOP_FASTCALL1), \
-        VM_DISPATCH_OP(LOP_FASTCALL2), VM_DISPATCH_OP(LOP_FASTCALL2K), VM_DISPATCH_OP(LOP_FORGPREP), VM_DISPATCH_OP(LOP_JUMPXEQKNIL), \
-        VM_DISPATCH_OP(LOP_JUMPXEQKB), VM_DISPATCH_OP(LOP_JUMPXEQKN), VM_DISPATCH_OP(LOP_JUMPXEQKS), VM_DISPATCH_OP(LOP_IDIV), \
-        VM_DISPATCH_OP(LOP_IDIVK), VM_DISPATCH_OP(LOP_GETUDATAKS), VM_DISPATCH_OP(LOP_SETUDATAKS), VM_DISPATCH_OP(LOP_NAMECALLUDATA), \
-        VM_DISPATCH_OP(LOP_NEWCLASSMEMBER), VM_DISPATCH_OP(LOP_CALLFB), VM_DISPATCH_OP(LOP_CMPPROTO), VM_DISPATCH_OP(LOP_FASTPCALL), \
-        VM_DISPATCH_OP(LOP_NEWCLASS), VM_DISPATCH_OP(LOP_CONSTRUCT), VM_DISPATCH_OP(LOP_FINCONSTRUCT), VM_DISPATCH_OP(LOP_GETPRIVATEFIELD), VM_DISPATCH_OP(LOP_SETPRIVATEFIELD),
+#define VM_OPCODES(V) \
+    V(LOP_NOP) V(LOP_BREAK) V(LOP_LOADNIL) V(LOP_LOADB) V(LOP_LOADN) \
+    V(LOP_LOADK) V(LOP_MOVE) V(LOP_GETGLOBAL) V(LOP_SETGLOBAL) V(LOP_GETUPVAL) \
+    V(LOP_SETUPVAL) V(LOP_CLOSEUPVALS) V(LOP_GETIMPORT) V(LOP_GETTABLE) V(LOP_SETTABLE) \
+    V(LOP_GETTABLEKS) V(LOP_SETTABLEKS) V(LOP_GETTABLEN) V(LOP_SETTABLEN) V(LOP_NEWCLOSURE) \
+    V(LOP_NAMECALL) V(LOP_CALL) V(LOP_RETURN) V(LOP_JUMP) V(LOP_JUMPBACK) \
+    V(LOP_JUMPIF) V(LOP_JUMPIFNOT) V(LOP_JUMPIFEQ) V(LOP_JUMPIFLE) V(LOP_JUMPIFLT) \
+    V(LOP_JUMPIFNOTEQ) V(LOP_JUMPIFNOTLE) V(LOP_JUMPIFNOTLT) V(LOP_ADD) V(LOP_SUB) \
+    V(LOP_MUL) V(LOP_DIV) V(LOP_MOD) V(LOP_POW) V(LOP_ADDK) \
+    V(LOP_SUBK) V(LOP_MULK) V(LOP_DIVK) V(LOP_MODK) V(LOP_POWK) \
+    V(LOP_AND) V(LOP_OR) V(LOP_ANDK) V(LOP_ORK) V(LOP_CONCAT) \
+    V(LOP_NOT) V(LOP_MINUS) V(LOP_LENGTH) V(LOP_NEWTABLE) V(LOP_DUPTABLE) \
+    V(LOP_SETLIST) V(LOP_FORNPREP) V(LOP_FORNLOOP) V(LOP_FORGLOOP) V(LOP_FORGPREP_INEXT) \
+    V(LOP_FASTCALL3) V(LOP_FORGPREP_NEXT) V(LOP_NATIVECALL) V(LOP_GETVARARGS) V(LOP_DUPCLOSURE) \
+    V(LOP_PREPVARARGS) V(LOP_LOADKX) V(LOP_JUMPX) V(LOP_FASTCALL) V(LOP_COVERAGE) \
+    V(LOP_CAPTURE) V(LOP_SUBRK) V(LOP_DIVRK) V(LOP_FASTCALL1) V(LOP_FASTCALL2) \
+    V(LOP_FASTCALL2K) V(LOP_FORGPREP) V(LOP_JUMPXEQKNIL) V(LOP_JUMPXEQKB) V(LOP_JUMPXEQKN) \
+    V(LOP_JUMPXEQKS) V(LOP_IDIV) V(LOP_IDIVK) V(LOP_GETUDATAKS) V(LOP_SETUDATAKS) \
+    V(LOP_NAMECALLUDATA) V(LOP_NEWCLASSMEMBER) V(LOP_CALLFB) V(LOP_CMPPROTO) V(LOP_FASTPCALL) \
+    V(LOP_NEWCLASS) V(LOP_CONSTRUCT) V(LOP_FINCONSTRUCT) V(LOP_GETPRIVATEFIELD) V(LOP_SETPRIVATEFIELD)
 
 #if defined(__GNUC__) || defined(__clang__)
 #define VM_USE_CGOTO 1
@@ -151,11 +149,12 @@ LUAU_FASTFLAG(LuauRuntimeFeedback)
  * switch statement to skip a LOP_BREAK instruction.
  */
 // Counts each instruction the interpreter dispatches (lua_workcounters)
+static_assert(LOP__COUNT + LUAU_INSN_COLD <= LUA_WORK_FIRSTSLOT, "cold opcode aliases must not overlap scalar work slots");
 #define VM_COUNT_OP(op) (workops[uint8_t(op)]++)
 
 #if VM_USE_CGOTO
 #define VM_CASE(op) CASE_##op:
-#define VM_NEXT() goto*(SingleStep ? &&dispatch : (VM_COUNT_OP(LUAU_INSN_OP(*pc)), kDispatchTable[LUAU_INSN_OP(*pc)]))
+#define VM_NEXT() goto*(SingleStep ? &&dispatch : (VM_COUNT_OP(uint8_t(*pc)), kDispatchTable[uint8_t(*pc)]))
 #define VM_CONTINUE(op) goto* kDispatchTable[uint8_t(op)]
 #else
 #define VM_CASE(op) case op:
@@ -259,11 +258,18 @@ static void luau_addexeccount(Proto* p, double count)
 }
 
 // (ProfileCalls: a host's profile samples calls, lprofile.cpp; without it the CALL paths do not ask)
+// A cold dispatch returns true after disarming its PC. The outer loop retries it
+// with fresh interpreter registers, without growing the C stack.
 template<bool SingleStep, bool ProfileCalls>
-static void luau_execute(lua_State* L)
+static bool luau_execute(lua_State* L)
 {
 #if VM_USE_CGOTO
-    static const void* kDispatchTable[256] = {VM_DISPATCH_TABLE()};
+    static_assert(LOP__COUNT == 95, "update the dispatch table padding after an opcode change");
+    static const void* kDispatchTable[256] = {
+        VM_OPCODES(VM_DISPATCH_OP)
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+        VM_OPCODES(VM_DISPATCH_COLD_OP)
+    };
 #endif
 
     // the critical interpreter state, stored in locals for performance
@@ -316,7 +322,7 @@ static void luau_execute(lua_State* L)
             luaP_nativeenter(L, clvalue(L->ci->func));
 
         if (L->global->ecb.enter(L, p) == 0)
-            return;
+            return false;
     }
 
 reentry:
@@ -359,13 +365,13 @@ reentry:
                 luaP_step(L, cl, pc);
 
 #if VM_USE_CGOTO
-            VM_COUNT_OP(LUAU_INSN_OP(*pc));
-            VM_CONTINUE(LUAU_INSN_OP(*pc));
+            VM_COUNT_OP(uint8_t(*pc));
+            VM_CONTINUE(uint8_t(*pc));
 #endif
         }
 
 #if !VM_USE_CGOTO
-        size_t dispatchOp = LUAU_INSN_OP(*pc);
+        size_t dispatchOp = uint8_t(*pc);
         VM_COUNT_OP(dispatchOp);
 
     dispatchContinue:
@@ -1192,7 +1198,9 @@ reentry:
 
                     // yield
                     if (n < 0)
+                    {
                         goto exit;
+                    }
 
                     // ci is our callinfo, cip is our parent
                     CallInfo* ci = L->ci;
@@ -1324,7 +1332,9 @@ reentry:
 
                     // yield
                     if (n < 0)
+                    {
                         goto exit;
+                    }
 
                     // ci is our callinfo, cip is our parent
                     CallInfo* ci = L->ci;
@@ -2595,7 +2605,7 @@ reentry:
 
                 // TODO: we really don't need this anymore
                 if (!ttistable(ra))
-                    return; // temporary workaround to weaken a rather powerful exploitation primitive in case of a MITM attack on bytecode
+                    return false; // temporary workaround to weaken a rather powerful exploitation primitive in case of a MITM attack on bytecode
 
                 int last = index + c - 1;
                 if (last > h->sizearray)
@@ -2898,7 +2908,9 @@ reentry:
                     VM_PROTECT(yielded = luaD_performcally(L, ra + 3, uint8_t(aux)));
 
                     if (yielded)
+                    {
                         goto exit;
+                    }
 
                     L->top = L->ci->top;
 
@@ -3740,7 +3752,7 @@ reentry:
 
                         // yield
                         if (results < 0)
-                            return;
+                            return false;
 
                         // ci is our callinfo, cip is our parent
                         CallInfo* ci = L->ci;
@@ -4076,21 +4088,42 @@ reentry:
                 VM_NEXT();
             }
 
-#if !VM_USE_CGOTO
+#if VM_USE_CGOTO
+        coldinstruction:
+#else
         default:
-            LUAU_ASSERT(!"Unknown opcode");
-            LUAU_UNREACHABLE(); // improves switch() codegen by eliding opcode bounds checks
 #endif
+        {
+            // Only armed instructions take this path. Warm code uses the usual dispatch table.
+            uint8_t op = uint8_t(*pc);
+            LUAU_ASSERT((op & LUAU_INSN_COLD) && LUAU_INSN_OP(*pc) < LOP__COUNT);
+            workops[op]--;
+            if (!SingleStep)
+            {
+                luaC_coldinstruction(L, cl, pc);
+                L->ci->savedpc = pc;
+                // Return to the interpreter's caller so no warm-loop register
+                // needs spilling across this helper. The caller retries this PC.
+                return true;
+            }
+            workops[op & ~LUAU_INSN_COLD]++;
+            luaC_coldinstruction(L, cl, pc);
+            VM_CONTINUE(uint8_t(*pc));
+        }
+
         }
     }
 
 exit:;
+    return false;
 }
 
 #ifdef LUAU_EXECUTE_PROFILED_UNIT
 void luaP_executeprofiled(lua_State* L)
 {
-    luau_execute<false, true>(L);
+    while (luau_execute<false, true>(L))
+    {
+    }
 }
 #else
 void luau_execute(lua_State* L)
@@ -4102,19 +4135,27 @@ void luau_execute(lua_State* L)
     {
         luaP_Execute profiled(L);
         if (L->singlestep || luaP_stepping(L))
-            luau_execute<true, true>(L);
+            while (luau_execute<true, true>(L))
+            {
+            }
         else if (L->global->profilecalls)
             luaP_executeprofiled(L);
         else
-            luau_execute<false, false>(L);
+            while (luau_execute<false, false>(L))
+            {
+            }
         return;
     }
 
     // (no profile: the plain copy, or the single-stepping one)
     if (L->singlestep)
-        luau_execute<true, true>(L);
+        while (luau_execute<true, true>(L))
+        {
+        }
     else
-        luau_execute<false, false>(L);
+        while (luau_execute<false, false>(L))
+        {
+        }
 }
 
 void luau_finishop(lua_State* L)

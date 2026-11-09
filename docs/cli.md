@@ -3,6 +3,32 @@
 `ree record`, `ree run` and `ree serve`: harnesses, options, outputs, the warm service and the environment.
 The [README](../README.md) has a first run; [engine.md](engine.md) is the contract behind it.
 
+`ree --version` prints the engine version.
+
+A [release install](building.md#release-binaries) runs the same offline harnesses as a source build. Name the harness
+and any roots, mounts, snapshots or animation directories it needs: it reads no checkout data or `.env` from the
+current folder or the executable's folder. Its project is the current folder, and its caches go to the per-user `ree`
+cache folder (`RUR_STATE_DIR`, else `RUR_CACHE_DIR`, moves it). `--repo <dir>` names input data only: it never selects
+host mode or puts caches in `<dir>/.cache`. Every job keeps the installed binary's standalone defaults for project,
+state and asset workers, and `--service`, services started by hand and `serve --warm` share them and one service key.
+`serve --state-dir <dir>` overrides state for that service, its engines and its workers.
+Environment paths, including `RUR_CLOCK` and `RUR_ENGINE_DUMP`, are resolved from the client's current folder before a
+standalone service starts; its key and launch use those same paths.
+When no flag names the output, a run's profile goes in `<state dir>/ree-profile`, its boundary profile in
+`<state dir>/ree-boundary.json` and `profile try` in `<state dir>/what-if/<file name>`, and each command prints the path.
+`profile diff` and `profile report` also put their default files in `<state dir>/ree-profile`, even when their inputs
+are elsewhere. `profile diff --out <dir>` uses the named output directory.
+A path you name is used as given, and a recording's profile stays in the recording's output folder. A run that spools
+its script output to a file does so in `<state dir>/output` and deletes the file when it closes.
+
+`--version` and `--help` need no cache. A command that writes files resolves state first and fails
+with an error asking for `RUR_STATE_DIR` when neither an override nor a usable per-user cache exists, also with
+`--repo`. A binary in its own checkout and library hosts keep their existing defaults.
+
+A release archive holds ree as its only executable, so `profile view` and `profile render` report that they need the
+separate profile viewer from a source build. `profile report`, `profile diff`, `profile try` and profiling during a run
+work. Manifest bundles need `REE_ASSET_WORKER`; an installed ree does not look for a worker beside a checkout.
+
 ## Commands
 
 ```sh
@@ -63,7 +89,10 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   before the run's seed was known included) from Seed and the order it was made in, and returns how
   many it restarted. `Context.SetRandomSeed(Seed)` reseeds math.random and the next unseeded
   Random.new() from then on. `Context.WorkSeconds()` is the script work charged so far in seconds of
-  Studio's time, the same however fast the host is. A server run's `Context.SetJoinData(Player,
+  Studio's time, the same however fast the host is. `Context.FireEvent(Instance, Event, ...)` fires an
+  engine event the emulator does not raise itself to the connections made to it (a Humanoid's
+  `Running` while the harness walks a character, which nothing simulates here), with nil, boolean,
+  number, string and instance arguments. A server run's `Context.SetJoinData(Player,
   JoinData)` gives a fake player, before it joins, the join data a teleport would have carried
   (`TeleportData`, `Members`, ...), which `Player:GetJoinData()` then returns as a fresh copy.
 - A harness may split its setup instead: `return { Prepare = function(Context) ... end, Run =
@@ -102,7 +131,7 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   (src/launch.rs): `--roots "<dir>;<dir>"` (the project's Rojo roots; without them there is no project,
   only the harness and its mounts), `--project <dir>` (the project's folder) and `--place <name>`;
   `--mount Service/Name=<dir|file>` and `--instance Service/Name=<ClassName>` (repeatable),
-  `--snapshot-dir <dir>` / `--snapshot <Service.rbxm>` (Studio exports; the checkout's `data/place-content/<Place>/<parent path>/*.rbxm` replaces a hierarchy snapshot's name-and-class placeholders with the stored instances, no flag), `--run-context client|server`, `--player <name>`,
+  `--snapshot-dir <dir>` / `--snapshot <Service.rbxm>` (Studio exports; in a checkout, its `data/place-content/<Place>/<parent path>/*.rbxm` replaces a hierarchy snapshot's name-and-class placeholders with the stored instances, no flag), `--run-context client|server`, `--player <name>`,
   `--place-id <n>`, `--streaming <radius>` (the place streams: Workspace.StreamingEnabled and its
   StreamingTargetRadius, as rur.json's `streamingTargetRadius` sets them per root), `--viewport WxH`,
   `--offline`, `--verbose`. Content naming a local file (`file://<path>`, or a path such as
@@ -145,15 +174,25 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   as `set` actions naming the referenced instance's path, Lighting),
   `events.json` (prints, warnings, errors, sound plays and stops with their times), `camera.json` and
   `summary.json`, which is also printed on stdout; a `ree: record ...` line goes to stderr.
-- `--timing-check` (or `REE_TIMING_CHECK=1`) records the harness a second time with the in-frame clock moved
-  (twice the modelled work, never frozen; a frozen run's wall clock stays pinned) and compares the two
-  recordings' playback and camera. A script that times itself on `os.clock` within a frame (a visual
-  clock's waits, an elapsed-time sum, a work budget) draws differently in a client whenever its real work
-  moves, which ree's modelled work and a frozen clock do not follow: if the second recording differs, an A/B
-  whose recordings read identical has not shown the look holds there. The verdict is `timing` in the summary
-  and `timing.json` (`hinges`, the first difference's time and what, how many entries differ per list), and
-  the status line ends `hinges on sub-frame timing from <t> s (<what>)` or `sub-frame timing: no change`.
-  The second recording's files are removed. A warm service's prepared run is not checked.
+- `--timing-check` (or `REE_TIMING_CHECK=1`) records the harness again under faster and slower clients and
+  compares each recording with the first. A script that times itself on `os.clock` within a frame (a visual
+  clock's waits, an elapsed-time sum, a work budget) draws, sounds or works differently in a client whenever
+  its real work moves, which ree's modelled work and a frozen clock do not follow. Each probe runs the in-frame
+  clock on a multiple of the modelled work (never frozen; a frozen run's wall clock stays pinned) across the
+  range a client may lie in: the work clock's current calibration reads 0.55-1.34x a client's script time, so a
+  desktop client's is 0.75-1.82x the modelled work, and a phone's script time is 2.13-4.16x a desktop client's. A
+  desktop run probes 0.75x (the fastest desktop client), 1.82x (the slowest) and 7.56x (the slowest phone); a
+  `--device phone` run, whose clock carries the phone's 2.77x already, probes 0.57x and 2.73x of it (the fastest and
+  slowest phone);
+  `REE_TIMING_PROBES=a,b` names others. Each probe is compared with the first recording in playback.json's lists,
+  camera.json, events.json (output lines and sounds) and the work each frame did (the summary's `frame_work_ms`,
+  recorded for timing checks): a threshold on os.clock flips under whichever probe crosses it, slower or faster.
+  If a probe differs, an A/B whose recordings read identical has not shown the look holds there. The verdict is
+  `timing` in the summary and `timing.json` (`hinges`, the earliest difference with its time, list, what and
+  probe, each probe's verdict and differing counts per list, and `range`: the factors tested and their basis), and
+  the status line ends `hinges on sub-frame timing under <factor>x (<client>) from <t> s (<list>: <what>); no
+  change at ...` or `sub-frame timing: no change (tested <low>x to <high>x the modelled clock: ...)`. The
+  probes' files are removed. A warm service's prepared run is not checked.
 
 ## Animation
 
@@ -316,6 +355,15 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
     the VM collects them), connections and the threads made. A kind that slows the run (stepping, the
     allocation and heap hooks, host time, the boundary) leaves the frame's host time and cycles out: `cpu` takes
     them in a pass of its own.
+    A phase mark inside a frame closes the row so far; its parts share the frame number and add up to one frame.
+    With work, `game_ms` and `harness_ms` split each row's code work. `timeline.function_stats` stores
+    `[function id, total work us, frames active, largest frame us, frame number]` over the reported phases.
+    `timeline.node_frames` stores `[row index, node id, work us, ...]` only on whole frames reaching half the
+    recorded budget. `site_frames` keeps those frames' net site savings and `replacement_frames` their shared
+    known shared replacement work. Small events keep their summaries. When a replacement's cold work is known,
+    `function_contexts` stores compact inclusive activity ranges
+    `[function id, node id, first frame, last frame, ...]`. A combined fix pays cold work only on the callers' frames
+    left running. No per-frame work history is stored for these ranges. The report page omits frame evidence.
   - `cpu`: from the run's start (its VM's) to the profile's end: the run thread's CPU time (its cycles at the
     timestamp counter's rate) by phase and by frame, the process's CPU time and page faults, the working set
     and private bytes at the run's start and their growth, the most working set a frame's end saw. Nothing is
@@ -359,7 +407,8 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
     and the CPU's counters are read in runs of their own (`cpu` takes its own pass). The cpu pass is the command run a
     second time, so `all` takes longer in wall time than its kinds without `cpu` (about 1.3 times on a recording): the price
     of CPU figures a slowed run cannot give.
-- A profile writes, in `--profile-out` (default `<out>/profile` for `record`, `ree-profile` for `run`):
+- A profile writes, in `--profile-out` (default `<out>/profile` for `record`, `<state dir>/ree-profile` for a standalone
+  `run`, `ree-profile` in the current folder for a host or checkout build):
   `summary.txt` (also printed on stderr), `profile.json` (everything), folded stacks for flame graph tools
   (`work.folded` in microseconds, `instructions.folded`, `time.folded`, `alloc.folded` and
   `alloc.counts.folded`, `heap.folded`, `counters.<counter>.folded`), `profile.speedscope.json`
@@ -372,12 +421,47 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   counted with it) and what it called are set apart, with their total on the
   summary's `reported below:` line and their top functions in a table of their own. Lines are counted for
   the whole run, not per phase. In profile.json each function has `harness` and its figures per phase
-  (`phases`, with `harness_self_work_ms`, the part done for the harness's code), and `scope` names the
+  (`phases`, with `harness_self_work_ms` and `harness_cold_work_ms`, the parts done for the harness's code), and `scope` names the
   reported phases with each side's self work. A function's `tool` marks ree's own code (the engine's chunks
   that drive a harness, and the harness of a run `ree profile try` made), never the game's nor a user's
   harness; `short` is its module's last segment, qualified where two modules would share one. A C function's
   `call_sites` give its callers and the lines that called it; a tree node's last element is the line that
   called it.
+  The work clock's figures read in the units the run's clock ran on (`work.units`: a `--device phone` run's are the
+  desktop prices times 2.77), and the summary's headline names the device and the reference client. Each function's
+  self work splits into kinds (`self.cold_work_ms`: the frame's cold and first-use charges; `collector_ms`: the
+  collector's share of what it allocated; `dispatch_ms`: the engine's delivery of its handlers and resumption of its
+  threads; `by_provenance_ms`: priced from a client, from a Studio-era measurement or by a borrowed price), and
+  `saving_ms` is what cutting it saves: its hot work and only the cold charges for objects nothing else touched in
+  their frame (a shared object's charge moves to its next user). A function's and a line's totals count its
+  outermost call on a path only, so recursion adds nothing twice. profile.json's `cold` lists the cold and first-use
+  charges by object (a table by the line that made it, a C or engine function, an instance's class, a member, an
+  engine path) with who paid them and in how many frames other code shared them; `handlers` the event handlers by
+  the line that connected them (connections, runs, dispatch and whole work); `resumptions` parked threads' resumptions
+  by the line that waited; `clock_reads` the lines that read os.clock: `reads`, `frames`, `runs` of their function
+  that read it (a call, or what is left of one after its thread yielded), `iterations` (two reads by one run) and
+  `iteration_us` (the clock's advance between them, callees included, in the clock's units); a line that reads it
+  more than once a run is an os.clock budget loop (`budget_loop`), which the summary lists with its work an
+  iteration: its total is set by its budget, so compare that, and profile on the work clock, not a frozen one. A read
+  after a yield starts a run (across a yield the clock's advance is whatever else ran), so a loop that waits each
+  iteration is none; `unmeasured_fires` the events of kinds no bench measured.
+  `fidelity` is the profile's own band for what the summary reports (`weighted`: the reported phases' game code): each
+  component's error on rows no fit saw (cost.rs `BENCH_BANDS`; `components.<name>` `{share, band, rows, basis}`)
+  weighted by that code's work in each, the Studio-era and borrowed shares at their bands; `band` folds a phone's
+  factor's spread in (`clock_band` is the band before it, `device.ratio_band` what the spread multiplies it by).
+  `work.collector` gives the collector's price an object (`object_ns`, desktop ns) and the objects it charged; the
+  work's kinds are in `work.cold_work_ms`, `work.collector_ms`, `work.dispatch_ms` and `work.by_provenance_ms`;
+  `cold.total_ms` is the run's cold and first-use charges and `cold.objects_ms` the part its objects carry (the rest
+  is functions' own code, closures and first runs, in their cold column). `work.prices` gives the work
+  clock's price of one count, in ns at desktop prices (a phone run's are these times `work.units.scale`): `object_ns` (an
+  object a script's instruction made), `stored_byte_ns` (a byte of its table storage), `rehashed_key_ns` (a key its
+  table's growth moved), `c_call_ns`, `sort_compare_ns`, `sort_call_ns`, `allocated_byte_ns` (a byte any script work
+  allocated, its library calls' too), `hash_rehashed_key_ns` (a key a growth put back into a hash part),
+  `large_block_ns` (an allocation over 1 KB), `library_object_ns` (an object a library call made) and
+  `collector_object_ns` (the collector's charge an object, which `collector_ms` holds and the others leave out).
+  `work.unpriced` gives the bytes the clock counts and prices at nothing: `buffer_fresh_bytes` (new buffers past Luau's
+  own pages, over 1 KB) and `buffer_big_bytes` (buffer copies, fills and string writes of over 64 KB a call); the
+  summary prints them on an `unpriced:` line when a run has any, as the clock reads that work low.
   The summary's `engine operations` line counts what the reported phases' scripts asked the engine to do, whatever the
   work clock prices it at (the engine's side of a cast, which the work clock reads lower than a client pays): instances
   cloned (each of a copy), made with Instance.new, destroyed (each of the subtree) and taken into the Workspace; property
@@ -388,7 +472,8 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   the harness's too, and what the engine's own Luau does inside a call it prices whole (a PivotTo's moves) is the call's.
   profile.json's `marks` (each `Context.ProfilePhase` mark) and `end` (the run's end) carry the counts so far, so a
   phase's figures are the difference of two marks': the work clock, host time and the run thread's cycles, instructions,
-  the VM's work counters (`vm`: objects, their bytes, table storage, keys rehashed, cold first touches), the allocation
+  the VM's work counters (`vm`: objects, their bytes, table storage, keys rehashed, cold first touches, large buffers'
+  unpriced bytes), the allocation
   profile's bytes and objects, rehashes (all, and a script's own: `script_rehashes`, `script_rehash_keys`), the
   collector's steps, cycles, bytes freed and host time, the inline caches' outcomes by kind, and the engine operations
   (`engine`).
@@ -401,16 +486,36 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   harness's functions in a table of their own: a harness's work moves with what it scans, not with the
   game. The headline's `engine:` rows compare the engine operations in the same phases (the whole run when
   the profiles share none): instances made, instances destroyed, property writes, parts moved (by a write
-  or BulkMoveTo), pivots and emits. Profiles from before the split are compared whole. profile.json carries a
-  `version` (2), which keeps every row's shape, so an older reader still parses it: a `tree` node is `[parent, function,
+  or BulkMoveTo), pivots and emits. Profiles from before the split are compared whole. Functions pair by module and name;
+  an anonymous one, whose key carries its line, pairs across an edit that moved it by its compiled code and its text
+  (profile.json `code_hash`, `source_hash`: the same code hashes the same wherever it lies; then, between those, in order),
+  and shows the move (`moved from :15 to :18`). A function is called priced differently, not changed, only when the
+  profiles show it: it ran the same path both times (the same calls, instructions and count of each opcode) and its cold
+  and first-use charges (profile.json `cold_work_ms`, the work clock's exact split, which counts only the cold
+  instructions that ran) account for the change in its work, to within 0.01 % of the rest of it (its warm part) and
+  2 us. Where the diff covers some phases, a row leaves out `harness_cold_work_ms` as it leaves out
+  `harness_self_work_ms`. The work clock is deterministic, so a move of who pays the cold charges leaves nothing
+  else, and 1 % of a 50 ms function would hide 0.5 ms of real growth. Cold first touches and first runs in a frame go
+  to whichever code touches first. The same instructions prove nothing on their own: a handler that clones a model of 200 parts runs the instructions one of
+  10 parts does while the engine's charges for what it clones grow twentyfold, so a profile without the split tags no
+  function, keeps those with the same calls and instructions among the changes, and says why in a note. Those tagged are
+  listed apart, after the functions whose path or charges changed, with a line totalling each side's self work and each
+  one's change in cold charges. A function or line is listed at all when its work moved by more than 1 ns (two sums of
+  the same charges in another order part in their last bits) or its calls, instructions or allocations changed, the
+  rule the viewer's Diff uses too. A measured figure (host time, the CPU's counters) has its change marked `~`: one run
+  each gives it no verdict; host time is left out when either profile stepped every instruction (`work`, `caches`), which
+  slows the interpreter several times over. The note
+  that the runs ran other harnesses compares the harnesses' contents (profile.json `run.harness_hash`), so two copies of
+  one harness in other folders are the same. profile.json carries a `version` (2), which keeps every row's shape, so an older reader still parses it: a `tree` node is `[parent, function,
   calls, self work in us, self instructions, label]`, and its calling line is in `tree_lines`, one a node (-1 for none);
   two profiles of different versions are compared without what changed meaning between them (a function's and
   a line's self work, the game's and the harness's code: a C function's work is its own row since version 2, not its
   caller's; a function's calls and instructions: version 1 counted a module's main chunk at none; host time, the wall
   clock's before; Luau's inline caches, builtin calls and ree's own caches), and the diff says so (`diff.json` gives those
-  figures as null, the text as `-`). The viewer refuses a newer version and says on its Overview when it reads an older one, and its Diff leaves the same
-  figures out across versions; the page says when its profile's version is not the one it reads. `ree profile report <dir>` prints a profile's summary again and
-  rewrites its page from its profile.json. `ree profile view` explores one in the terminal and `ree profile render`
+  figures as null, the text as `-`). The viewer refuses a newer version and says on its Overview when it reads an
+  older one, and its Diff leaves the same figures out across versions; the page says when its profile's version is not
+  the one it reads. `ree profile report <dir>` prints a profile's summary again and rewrites its page from its
+  profile.json. `ree profile view` explores one in the terminal and `ree profile render`
   draws its screens to files ("The profile viewer").
 - With no profile the engine pays nothing measurable (a thread-local read where each profiler hooks in),
   and a profile changes nothing a script sees: the work clock, os.clock and a recording are the same with
@@ -761,6 +866,7 @@ reused, ways to iterate, Vector3 or numbers) and what they show.
       about = "two keys, many values each",          -- optional, one line
       sizes = { 10, 100, 1000, 10000 },              -- the n every variant runs at (default { 1 })
       frames = 1,                                    -- calls of run, one a frame (default 1)
+      per_frame = 1,                                 -- optional: how many times a frame the game runs this code (default 1)
       setup = function(n) return data end,           -- the input; measured as the setup phase, not the run
       variants = {
           ["t[k][v]"] = function(data) return result end,
@@ -775,7 +881,10 @@ reused, ways to iterate, Vector3 or numbers) and what they show.
   variants runs in name order, a list of `{ name = ..., setup = ..., run = ... }` in its own; the first is the baseline,
   which the others are measured against. `check(a, b, n)` gets the baseline's result and another variant's at the same size
   and returns true, or false and a message; `check = true` compares them for deep equality. Results are checked in an
-  engine of their own, never in a profiled run; without a check, the summary compares the results' digests.
+  engine of their own, never in a profiled run; without a check, by their digests (a hash of the result's contents, keys
+  sorted). A variant whose result differs, either way, computes something else: it wins nothing, the summary and the
+  viewer say so, and the command exits 1. `per_frame` is how often the game runs the code in a frame: a gap in a ms figure
+  is material from 0.1 % of a 60 fps frame at that rate (16.7 us a call at the default 1), and 1 ns a call at least.
 - **Versions of a module**: `versions = { before = "old/Handler.luau", after = "../src/Handler.luau" }` (or a list of
   `{ name = ..., file = ... }`; paths from the variant file's folder) makes each version of one module a variant, with
   `setup = function(n, Module)` and `run = function(data, Module)` driving it. With `module =
@@ -783,8 +892,9 @@ reused, ways to iterate, Vector3 or numbers) and what they show.
   it (`Context.StandIn`), so it requires its siblings as the project's own does; without `module` each version is mounted on
   its own. Project options (`--roots`, `--project`, `--place`, `--mount`, and the other engine options above) pass through
   to every run; without them the runs have no project.
-- **What runs.** For each variant and size, one profiled run: `ree run` of a generated harness with `--profile all`,
-  written to `runs/<variant>/<n>/`, an ordinary profile folder (`ree profile report` and `diff` read it). The harness
+- **What runs.** For each variant and size, one profiled run: `ree run` of a generated harness with `--profile
+  work,caches,alloc,heap,timeline,phases`, written to `runs/<variant>/<n>/`, an ordinary profile folder (`ree profile
+  report` and `diff` read it). The harness
   marks three phases, each with a heap snapshot at its mark: `setup` (the variant's setup, in a frame of its own), `run`
   (`frames` calls of run, one a frame, from the second frame after setup's, so that what it touches of setup's data is a
   first touch in its frame) and `after` (the result still held). Every mark carries the run's counts so far (profile.json
@@ -793,31 +903,58 @@ reused, ways to iterate, Vector3 or numbers) and what they show.
   a fresh process, in a new order each round, with the baseline run twice (an A/A pair: how far two runs of the same code
   differ). Such a run calls run for about `--time-ms` (default 10) ms of warm work, at least three times, on inputs it
   prepares in groups of about 1 MB (what a CPU's L2 cache holds); each group's calls run back to back and only they are
-  timed, by the run thread's cycles and the host's clock. With the hardware counter service installed, three more rounds
-  of such runs read `--profile hw` alone (a new order each round; the first round's profiles in `runs/<variant>/<n>/hw/`),
-  and each counter's figure is the median of its rounds. One more engine runs every variant at every size for the
-  check. The profiled runs take `--jobs` (default 4) processes at a time; the timed ones run one at a time.
-- **Options**: `--out <dir>` (default `what-if/<file name>` here; a folder holding anything a comparison does not write
+  timed, by the run thread's cycles and the host's clock. A pair still undecided after those rounds (its gap looks larger
+  than the noise, or it is a round or two short of the sign test below) gets 6 rounds more at a time, of its two variants
+  and its size's A/A pair, until it is decided or `--max-rounds` (default three times `--rounds`) is reached. With the
+  hardware counter service installed, three more rounds of such runs read `--profile hw` alone (a new order each round;
+  the first round's profiles in `runs/<variant>/<n>/hw/`), and each counter's figure is the median of its rounds. One more
+  engine runs every variant at every size for the check. The profiled runs take `--jobs` (default 4) processes at a time;
+  the timed ones run one at a time.
+- **Options**: `--out <dir>` (default `<state dir>/what-if/<file name>` for a standalone binary, `what-if/<file name>` here
+  for a host or checkout build; a folder holding anything a comparison does not write
   is refused), `--sizes a,b`, `--variants a,b` (some of them, the first the baseline), `--frames <n>`, `--rounds <n>`,
-  `--time-ms <ms>`, `--jobs <n>`, `--no-time`, `--no-hw`, `--no-check`, `--keep-timed` (keep the timed runs' profile
-  folders in `timed/`), `--script-timeout <s>`, and engine options. Exit 0 when every run finished and every check held,
-  1 otherwise (compare.json is written either way), 2 for a command line it cannot read.
-- **Which numbers are exact.** The work clock (with and without its cold first touches), instructions, allocations
+  `--max-rounds <n>` (`--rounds` adds none), `--time-ms <ms>`, `--jobs <n>`, `--no-time`, `--no-hw`, `--no-check`
+  (neither the check nor the digests), `--keep-timed` (keep the timed runs' profile folders in `timed/`),
+  `--script-timeout <s>`, and engine options. Exit 0 when every run finished and every result held, 1 otherwise
+  (compare.json is written either way), 2 for a command line it cannot read.
+- **Which numbers are exact.** The work clock (with and without its cold and first-use charges), instructions, allocations
   (bytes and count), the reachable heap, the collector's steps and bytes freed (it paces itself by the scripts' work),
   table shapes, rehashes, cold first touches and inline cache counts are the same in every run of the same code: one
   profiled run is enough, and any difference between variants is theirs. Host time and hardware counters are measured.
-  Host time is each variant's fastest round, since whatever else runs on the machine only ever slows a round (a shared
-  machine's scheduler can slow whole stretches of rounds several times over, which moves medians and round-by-round
-  wins); a variant wins on it only where its fastest round is faster by more than the A/A pair's fastest rounds differ,
-  3 % at least, and its median round agrees. On a counter (the median of its rounds: a core's own cycles, which such
-  slowing hardly moves), only where it won every round, by 5 % or more. The collector's host time comes from the profiled run
-  (its profilers slow it) and is a guide, not a measure.
-- **The summary** (`compare.txt`, also printed): the check; a table of each variant at each n by the main figures; the
-  setup's cost; the exponent of each figure against n; at the largest n the best variant on each figure with every other
-  variant's figure over it (host time with the rounds it won), the figures where they are about equal or within noise;
+  Host time's figure is each variant's fastest round, since whatever else runs on the machine only ever slows a round. Its
+  verdicts pair the variants' runs round by round (each round runs every arm once, in an order of its own, so a round's
+  two runs met the same machine): first, a run over 1.15x what its arm's level times its round's lead one to expect is
+  left out (the two levels fitted by median polish on the runs' logarithms: each arm's median of what is left, then each
+  round's, in turn; the machine slowed such a run alone, while a stretch where it slowed every run raises its rounds'
+  level and stays, as a pair's ratio cancels it). A
+  variant is then clearly slower than another when it was slower in enough rounds for a sign test at 2 % (8 of 9; 0.5 %
+  once rounds were added for the pair, as a pair looked at again had more chances to cross by luck), the 95 % interval
+  of its shift (the Hodges-Lehmann estimate of the rounds' log ratios, from the exact signed-rank distribution) leaves
+  out none, the shift is past both 2 % and the noise two runs of the same code show at that many rounds (the 99th
+  percentile of the shift over 2,000 draws of the A/A pairs' rounds, every size's pooled; at a size where the A/A pair
+  itself parted beyond the noise, past the far end of its interval too), and its fastest run is slower too, by a third of
+  the shift at least and 2 % (whatever slows the machine moves a variant's typical runs, not its fastest: a gap in the code
+  moves both). The summary gives the ratio with its interval and the rounds won. Measured on one shared desktop under
+  heavy load from other work (8-10 other agents' builds and sweeps), at the default 9 rounds (adding 6 at a time, up to
+  27, for an undecided pair) with the A/A noise at 9 rounds 3.5-21.5 %: three identical variants were called apart in
+  none of 240 host-time verdicts (10 comparisons), and planted gaps of 3 %, 10 % and 30 % (a loop run 1.03, 1.10 and 1.30
+  times as often, at n = 10,000 and 30,000) were found in 10, 19 and 20 of 20 comparisons, never the wrong way, their
+  ratios read 1.026-1.039, 1.093-1.128 and 1.264-1.376 (the 10 % gap missed was in a comparison where two runs of the
+  same code parted by up to 11.6 %). A review's batch on the same machine at another time found the same gaps in 2, 13
+  and 20 of 20, also never the wrong way: so 2-10, 13-19 and 20 of 20 over the two. How much a machine's load moves
+  runs decides the smallest gap found; a quieter machine finds smaller gaps. On a counter (the median of its rounds: a core's own cycles, which such
+  slowing hardly moves), only where it won every round, by 5 % or more. The collector's host time comes from the profiled
+  run (its profilers slow it) and is a guide, not a measure.
+- **The summary** (`compare.txt`, also printed): the check (and how: the file's function, deep equality or digests); a
+  table of each variant at each n by the main figures; the setup's cost; how each figure grows with n: the exponent at
+  large n (a fit to a + b * n^k with a fixed cost a call apart, read as the growing part's slope between the two largest
+  sizes: a constant overhead no longer bends it) with each segment's own slope; at the largest n the best variant on each
+  figure where it is clear of every other (else "no clear winner among" it and those no clear gap parts from it) with
+  every other variant's figure over it (host time with its interval and the rounds it won), the figures where
+  they are about equal, within noise or too small to matter, and the floor that made them so;
   the tables each variant's run left, by the line that made them (count, array and hash parts, levels, bytes each, the
-  rehashes that grew them); then notes (where the work clock's model bears on the comparison: cold first touches of data
-  made before the frame, a gap host time sees and the work clock does not; the collector; failed runs), what is exact and
+  rehashes that grew them); then notes (where the work clock's model bears on the comparison: cold and first-use charges
+  that are a large share of the work, a gap host time sees and the work clock does not; the collector; failed runs), what is exact and
   what measured, and the fidelity line.
 - **Files**: `compare.json` (below), `compare.txt`, `runs/<variant>/<n>/`, `diff/<variant>/` (`ree profile diff` of the
   baseline's profile and the variant's at the largest n) and `harness/` (the generated harness and each run's context).
@@ -826,15 +963,18 @@ reused, ways to iterate, Vector3 or numbers) and what they show.
 
 ```jsonc
 {
-  "format": "ree-what-if", "version": 1,
+  "format": "ree-what-if", "version": 2,
   "title": "t[k][v] or t[v][k]", "about": "...", "file": "<the variant file>", "out": "<this folder>",
   "command": "<the command line>",
   "baseline": "t[k][v]",
   "variants": [{"name": "t[k][v]", "slug": "t-k-v", "kind": "function", "source": "ReplicatedStorage.WhatIf.tkv:12", "file": null}],
   "sizes": [10, 100, 1000, 10000],
   "frames": 1,
+  "per_frame": 1,
   "module": null,
   "fidelity": "fidelity: ...",
+  "fidelity_profile": null,
+  "floor": {"ms": 0.0167, "per_frame": 1, "frame_ms": 16.67, "frame_share": 0.001, "ns": 1, "host": 0.02},
   "metrics": [{"key": "work_ms", "label": "work clock", "unit": "ms", "better": "lower", "exact": true, "per_call": true, "about": "..."}],
   "runs": [{
     "variant": "t[k][v]", "size": 10, "status": "ok", "error": null,
@@ -849,18 +989,26 @@ reused, ways to iterate, Vector3 or numbers) and what they show.
                "sizes": {"table": 48, "slot": 16, "node": 32}, "sites": [{"...": "a site, below"}]},
     "hot": [{"key": "...", "name": "build", "module": "...", "line": 14, "work_ms": 0.0018, "insns": 98, "calls": 1}]
   }],
-  "scaling": [{"variant": "t[k][v]", "metric": "work_ms", "exponent": 1.01, "r2": 0.999, "last": 1.0,
+  "scaling": [{"variant": "t[k][v]", "metric": "work_ms", "exponent": 1.0, "last": 0.97,
+               "fit": {"k": 1.0, "fixed": 0.0011, "coefficient": 3e-7, "error": 0.004, "fitted": true},
+               "segments": [[10, 100, 0.42], [100, 1000, 0.85], [1000, 10000, 0.97]],
                "points": [[10, 0.002], [100, 0.019]]}],
   "functions": [{"variant": "t[k][v]", "key": "...", "name": "build", "module": "...", "line": 14,
-                 "exponent": 1.98, "r2": 0.99, "points": [[10, 0.0004], [100, 0.04]]}],
+                 "exponent": 1.98, "fit": {"...": 0}, "segments": [], "last": 1.97, "points": [[10, 0.0004], [100, 0.04]]}],
   "winners": [{"metric": "host_ms", "size": 10000, "winner": "t[k][v]", "value": 3.3, "runner_up": "t[v][k]",
-               "ratio": 1.77, "vs_baseline": null, "clear": true, "material": true, "rounds": {"won": 9, "of": 9},
-               "ranking": [{"variant": "t[k][v]", "value": 3.3, "ratio": 1.0, "clear": false, "rounds": null},
-                           {"variant": "t[v][k]", "value": 5.8, "ratio": 1.77, "clear": true, "rounds": {"won": 9, "of": 9}}]}],
-  "aa": [{"size": 10, "ratio": 1.02, "min_ratio": 1.01, "spread": 0.03, "first_ms": [0.0011, 0.0012], "second_ms": [0.0012, 0.0011]}],
-  "host": {"rounds": 9, "time_ms": 10, "reps": [[10, 2500]], "groups": [[10, 133]]},
+               "ratio": 1.77, "interval": [1.71, 1.82], "vs_baseline": null, "clear": true, "material": true,
+               "rounds": {"won": 9, "of": 9, "p": 0.002, "alpha": 0.02, "noise": 0.031, "added": false, "aa_bar": null, "faster": false, "lost": 0},
+               "ranking": [{"variant": "t[k][v]", "value": 3.3, "ratio": 1.0, "value_ratio": 1.0, "clear": false, "material": null, "differs": false, "rounds": null},
+                           {"variant": "t[v][k]", "value": 5.8, "ratio": 1.77, "interval": [1.71, 1.82], "value_ratio": 1.76, "clear": true, "material": true,
+                            "gap": 2.5, "differs": false, "rounds": {"won": 9, "of": 9, "...": 0}}],
+               "baseline": [{"variant": "t[v][k]", "ratio": 1.77, "interval": [1.71, 1.82], "clear": true, "material": true, "differs": false, "rounds": {"...": 0}}]}],
+  "aa": [{"size": 10, "n": 9, "wins": 4, "shift": 1.004, "interval": [0.98, 1.03], "separated": false, "noise": 0.031,
+          "ratio": 1.02, "min_ratio": 1.01, "spread": 0.03, "first_ms": [0.0011, 0.0012], "second_ms": [0.0012, 0.0011]}],
+  "noise": {"pool": 36, "quantile": 0.99, "slowed": 1.15, "floor": 0.02, "at_rounds": 9, "level": 0.031, "alpha": 0.02, "later_alpha": 0.005},
+  "host": {"rounds": 9, "max_rounds": 27, "ran": 15, "time_ms": 10, "reps": [[10, 2500]], "groups": [[10, 133]],
+           "added": [{"after": 9, "rounds": 6, "pairs": [{"size": 10000, "a": "t[k][v]", "b": "t[v][k]"}]}]},
   "hw": {"read": true, "why": null, "rounds": 3},
-  "check": {"ran": true, "ok": true, "failures": []},
+  "check": {"ran": true, "by": "function", "ok": true, "failures": []},
   "diffs": [{"variant": "t[v][k]", "size": 10000, "dir": "diff/t-v-k"}],
   "notes": ["..."],
   "seconds": 18.4
@@ -877,16 +1025,18 @@ reused, ways to iterate, Vector3 or numbers) and what they show.
   hash of the result's contents (keys sorted), equal for equal results; `check` is null when nothing was checked. `setup`
   and `run` hold the figures of their phase by metric key, null where not measured; run's are per call (the phase's
   totals divided by `frames`) where the metric says `per_call`:
-  - `work_ms` the work clock (ms of a client's time, docs/engine.md "Work clock") and `warm_ms` the same without the
-    frame's cold first touches (what the work costs with its data in the CPU's caches: a client's figure for data made
-    together lies between the two); `insns` instructions; `alloc_bytes` and `allocs` what the VM allocated (bytes of
+  - `work_ms` the work clock (ms of a client's time, docs/engine.md "Work clock") and `warm_ms` the same without any
+    cold or first-use charge (code run for the first time in the frame, and first touches of tables, functions and engine
+    objects: what a call costs once a loop has run it; a client's figure lies between the two); `insns` instructions; `alloc_bytes` and `allocs` what the VM allocated (bytes of
     objects, table parts and stacks; collectable objects); `heap_bytes` the reachable heap at the phase's end beyond its
-    start (what the phase still holds); `gc_steps`, `gc_freed` (bytes) and `gc_ms` the collector's work; `cache_hits`,
+    start (what the phase still holds); `gc_steps`, `gc_freed` (bytes) and `gc_ms` the collector's work (the work clock charges it in `work_ms`; `gc_ms`
+    is its host time); `cache_hits`,
     `cache_lookups` (those a table serves) and `cache_hit_rate` Luau's inline caches, and `cache_uncharged_ms` what their
     outcomes the work clock does not charge cost over hits at the committed prices (a reprediction, an absent key, an insert
     with room, a metatable walk by its depth), beyond `work_ms`, which holds what the clock charges (a rehash, a looked-up
-    import); prices within the noise are left out; `cold_tables` and `cold_ms` the
-    frame's first touches of tables made before it and the work they were charged; `rehashes` and `rehash_keys` the
+    import); prices within the noise are left out; `cold_tables` the tables
+    the frame touched first that were made before it (the whole phase's, the harness's included) and `cold_ms` every cold
+    and first-use charge of the variant's code, its tables' first touches among them; `rehashes` and `rehash_keys` the
     rehashes a script's own instructions made tables do to grow, and the keys they moved; `host_ms` (the fastest round),
     `host_ms_median` and `host_cycles` (the fastest round, the run thread's reference cycles) from the timed runs; `hw_instructions`, `hw_cycles`,
     `hw_ipc`, `hw_load_stall_cycles`, `hw_load_stall_share`, `hw_miss_latency`, `hw_miss_buffers`, `hw_demand_fills`,
@@ -911,24 +1061,45 @@ reused, ways to iterate, Vector3 or numbers) and what they show.
     not held); `rehashes` and `rehash_keys` count the rehashes of the site's tables over the run (any line's) and the keys
     they moved.
   - `hot`: the functions with the most work in the run phase (its part of the call tree), the harness's left out.
-- `scaling`: per variant and metric, the exponent k of a least-squares fit of the figure against n (`c * n^k`, sizes
-  with a figure above zero) with its r², `last` the exponent between the two largest sizes (a constant overhead bends the
-  fit at small n; the last pair shows the trend), and the points. `functions`: the same for the hot functions' work,
-  matched across sizes by their key.
-- `winners`: per metric with a `better` and size, the variant with the best figure, the runner-up, `ratio` (the
-  runner-up's figure over the winner's, the other way for `better: higher`; null when only the runner-up is above 0) and
-  `vs_baseline`; `ranking` every variant from the best, each with its figure over the best's and whether that gap is
-  `clear`: an exact figure by 1 % or more, host time by the rule above (`rounds`: the rounds it won, of those both ran), a hardware counter when it won every round by 5 % or
-  more (`rounds` too). `clear` at the top is the runner-up's. `material` is false for a count too small to matter beside the run's work
-  (under a thousandth of its instructions, or 10) and for bytes under 1 KB; such a winner is no finding. `aa`: per size,
-  the A/A pair's median ratio round by round (the second run over the first), `min_ratio` the ratio of their fastest
-  rounds (the host-time rule's noise), `spread` the relative interquartile range of the round-by-round ratios, and both
-  runs' figures in the rounds where both finished. `host`: the timing's settings and the calls
-  per size. `check.ok` is there only when something was checked (`ran`); fields with no value are null, but `about`, a
-  frame's `path` and the samples' lists hold no nulls.
+- `scaling`: per variant and metric, how the figure grows with n (sizes with a figure above zero): `exponent` the
+  exponent at large n, `fit` the fit of the figure to `a + b * n^k` by least squares on the relative error (`fixed` a,
+  the cost a call that does not grow, `coefficient` b, `k`, `error` the largest relative miss at a size; with two sizes
+  no fixed cost is fitted and `fitted` is false), `segments` each pair of neighbouring sizes with the figure's own log-log
+  slope between them, `last` the raw slope between the two largest, and the points. `exponent` is the growing part's
+  slope (the figure less the fixed cost) between the two largest sizes: a linear walk with a fixed cost reads 1.00 where
+  a log-log fit without one read 0.68. The viewer's scaling column and its issues read it. `functions`: the same for the
+  hot functions' work, matched across sizes by their key. (Version 1 had `exponent` from a log-log fit without a fixed
+  cost and its `r2`.)
+- `winners`: per metric with a `better` and size, the variant with the best figure among those whose result holds (tied
+  leaders lead in the variants' order, the next at ratio 1, so a tie names no winner and every other variant keeps its
+  verdict; host time's leader is the one its paired rounds put ahead, so the order agrees with the paired ratios), the
+  runner-up, `ratio` and `interval` the runner-up's entry's, `clear` whether the best is clear of every other variant
+  whose result holds (the summary names no winner otherwise: "no clear winner among" the best and those within reach of
+  it), and `vs_baseline`; `ranking` every variant from the
+  best (those whose result differs last, `differs` true, with no verdict), each with its figure over the best's
+  (`ratio`: for host time the paired shift's, with its 95 % `interval`; `value_ratio` the figures' own ratio) and whether
+  that gap is `clear`: an exact figure by 1 % or more, host time by the rule above (`rounds`: won of paired, the sign
+  test's `p` and the level it had to clear, the A/A `noise` at that many rounds, whether rounds were `added` at the size,
+  `aa_bar` the gap the size's A/A pair parted by when it did), a hardware counter when it won every round by 5 % or more
+  (`rounds` too), another measured figure by 10 %. `material` is false for a gap too small to matter, judged by what a
+  frame pays as a ms figure is: in a ms figure under `floor.ms` a call (0.1 % of a 60 fps frame over `per_frame`, 1 ns
+  at least); in host cycles and the counters' CPU cycles likewise, as the time they take at the clock they ran at (host
+  cycles at `floor.cycles_per_ms`, measured from the timed rounds; core cycles at the counter runs' own clock); in a
+  count a call, times `per_frame`, under a thousandth of a call's instructions or 10; in bytes so, under 1 KB (the heap
+  a phase holds, no figure a call, as it is); a gap that is not material is never clear. `baseline`: each other variant against the baseline, either way (its `ratio` above 1 is worse), with the same
+  fields: the viewer colours a verdict only where it is clear. `aa`: per size, the A/A pair's paired shift (the second
+  run over the first) with its interval and rounds, whether it `separated` (parted beyond the noise: a verdict there then
+  has to pass its interval's far end), the noise level at its rounds, the median ratio round by round, `min_ratio` the
+  ratio of their fastest rounds, `spread` the relative interquartile range of the round-by-round ratios, and both runs'
+  figures in the rounds where both finished. `noise`: the pool of A/A log ratios the verdicts read and its level at the
+  comparison's rounds. `host`: the timing's settings, the rounds run and those added, and the calls per size.
+  `check.ok` is there only when something was checked (`ran`), and `check.by` says how (`function`, `equality`,
+  `digest`); fields with no value are null, but `about`, a frame's `path` and the samples' lists hold no nulls.
 - `notes`: what to keep in mind reading this comparison: where the work clock's model bears on it (a large share of
   cold first touches, a gap host time sees and the clock does not), rounds the machine slowed (twice a variant's fastest
-  or more), the collector's work, failed runs and checks, why the hardware counters were not read.
+  or more), the runs left out as slowed, the rounds added for undecided pairs, an A/A pair that parted, the collector's
+  work, failed runs and checks, why the hardware counters were not read. `fidelity_profile`: the baseline's profile's
+  `fidelity` object at the largest size (how far its figures may lie from a client's), null when the profile has none.
 
 ## The profile viewer
 
@@ -973,13 +1144,26 @@ border in the accent.
     profiles report the same phases, or both marked steady, it leads with the game's code and the harness's in them,
     and the functions' work covers those phases, the harness's functions last and greyed, as `ree profile diff`. The
     engine's counts in the same phases follow (instances made and destroyed, property writes, parts moved, pivots,
-    emits), in ree profile diff's groups.
+    emits), in ree profile diff's groups. A measured figure (host time, a CPU counter) is marked `~` in no colour: one
+    run each gives its change no verdict (and host time, the run's and a frame's, is left out when a profile stepped
+    every instruction, which slows the interpreter several times over). Functions pair as `ree profile diff` pairs them, an anonymous one
+    across a move; their table shows calls and instructions before and after (`not counted` where a profile did not step
+    every instruction, as a `time` profile does not) and a path: `moved`, `gone` and `new` for a function one profile
+    did not run (not one host time's samples missed), or `price only` for one that ran the same calls, instructions and
+    opcodes and whose cold and first-use charges account for its change, as `ree profile diff` tags it (a profile
+    without that split tags none, nor does scripts only, which folds C functions into their callers and says so),
+    marked ≈ with its bar grey. A row moved by `ree profile diff`'s rule. The tables of a measured metric (host time, a
+    CPU counter) mark each change `~` in no colour, as the headline does.
   - `c` Compare, of a what-if folder: each variant at each size in the comparison's metric, how it grows with n (a
-    log-log plot, a line a variant) and each variant over the baseline by n, the best of each size, each variant's
-    figure at the selected size as bars, every figure of a variant over the baseline's (worse to the right, on a log
-    scale; a figure that names no winner, as `better` "none", as it is, in no colour), and the variant's own table
-    shapes (its run's, the setup's input apart). A winner that is clear and material is marked ◆, one within noise or
-    too small to matter ≈. Enter opens the run in the other views, `D` diffs it against the baseline's.
+    log-log plot, a line a variant) and each variant over the baseline by n (on a log scale: a ratio of 2 and one of 0.5
+    lie as far from 1), the best of each size, each variant's figure at the selected size as bars, every figure of a
+    variant over the baseline's (worse to the right, on a log scale; a figure that names no winner, as `better` "none",
+    as it is, in no colour), and the variant's own table shapes (its run's, the setup's input apart). A winner that is
+    clear and material is marked ◆, one within noise or too small to matter ≈, and a variant whose result differs from
+    the baseline's ✗ (it wins nothing; the header names it, and the issues list it). Against the baseline, ▲ worse and
+    ▼ better in colour only where compare.json's verdict calls the gap clear and material; any other gap shows its
+    ratio in no colour with why it names nothing (noise, too small, about equal). The scaling column is the exponent at
+    large n. Enter opens the run in the other views, `D` diffs it against the baseline's.
 - **Keys**: arrows or hjkl move, enter goes in, esc or backspace comes back out; `m` and `M` the metric (Studio work,
   host time, instructions, allocated bytes, allocations, Luau cache misses, each hardware counter the profile read);
   `s` sort; `f` scripts only (C functions and the engine's own Luau fold into the script that called them); `/` search,
@@ -992,15 +1176,97 @@ border in the accent.
   a colour a variant or phase, in the data-viz palette's fixed order; an issue's severity as an icon and a word.
   24-bit colour where the terminal shows it, else each colour's nearest of the 256 every terminal has
   (`REE_VIEW_COLOR=truecolor|256` decides). Screenshots are always 24-bit.
-- **Issues** come from measured patterns only, each with its numbers and a link (enter) to the view and line that show
-  it: `table.sort` about once a frame or more in the steady state (the last phase holding most of the frames); a site
-  that allocates through the steady state, or in bursts (more a frame on average than some frames allocate in all);
-  tables regrown (table storage allocated past their first); collector and frame spikes; connections, instances or
-  threads that keep growing; the reachable heap growing; an inline cache that misses; a property read again in the
-  same frame, and writes that change nothing (the boundary profile's, `--profile boundary`); in a comparison, cost that
-  grows faster than n and a variant whose result differs. The issues cover the game's code: what the harness's own code
-  sorts, allocates, misses or reads again is left out (unless the run's code is all the harness's), and a frame spike
-  says how much of the harness's work the frames hold. What the profile's kinds cannot show is listed as not checked.
+- **Issues** come from measured patterns only. Each issue shows its numbers, its price, advice, and a link (enter) to the
+  view and line that show it.
+
+  *Price.* Every issue names a set of call-tree nodes or charged sites. Its standalone price is what removing the
+  advised work saves, minus the replacement's cost, divided by the reported phases' frames. It is always a mean rate,
+  including an event seen once: "19 ms once in this run: 31.7 us a frame over 600 frames". Spreading work between
+  frames saves no work. The words steady, recurring and once say how often a function worked. They describe an
+  issue and never change its price.
+
+  *Precision.* A price is exact, an estimate or a bound, and the issue says which.
+  - **Exact:** the work the clock charged at identified sites, less a known replacement's cost. Only exact prices are
+    clock savings.
+  - **Estimate:** work the clock did not charge (`extra_work_us`), shown with the calibration's low and high spread. An
+    estimate never enters the charged totals or the strongest-saving claim.
+  - **At most:** when the setup instructions of a source rewrite are unknown, the saving is somewhere between zero and
+    the price, which is then an upper bound.
+  - **Part:** a removal's recorded subtotal (a sort, a repeat read, an unchanged write) leaves out instructions the edit
+    also changes. Every advised source edit uses the whole scoped code work as the complete edit's upper bound by
+    default, including the caller's instructions and argument evaluation in other functions.
+
+  None of these claims to be the complete saving of a source edit.
+
+  *Floor and the closing row.* A fix is listed when its mean saving reaches the absolute floor, 41.7 us a frame
+  (0.25% of a 60 fps frame), or its own largest frame reaches 2.5% of the recorded frame budget. The cutoff only
+  decides what is shown. One closing row holds every millisecond outside the listed fixes' union.
+
+  *Overlap.* Each issue keeps its standalone saving. Totals intersect the actual node and site sets, so a declined
+  builtin inside a comparator overlaps removing the sort, while the comparator's work outside the sort stays separate.
+  `counted_ms` is the additional union work each row covers. Every function whose work the fix saves is named. A frame
+  hitch names its contributors and shares, and books no work itself.
+
+  *Severity.* An issue is as severe as the worse of its own mean price and its own work in frames over budget. The budget
+  is `1000 / fps` ms from the profile. A mean price of a tenth of the budget is critical, a fortieth serious, a
+  two-hundredth warning. A hitch contribution over budget is warning, over by a quarter of the budget serious, over
+  by a whole budget critical. Another function's hitch cannot promote a small contributor. Rank by severity, then mean
+  price. "Nothing elsewhere can save as much" belongs only to the largest exact saving across all candidates, including
+  those below the display floor. Another issue's upper bound counts against it, and an at-most price never gets it.
+
+  *Caches and builtins.* A cache fix keeps paying `first_touch_us`. Its charged saving is `outcome_charged_us`, less
+  `presized_us` for rehash outcomes. Presizing advice retains the writes; the price removes the rehash work.
+  Profiles without that breakdown say **not priced: needs a newer profile**.
+  `extra_work_us` is uncharged work beyond the measured clock; `luau_caches.prices.kinds` identifies charged outcomes.
+  Each calibration outcome also carries `low_ns` and `high_ns`. They are the spread of the estimate, not clock charges.
+  Outcomes within noise are shown and never summed.
+
+  A builtin fix saves its site's `decline_charged_us`, less the fast path's cost for those same calls
+  (`fast_equivalent_us`) and less the added instructions of the advised rewrite. For `math.abs` given a numeric string,
+  pass an existing numeric value directly: that price includes no added conversion.
+
+  For `string.sub`, `string.byte`, `table.insert` and `table.unpack` the rewrite adds code, and its cost is counted
+  from the opcodes alone. `fix_instructions_us` is a nominal warm cost; `fix_cold_us` is unknown without the replacement's
+  executed instructions. Only two rewrites keep a site-only bound, because they keep every original operand:
+  `string.byte(s)` to
+  `string.byte(s, 1)` and `string.sub(s, i)` to `string.sub(s, i, #s)`, each with no other advised reason to fix. Every
+  other builtin rewrite and every cache edit states its site part separately and bounds the complete edit by the whole
+  scoped code work.
+
+  An early `unsafe_env` rejection hides the checks after it. The advice is therefore the combination of a safe
+  environment and the types, values, argument count and result count the fast path accepts. Removing the environment
+  access alone is not priced as reaching the fast path. The cache lookups in a declined call's fallback are the same
+  work as the decline that contains them, so both issues name that work in the same way and the totals count it once.
+
+  A source edit's added cold work is unknown without the replacement's executed instructions in each frame, so
+  `fix_cold_us` is null for the argument rewrites above. Added code words and prototype activity do not establish that
+  cost: fallback words can stay dead, and a builtin can skip frames its function runs in. The operand-preserving
+  rewrites still give site-only upper bounds by subtracting none of the unknown setup, including cold setup. When the
+  site part of an edit with a whole-code bound is zero or negative, the issue says the recorded site part saves nothing
+  on this clock and keeps the bound, since the complete edit may still
+  save work outside the site. Only the two operand-preserving rewrites can say the complete fix saves nothing on this
+  clock.
+  Sites keep their exact context amounts under `nodes`. Without the replacement's cost or the exact call context, an
+  issue is not priced. A sort's whole subtree is priced only with the advice to remove those calls when ordering is
+  unnecessary. Older profiles still open and say what pricing evidence they lack.
+
+  `timeline.issue_stats` holds each issue's active frames, its peak and its largest own work in an over-budget frame,
+  written from every frame. Listing and severity therefore do not depend on which frames the timeline kept. Priced site
+  tables are not capped.
+
+  *What is checked.* Functions and their top lines, sorts every frame (a comparator's runs included; a sort with no
+  comparator needs the C call rows), cache misses (absent and inserted outcomes too), builtin declines, a property read
+  again in a frame and writes that change nothing (priced at what keeping the value saves: the first read of a frame
+  keeps its cold charge, and repeats in the same call and in later calls are both priced), allocation and table growth,
+  collector spikes, a heap that keeps growing, connections, instances or threads that keep growing, and, in a
+  comparison, cost that grows faster than n at large n (with a fixed cost a call apart) and a variant whose result
+  differs (by its check, or by digest without one). An issue the profile cannot price says
+  why (**not priced: ...**) and ranks after the priced ones; its severity is its own check's measure (bytes, counts,
+  steps). A check that cannot run on the profile (a kind missing, too few frames) is listed as not checked, with why.
+  The issues cover the game's code: what the harness's own code does is left out unless the run's code is all the
+  harness's. A price in ns (`work.prices`, boundary.json's costs) is a desktop one: the viewer multiplies it by the
+  run's `work.units.scale`, as the profile's own ms already are. A run of `ree profile try` is not read frame by frame:
+  its variant runs once, in one frame.
 - `ree profile render <dir> [<dir2>] --out <file|dir|-> [--view <name>|all|<a,b>] [--metric <m>] [--select
   <function|file:line>] [--keys "<keys>"] [--size <cols>x<rows>] [--theme dark|light] [--scale <n>] [--format
   png|svg|txt]` draws exactly what the terminal shows at that size (default 160x48), the same on every machine:
@@ -1021,7 +1287,7 @@ Environment (the variables keep the names they had in rur, whose tools set them;
 `REE_PROFILE_COUNTERS` are the profile's, above, and `REE_HW_COUNTERS` its counters' source; the guards' `REE_SCRIPT_TIMEOUT`,
 `REE_MAX_SCRIPT_TIMEOUTS`, `REE_MAX_WALL_SECONDS` and `REE_PARENT_WATCH` are above; docs/engine.md "Environment"
 lists them all): `RUR_STATE_DIR`
-(caches; default `.cache`), `RUR_VERBOSE=1` (script output on stderr), `RUR_ENGINE_TIMINGS=1` (mount
+(caches; default the checkout's `.cache`, or the standalone per-user `ree` cache), `RUR_VERBOSE=1` (script output on stderr), `RUR_ENGINE_TIMINGS=1` (mount
 phases), `RUR_ENGINE_DUMP=<file>` (every instance after the mount), `RUR_EPOCH` (the wall clock's start),
 `RUR_CLOCK` (a recorded Studio clock), `RUR_CAMERA`, `RUR_PLACE_ID`, `RUR_PLAYER`, `RUR_PLAYER_ID`,
 `RUR_PLAYER_DISPLAY`, `RUR_ROTATION_CLIPPING`, `RUR_PROFILE_CALLBACKS`, `RUR_LUAU_PROFILE=<file>` (the

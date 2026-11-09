@@ -114,7 +114,7 @@ local function find(path)
 	return current
 end
 
--- The variant file, read: { title, about, sizes, frames, check, variants = { { name, kind, setup, run, source, file } } }
+-- The variant file, read: { title, about, sizes, frames, per_frame, check, variants = { { name, kind, setup, run, source, file } } }
 local function load(Context)
 	local stem = string.match(Context.File, "([^/\\]+)$") or "Variants"
 	stem = string.gsub(stem, "%.luau?$", "")
@@ -127,10 +127,14 @@ local function load(Context)
 		about = Spec.about,
 		sizes = Spec.sizes or { 1 },
 		frames = Spec.frames or 1,
+		per_frame = Spec.per_frame or 1,
 		check = Spec.check,
 		module = Spec.module,
 		variants = {},
 	}
+	if type(spec.per_frame) ~= "number" or spec.per_frame <= 0 then
+		fail("per_frame is how many times a frame the game runs this code: a number above 0")
+	end
 	if type(spec.sizes) ~= "table" or #spec.sizes == 0 then
 		fail("sizes is a list of numbers: { 10, 100, 1000 }")
 	end
@@ -279,7 +283,9 @@ function Modes.list(Context)
 		about = spec.about,
 		sizes = spec.sizes,
 		frames = spec.frames,
-		check = spec.check ~= nil,
+		per_frame = spec.per_frame,
+		-- (how results are checked: the file's function, deep equality, or none: the runner then compares digests)
+		check = if spec.check == true then "equality" elseif spec.check ~= nil then "function" else nil,
 		module = spec.module,
 		variants = variants,
 	})

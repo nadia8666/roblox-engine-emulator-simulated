@@ -18,6 +18,8 @@ pub struct Run {
     pub command: String,
     pub status: String,
     pub harness: Option<String>,
+    /// The harness file's contents hashed (two copies of one harness in other folders are the same harness)
+    pub harness_hash: Option<String>,
     pub frames: u64,
     pub seconds: f64,
     pub fps: f64,
@@ -45,6 +47,8 @@ pub struct Figures {
     pub time_ms: f64,
     pub alloc_bytes: f64,
     pub allocs: f64,
+    /// Of `work_ms`, the cold and first-use charges (the work clock's split; absent where the profile does not split them)
+    pub cold_work_ms: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -56,6 +60,9 @@ pub struct RawFunction {
     pub module: Option<String>,
     pub line: Option<i64>,
     pub last_line: Option<i64>,
+    /// Its compiled code and its text hashed: what pairs it across an edit that moved it (ree's report.rs)
+    pub code_hash: Option<String>,
+    pub source_hash: Option<String>,
     pub kind: String,
     pub native: bool,
     pub native_entries: u64,
@@ -66,6 +73,11 @@ pub struct RawFunction {
     pub total: Figures,
     /// The harness's own code (its module under ReplicatedStorage.RURFixtures); absent before ree c692e40
     pub harness: Option<bool>,
+    /// ree's own code (its rur.* and ree.* chunks, a what-if run's harness), never the game's or a user's harness (a
+    /// newer ree's)
+    pub tool: Option<bool>,
+    /// The module's short name, qualified where two would read the same (a newer ree's)
+    pub short: Option<String>,
     /// Per phase, by name: self and total work, calls, self instructions, and the self work done for the harness
     pub phases: Option<BTreeMap<String, PhaseFigures>>,
 }
@@ -81,6 +93,10 @@ pub struct PhaseFigures {
     /// The part of the self work done for the harness's code: all of a harness function's, and a C function's, the
     /// engine's Luau's or mlua's helpers' when the harness called them
     pub harness_self_work_ms: f64,
+    /// Of the self work, the cold and first-use charges (the work clock's split; absent where the profile does not split them)
+    pub cold_work_ms: Option<f64>,
+    /// Cold charges paid for the harness, on the same side as `harness_self_work_ms`.
+    pub harness_cold_work_ms: Option<f64>,
 }
 
 /// The phases the profile's summary reports (`--profile-phase`; by default steady when the run marked one, else every
@@ -110,6 +126,17 @@ pub struct RawLine {
     pub alloc_bytes: f64,
     pub allocs: f64,
     pub ops: BTreeMap<String, u64>,
+    /// Its figures per phase, by name (a newer ree's; before, a line's figures were the whole run's)
+    pub phases: Option<BTreeMap<String, LinePhase>>,
+}
+
+/// A line's figures in one phase (profile.json `lines[].phases`)
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct LinePhase {
+    pub work_ms: f64,
+    pub total_work_ms: f64,
+    pub insns: f64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -122,8 +149,8 @@ pub struct Edge {
     pub insns: f64,
 }
 
-/// A node of the calling-context tree: `[parent, function, calls, self work in us, self instructions, label, the calling line]`
-/// (the calling line is a newer ree's: -1 when not known)
+/// A call-tree row: `[parent, function, calls, self work us, self instructions, label]`; older builds appended the calling line.
+/// `line` (a newer ree's) is the calling function's line of the call, -1 when not known
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct TreeNode(pub i64, pub i64, pub u64, pub f64, pub f64, #[serde(default)] pub Option<String>, #[serde(default)] pub Option<i64>);
 
@@ -145,6 +172,21 @@ pub struct NativeFunction {
     pub work_ms: f64,
 }
 
+/// The work clock's price of one count of what an issue prices (ns), profile.json `work.prices`
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct Prices {
+    pub object_ns: f64,
+    pub stored_byte_ns: f64,
+    pub rehashed_key_ns: f64,
+    /// A byte the scripts' work allocated, and the collector's work for it (a newer work clock's; 0 where not priced)
+    pub allocated_byte_ns: f64,
+    pub collector_byte_ns: f64,
+    pub c_call_ns: f64,
+    pub sort_compare_ns: f64,
+    pub sort_call_ns: f64,
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Work {
@@ -157,6 +199,25 @@ pub struct Work {
     pub engine_insns: f64,
     pub native_functions: Vec<NativeFunction>,
     pub opcodes: Vec<Opcode>,
+    /// C functions are recorded by name at their call sites, whether or not Luau runs under them (a newer ree's): a
+    /// `table.sort` with no comparator is a node of the call tree, and no C function in it means none was called
+    pub c_calls: bool,
+    /// A Luau function a C function calls (a sort's comparator) counts a call per entry from C, not one per C call
+    pub c_invocations: bool,
+    pub prices: Option<Prices>,
+    /// What the collector's work added to the work clock (a newer ree's), already in every work figure
+    pub collector_ms: Option<f64>,
+    /// The units the run's clock ran in (a newer ree's): a phone run's work figures are desktop prices times `scale`
+    pub units: Option<Units>,
+}
+
+/// The work clock's units (profile.json `work.units`): the device it priced for and what it multiplied desktop prices by.
+/// The profile's work figures are in them already; a price in ns (`work.prices`, boundary.json's costs) is a desktop one
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct Units {
+    pub device: String,
+    pub scale: f64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -202,55 +263,51 @@ impl CacheKind {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct CacheSite {
+    pub nodes: Option<Vec<CacheContext>>,
+    pub node: Option<usize>,
     pub function: i64,
     pub line: i64,
     pub pc: i64,
     pub op: String,
-    pub key: Option<String>,
     /// The counts profiles had before the outcomes (a version 1 profile's only ones)
     pub hits: f64,
     pub misses: f64,
     pub slow: f64,
     pub other: f64,
-    /// What it did as the interpreter ran it, by outcome (version 2)
-    pub outcomes: BTreeMap<String, f64>,
-    /// The work clock's charge at the site past its dispatch (part of its function's work) and the uncharged outcomes' work at
-    /// the committed prices (beyond it), in microseconds a frame of the reported phases; outcomes priced within the noise (left
-    /// out of the extra)
-    pub charged_work_us_per_frame: f64,
-    pub extra_work_us_per_frame: f64,
-    pub within_noise: f64,
+    /// The outcomes by what happened (a newer ree's): hit, repredicted, absent, inserted, rehashed, metatable_table,
+    /// metatable_function, unsafe_env, not_table, readonly
+    pub outcomes: Option<BTreeMap<String, f64>>,
+    /// For `metatable_table` lookups: how many walked each metatable depth (the depth as the key)
+    pub depth: BTreeMap<String, f64>,
+    /// The measured host time its outcomes other than a hit cost over the run and a frame (us; not the work clock)
+    pub extra_us: Option<f64>,
+    pub extra_us_per_frame: Option<f64>,
+    /// A newer ree's (profile.json version 2), in the reported phases and a frame of them (us): what the outcomes the work
+    /// clock does not charge cost over hits at the committed prices (another slot, an absent key, an insert with room, a
+    /// metatable walk, an `__index` function's call), beyond its work; and what it charged at the site past its dispatch
+    /// (a rehash, a looked-up import, its first touch of a table in a frame), part of the function's work
+    pub extra_work_us: Option<f64>,
+    pub extra_work_us_per_frame: Option<f64>,
+    pub charged_work_us: Option<f64>,
+    pub charged_work_us_per_frame: Option<f64>,
+    /// How the charge splits (a newer ree's, in the reported phases, us): the part for a table's first touch in a frame,
+    /// which a fix keeps paying; the part for the outcomes themselves; and, for a rehash, what building the table at its
+    /// final size costs instead (`presized_us`), which a fix also keeps paying. A profile without the split leaves them None
+    pub first_touch_us: Option<f64>,
+    pub outcome_charged_us: Option<f64>,
+    pub presized_us: Option<f64>,
+    /// The cache's kind (`table key slot`, ...): the key into `luau_caches.prices.kinds`
+    pub kind: String,
+    /// The outcomes whose prices are within their noise, left out of `extra_work_us`
+    pub within_noise: Option<f64>,
+    /// The constant it looks up (a key, a method, a global, an import path), and whether it is in the harness's own code
+    /// (a newer ree's)
+    pub key: Option<String>,
+    pub harness: Option<bool>,
+    pub tool: Option<bool>,
 }
 
-impl CacheSite {
-    /// The lookups a table serves (a value another type's metamethod serves is no cache's lookup)
-    pub fn lookups(&self) -> f64 {
-        lookups_and_hits(&self.outcomes, (self.hits, self.misses, self.slow)).0
-    }
-
-    /// The hits among them
-    pub fn hit_count(&self) -> f64 {
-        lookups_and_hits(&self.outcomes, (self.hits, self.misses, self.slow)).1
-    }
-
-    /// What the cached slot did not serve: the lookups but the hits (a reprediction, an absent key, an insert, a rehash, a
-    /// metatable walk; before the outcomes, repredictions and slow paths)
-    pub fn missed(&self) -> f64 {
-        self.lookups() - self.hit_count()
-    }
-
-    /// Every run, a value another type serves too
-    pub fn runs(&self) -> f64 {
-        if self.outcomes.is_empty() { self.hits + self.misses + self.slow + self.other } else { self.outcomes.values().sum() }
-    }
-
-    /// Its commonest outcome but a hit, and how many (version 2)
-    pub fn commonest_miss(&self) -> Option<(&str, f64)> {
-        self.outcomes.iter().filter(|(name, n)| name.as_str() != "hit" && name.as_str() != "not_table" && **n > 0.0).max_by(|a, b| a.1.total_cmp(b.1).then(b.0.cmp(a.0))).map(|(name, n)| (name.as_str(), *n))
-    }
-}
-
-/// What an outcome means and what helps (profile.json luau_caches.outcome_info)
+/// What a cache outcome means and what removes it (profile.json `luau_caches.outcome_info`, a newer ree's)
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct OutcomeInfo {
@@ -258,20 +315,192 @@ pub struct OutcomeInfo {
     pub advice: String,
 }
 
+impl CacheSite {
+    pub fn lookups(&self) -> f64 {
+        match &self.outcomes {
+            Some(outcomes) => lookups_and_hits(outcomes, (self.hits, self.misses, self.slow)).0,
+            None => self.hits + self.misses + self.slow,
+        }
+    }
+
+    pub fn hit_count(&self) -> f64 {
+        match &self.outcomes {
+            Some(outcomes) => lookups_and_hits(outcomes, (self.hits, self.misses, self.slow)).1,
+            None => self.hits,
+        }
+    }
+
+    /// Absent and inserted outcomes miss too; a type's own handler and a read-only error are apart.
+    pub fn missed(&self) -> f64 {
+        match self.outcomes.as_ref().filter(|outcomes| !outcomes.is_empty()) {
+            Some(outcomes) => outcomes.iter().filter(|(name, _)| !matches!(name.as_str(), "hit" | "not_table" | "readonly")).map(|(_, count)| count).sum(),
+            None => self.misses + self.slow,
+        }
+    }
+
+    pub fn runs(&self) -> f64 {
+        match self.outcomes.as_ref().filter(|outcomes| !outcomes.is_empty()) {
+            Some(outcomes) => outcomes.values().sum(),
+            None => self.hits + self.misses + self.slow + self.other,
+        }
+    }
+
+    pub fn commonest_miss(&self) -> Option<(&str, f64)> {
+        self.outcomes.as_ref()?.iter().filter(|(name, n)| !matches!(name.as_str(), "hit" | "not_table" | "readonly") && **n > 0.0)
+            .max_by(|a, b| a.1.total_cmp(b.1).then(b.0.cmp(a.0))).map(|(name, n)| (name.as_str(), *n))
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct LuauCaches {
     pub by_kind: Vec<CacheKind>,
     pub sites: Vec<CacheSite>,
-    /// The frames of the reported phases the counts cover (version 2; a version 1 profile's are the run's)
-    pub frames: Option<f64>,
     pub outcome_info: BTreeMap<String, OutcomeInfo>,
+    /// The committed prices of the outcomes and of a declined builtin call (a newer ree's, version 2)
+    pub prices: Option<CachePrices>,
+}
+
+/// profile.json `luau_caches.prices`: `clock` "work" when the prices are the work clock's, in its units (each site's
+/// charged and uncharged figures come priced with them)
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct CachePrices {
+    /// Each cache kind's outcomes, saying which the work clock already charged
+    pub kinds: BTreeMap<String, CachePriceKind>,
+    pub clock: Option<String>,
+    pub units: String,
+}
+
+/// One cache kind's outcome prices: the VM declares which outcomes the work clock already charged
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct CachePriceKind {
+    pub outcomes: BTreeMap<String, CacheOutcomePrice>,
+    /// The price of a `metatable_table` lookup by how deep its walk went (the depth as the key)
+    pub metatable_depths: BTreeMap<String, CacheOutcomePrice>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct CacheOutcomePrice {
+    /// The work clock already charges the outcome, so it is not extra work
+    pub charged: bool,
+    /// The price is within its measurement noise, so it is left out of sums
+    pub within_noise: bool,
+    /// The committed price over a hit (ns)
+    pub ns: Option<f64>,
+    /// The calibration's lowest and highest price over a hit (ns): the spread of the estimate, not a clock charge
+    pub low_ns: Option<f64>,
+    pub high_ns: Option<f64>,
+}
+
+/// The charged outcomes of a cache site in one exact calling context.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct CacheContext {
+    pub node: usize,
+    pub outcomes: Option<BTreeMap<String, f64>>,
+    pub charged_work_us: Option<f64>,
+    pub first_touch_us: Option<f64>,
+    pub outcome_charged_us: Option<f64>,
+    pub presized_us: Option<f64>,
+    pub extra_work_us: Option<f64>,
+}
+
+/// A builtin's call site (profile.json `builtins[].sites`)
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct BuiltinSite {
+    /// An independently measured replacement, including its source setup. Opcode-only rules are not exact.
+    pub fix_cost_exact: bool,
+    /// Last instruction of the declined call's fallback, inclusive.
+    pub fallback_end_pc: Option<usize>,
+    pub fix_unpriced: Option<String>,
+    pub fix_instructions_us: Option<f64>,
+    pub fix_cold_us: Option<f64>,
+    pub nodes: Option<Vec<BuiltinContext>>,
+    pub pc: usize,
+    pub node: Option<usize>,
+    pub fast_equivalent_us: Option<f64>,
+    pub decline_charged_us: Option<f64>,
+    pub function: i64,
+    pub line: i64,
+    pub calls: f64,
+    pub fast: f64,
+    pub declines: BTreeMap<String, f64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct BuiltinContext {
+    pub fix_instructions_us: Option<f64>,
+    pub node: usize,
+    pub calls: f64,
+    pub fast: f64,
+    pub declines: BTreeMap<String, f64>,
+    pub decline_charged_us: Option<f64>,
+    pub fast_equivalent_us: Option<f64>,
+}
+
+impl BuiltinSite {
+    /// One record for each calling context of the site. A context inherits the site's location and its fix's unpriced note,
+    /// never its aggregate amounts; a site without contexts is its own only one.
+    pub fn contexts(&self) -> Vec<Self> {
+        let Some(contexts) = &self.nodes else { return vec![self.clone()] };
+        let mut records = Vec::new();
+        for context in contexts {
+            records.push(Self {
+                fix_cost_exact: self.fix_cost_exact,
+                fallback_end_pc: self.fallback_end_pc,
+                nodes: None,
+                node: Some(context.node),
+                function: self.function,
+                pc: self.pc,
+                line: self.line,
+                fix_instructions_us: context.fix_instructions_us,
+                // (the cold code is the whole prototype's, not any one context's)
+                fix_cold_us: None,
+                fix_unpriced: self.fix_unpriced.clone(),
+                calls: context.calls,
+                fast: context.fast,
+                declines: context.declines.clone(),
+                decline_charged_us: context.decline_charged_us,
+                fast_equivalent_us: context.fast_equivalent_us,
+            });
+        }
+        records
+    }
+}
+
+/// A builtin's calls and the times its fast path turned them down (profile.json `builtins`, a newer ree's)
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct Builtin {
+    pub fast_equivalent_us: Option<f64>,
+    pub name: String,
+    pub calls: f64,
+    pub fast: f64,
+    /// Declines by reason (args, types, results, gc_debt, unsafe_env, values)
+    pub declines: BTreeMap<String, f64>,
+    /// The measured host time one declined call costs over a fast one (ns), None when not calibrated
+    pub decline_extra_ns: Option<f64>,
+    /// A newer ree's (version 2): what the work clock charged a declined call (ns) and the declines in the reported phases
+    /// (us): part of the work of the functions that made them
+    pub decline_charged_ns: Option<f64>,
+    pub decline_charged_us: Option<f64>,
+    /// Its call sites (a newer ree's): the function and line, and their declines by reason
+    pub sites: Vec<BuiltinSite>,
+    /// For a reason an equivalent call avoids: what to write instead
+    pub advice: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Time {
     pub sampled_ms: f64,
+    /// What a sample weighs: "thread CPU" (the run thread's CPU time, a newer ree's) or "wall"
+    pub weight: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -408,15 +637,119 @@ pub struct ReeCache {
     pub evictions: f64,
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(from = "(i64, f64, usize, f64, i64)")]
+pub struct FunctionStats {
+    pub function: i64,
+    pub total_us: f64,
+    pub active: usize,
+    pub largest_us: f64,
+    pub frame: i64,
+}
+
+impl From<(i64, f64, usize, f64, i64)> for FunctionStats {
+    fn from((function, total_us, active, largest_us, frame): (i64, f64, usize, f64, i64)) -> Self {
+        Self { function, total_us, active, largest_us, frame }
+    }
+}
+
 /// A table of rows by named columns (the timeline, the counters' frames)
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Columns {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<serde_json::Value>>,
+    /// The timeline's: each row's script functions with a microsecond of work or more, heaviest first, flat: `[function
+    /// id, work us, id, us, ...]` (a function's own instructions' and the C functions' it called; its side is its own)
+    pub functions: Option<Vec<Vec<f64>>>,
+    /// A newer ree's frame histories, run-encoded: for each function `[id, first row, row count, work us, first row, ...]`,
+    /// equal work in consecutive rows stored once. Only functions the issue list can use are kept
+    pub function_runs: Option<Vec<Vec<f64>>>,
+    pub function_stats: Vec<FunctionStats>,
+    /// Each issue's frame summary, written from every frame before the frame detail is dropped
+    pub issue_stats: Vec<IssueStats>,
+    pub node_frames: Vec<Vec<f64>>,
+    pub site_frames: Vec<SiteFrame>,
+    pub replacement_frames: Vec<(usize, String, f64)>,
+    /// Cold-code prototypes only: [function, node, first frame, last frame, ...], inclusive ranges.
+    pub function_contexts: Vec<Vec<i64>>,
 }
 
+/// One issue's summary over every frame of the reported phases: its key, the frames it was active in, its largest frame
+/// (us) and that frame's number, and its largest own work in a frame over the budget (us).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(from = "(String, usize, f64, i64, f64)")]
+pub struct IssueStats {
+    pub key: String,
+    pub active: usize,
+    pub largest_us: f64,
+    pub frame: i64,
+    pub over_budget_us: f64,
+}
+
+impl From<(String, usize, f64, i64, f64)> for IssueStats {
+    fn from((key, active, largest_us, frame, over_budget_us): (String, usize, f64, i64, f64)) -> Self {
+        Self { key, active, largest_us, frame, over_budget_us }
+    }
+}
+
+/// Net site savings on a heavy frame: row, kind, function id, pc, context node, us.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(from = "(usize, String, i64, i64, usize, f64)")]
+pub struct SiteFrame {
+    pub row: usize,
+    pub kind: String,
+    pub function: i64,
+    pub pc: i64,
+    pub node: usize,
+    pub saving_us: f64,
+}
+impl From<(usize, String, i64, i64, usize, f64)> for SiteFrame {
+    fn from((row, kind, function, pc, node, saving_us): (usize, String, i64, i64, usize, f64)) -> Self {
+        Self { row, kind, function, pc, node, saving_us }
+    }
+}
+
+/// A timeline row's `functions` as (function id, work ms)
+pub fn function_cells(cells: &[f64]) -> Vec<(i64, f64)> {
+    cells.as_chunks::<2>().0.iter().map(|[id, us]| (*id as i64, us / 1e3)).collect()
+}
+
+/// The numbers in one run of a function's `function_runs` history: first row, row count, work us
+const NUMBERS_IN_RUN: usize = 3;
+
 impl Columns {
+    /// Each row's script functions as (function id, work ms), from whichever history the profile holds: the run-encoded
+    /// `function_runs` of a newer ree, else the older flat `functions`. None for a profile with neither
+    pub fn function_rows(&self) -> Option<Vec<Vec<(i64, f64)>>> {
+        if let Some(runs) = &self.function_runs {
+            return Some(self.expand_function_runs(runs));
+        }
+        let flat_rows = self.functions.as_ref()?;
+        Some(flat_rows.iter().map(|cells| function_cells(cells)).collect())
+    }
+
+    /// Spreads `function_runs` back out to one list of (function id, work ms) for each row. A run that reaches past the
+    /// last row is cut to it
+    fn expand_function_runs(&self, runs: &[Vec<f64>]) -> Vec<Vec<(i64, f64)>> {
+        let row_count = self.rows.len();
+        let mut rows = vec![Vec::new(); row_count];
+        for function in runs {
+            // a function is `[id, first row, row count, work us, first row, row count, work us, ...]`
+            let Some((&id, runs_of_function)) = function.split_first() else { continue };
+            let id = id as i64;
+            let (function_runs, _unfinished_run) = runs_of_function.as_chunks::<NUMBERS_IN_RUN>();
+            for &[first_row, row_span, work_us] in function_runs {
+                let first = (first_row.max(0.0) as usize).min(row_count);
+                let end = first.saturating_add(row_span.max(0.0) as usize).min(row_count);
+                for row in &mut rows[first..end] {
+                    row.push((id, work_us / 1e3));
+                }
+            }
+        }
+        rows
+    }
+
     pub fn index(&self, name: &str) -> Option<usize> {
         self.columns.iter().position(|column| column == name)
     }
@@ -434,6 +767,12 @@ impl Columns {
     pub fn value(&self, row: usize, name: &str) -> Option<f64> {
         let index = self.index(name)?;
         self.rows.get(row)?.get(index)?.as_f64()
+    }
+
+    /// Whether a column has no value in any row (a newer ree writes null where a kind's slowing makes a figure the
+    /// run's no longer)
+    pub fn all_null(&self, name: &str) -> bool {
+        self.index(name).is_some_and(|index| self.rows.iter().all(|row| row.get(index).is_none_or(serde_json::Value::is_null)))
     }
 }
 
@@ -559,6 +898,9 @@ pub struct Raw {
     pub lines: Vec<RawLine>,
     pub edges: Vec<Edge>,
     pub tree: Vec<TreeNode>,
+    /// Calling lines parallel to the six-element tree rows.
+    #[serde(default)]
+    pub tree_lines: Vec<Option<i64>>,
     pub work: Option<Work>,
     pub luau_caches: Option<LuauCaches>,
     pub time: Option<Time>,
@@ -570,6 +912,7 @@ pub struct Raw {
     pub timeline: Option<Columns>,
     pub cpu: Option<serde_json::Value>,
     pub counters: Option<Counters>,
+    pub builtins: Option<Vec<Builtin>>,
     pub phase_timing: Option<String>,
     pub boundary: Option<String>,
     pub listings: BTreeMap<String, Listing>,
@@ -595,6 +938,15 @@ pub struct BoundarySite {
     pub unchanged_writes: f64,
     pub repeat_reads: f64,
     pub repeat_reads_per_s: f64,
+    /// A newer ree's split of the repeats (a read that saw the value an earlier read in the frame saw): in the same call,
+    /// in a later call of the same function (`repeat_reads` is the two), and in another function (not in `repeat_reads`)
+    pub repeat_same_call: Option<f64>,
+    pub repeat_later_call: Option<f64>,
+    pub repeat_other_function: Option<f64>,
+    /// What the work clock charged the repeat reads and the unchanged writes themselves, ms over the phase (a newer
+    /// ree's): a site's first read in a frame takes the frame's cold charge, which a kept value keeps
+    pub repeat_cost_ms: Option<f64>,
+    pub unchanged_cost_ms: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -625,6 +977,8 @@ pub struct Boundary {
     pub by_site_cost: Vec<BoundarySite>,
     pub by_member: Vec<BoundaryMember>,
     pub repeat_reads: Vec<BoundarySite>,
+    /// Every site with writes that changed nothing, most first (a newer ree's; before, only the site tables had them)
+    pub unchanged_writes: Vec<BoundarySite>,
 }
 
 /// What a function is
@@ -653,6 +1007,9 @@ pub struct Func {
     pub short: String,
     pub line: i64,
     pub last_line: i64,
+    /// Its compiled code's hash and its text's (None from a ree before them, and for C functions)
+    pub code_hash: Option<String>,
+    pub source_hash: Option<String>,
     pub kind: Kind,
     pub native: bool,
     pub calls: u64,
@@ -661,6 +1018,9 @@ pub struct Func {
     /// The harness's own code: a Luau function whose module is under [`HARNESS_FOLDER`] (a C function, the engine's
     /// Luau and mlua's helpers are never the harness's themselves: their work goes with their caller's side)
     pub harness: bool,
+    /// ree's own code: profile.json's `tool`, else a script function of the engine's own chunks (rur.*, ree.*). Never an
+    /// issue, whatever the game's share
+    pub tool: bool,
     /// Its figures per phase, by phase index (profile.json `phases`, from ree c692e40; empty before)
     pub phases: BTreeMap<u32, PhaseFigures>,
 }
@@ -778,6 +1138,8 @@ pub struct LineFig {
     pub cache_runs: f64,
     pub counters: Vec<f64>,
     pub ops: BTreeMap<String, u64>,
+    /// Its own work per phase index, when the profile counts lines per phase
+    pub phases: BTreeMap<u32, f64>,
 }
 
 /// The profile.json version this viewer reads (ree's report.rs PROFILE_VERSION); an older one reads with what it has, and says so
@@ -864,6 +1226,7 @@ impl Profile {
             let name = if function.name.is_empty() && !module.is_empty() { "anonymous".to_string() } else { function.name.clone() };
             // (the flag profile.json gives, else the rule ree applies: a script function under the harness's folder)
             let harness = function.harness.unwrap_or(kind == Kind::Script && harness_module(&module));
+            let tool = function.tool.unwrap_or(kind == Kind::Script && (module.starts_with("rur.") || module.starts_with("ree.")));
             let phases = function
                 .phases
                 .iter()
@@ -873,17 +1236,20 @@ impl Profile {
             profile.push_func(Func {
                 id: function.id,
                 key: function.key.clone(),
-                short: short_module(&module).to_string(),
+                short: function.short.clone().filter(|short| !short.is_empty()).unwrap_or_else(|| short_module(&module).to_string()),
                 module,
                 name,
                 line: function.line.unwrap_or(0),
                 last_line: function.last_line.or(function.line).unwrap_or(0),
+                code_hash: function.code_hash.clone(),
+                source_hash: function.source_hash.clone(),
                 kind,
                 native: function.native,
                 calls: function.calls,
                 own: function.own,
                 total: function.total,
                 harness,
+                tool,
                 phases,
             });
         }
@@ -914,6 +1280,11 @@ impl Profile {
             fig.total_time += line.total_time_ms;
             for (op, count) in &line.ops {
                 *fig.ops.entry(op.clone()).or_default() += count;
+            }
+            for (name, figures) in line.phases.iter().flatten() {
+                if let Some(phase) = self.raw.phases.iter().position(|known| known == name) {
+                    *fig.phases.entry(phase as u32).or_default() += figures.work_ms;
+                }
             }
         }
         for (&key, &(bytes, count)) in &self.line_alloc {
@@ -1004,7 +1375,8 @@ impl Profile {
         };
         let id = -3_000_000_000 - self.funcs.len() as i64;
         let harness = kind == Kind::Script && harness_module(&module);
-        self.push_func(Func { id, key: frame.to_string(), short: short_module(&module).to_string(), module, name, line, last_line: line, kind, native: false, calls: 0, own: Figures::default(), total: Figures::default(), harness, phases: BTreeMap::new() })
+        let tool = kind == Kind::Script && (module.starts_with("rur.") || module.starts_with("ree."));
+        self.push_func(Func { id, key: frame.to_string(), short: short_module(&module).to_string(), module, name, line, last_line: line, code_hash: None, source_hash: None, kind, native: false, calls: 0, own: Figures::default(), total: Figures::default(), harness, tool, phases: BTreeMap::new() })
     }
 
     /// Parses a folded file: `phase;outermost;...;innermost @line weight`
@@ -1079,6 +1451,22 @@ impl Profile {
         self.raw.run.harness.as_deref().map(|path| path.rsplit(['/', '\\']).next().unwrap_or(path).to_string())
     }
 
+    /// What tells the run's harness apart, and whether by content: its file's contents hashed (run.harness_hash), else its
+    /// module's source hash, else (a profile from before ree hashed it) its file's name
+    pub fn harness_identity(&self) -> Option<(bool, String)> {
+        // (both forms the plain hash: run.harness_hash hashes the text the harness's module loaded as source_hashes does,
+        // so a profile from before it and one after read the same harness as the same)
+        if let Some(hash) = &self.raw.run.harness_hash {
+            return Some((true, hash.clone()));
+        }
+        let name = self.harness()?;
+        let stem = name.rsplit_once('.').map_or(name.as_str(), |(stem, _)| stem);
+        match self.raw.source_hashes.get(&format!("{HARNESS_FOLDER}.{stem}")) {
+            Some(hash) => Some((true, hash.clone())),
+            None => Some((false, name)),
+        }
+    }
+
     pub fn phase_name(&self, phase: u32) -> &str {
         self.raw.phases.get(phase as usize).map_or("?", String::as_str)
     }
@@ -1090,11 +1478,135 @@ impl Profile {
         (name != "frames").then(|| format!("the {name} phase"))
     }
 
-    /// A timeline column's values past startup (all of them when the run marks no phase after it)
+    /// A timeline column of flows (work, time, bytes allocated) frame by frame past startup (all of them when the run
+    /// marks no phase after it): a frame a phase mark split is one frame, its parts past startup summed
     pub fn frames_past_startup(&self, values: &[f64]) -> Vec<f64> {
         let phases = self.raw.timeline.as_ref().and_then(|t| t.values("phase")).unwrap_or_default();
         let later = phases.iter().any(|phase| *phase > 0.0);
-        values.iter().enumerate().filter(|(row, _)| !later || phases.get(*row).is_some_and(|phase| *phase > 0.0)).map(|(_, v)| *v).collect()
+        self.whole_frames(values, |row| !later || phases.get(row).is_some_and(|phase| *phase > 0.0))
+    }
+
+    /// A timeline column of flows frame by frame over the rows `keep` keeps: the parts of a frame its phase marks split
+    /// (the `part` column, ree's timeline since rows split at marks) summed into one value
+    pub fn whole_frames(&self, values: &[f64], keep: impl Fn(usize) -> bool) -> Vec<f64> {
+        let timeline = self.raw.timeline.as_ref();
+        let frames = timeline.and_then(|t| t.values("frame")).unwrap_or_default();
+        let parts = timeline.and_then(|t| t.values("part")).unwrap_or_default();
+        let mut out: Vec<f64> = Vec::new();
+        let mut last_frame: Option<f64> = None;
+        for (row, value) in values.iter().enumerate() {
+            if !keep(row) {
+                continue;
+            }
+            let frame = frames.get(row).copied();
+            let continues = parts.get(row).is_some_and(|part| *part > 1.0) && frame.is_some() && frame == last_frame;
+            match out.last_mut().filter(|_| continues) {
+                Some(last) => *last += value,
+                None => out.push(*value),
+            }
+            last_frame = frame;
+        }
+        out
+    }
+
+    /// Whether the profile is a run of `ree profile try` (its harness WhatIf, phases setup, run and after): each variant's
+    /// call runs once in one frame, so figures across frames say nothing about it
+    /// What the run's clock multiplied desktop prices by (`work.units.scale`): 1 for a desktop run and before ree said
+    pub fn price_scale(&self) -> f64 {
+        self.raw.work.as_ref().and_then(|work| work.units.as_ref()).map(|units| units.scale).filter(|scale| *scale > 0.0).unwrap_or(1.0)
+    }
+
+    /// Whether the cache outcomes' and builtin declines' prices are the work clock's committed ones (a newer ree's,
+    /// `luau_caches.prices.clock`), counted in the reported phases, not host time measured over the run
+    pub fn cache_prices_work(&self) -> bool {
+        self.raw.luau_caches.as_ref().and_then(|caches| caches.prices.as_ref()).and_then(|prices| prices.clock.as_deref()) == Some("work")
+    }
+
+    pub fn is_what_if(&self) -> bool {
+        let harness = self.raw.run.harness.as_deref().unwrap_or("");
+        let file = harness.rsplit(['/', '\\']).next().unwrap_or(harness);
+        file.eq_ignore_ascii_case("WhatIf.luau") && ["setup", "run", "after"].iter().all(|phase| self.raw.phases.iter().any(|known| known == phase))
+    }
+
+    /// Why the checks that read the run frame by frame (spikes, growth across frames, bursts) do not apply to this
+    /// profile, None when they do: a what-if run, or no timeline
+    pub fn per_frame_unchecked(&self) -> Option<String> {
+        if self.is_what_if() {
+            return Some("a what-if run (ree profile try): each variant's call runs in one frame, so a frame's figures are the call's, not a frame rate".into());
+        }
+        if self.raw.timeline.is_none() {
+            return Some("needs timeline".into());
+        }
+        None
+    }
+
+    /// A frame's time at the run's frame rate (ms): the scale an issue's milliseconds are read against
+    pub fn budget_ms(&self) -> f64 {
+        let fps = if self.raw.run.fps > 0.0 { self.raw.run.fps } else { 60.0 };
+        1000.0 / fps
+    }
+
+    /// Whether the profile holds the work the VM stepped: its `work` section, or a call tree with a node that did work (a
+    /// timeline or cpu profile keeps a call tree of one empty node)
+    pub fn has_work(&self) -> bool {
+        self.raw.work.is_some() || self.raw.tree.iter().any(|node| node.3 > 0.0 || node.4 > 0.0)
+    }
+
+    /// Whether the VM stepped (work or caches): its interpreter ran several times slower than a plain run, so host time
+    /// and CPU cycles say little of a client's
+    pub fn steps(&self) -> bool {
+        self.has_kind("work") || self.has_kind("caches")
+    }
+
+    /// Whether the timeline's host time and cycles are the run's own: a profile that did not step, or whose CPU figures
+    /// a run of its own took (a newer ree's cpu pass, `cpu.pass`), and that has them (a newer ree writes null where a kind
+    /// slowed the run)
+    pub fn host_frames(&self) -> bool {
+        let Some(timeline) = &self.raw.timeline else { return false };
+        let pass = self.raw.cpu.as_ref().is_some_and(|cpu| cpu.get("pass").is_some_and(|pass| !pass.is_null()));
+        timeline.index("host_ms").is_some() && !timeline.all_null("host_ms") && (pass || !self.steps())
+    }
+
+    /// The frames a scope's phases ran in: from the timeline (a frame two of its phases share counts once), else from the
+    /// marks (each phase's mark to the next mark, the last to the run's end), else the run's frames for every phase
+    pub fn scope_frames(&self, scope: &Scope) -> Option<f64> {
+        if let Some(timeline) = &self.raw.timeline {
+            let (Some(frames), Some(phases)) = (timeline.values("frame"), timeline.values("phase")) else { return None };
+            let mut seen: Vec<f64> = frames.iter().zip(&phases).filter(|(_, phase)| scope.covers(**phase as u32)).map(|(frame, _)| *frame).collect();
+            seen.dedup();
+            return (!seen.is_empty()).then_some(seen.len() as f64);
+        }
+        if scope.phases.is_none() {
+            return (self.raw.run.frames > 0).then_some(self.raw.run.frames as f64);
+        }
+        let marks = &self.raw.marks;
+        let mut frames = 0.0;
+        for (index, mark) in marks.iter().enumerate() {
+            let Some(phase) = self.raw.phases.iter().position(|phase| *phase == mark.phase) else { continue };
+            if scope.covers(phase as u32) {
+                let end = marks.get(index + 1).or(self.raw.end.as_ref()).map_or(self.raw.run.frames, |next| next.frame);
+                frames += end.saturating_sub(mark.frame) as f64;
+            }
+        }
+        (frames > 0.0).then_some(frames)
+    }
+
+    /// The calling-context tree as profile.json holds it, each node with its function (an index into `funcs`), its phase
+    /// and the calling line: what the merged views lose (a sort's call sites, a comparator's caller)
+    pub fn raw_nodes(&self) -> Vec<RawNode> {
+        let raw = &self.raw.tree;
+        let mut out: Vec<RawNode> = Vec::with_capacity(raw.len());
+        for (index, node) in raw.iter().enumerate() {
+            let parent = (node.0 >= 0 && (node.0 as usize) < index).then_some(node.0 as usize);
+            let phase = if index == 0 || node.1 == -1 {
+                node.5.as_deref().and_then(|label| self.raw.phases.iter().position(|phase| phase == label)).unwrap_or(0) as u32
+            } else {
+                parent.map_or(0, |parent| out[parent].phase)
+            };
+            let func = if node.1 == -1 { None } else { self.func_of_id(node.1) };
+            out.push(RawNode { parent, func, calls: node.2, own: node.3 / 1000.0, phase, line: self.raw.tree_lines.get(out.len()).copied().flatten().or(node.6).filter(|line| *line >= 0) });
+        }
+        out
     }
 
     /// A timeline column's mean a frame past startup
@@ -1123,6 +1635,12 @@ impl Profile {
         }
         let label = format!("{} {}", if phases.len() == 1 { "phase" } else { "phases" }, phases.iter().map(|&phase| self.phase_name(phase).to_string()).collect::<Vec<_>>().join(", "));
         Scope { phases: Some(phases), label }
+    }
+
+    /// Whether the views set the harness's code apart in the profile's scope ([`harness_apart`] on the work clock, from
+    /// the profile's own figures: a profile from before ree c692e40 keeps it together)
+    pub fn harness_set_apart(&self) -> bool {
+        self.has_harness() && self.scope_work().is_some_and(|(game, harness)| harness_apart(game, harness))
     }
 
     /// Whether any of the profile's code is the harness's
@@ -1266,6 +1784,21 @@ impl Profile {
     pub fn module_path(&self, module: &str) -> Option<String> {
         self.raw.listings.iter().find(|(id, _)| id.parse::<i64>().ok().and_then(|id| self.func_of_id(id)).is_some_and(|func| self.funcs[func].module == module)).map(|(_, listing)| listing.path.clone())
     }
+}
+
+/// A node of profile.json's calling-context tree ([`Profile::raw_nodes`])
+#[derive(Clone, Copy, Debug)]
+pub struct RawNode {
+    /// The parent node (None for the root)
+    pub parent: Option<usize>,
+    /// The function (an index into `Profile::funcs`), None for the root and a phase's node
+    pub func: Option<usize>,
+    pub calls: u64,
+    /// Its own work (ms)
+    pub own: f64,
+    pub phase: u32,
+    /// The calling function's line of the call, when the profile has it
+    pub line: Option<i64>,
 }
 
 /// A module's source as the Source view shows it

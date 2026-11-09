@@ -1040,7 +1040,7 @@ fn report_raycast_timing() {
 
 /// What a cast pays for the parts its path crosses, whatever its filter admits (cost.rs RAY_MET, RAY_CROSSED): the engine's
 /// broadphase meets them all before the filter is asked
-fn charge_cast(engine: &Engine, origin: Vec3, direction: Vec3, grow: f32) {
+fn charge_cast(engine: &Engine, origin: Vec3, direction: Vec3, grow: f32, each: f64, kinds: u8) {
     query_trace(engine, "cast cost begin");
     let solids = cached_solids(engine, &Filter::default());
     let mut crossed = 0usize;
@@ -1052,7 +1052,9 @@ fn charge_cast(engine: &Engine, origin: Vec3, direction: Vec3, grow: f32) {
     });
     if crossed > 0 {
         RAYCAST_CROSSED.fetch_add(crossed as u64, std::sync::atomic::Ordering::Relaxed);
-        charge_query(engine, crate::cost::RAY_MET + (crossed - 1) as f64 * crate::cost::RAY_CROSSED);
+        let seconds = crate::cost::RAY_MET + (crossed - 1) as f64 * each;
+        charge_query(engine, seconds);
+        engine.state.borrow().sched.touched.borrow().book_kinds(kinds, seconds);
     }
     query_trace_format(engine, || format!("cast cost end solids={} crossed={crossed}", solids.solids.len()));
 }
@@ -1089,7 +1091,7 @@ pub fn install(engine: &Rc<Engine>) {
         let hit = cast_ray_indexed(&cached, origin, direction, 0.0, None);
         lap(&mut clock, 1);
         keep_filter(engine, filter);
-        charge_cast(engine, origin, direction, 0.0);
+        charge_cast(engine, origin, direction, 0.0, crate::cost::RAY_CROSSED, 0);
         lap(&mut clock, 2);
         let result = hit_values(lua, engine, hit);
         if clock.is_some() {
@@ -1107,7 +1109,7 @@ pub fn install(engine: &Rc<Engine>) {
         let cached = cached_solids(engine, &filter);
         let hit = cast_ray_indexed(&cached, center, direction, radius.max(0.0) as f32, None);
         keep_filter(engine, filter);
-        charge_cast(engine, center, direction, radius.max(0.0) as f32);
+        charge_cast(engine, center, direction, radius.max(0.0) as f32, crate::cost::SPHERE_CROSSED, 0);
         hit_values(lua, engine, hit)
     })));
     members.push(("Blockcast", method(|lua, engine, _, args| {
@@ -1122,7 +1124,7 @@ pub fn install(engine: &Rc<Engine>) {
         let hit = cast_box_indexed(&solids, &frame, size, direction, None);
         query_trace(engine, "Blockcast cast end");
         keep_filter(engine, filter);
-        charge_cast(engine, frame::translation(&frame), direction, size.length() * 0.5);
+        charge_cast(engine, frame::translation(&frame), direction, size.length() * 0.5, crate::cost::BLOCK_CROSSED, 0);
         query_trace(engine, "Blockcast end");
         hit_values(lua, engine, hit)
     })));

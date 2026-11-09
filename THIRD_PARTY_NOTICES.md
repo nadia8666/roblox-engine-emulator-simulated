@@ -30,6 +30,15 @@ own license (most are MIT or Apache-2.0; tools such as `cargo about` list them).
 [roblox-object-renderer](https://github.com/Anime-Vanguards/roblox-object-renderer), which is GPL-2.0-or-later like
 this project.
 
+A release also ships a generated `THIRD_PARTY_LICENSES.txt`. It lists the normal dependencies of the engine package
+with the default features, each with its declared license and its license and notice files. When a package ships no
+license file, the standard text of its license is added once in an appendix, taken from another local package.
+
+It also holds the license texts of the native sources compiled in through crates: Luau and Lua (above), mimalloc v2
+(`libmimalloc-sys`, MIT, its `c_src/mimalloc/v2/LICENSE`) and Zstd (`zstd-sys`, BSD-3-Clause or GPL-2.0-or-later, its
+`zstd/LICENSE` and `zstd/COPYING`), and the UI Labs stand-in's MIT text below. All of these texts come from the
+locked source packages, with no download.
+
 ## Fonts
 
 | Font | Where | License | License text |

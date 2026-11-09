@@ -67,6 +67,7 @@ static int str_lower(lua_State* L)
     const char* s = luaL_checklstring(L, 1, &l);
     luaL_Strbuf b;
     char* ptr = luaL_buffinitsize(L, &b, l);
+    luaE_worklib(L, LUA_WORK_CASEBYTES, l);
     for (size_t i = 0; i < l; i++)
         *ptr++ = tolower(uchar(s[i]));
     luaL_pushresultsize(&b, l);
@@ -79,6 +80,7 @@ static int str_upper(lua_State* L)
     const char* s = luaL_checklstring(L, 1, &l);
     luaL_Strbuf b;
     char* ptr = luaL_buffinitsize(L, &b, l);
+    luaE_worklib(L, LUA_WORK_CASEBYTES, l);
     for (size_t i = 0; i < l; i++)
         *ptr++ = toupper(uchar(s[i]));
     luaL_pushresultsize(&b, l);
@@ -147,6 +149,7 @@ static int str_byte(lua_State* L)
     if (posi + n <= pose) // overflow?
         luaL_error(L, "string slice too long");
     luaL_checkstack(L, n, "string slice too long");
+    luaE_worklib(L, LUA_WORK_BYTEVALUES, n);
     for (i = 0; i < n; i++)
         lua_pushinteger(L, uchar(s[posi + i - 1]));
     return n;
@@ -158,6 +161,7 @@ static int str_char(lua_State* L)
 
     luaL_Strbuf b;
     char* ptr = luaL_buffinitsize(L, &b, n);
+    luaE_worklib(L, LUA_WORK_STRCHARS, n);
 
     for (int i = 1; i <= n; i++)
     {
@@ -192,6 +196,8 @@ typedef struct MatchState
         const char* init;
         ptrdiff_t len;
     } capture[LUA_MAXCAPTURES];
+    uint64_t steps;   // pattern items tried at a position (the work counters' LUA_WORK_MATCHSTEPS)
+    uint64_t classes; // the character class tests among them (LUA_WORK_MATCHCLASSES)
 } MatchState;
 
 // recursive function
@@ -321,22 +327,22 @@ static int matchbracketclass(int c, const char* p, const char* ec)
 
 static int singlematch(MatchState* ms, const char* s, const char* p, const char* ep)
 {
-    if (s >= ms->src_end)
-        return 0;
-    else
+    // The count is made in the switch that tells the kind of pattern item, so a test at the end of the input is counted too.
+    // (a class's test is dearer than a character's: steps count the cheap ones, classes the others)
+    switch (*p)
     {
-        int c = uchar(*s);
-        switch (*p)
-        {
-        case '.':
-            return 1; // matches any char
-        case L_ESC:
-            return match_class(c, uchar(*(p + 1)));
-        case '[':
-            return matchbracketclass(c, p, ep - 1);
-        default:
-            return (uchar(*p) == c);
-        }
+    case '.':
+        ms->steps++;
+        return s < ms->src_end;
+    case L_ESC:
+        ms->classes++;
+        return s < ms->src_end && match_class(uchar(*s), uchar(*(p + 1)));
+    case '[':
+        ms->classes++;
+        return s < ms->src_end && matchbracketclass(uchar(*s), p, ep - 1);
+    default:
+        ms->steps++;
+        return s < ms->src_end && uchar(*p) == uchar(*s);
     }
 }
 
@@ -434,6 +440,7 @@ static const char* match(MatchState* ms, const char* s, const char* p)
 {
     if (ms->matchdepth-- == 0)
         luaL_error(ms->L, "pattern too complex");
+    ms->steps++;
 
     lua_State* L = ms->L;
     void (*interrupt)(lua_State*, int) = L->global->cb.interrupt;
@@ -652,6 +659,8 @@ static int nospecials(const char* p, size_t l)
 
 static void prepstate(MatchState* ms, lua_State* L, const char* s, size_t ls, const char* p, size_t lp)
 {
+    ms->steps = 0;
+    ms->classes = 0;
     ms->L = L;
     ms->matchdepth = LUAI_MAXCCALLS;
     ms->src_init = s;
@@ -683,6 +692,8 @@ static int str_find_aux(lua_State* L, int find)
     {
         // do a plain search
         const char* s2 = lmemfind(s + init - 1, ls - init + 1, p, lp);
+        // (the bytes it read: up to the match's end, or the rest of the string)
+        luaE_worklib(L, LUA_WORK_STRSCANNED, s2 ? size_t(s2 - s) + lp - size_t(init - 1) : ls - size_t(init - 1));
         if (s2)
         {
             lua_pushinteger(L, (int)(s2 - s + 1));
@@ -707,6 +718,8 @@ static int str_find_aux(lua_State* L, int find)
             reprepstate(&ms);
             if ((res = match(&ms, s1, p)) != NULL)
             {
+                luaE_worklib(L, LUA_WORK_MATCHSTEPS, ms.steps);
+                luaE_worklib(L, LUA_WORK_MATCHCLASSES, ms.classes);
                 if (find)
                 {
                     lua_pushinteger(L, (int)(s1 - s + 1)); // start
@@ -717,6 +730,8 @@ static int str_find_aux(lua_State* L, int find)
                     return push_captures(&ms, s1, res);
             }
         } while (s1++ < ms.src_end && !anchor);
+        luaE_worklib(L, LUA_WORK_MATCHSTEPS, ms.steps);
+        luaE_worklib(L, LUA_WORK_MATCHCLASSES, ms.classes);
     }
     lua_pushnil(L); // not found
     return 1;
@@ -751,9 +766,13 @@ static int gmatch_aux(lua_State* L)
                 newstart++; // empty match? go at least one position
             lua_pushinteger(L, newstart);
             lua_replace(L, lua_upvalueindex(3));
+            luaE_worklib(L, LUA_WORK_MATCHSTEPS, ms.steps);
+            luaE_worklib(L, LUA_WORK_MATCHCLASSES, ms.classes);
             return push_captures(&ms, src, e);
         }
     }
+    luaE_worklib(L, LUA_WORK_MATCHSTEPS, ms.steps);
+    luaE_worklib(L, LUA_WORK_MATCHCLASSES, ms.classes);
     return 0; // not found
 }
 
@@ -970,6 +989,10 @@ static int str_gsub(lua_State* L)
         }
     }
     luaL_addlstring(&b, src, ms.src_end - src);
+    // (a literal pattern's search read the string's bytes; a pattern counted its steps)
+    luaE_worklib(L, LUA_WORK_STRSCANNED, ms.steps + ms.classes == 0 ? size_t(src - ms.src_init) : 0);
+    luaE_worklib(L, LUA_WORK_MATCHSTEPS, ms.steps);
+    luaE_worklib(L, LUA_WORK_MATCHCLASSES, ms.classes);
     luaL_pushresult(&b);
     lua_pushinteger(L, n); // number of substitutions
     return 2;

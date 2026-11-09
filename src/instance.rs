@@ -8,7 +8,7 @@ use super::{
     Engine, Hooks, InstanceId, ScriptError, ScriptResult, State,
     dom::{InstanceSignals, flags},
     reflection::{ClassId, K, NameId, Reflection},
-    scheduler::JobTarget,
+    scheduler::{DispatchKind, JobTarget},
     signal::{Handler, SignalId},
     value::{Str, Value},
 };
@@ -196,29 +196,51 @@ fn existing_event(state: &State, id: InstanceId, name: NameId) -> Option<SignalI
     state.dom.at(id).signals.as_ref().and_then(|s| s.event(name))
 }
 
-/// Signal.Fire: queues every handler (deferred) and wakes threads blocked in :Wait().
+/// Signal.Fire: queues every handler (deferred) and wakes threads blocked in :Wait(): an event of a kind no bench measured, priced as
+/// a heard BindableEvent's (cost.rs signal_costs: a borrowed price, counted apart)
 pub fn fire(state: &mut State, signal: SignalId, args: Vec<Value>) {
-    fire_costing(state, signal, args, 0.0, 0.0);
+    fire_measured(state, signal, args, SignalKind::Unmeasured);
 }
 
-/// [`fire`], charging the firer `queue` seconds for a signal with handlers and each handler's thread `resume` seconds when it runs.
-fn fire_costing(state: &mut State, signal: SignalId, args: Vec<Value>, queue: f64, resume: f64) {
-    if !state.signals.has_handlers(signal) {
+/// [`fire`], charging the firer `queue` seconds for a signal with handlers and each handler's thread `resume` seconds when it runs,
+/// keeping `kind` for delivery so a later-started profile still knows where its price came from
+fn fire_costing(state: &mut State, signal: SignalId, args: Vec<Value>, queue: f64, resume: f64, kind: SignalKind) {
+    let has_handlers = state.signals.has_handlers(signal);
+    // Kind bits of the queue charge exist only while a work profile runs, which is the one reader of them
+    let profiling = state.sched.kinds.is_some();
+    if profiling && has_handlers && kind == SignalKind::Unmeasured {
+        crate::profiler::attribution::unmeasured_fire();
+    }
+    let queue_kinds = if profiling { crate::cost::signal_kinds(kind).queue } else { 0 };
+    if !has_handlers {
         return;
     }
-    state.sched.charge_dispatch(queue);
+    state.sched.charge_kind(queue, queue_kinds);
     let handlers = state.signals.take_handlers(signal);
     // (a measured kind: a handler beyond the first queues and resumes for less than a lone one, cost.rs EXTRA_HANDLER_*)
     if resume > 0.0 && handlers.len() > 1 {
-        state.sched.charge_dispatch((handlers.len() - 1) as f64 * crate::cost::EXTRA_HANDLER_QUEUED);
+        state.sched.charge_kind((handlers.len() - 1) as f64 * crate::cost::EXTRA_HANDLER_QUEUED, crate::cost::kind::STUDIO);
     }
     for (index, handler) in handlers.into_iter().enumerate() {
-        let target = match handler {
-            Handler::Thread(thread) => JobTarget::Thread(thread),
-            Handler::Connection(connection) => JobTarget::Handler(connection),
+        let (target, thread_price) = match handler {
+            // a thread parked in the signal's Wait resumes at a client's measured price, whatever the signal (cost.rs RESUMED_SIGNAL_WAIT)
+            Handler::Thread(thread) => {
+                let price = if resume > 0.0 { crate::cost::RESUMED_SIGNAL_WAIT } else { 0.0 };
+                (JobTarget::Thread(thread), price)
+            }
+            // the first handler's thread costs what the kind says
+            Handler::Connection(connection) if index == 0 => {
+                let target = JobTarget::Handler { connection, kind: DispatchKind::Signal(kind) };
+                (target, resume)
+            }
+            // the later ones cost less
+            Handler::Connection(connection) => {
+                let target = JobTarget::Handler { connection, kind: DispatchKind::ExtraHandler };
+                let price = resume.min(crate::cost::EXTRA_HANDLER_THREAD);
+                (target, price)
+            }
         };
-        let thread = if index == 0 { resume } else { resume.min(crate::cost::EXTRA_HANDLER_THREAD) };
-        state.sched.defer_handler(target, args.clone(), thread, signal);
+        state.sched.defer_handler(target, args.clone(), thread_price, signal);
     }
 }
 
@@ -236,10 +258,10 @@ pub fn fire_event_measured(state: &mut State, id: InstanceId, name: NameId, args
     }
 }
 
-/// [`fire`] for an event of the kinds Studio's bench measured (cost.rs `SIGNAL_QUEUED`, `HANDLER_THREAD`)
+/// [`fire`] for an event of the kinds Studio's bench measured (cost.rs `signal_costs`, `signal_kinds`)
 fn fire_measured(state: &mut State, signal: SignalId, args: Vec<Value>, kind: SignalKind) {
     let (queue, resume) = crate::cost::signal_costs(kind);
-    fire_costing(state, signal, args, queue, resume);
+    fire_costing(state, signal, args, queue, resume, kind);
 }
 
 // Properties

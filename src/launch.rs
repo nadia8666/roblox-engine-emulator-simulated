@@ -21,11 +21,118 @@
 //! prices ([`crate::cost::PlacePrices::with`]).
 
 use std::{
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     rc::Rc,
 };
 
 use super::{Engine, Options, RunContext, project};
+
+/// RUR_STATE_DIR / RUR_CACHE_DIR when relative, made absolute (from the current directory): a service
+/// runs in its state dir, where a relative one would name another directory.
+fn relative_state_variables() -> Vec<(&'static str, PathBuf)> {
+    ["RUR_STATE_DIR", "RUR_CACHE_DIR"]
+        .into_iter()
+        .filter_map(|name| {
+            let value = std::env::var_os(name).filter(|value| !value.is_empty() && Path::new(value).is_relative())?;
+            Some((name, std::path::absolute(value).ok()?))
+        })
+        .collect()
+}
+
+/// Environment variables naming a file or folder the client chose: the recorded clock, the engine dump and the profile
+/// outputs. A service runs in its state dir, where a relative value would name another file than the client meant.
+const CLIENT_PATH_VARIABLES: [&str; 6] =
+    ["RUR_ENGINE_DUMP", "RUR_CLOCK", "RUR_BOUNDARY_PROFILE", "RUR_LUAU_PROFILE", "RUR_LUAU_ALLOC_PROFILE", "REE_PROFILE_OUT"];
+
+/// The per-user cache roots and temporary folders. The OS, Rust's temp-folder lookup and child processes read them, so
+/// the service must see the client's folders, and two clients in different folders must not share a service key.
+const USER_FOLDER_VARIABLES: [&str; 8] = ["LOCALAPPDATA", "HOME", "XDG_CACHE_HOME", "APPDATA", "USERPROFILE", "TMP", "TEMP", "TMPDIR"];
+
+/// The absolute form of a path the client passes to a service or worker, or `None` when it cannot be made absolute.
+///
+/// The cache lookup ignores a relative per-user folder, but a service or worker runs in the state dir, where the same
+/// relative spelling would name another folder than the client meant. So these values are resolved against the client's
+/// current folder before they are forwarded. That cannot turn an ignored folder into the cache: the state dir is pinned
+/// by then (see `resolve_standalone_state`), and a later lookup returns the pinned folder.
+pub(crate) fn resolve_path_variable(value: OsString) -> Option<OsString> {
+    std::path::absolute(value).ok().map(PathBuf::into_os_string)
+}
+
+/// `list` (a PATH-style list) with each relative directory made absolute, or `None` when one cannot be.
+///
+/// A worker runs in the state dir, so a relative PATH entry would lead somewhere else there. What an empty entry means
+/// differs by platform and variable, so `empty_is_current` selects the search rule:
+/// - Unix searches the current folder for an empty entry, so it becomes the client's folder (as an absolute path).
+/// - Windows has no such rule: `Command` skips an empty entry and never searches the current folder, and a project
+///   file must not stand in for the worker. The entry stays empty; made absolute it would become a searched folder.
+fn absolute_path_list(list: &OsStr, empty_is_current: bool) -> Option<OsString> {
+    let mut directories = Vec::new();
+    for directory in std::env::split_paths(list) {
+        let is_empty = directory.as_os_str().is_empty();
+        if is_empty && !empty_is_current {
+            directories.push(directory);
+            continue;
+        }
+        let directory = if is_empty { PathBuf::from(".") } else { directory };
+        directories.push(std::path::absolute(directory).ok()?);
+    }
+    std::env::join_paths(directories).ok()
+}
+
+/// The relative state directories, and, for a standalone binary, all environment paths and worker paths.
+/// The service key and environment use the same values before its working directory changes.
+pub(crate) fn path_variables() -> Vec<(&'static str, OsString)> {
+    let mut variables: Vec<(&'static str, OsString)> = Vec::new();
+    for (name, path) in relative_state_variables() {
+        variables.push((name, path.into_os_string()));
+    }
+    if crate::is_standalone_binary() {
+        for name in CLIENT_PATH_VARIABLES.into_iter().chain(USER_FOLDER_VARIABLES) {
+            let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) else { continue };
+            if let Some(value) = resolve_path_variable(value) {
+                variables.push((name, value));
+            }
+        }
+        // These are lists, so each directory is resolved, not the list as one path. Node ignores an empty NODE_PATH
+        // entry on every platform, while PATH searches it as the current folder on Unix only.
+        for (name, empty_is_current) in [("PATH", !cfg!(windows)), ("NODE_PATH", false)] {
+            if let Some(list) = std::env::var_os(name).and_then(|list| absolute_path_list(&list, empty_is_current)) {
+                variables.push((name, list));
+            }
+        }
+        // Windows: the client resolves the worker once and forwards an absolute path or the lookup failure, so a copied
+        // service never searches beside its own executable. Unix: a bare name stays bare, for native search against this PATH.
+        #[cfg(feature = "bundles")]
+        variables.extend(crate::project::model_assets::worker_variables());
+    }
+    variables
+}
+
+/// A variable name as the platform compares it: Windows environment names are case-insensitive, so two spellings must
+/// collapse to one entry. Unix names stay as they are.
+fn environment_name(name: OsString) -> OsString {
+    if cfg!(windows) { name.to_ascii_uppercase() } else { name }
+}
+
+/// The full environment a standalone worker receives, which is also what its service is started with and what the
+/// service key hashes. Using one value for all three keeps a direct run and a served run in agreement for any variable,
+/// including ones only a custom worker reads, and a different environment selects a different service.
+///
+/// Only the variables ree knows to hold paths are resolved against the client's folder (the ones in `path_variables`).
+/// Every other value is passed unchanged: ree cannot tell a path from any other text, so a relative path in an unknown
+/// variable is read from the worker's working folder, the state dir, both directly and through a service.
+pub(crate) fn worker_environment() -> Vec<(OsString, OsString)> {
+    let mut variables: std::collections::BTreeMap<OsString, OsString> = std::env::vars_os().map(|(name, value)| (environment_name(name), value)).collect();
+    for (name, value) in path_variables() {
+        variables.insert(environment_name(name.into()), value);
+    }
+    // A flag-only service has its state from `--state-dir`, not from the environment: name it for the worker so the
+    // service and a client that sets the same variable agree.
+    let state = crate::state_dir(&crate::default_repo());
+    variables.insert("RUR_STATE_DIR".into(), state.into_os_string());
+    variables.into_iter().collect()
+}
 
 /// The engine options of a command line.
 #[derive(Default, Debug, Clone)]
@@ -143,6 +250,8 @@ pub struct Prepared {
 /// the host's checkout when `--repo` is not given ([`Options::repo`]).
 pub fn prepare(args: &Args, default_repo: &Path) -> Result<Prepared, String> {
     let repo = args.repo.as_ref().map(PathBuf::from).unwrap_or_else(|| default_repo.to_path_buf());
+    // runs need state, so report a missing standalone cache before preparing the engine
+    crate::try_state_dir(&repo)?;
     // Studio snapshots: the ones named (--snapshot-dir / --snapshot)
     let snapshot_dir = args.snapshot_dir.as_ref().map(|d| absolute(d));
     // Options::project: the project named, else the first root's folder, else here
@@ -221,7 +330,7 @@ pub fn prepare(args: &Args, default_repo: &Path) -> Result<Prepared, String> {
         streaming_target_radius: args.streaming.or_else(|| project::project_setting(&roots, "streamingTargetRadius").and_then(|v| v.as_f64())),
         place_prices,
         loopback: args.loopback,
-        clock_moved: false,
+        clock_probe: None,
         device,
         ..Options::default()
     };
@@ -255,6 +364,29 @@ impl Default for Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An empty entry is the client's folder on Unix and stays empty on Windows, wherever it sits in the list.
+    #[test]
+    fn path_lists_resolve_relative_and_empty_entries() {
+        let current = std::env::current_dir().unwrap();
+        for entries in [["", "helpers", "tools"], ["helpers", "", "tools"], ["helpers", "tools", ""]] {
+            let list = std::env::join_paths(entries).unwrap();
+            let resolved = absolute_path_list(&list, !cfg!(windows)).unwrap();
+            let actual: Vec<_> = std::env::split_paths(&resolved).collect();
+            let expected: Vec<_> = entries
+                .iter()
+                .map(|entry| if cfg!(windows) && entry.is_empty() { PathBuf::new() } else { current.join(entry) })
+                .collect();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn node_path_lists_keep_empty_entries_ignored_on_every_platform() {
+        let list = std::env::join_paths(["", "modules", ""]).unwrap();
+        let resolved = absolute_path_list(&list, false).unwrap();
+        assert_eq!(std::env::split_paths(&resolved).collect::<Vec<_>>(), [PathBuf::new(), std::path::absolute("modules").unwrap(), PathBuf::new()]);
+    }
 
     #[test]
     fn engine_options_are_taken_and_other_arguments_skipped() {
@@ -312,5 +444,26 @@ mod tests {
         let args = parse(&split_equals(&argv)).unwrap();
         assert_eq!(args.place_id, Some(-5.0));
         assert_eq!(args.mounts[0].segments, ["ReplicatedStorage", "Lib"]);
+    }
+
+    /// A library host never calls `init_binary`, so even an empty repo is not standalone and its cache is relative
+    #[test]
+    fn an_empty_host_repo_keeps_checkout_defaults() {
+        // Either override wins over the host default checked below, so a caller that sets one would fail this test.
+        // Rerun it in a child without them rather than removing them here, which would change the other tests' environment.
+        let overrides = ["RUR_STATE_DIR", "RUR_CACHE_DIR"];
+        if overrides.iter().any(|name| std::env::var_os(name).is_some()) {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child.args(["--exact", "launch::tests::an_empty_host_repo_keeps_checkout_defaults", "--nocapture"]);
+            for name in overrides {
+                child.env_remove(name);
+            }
+            let output = child.output().unwrap();
+            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        let prepared = prepare(&Args::default(), Path::new("")).unwrap();
+        assert!(!crate::is_standalone(&prepared.options.repo));
+        assert_eq!(crate::state_dir(&prepared.options.repo), PathBuf::from(".cache"));
     }
 }

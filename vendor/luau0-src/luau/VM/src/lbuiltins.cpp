@@ -864,6 +864,8 @@ static int luauF_char(lua_State* L, StkId res, TValue* arg0, int nresults, StkId
 
         buffer[nparams] = 0;
 
+        // (the characters it made of its arguments, as string.char's C function counts them: lua.h LUA_WORK_STRCHARS)
+        luaE_worklib(L, LUA_WORK_STRCHARS, nparams);
         setsvalue(L, res, luaS_newlstr(L, buffer, nparams));
         return 1;
     }
@@ -1060,6 +1062,7 @@ static int luauF_tunpack(lua_State* L, StkId res, TValue* arg0, int nresults, St
 
         if (n >= 0 && n <= t->sizearray && cast_int(L->stack_last - res) >= n && n + nparams <= LUAI_MAXCSTACK)
         {
+            luaE_worklib(L, LUA_WORK_MOVED, n);
             TValue* array = t->array;
             for (int i = 0; i < n; ++i)
                 setobj2s(L, res + i, array + i);

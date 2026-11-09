@@ -27,7 +27,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     ffi::CStr,
     path::PathBuf,
 };
@@ -66,12 +66,16 @@ pub const NO_INSTANCE: u32 = u32::MAX;
 
 /// Luau's RETURN opcode (Bytecode.h): an interrupt there ends the call at its depth
 const OP_RETURN: u8 = 22;
+
+/// The keyed property access opcodes' indexes in `cost::INTERPRETED_OPS`
+const GETTABLEKS: usize = 15;
+const SETTABLEKS: usize = 16;
 /// A member the reflection has no name for (a child looked up by name)
 pub const NO_MEMBER: u32 = u32::MAX;
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// Where the JSON report goes (`--profile-out`; default `ree-boundary.json` in the working directory)
+    /// Where the JSON report goes (`--profile-out`; default `ree-boundary.json` in state for standalone runs, else here)
     pub out: PathBuf,
     /// How many rows the printed report shows per table
     pub top: usize,
@@ -88,7 +92,7 @@ pub fn parse(args: &[String]) -> Option<Config> {
     if !flag && env.is_none() {
         return None;
     }
-    let out = value("--profile-out").map(PathBuf::from).or_else(|| env.map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("ree-boundary.json"));
+    let out = value("--profile-out").map(PathBuf::from).or_else(|| env.map(PathBuf::from)).unwrap_or_else(|| crate::default_output_path("ree-boundary.json"));
     Some(Config { out, top: value("--profile-top").and_then(|top| top.parse().ok()).unwrap_or(30), phase: value("--profile-phase") })
 }
 
@@ -132,6 +136,8 @@ struct Stat {
     cost: f64,
     /// writes that changed nothing
     unchanged: u64,
+    repeat_cost: f64,
+    unchanged_cost: f64,
     /// reads of a value read before in the frame and unchanged since: by the same call of the same function, by a later call of
     /// it, by another function
     same_call: u64,
@@ -160,7 +166,10 @@ struct MemberStat {
 struct Phase {
     name: String,
     seconds: f64,
+    /// the physical frames the phase ran in, and how many there are (a frame the phase was marked in the middle of counts
+    /// once for each phase it ran in)
     frames: u64,
+    frame_ids: BTreeSet<u64>,
     stats: FxHashMap<(u32, u32), Stat>,
     members: FxHashMap<u32, MemberStat>,
     /// seconds the Instance API charged, and the part of it a crossing accounts for
@@ -168,6 +177,18 @@ struct Phase {
     attributed: f64,
     /// seconds charged for the engine delivering events to handlers (a handler thread resumed, a signal queued): not a crossing
     dispatched: f64,
+}
+
+impl Phase {
+    /// Notes that the phase ran in this physical frame, which counts once however often the phase is marked in it.
+    /// Frame 0 is the count before the first render, not a frame, so it is never recorded.
+    fn ran_in_frame(&mut self, frame: u64) {
+        if frame == 0 {
+            return;
+        }
+        self.frame_ids.insert(frame);
+        self.frames = self.frame_ids.len() as u64;
+    }
 }
 
 struct Site {
@@ -201,6 +222,10 @@ struct Recorder {
     member_texts: HashMap<(u8, String, String), u32>,
     phases: Vec<Phase>,
     current: usize,
+    /// the render steps so far; the one in progress is not counted until it renders
+    frame: u64,
+    /// the scheduler step in progress, if any (see [`Frame`])
+    open_step: Option<OpenStep>,
     /// reads this frame: (function, instance, member) -> the value's mark then (the instance's version and the writes the
     /// profiler saw to it) and the call that read it; (instance, member) -> the function that read it last and the mark then
     read_by_function: FxHashMap<(u32, u32, u32), (Mark, Activation)>,
@@ -211,6 +236,8 @@ struct Recorder {
     returns: FxHashMap<(usize, i32), u64>,
     /// the last crossing, which a follow-up charge of the same call (a whole-call price) adds its cost to
     last: Option<(u32, u32)>,
+    last_saved: (bool, bool),
+    accesses: Vec<Access>,
     /// the VM's host-call counters at the last safepoint, and the call site that safepoint was at
     host: Option<(u64, i64)>,
     previous: Option<u32>,
@@ -233,11 +260,15 @@ pub fn begin(config: Config) {
             member_texts: HashMap::new(),
             phases: vec![Phase { name: "startup".into(), ..Phase::default() }],
             current: 0,
+            frame: 0,
+            open_step: None,
             read_by_function: FxHashMap::default(),
             read_by_any: FxHashMap::default(),
             writes: FxHashMap::default(),
             returns: FxHashMap::default(),
             last: None,
+            last_saved: (false, false),
+            accesses: Vec::new(),
             host: None,
             previous: None,
             datatype: None,
@@ -251,12 +282,130 @@ pub fn begin(config: Config) {
 /// A frame begins (`delta` virtual seconds long): the repeat table starts over and the phase's clock advances.
 pub fn begin_frame(delta: f64) {
     with(|recorder| {
+        recorder.frame += 1;
         let phase = &mut recorder.phases[recorder.current];
         phase.seconds += delta;
-        phase.frames += 1;
+        phase.ran_in_frame(recorder.frame);
         recorder.read_by_function.clear();
         recorder.read_by_any.clear();
         recorder.writes.clear();
+        recorder.accesses.clear();
+    });
+}
+
+/// A scheduler step that has begun and not yet ended.
+struct OpenStep {
+    /// the render count when the step began; the step has rendered once the count is higher
+    frame_at_start: u64,
+    /// the phases that were current at some moment of the step: the one it began in, and each one marked since
+    phases: BTreeSet<usize>,
+}
+
+/// Held by a scheduler step from its start to its end, so that the phases marked during the step count in the
+/// frame the step renders, and to no other.
+///
+/// A step runs the Heartbeat handlers and then renders, and a handler can mark a new phase on the way. Both the phase
+/// the step began in and the phase marked later have then run in the frame the step renders, so both get it. A step
+/// that does not render (a recorded replay's tail, which only resumes timers) is no frame, so its phases get none.
+/// The render count only moves when the step renders, which is how the guard tells the two apart when the step ends.
+pub(crate) struct Frame {
+    /// whether this guard opened the step; false for a step started inside another, which the outer guard accounts for
+    opened_step: bool,
+}
+
+impl Frame {
+    /// Opens a step. When one is already open (a step that runs another, as `step` runs `step_recorded`), this does
+    /// nothing, and the outer guard counts the phases at its end.
+    pub(crate) fn begin() -> Self {
+        let mut opened_step = false;
+        with(|recorder| {
+            if recorder.open_step.is_some() {
+                return;
+            }
+            recorder.open_step = Some(OpenStep { frame_at_start: recorder.frame, phases: BTreeSet::from([recorder.current]) });
+            opened_step = true;
+        });
+        Self { opened_step }
+    }
+}
+
+impl Drop for Frame {
+    /// Ends the step: counts the phases it held in the frame it rendered, if it rendered one
+    fn drop(&mut self) {
+        if !self.opened_step {
+            return;
+        }
+        with(|recorder| {
+            let Some(step) = recorder.open_step.take() else { return };
+            let rendered = recorder.frame > step.frame_at_start;
+            if !rendered {
+                return;
+            }
+            for phase in step.phases {
+                recorder.phases[phase].ran_in_frame(recorder.frame);
+            }
+        });
+    }
+}
+
+/// A property read or write under way (raw.rs `meta_index`, `meta_newindex`)
+struct Access {
+    /// the VM's C calls, host calls and host nanoseconds as it began
+    at: (u64, u64, i64),
+    /// the crossing it recorded: its key, and whether it was a repeat read or an unchanged write
+    crossing: Option<((u32, u32), bool, bool)>,
+    /// what the reads and writes nested in it charged (seconds), not its own
+    nested: f64,
+}
+
+/// A property read or write begins: what the VM's call counters read now, so its end can book what its own C and host
+/// calls cost the work clock
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn access_begin(state: *mut ffi::lua_State) {
+    if !active() {
+        return;
+    }
+    let counters = unsafe { &*crate::cost::lua_workcounters(state) };
+    let at = (counters.ccalls, counters.hostcalls, counters.hostnanos);
+    with(|recorder| recorder.accesses.push(Access { at, crossing: None, nested: 0.0 }));
+}
+
+/// A property read or write ends: when the crossing it recorded was a repeat read or an unchanged write, what the script's
+/// side of it cost is booked with it, as removing it saves that too: the keyed access (GETTABLEKS or SETTABLEKS, at its
+/// interpreted price) and the C and host calls the VM charged while it ran (a getter's call is charged, the __index call
+/// itself is not), the reads nested in it aside
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn access_end(state: *mut ffi::lua_State, write: bool) {
+    if !active() {
+        return;
+    }
+    let counters = unsafe { &*crate::cost::lua_workcounters(state) };
+    let now = (counters.ccalls, counters.hostcalls, counters.hostnanos);
+    with(|recorder| {
+        let Some(access) = recorder.accesses.pop() else { return };
+        // (what the VM charged for the C and host calls made while the access ran, in ns, then seconds)
+        let c_calls = now.0.saturating_sub(access.at.0) as f64;
+        let host_calls = now.1.saturating_sub(access.at.1) as f64;
+        let host_ns = (now.2 - access.at.2).max(0) as f64;
+        let calls_ns = c_calls * crate::cost::LUAU_CCALL + host_calls * crate::cost::LUAU_HOSTCALL + host_ns;
+        let spent = calls_ns * 1e-9;
+        if let Some(parent) = recorder.accesses.last_mut() {
+            parent.nested += spent;
+        }
+        // (the keyed access itself: GETTABLEKS for a read, SETTABLEKS for a write)
+        let keyed_access_op = if write { SETTABLEKS } else { GETTABLEKS };
+        let keyed_access = crate::cost::INTERPRETED_OPS[keyed_access_op] * 1e-9;
+        let own = (spent - access.nested).max(0.0) + keyed_access;
+        if let Some((key, repeat, unchanged)) = access.crossing
+            && let Some(stat) = recorder.phases[recorder.current].stats.get_mut(&key)
+        {
+            if repeat {
+                stat.repeat_cost += own;
+            }
+            if unchanged {
+                stat.unchanged_cost += own;
+            }
+        }
     });
 }
 
@@ -270,6 +419,11 @@ pub fn set_phase(name: &str) {
                 recorder.phases.len() - 1
             }
         };
+        // Only a mark inside a step is held for that step's frame. A mark outside any step (before the first one, when no
+        // frame has rendered yet) ran in no frame, so it adds none.
+        if let Some(step) = recorder.open_step.as_mut() {
+            step.phases.insert(recorder.current);
+        }
     });
 }
 
@@ -353,7 +507,7 @@ pub fn record(kind: Kind, class: u32, member: u32, instance: u32, version: Optio
             && instance != NO_INSTANCE
             && let Some(version) = version
         {
-            recorder.repeat(site, member, instance, version, activation);
+            recorder.repeat(site, member, instance, version, activation, cost);
         }
     });
 }
@@ -378,6 +532,12 @@ pub fn add_cost(seconds: f64) {
             let phase = &mut recorder.phases[recorder.current];
             if let Some(stat) = phase.stats.get_mut(&key) {
                 stat.cost += seconds;
+                if recorder.last_saved.0 {
+                    stat.repeat_cost += seconds;
+                }
+                if recorder.last_saved.1 {
+                    stat.unchanged_cost += seconds;
+                }
                 phase.attributed += seconds;
             }
         }
@@ -445,14 +605,22 @@ impl Recorder {
         }
         if kind == Kind::Set && !changed {
             stat.unchanged += 1;
+            stat.unchanged_cost += cost;
         }
+        let unchanged = kind == Kind::Set && !changed;
         self.last = Some((site, member));
+        self.last_saved = (false, unchanged);
+        if matches!(kind, Kind::Get | Kind::Set)
+            && let Some(access) = self.accesses.last_mut().filter(|access| access.crossing.is_none())
+        {
+            access.crossing = Some(((site, member), false, unchanged));
+        }
     }
 
     /// A read of `member` of `instance` at `site`: a repeat when its value is the one an earlier read in the frame saw (the
     /// instance's version and the writes to it unchanged since), by the same call of the reading function, by a later call of
     /// it, or by another function
-    fn repeat(&mut self, site: u32, member: u32, instance: u32, version: u32, activation: Activation) {
+    fn repeat(&mut self, site: u32, member: u32, instance: u32, version: u32, activation: Activation, cost: f64) {
         let function = self.sites[site as usize].function;
         let mark = Mark { version, writes: self.writes.get(&instance).copied().unwrap_or(0) };
         let phase = &mut self.phases[self.current];
@@ -466,6 +634,14 @@ impl Recorder {
         let stat = phase.stats.entry((site, member)).or_default();
         match by_function {
             Some((seen, call)) if seen == mark => {
+                stat.repeat_cost += cost;
+                self.last_saved.0 = true;
+                if let Some(access) = self.accesses.last_mut()
+                    && let Some((key, repeat, _)) = access.crossing.as_mut()
+                    && *key == (site, member)
+                {
+                    *repeat = true;
+                }
                 if call == activation {
                     stat.same_call += 1;
                     extra.same_call += 1;
@@ -589,7 +765,9 @@ impl Recorder {
         let mut merged = Phase { name: label, ..Phase::default() };
         for phase in chosen {
             merged.seconds += phase.seconds;
-            merged.frames += phase.frames;
+            // (a frame two of the phases ran in is one frame, not two)
+            merged.frame_ids.extend(&phase.frame_ids);
+            merged.frames = merged.frame_ids.len() as u64;
             merged.charged += phase.charged;
             merged.attributed += phase.attributed;
             merged.dispatched += phase.dispatched;
@@ -598,6 +776,8 @@ impl Recorder {
                 into.count += stat.count;
                 into.cost += stat.cost;
                 into.unchanged += stat.unchanged;
+                into.repeat_cost += stat.repeat_cost;
+                into.unchanged_cost += stat.unchanged_cost;
                 into.same_call += stat.same_call;
                 into.later_call += stat.later_call;
                 into.other_function += stat.other_function;
@@ -635,6 +815,8 @@ impl Recorder {
             into.count += stat.count;
             into.cost += stat.cost;
             into.unchanged += stat.unchanged;
+            into.repeat_cost += stat.repeat_cost;
+            into.unchanged_cost += stat.unchanged_cost;
             into.same_call += stat.same_call;
             into.later_call += stat.later_call;
             into.other_function += stat.other_function;
@@ -671,6 +853,8 @@ impl Recorder {
                 // (a value read again unchanged by the same function: in the same call, a local holds it; in a later call, the
                 // caller can read it once; repeat_reads is the two)
                 "repeat_reads": stat.repeats(),
+                "repeat_cost_ms": stat.repeat_cost * 1e3,
+                "unchanged_cost_ms": stat.unchanged_cost * 1e3,
                 "repeat_reads_per_s": stat.repeats() as f64 / seconds,
                 "repeat_same_call": stat.same_call,
                 "repeat_later_call": stat.later_call,
@@ -881,11 +1065,42 @@ pub fn finish() -> Option<String> {
             // (the profiling suite's boundary.json goes in the profile's folder, which the suite makes only after this, as
             // it writes the rest: a new folder lost the file)
             let folder = recorder.config.out.parent().filter(|folder| !folder.as_os_str().is_empty());
-            if let Err(error) = folder.map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&recorder.config.out, json)) {
-                eprintln!("Writing boundary profile {}: {error}", recorder.config.out.display());
+            let written = folder.map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&recorder.config.out, json));
+            match written {
+                Err(error) => eprintln!("Writing boundary profile {}: {error}", recorder.config.out.display()),
+                // a standalone run's default file is in state, a folder the user never named, so say where it went
+                Ok(()) if crate::is_standalone_binary() => eprintln!("boundary profile: {}", recorder.config.out.display()),
+                Ok(()) => {}
             }
         }
         Err(error) => eprintln!("Encoding boundary profile: {error}"),
     }
     Some(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_phase_never_counts_frame_zero() {
+        let mut phase = Phase::default();
+
+        phase.ran_in_frame(0);
+
+        assert_eq!(phase.frames, 0);
+        assert!(phase.frame_ids.is_empty());
+    }
+
+    #[test]
+    fn a_phase_counts_a_frame_once_however_often_it_is_marked_in_it() {
+        let mut phase = Phase::default();
+
+        phase.ran_in_frame(1);
+        phase.ran_in_frame(1);
+        phase.ran_in_frame(2);
+
+        assert_eq!(phase.frames, 2);
+        assert_eq!(phase.frame_ids, BTreeSet::from([1, 2]));
+    }
 }

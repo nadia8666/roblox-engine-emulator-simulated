@@ -3,6 +3,7 @@
 
 #include "lgc.h"
 #include "lmem.h"
+#include "lstate.h"
 
 #include <string.h>
 
@@ -24,6 +25,8 @@ Buffer* luaB_newbuffer(lua_State* L, size_t s)
 
         luaC_init(L, b, LUA_TBUFFER);
         b->len = unsigned(s);
+        luaE_worklib(L, LUA_WORK_BUFFERS, 1);
+        luaE_workbufnew(L, s);
         memset(b->data, 0, b->len);
         return b;
     }
@@ -34,6 +37,8 @@ Buffer* luaB_newbuffer(lua_State* L, size_t s)
 
         luaC_init(L, b, LUA_TBUFFER);
         b->len = unsigned(s);
+        luaE_worklib(L, LUA_WORK_BUFFERS, 1);
+        luaE_workbufnew(L, s);
         memset(b->data, 0, b->len);
         return b;
     }

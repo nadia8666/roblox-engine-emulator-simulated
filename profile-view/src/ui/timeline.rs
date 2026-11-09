@@ -21,14 +21,17 @@ use crate::{
     theme::Theme,
 };
 
-/// The series a timeline can show: the timeline's columns, then the hardware counters' a frame
+/// The series a timeline can show: the timeline's columns, then the hardware counters' a frame. A profile whose VM
+/// stepped (work, caches) leaves out host time and CPU cycles: stepping ran the interpreter several times slower than a
+/// plain run (11x in a CPU-bound harness), so they say nothing of a client's
 pub fn series(p: &Profile) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     if let Some(timeline) = &p.raw.timeline {
         for column in &timeline.columns {
-            if !matches!(column.as_str(), "frame" | "seconds" | "phase") {
-                out.push(column.clone());
+            if matches!(column.as_str(), "frame" | "seconds" | "phase" | "part") || (!p.host_frames() && matches!(column.as_str(), "host_ms" | "cycles")) {
+                continue;
             }
+            out.push(column.clone());
         }
     }
     if let Some(counters) = p.raw.counters.as_ref().filter(|c| c.error.is_none()) {
@@ -116,7 +119,15 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
     let selected = app.timeline.frame.unwrap_or_else(|| (0..all.len()).max_by(|&a, &b| all[a].total_cmp(&all[b]).then(b.cmp(&a))).unwrap_or(0)).min(all.len() - 1);
     let unit = unit_of(&name);
     let frame_at = |row: usize| frames.get(row).copied().unwrap_or(row as f64);
-    let range = if app.timeline.range.is_some() { format!("frames {}-{} of {}", frame_at(from), frame_at(to - 1), fmt::grouped(all.len() as f64)) } else { format!("{} frames", fmt::grouped(all.len() as f64)) };
+    // (a frame a phase mark split shows as a column a part, each in its phase's colour)
+    let mut distinct = frames.clone();
+    distinct.dedup();
+    let count = if distinct.is_empty() { all.len() } else { distinct.len() };
+    let split = all.len().saturating_sub(count);
+    let counted = if split > 0 { format!("{} frames, {split} split by phase marks", fmt::grouped(count as f64)) } else { format!("{} frames", fmt::grouped(count as f64)) };
+    let range = if app.timeline.range.is_some() { format!("frames {}-{} of {}", frame_at(from), frame_at(to - 1), fmt::grouped(count as f64)) } else { counted };
+    // (host time is left out of a stepping profile: said where it would be)
+    let range = if !p.host_frames() && p.raw.timeline.as_ref().is_some_and(|t| t.index("host_ms").is_some()) { format!("{range} · host time not shown: stepping slows the interpreter") } else { range };
     let series_count = series(p).len();
     let chart_height = (area.height / 2).clamp(9, 20);
     let table_height = (series_count as u16 + 4).min(area.height.saturating_sub(chart_height));

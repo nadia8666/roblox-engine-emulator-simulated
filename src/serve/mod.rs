@@ -82,6 +82,13 @@ pub fn build_id() -> String {
 /// Only an unkeyed 64-bit hash of their values reaches disk (the service record's name), never the values.
 pub fn env_digest() -> String {
     use std::hash::{Hash, Hasher};
+    if crate::is_standalone_binary() {
+        // The key is the environment the service is started with and its workers receive (launch::worker_environment),
+        // so the same environment always reaches the same service, and any variable that differs reaches another.
+        let mut hasher = rustc_hash::FxHasher::default();
+        launch::worker_environment().hash(&mut hasher);
+        return format!("{:016x}", hasher.finish());
+    }
     let mut variables: Vec<(String, String)> = std::env::vars_os()
         .filter_map(|(name, value)| Some((name.into_string().ok()?, value.to_string_lossy().into_owned())))
         .filter(|(name, _)| {
@@ -96,16 +103,16 @@ pub fn env_digest() -> String {
     format!("{:016x}", hasher.finish())
 }
 
-/// RUR_STATE_DIR / RUR_CACHE_DIR when relative, made absolute (from the current directory): a service
-/// runs in its state dir, where a relative one would name another directory.
-fn relative_state_variables() -> Vec<(&'static str, PathBuf)> {
-    ["RUR_STATE_DIR", "RUR_CACHE_DIR"]
-        .into_iter()
-        .filter_map(|name| {
-            let value = std::env::var_os(name).filter(|value| !value.is_empty() && Path::new(value).is_relative())?;
-            Some((name, std::path::absolute(value).ok()?))
-        })
-        .collect()
+/// The state dir of the default repo, for a command that has no explicit one. A standalone ree can lack a per-user
+/// cache folder: this prints that as `<command>: <reason>` and returns `None`, and the caller exits with code 2.
+fn default_state_dir(command: &str) -> Option<PathBuf> {
+    match crate::try_state_dir(&crate::default_repo()) {
+        Ok(dir) => Some(dir),
+        Err(error) => {
+            eprintln!("{command}: {error}");
+            None
+        }
+    }
 }
 
 /// How long a service waits for its next job before it exits (`--idle`). What it keeps warm (compiled
@@ -148,11 +155,21 @@ pub fn cli(argv: &[String]) -> i32 {
         Ok(false) => {}
     }
     let value = |key: &str| args.iter().position(|a| a == key).and_then(|i| args.get(i + 1)).cloned();
-    // it runs from a copy in its state dir: its checkout is its starter's
-    if let Some(repo) = value("--source").and_then(|source| crate::checkout_of(std::path::Path::new(&source))) {
+    // It runs from a copy in its state dir: its checkout is its starter's. Ree's own binary already chose that
+    // in `init_binary` (and the first choice stands), so this is for a library host that calls `cli` itself,
+    // which finds the starter's checkout the way a host does: the nearest `Cargo.lock`.
+    let starter_checkout = value("--source").and_then(|source| crate::checkout_of(std::path::Path::new(&source)));
+    if let Some(repo) = starter_checkout {
         crate::set_default_repo(repo);
     }
-    let state_dir = value("--state-dir").map(PathBuf::from).unwrap_or_else(|| crate::state_dir(&crate::default_repo()));
+    // An explicit directory needs no per-user cache, so that lookup (which can fail) runs only without one
+    let state_dir = match value("--state-dir") {
+        Some(dir) => PathBuf::from(dir),
+        None => match default_state_dir("ree serve") {
+            Some(dir) => dir,
+            None => return 2,
+        },
+    };
     if args.iter().any(|a| a == "--status") {
         for (info, health) in client::status(&state_dir) {
             println!("{}", json!({ "port": info.port, "pid": info.pid, "build": info.build, "env": info.env, "health": health }));
@@ -167,7 +184,7 @@ pub fn cli(argv: &[String]) -> i32 {
     // (the service runs in its state dir: relative ones are the caller's)
     let state_dir = std::path::absolute(&state_dir).unwrap_or(state_dir);
     let env = value("--env").unwrap_or_else(env_digest);
-    for (name, value) in relative_state_variables() {
+    for (name, value) in launch::path_variables() {
         // SAFETY: before this process starts any thread of its own
         unsafe { std::env::set_var(name, value) };
     }

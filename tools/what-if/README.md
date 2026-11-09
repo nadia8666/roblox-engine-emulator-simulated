@@ -17,7 +17,10 @@ it all, and each `runs/<variant>/<n>/` is an ordinary profile (`ree profile repo
 
 Figures at n = 10,000. The work clock, allocations, heap and table shapes are exact: the same every run. Host time
 here is the Luau VM in ree on one desktop machine, under load from other work: each variant's fastest of 9 interleaved
-rounds (other work only ever slows a round); "won 9 of 9" is how often the faster variant was faster round by round. The work clock prices each instruction kind
+rounds (other work only ever slows a round); "won 9 of 9" is how often the faster variant was faster round by round.
+These figures were read before host time's verdicts paired rounds against the A/A noise (docs/cli.md "Which numbers are
+exact"); a comparison run now prints each host-time gap with its interval, and calls one clear only past that noise, by
+8 of 9 rounds or more, and with the fastest runs agreeing. The work clock prices each instruction kind
 at a client's measured average, and charges a cold first touch in a frame of every table made before the frame
 (`warm` leaves those out).
 

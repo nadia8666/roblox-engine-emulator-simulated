@@ -4,7 +4,7 @@
 //! and `report.html` (one self-contained page).
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt::Write as _,
     path::Path,
 };
@@ -12,7 +12,7 @@ use std::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::{Value as Json, json};
 
-use super::{Config, Mark, Row, Run, Source, caches::Counts, cpu, hw, memory, vm};
+use super::{Config, Mark, Row, Run, Source, attribution, caches::Counts, cpu, hw, memory, vm};
 
 /// What a profile collected
 pub struct Input<'a> {
@@ -20,6 +20,8 @@ pub struct Input<'a> {
     pub run: &'a Run,
     pub elapsed: f64,
     pub vm: Option<&'a vm::Results>,
+    /// Who paid the engine's cold charges, handlers' dispatch by connect site, resumptions by wait site (`work`)
+    pub attribution: Option<&'a attribution::Results>,
     pub allocations: Option<&'a memory::Allocations>,
     pub time: Option<&'a super::time::Time>,
     pub phases: &'a [String],
@@ -44,6 +46,9 @@ pub struct Input<'a> {
     /// The phases as a tree (timing.rs: the command first, a phase timed inside another its child)
     pub phase_tree: Option<&'a [crate::timing::Node]>,
     pub warnings: &'a [String],
+    /// What the clock multiplied script work by (Scheduler::price_scale) and the device the run priced (Options::device)
+    pub price_scale: f64,
+    pub device: &'a str,
 }
 
 /// profile.json's version. 2: host time is the run thread's CPU time (time_ms; wall_ms beside it), a C function is a row at its
@@ -252,6 +257,11 @@ impl Names<'_> {
         self.function(id).is_some_and(vm::Function::exempt)
     }
 
+    /// A helper chunk of the binding (mlua's "=__mlua..."): its work is the calling line's, so tables leave it out
+    fn binding(&self, id: i32) -> bool {
+        self.function(id).is_some_and(|f| f.binding || module_name(&f.source).starts_with("__mlua"))
+    }
+
     /// A Luau function of the harness's own code ([`harness_module`])
     fn harness(&self, id: i32) -> bool {
         self.function(id).is_some_and(|f| !f.exempt() && harness_module(module_name(&f.source)))
@@ -283,6 +293,43 @@ struct Figures {
     /// Host time on its own lines in those copies (CPU, wall)
     inlined_time: f64,
     inlined_wall: f64,
+    /// Of its self work, each kind's (vm::SPLITS: cold and first-use, the collector's, Studio-era, defaulted, dispatch); of the cold,
+    /// the charges for objects nothing else touched in their frame; and its subtree's cold charges (outermost on a path)
+    self_split: [f64; vm::SPLITS],
+    self_exclusive: f64,
+    total_cold: f64,
+}
+
+impl Figures {
+    /// What cutting the function saves: its hot self work and only the cold charges for objects nothing else touched in their frame
+    /// (a shared object's charge moves to the code that touches it next)
+    fn saving(&self) -> f64 {
+        (self.self_work - self.self_split[vm::COLD] + self.self_exclusive).max(0.0)
+    }
+}
+
+/// A game function's cold charges in the reported phases, and what cutting it saves there
+#[derive(Clone, Copy, Debug, Default)]
+struct ColdAndSaving {
+    cold: f64,
+    saving: f64,
+}
+
+/// A function's figures in one phase (profile.json's `phases` of a function)
+#[derive(Clone, Copy, Debug, Default)]
+struct FunctionPhase {
+    self_work: f64,
+    total_work: f64,
+    calls: u64,
+    self_insns: u64,
+    /// Self work on the harness's side
+    harness_self_work: f64,
+    /// Of the self work: the cold and first-use charges, what cutting the function saves, the collector's
+    cold: f64,
+    saving: f64,
+    collector: f64,
+    /// Cold charges on the harness's side
+    harness_cold: f64,
 }
 
 /// A function's copies inlined into one caller (the caller, or the function whose copy holds them)
@@ -312,6 +359,80 @@ struct LineFigures {
     alloc: f64,
     allocs: f64,
     ops: BTreeMap<u8, u64>,
+    /// Of its work, the cold and first-use charges and the collector's
+    cold: f64,
+    collector: f64,
+    /// Its figures in each phase that ran it
+    phases: BTreeMap<u32, LinePhase>,
+}
+
+/// A line's figures in one phase
+#[derive(Clone, Copy, Debug, Default)]
+struct LinePhase {
+    insns: u64,
+    work: f64,
+    c_work: f64,
+    cold: f64,
+    total_work: f64,
+}
+
+impl LinePhase {
+    /// The line's own instructions' work and the C functions it called
+    fn self_work(&self) -> f64 {
+        self.work + self.c_work
+    }
+}
+
+impl LineFigures {
+    /// The line's figures summed over the phases in `phases`
+    fn within(&self, phases: &[u32]) -> LinePhase {
+        let mut sum = LinePhase::default();
+        for (phase, figures) in &self.phases {
+            if phases.contains(phase) {
+                sum.insns += figures.insns;
+                sum.work += figures.work;
+                sum.c_work += figures.c_work;
+                sum.cold += figures.cold;
+                sum.total_work += figures.total_work;
+            }
+        }
+        sum
+    }
+}
+
+/// A line's figures in the reported phases, for the summary's table of lines
+struct ScopedLine<'a> {
+    function: i32,
+    line: i32,
+    figures: &'a LineFigures,
+    phase: LinePhase,
+}
+
+/// How a function's self work in one phase splits by kind, and the cold charges nothing else shared
+#[derive(Clone, Copy, Debug, Default)]
+struct PhaseSplit {
+    /// Self work of each kind (vm::SPLITS)
+    kinds: [f64; vm::SPLITS],
+    /// The cold charges for objects nothing else touched in their frame
+    exclusive_cold: f64,
+}
+
+impl PhaseSplit {
+    fn cold(&self) -> f64 {
+        self.kinds[vm::COLD]
+    }
+
+    /// What cutting the function in this phase saves, given its `self_work` there: the hot work and the unshared cold charges
+    fn saving(&self, self_work: f64) -> f64 {
+        (self_work - self.cold() + self.exclusive_cold).max(0.0)
+    }
+}
+
+/// Adds each kind of `more` to the same kind of `total`
+fn add_kinds(total: &mut [f64; vm::SPLITS], more: &[f64; vm::SPLITS]) {
+    for (sum, value) in total.iter_mut().zip(more) {
+        *sum += value;
+    }
 }
 
 #[derive(Default)]
@@ -324,8 +445,9 @@ struct Model {
     inlined: FxHashMap<(i32, i32), Inlined>,
     /// (function, line) -> the function whose inlined copy the line's instructions are
     line_inlined: FxHashMap<(i32, i32), i32>,
-    /// Per-node subtree totals (work, instructions)
+    /// Per-node subtree totals (work, instructions) and cold charges
     subtree: Vec<(f64, u64)>,
+    subtree_cold: Vec<f64>,
     /// The phase each node is under
     node_phase: Vec<u32>,
     /// (function, phase, the harness's side) -> self work, calls and self instructions there. A node is on the side of
@@ -333,12 +455,15 @@ struct Model {
     phase_self: FxHashMap<(i32, u32, bool), (f64, u64, u64)>,
     /// (function, phase, the harness's side) -> total work there (a function's outermost node on its path)
     phase_total: FxHashMap<(i32, u32, bool), f64>,
+    /// (function, phase, the harness's side) -> each kind's share of its self work there, and its unshared cold charges
+    phase_split: FxHashMap<(i32, u32, bool), PhaseSplit>,
 }
 
-/// The call tree's per-function and per-line figures, and its edges
-fn tree_model(vm: &vm::Results) -> Model {
+/// The call tree's per-function and per-line figures, and its edges. `engine_exclusive`: the engine's cold charges nothing else touched
+/// in their frame, by tree node (profiler/attribution.rs), beside the VM's own (each node's `exclusive`).
+fn tree_model(vm: &vm::Results, engine_exclusive: &FxHashMap<i32, f64>) -> Model {
     let nodes = &vm.nodes;
-    let mut model = Model { subtree: vec![(0.0, 0); nodes.len()], node_phase: vec![0; nodes.len()], ..Model::default() };
+    let mut model = Model { subtree: vec![(0.0, 0); nodes.len()], subtree_cold: vec![0.0; nodes.len()], node_phase: vec![0; nodes.len()], ..Model::default() };
     // phases: a node under the root with function -1 is a phase's
     for (index, node) in nodes.iter().enumerate() {
         model.node_phase[index] = if node.function == -1 && node.parent == 0 && index != 0 {
@@ -356,7 +481,7 @@ fn tree_model(vm: &vm::Results) -> Model {
         let own = (node.function >= 0)
             .then(|| vm.functions.get(node.function as usize))
             .flatten()
-            .filter(|f| !f.exempt() && !module_name(&f.source).starts_with("__mlua"));
+            .filter(|f| !f.exempt() && !f.binding && !module_name(&f.source).starts_with("__mlua"));
         harness_side[index] = match own {
             Some(function) => harness_module(module_name(&function.source)),
             None => node.parent >= 0 && harness_side[node.parent as usize],
@@ -366,39 +491,63 @@ fn tree_model(vm: &vm::Results) -> Model {
         let node = &nodes[index];
         model.subtree[index].0 += node.work;
         model.subtree[index].1 += node.insns;
+        model.subtree_cold[index] += node.split[vm::COLD];
         if node.parent >= 0 {
             let (work, insns) = model.subtree[index];
+            let cold = model.subtree_cold[index];
             model.subtree[node.parent as usize].0 += work;
             model.subtree[node.parent as usize].1 += insns;
+            model.subtree_cold[node.parent as usize] += cold;
         }
     }
     let real = |id: i32| id >= 0 || id < -1;
+    // whether a node has an ancestor of its own function: totals count only a function's outermost node on a path, and only the calls
+    // its outermost nodes made (a recursion's inner calls are inside the outer one's subtree already: a fib(15)'s line read 16.2 ms in a
+    // 3.0 ms run when every level added its subtree)
+    let mut nested = vec![false; nodes.len()];
     for (index, node) in nodes.iter().enumerate() {
-        if !real(node.function) {
-            continue;
-        }
-        let scoped = (node.function, model.node_phase[index], harness_side[index]);
-        let in_phase = model.phase_self.entry(scoped).or_default();
-        in_phase.0 += node.work;
-        in_phase.1 += node.calls;
-        in_phase.2 += node.insns;
-        let figures = model.functions.entry(node.function).or_default();
-        figures.calls += node.calls;
-        figures.self_insns += node.insns;
-        figures.self_work += node.work;
-        // total: only the outermost node of a function on its path (recursion counts once)
         let mut up = node.parent;
-        let mut nested = false;
         while up >= 0 {
-            if nodes[up as usize].function == node.function {
-                nested = true;
+            if nodes[up as usize].function == node.function && real(node.function) {
+                nested[index] = true;
                 break;
             }
             up = nodes[up as usize].parent;
         }
-        if !nested {
+    }
+    // each function's self work in its outermost nodes, against all of it (its lines' own work in the outermost frames)
+    let mut outer_self: FxHashMap<i32, (f64, f64)> = FxHashMap::default();
+    for (index, node) in nodes.iter().enumerate() {
+        let entry = outer_self.entry(node.function).or_default();
+        entry.1 += node.work;
+        if !nested[index] {
+            entry.0 += node.work;
+        }
+    }
+    for (index, node) in nodes.iter().enumerate() {
+        if !real(node.function) {
+            continue;
+        }
+        let phase = model.node_phase[index];
+        let scoped = (node.function, phase, harness_side[index]);
+        let in_phase = model.phase_self.entry(scoped).or_default();
+        in_phase.0 += node.work;
+        in_phase.1 += node.calls;
+        in_phase.2 += node.insns;
+        let exclusive = node.exclusive + engine_exclusive.get(&(index as i32)).copied().unwrap_or(0.0);
+        let split = model.phase_split.entry(scoped).or_default();
+        add_kinds(&mut split.kinds, &node.split);
+        split.exclusive_cold += exclusive;
+        let figures = model.functions.entry(node.function).or_default();
+        figures.calls += node.calls;
+        figures.self_insns += node.insns;
+        figures.self_work += node.work;
+        add_kinds(&mut figures.self_split, &node.split);
+        figures.self_exclusive += exclusive;
+        if !nested[index] {
             figures.total_work += model.subtree[index].0;
             figures.total_insns += model.subtree[index].1;
+            figures.total_cold += model.subtree_cold[index];
             *model.phase_total.entry(scoped).or_default() += model.subtree[index].0;
         }
         if node.parent >= 0 {
@@ -406,22 +555,33 @@ fn tree_model(vm: &vm::Results) -> Model {
             if real(parent.function) {
                 let edge = model.edges.entry((parent.function, node.function)).or_default();
                 edge.0 += node.calls;
-                edge.1 += model.subtree[index].0;
-                edge.2 += model.subtree[index].1;
-                // the calling line's total, and a C function's own work its self work too
-                if parent.function >= 0 && node.callpc >= 0 {
-                    if let Some(line) = vm.functions.get(parent.function as usize).and_then(|f| f.lines.get(node.callpc as usize)) {
-                        let figures = model.lines.entry((parent.function, *line)).or_default();
+                // (a call's subtree counts in its edge's and its calling line's totals when the caller's node is outermost)
+                if !nested[node.parent as usize] {
+                    edge.1 += model.subtree[index].0;
+                    edge.2 += model.subtree[index].1;
+                    if parent.function >= 0
+                        && node.callpc >= 0
+                        && let Some(&line) = vm.functions.get(parent.function as usize).and_then(|f| f.lines.get(node.callpc as usize))
+                    {
+                        let figures = model.lines.entry((parent.function, line)).or_default();
                         figures.total_work += model.subtree[index].0;
                         figures.total_insns += model.subtree[index].1;
-                        if node.function < -1 {
-                            figures.c_work += node.work;
-                        }
+                        figures.phases.entry(phase).or_default().total_work += model.subtree[index].0;
                     }
+                }
+                // A C call's own work is part of its calling line's self work even
+                // inside recursion. Only the inclusive totals skip nested callers.
+                if node.function < -1 && parent.function >= 0 && node.callpc >= 0
+                    && let Some(&line) = vm.functions.get(parent.function as usize).and_then(|f| f.lines.get(node.callpc as usize))
+                {
+                    let figures = model.lines.entry((parent.function, line)).or_default();
+                    figures.c_work += node.work;
+                    figures.phases.entry(phase).or_default().c_work += node.work;
                 }
             }
         }
     }
+    let outer_share = |id: i32| outer_self.get(&id).map_or(1.0, |&(outer, all)| if all > 0.0 { outer / all } else { 1.0 });
     for (id, function) in vm.functions.iter().enumerate() {
         for (pc, &count) in function.counts.iter().enumerate() {
             let work = function.work.get(pc).copied().unwrap_or(0.0);
@@ -432,10 +592,28 @@ fn tree_model(vm: &vm::Results) -> Model {
             let figures = model.lines.entry((id as i32, line)).or_default();
             figures.insns += count;
             figures.work += work;
-            figures.total_work += work;
+            // (in its total, the outermost frames' share of it: deeper frames of a recursion are in an outer call's subtree)
+            figures.total_work += work * outer_share(id as i32);
             figures.total_insns += count;
+            figures.cold += function.split.get(pc * vm::SPLITS + vm::COLD).copied().unwrap_or(0.0);
+            figures.collector += function.split.get(pc * vm::SPLITS + vm::COLLECTOR).copied().unwrap_or(0.0);
             if count > 0 {
                 *figures.ops.entry((function.code[pc] & 0xff) as u8).or_default() += count;
+            }
+        }
+        // each phase's own lines
+        for lines in &function.phase_lines {
+            for pc in 0..function.code.len() {
+                let (count, work, cold) = (lines.counts.get(pc).copied().unwrap_or(0), lines.work.get(pc).copied().unwrap_or(0.0), lines.cold.get(pc).copied().unwrap_or(0.0));
+                if count == 0 && work == 0.0 {
+                    continue;
+                }
+                let line = function.lines.get(pc).copied().unwrap_or(0);
+                let phase = model.lines.entry((id as i32, line)).or_default().phases.entry(lines.phase).or_default();
+                phase.insns += count;
+                phase.work += work;
+                phase.total_work += work * outer_share(id as i32);
+                phase.cold += cold;
             }
         }
     }
@@ -584,8 +762,76 @@ fn add_time(model: &mut Model, stack: &[memory::Frame], cpu: f64, wall: f64) {
     }
 }
 
+thread_local! {
+    /// What the clock multiplied script work by in the run being written (Scheduler::price_scale: a phone's factor, a timing check's):
+    /// the profile's milliseconds are the clock's, the units os.clock advanced in
+    static SCALE: std::cell::Cell<f64> = const { std::cell::Cell::new(1.0) };
+}
+
+/// The scale of the run being written
+fn price_scale() -> f64 {
+    SCALE.with(std::cell::Cell::get)
+}
+
+/// A row's code work on each side, in the run's device units.
+fn row_sides_ms(row: &Row) -> Option<(f64, f64)> {
+    row.sides.map(|(game, harness)| (game * price_scale(), harness * price_scale()))
+}
+
+/// Two parts of a frame's work on each side added; unknown when either part's is
+fn add_sides(first: Option<(f64, f64)>, second: Option<(f64, f64)>) -> Option<(f64, f64)> {
+    let (first, second) = first.zip(second)?;
+    Some((first.0 + second.0, first.1 + second.1))
+}
+
+/// A timeline row as profile.json stores it, its values in the order of the timeline's `columns`. `host`: the frame's host time
+/// (ms) and cycles
+fn timeline_row(row: &Row, host: Option<(f64, u64)>) -> Json {
+    let sides = row_sides_ms(row);
+    json!([
+        row.frame,
+        round(row.seconds, 4),
+        row.phase,
+        host.map(|(ms, _)| round(ms, 4)),
+        round(row.work_ms * price_scale(), 5),
+        row.instructions,
+        row.heap_bytes,
+        row.allocated_bytes,
+        row.allocations,
+        row.gc_steps,
+        round(row.gc_ms, 4),
+        row.gc_freed,
+        row.instances.0,
+        row.instances.1,
+        row.instances.2,
+        row.connections,
+        row.threads_made,
+        host.map(|(_, cycles)| cycles),
+        row.part,
+        sides.map(|(game, _)| game),
+        sides.map(|(_, harness)| harness),
+        round(row.collector_ms * price_scale(), 5),
+    ])
+}
+
+/// The row a timeline keeps when it drops the detail: the frame's work, its sides and its collector share
+fn compact_timeline_row(row: &Row) -> Json {
+    let sides = row_sides_ms(row);
+    json!([
+        row.frame,
+        row.seconds,
+        row.phase,
+        row.work_ms * price_scale(),
+        row.part,
+        sides.map(|(game, _)| game),
+        sides.map(|(_, harness)| harness),
+        row.collector_ms * price_scale(),
+    ])
+}
+
+/// Milliseconds of the work clock as the run's clock ran (`seconds` at desktop prices times the run's scale)
 fn ms(seconds: f64) -> f64 {
-    seconds * 1e3
+    seconds * 1e3 * price_scale()
 }
 
 fn round(value: f64, digits: i32) -> f64 {
@@ -640,7 +886,16 @@ pub fn write(input: &Input) -> Result<String, String> {
     std::fs::create_dir_all(out).map_err(|error| format!("--profile-out {}: {error}", out.display()))?;
     let shorts = short_names(input.vm.iter().flat_map(|vm| vm.functions.iter()).map(|f| module_name(&f.source)));
     let names = Names { vm: input.vm, steps: ENGINE_STEPS.with(|steps| steps.borrow().clone()), outside: OUTSIDE.with(|outside| outside.borrow().clone()), shorts };
-    let mut model = input.vm.map(tree_model).unwrap_or_default();
+    let scale = if input.price_scale > 0.0 { input.price_scale } else { 1.0 };
+    SCALE.with(|cell| cell.set(scale));
+    // (the engine's unshared cold charges, by tree node)
+    let mut engine_exclusive: FxHashMap<i32, f64> = FxHashMap::default();
+    if let Some(attribution) = input.attribution {
+        for charge in &attribution.exclusive {
+            *engine_exclusive.entry(charge.node).or_default() += charge.cost;
+        }
+    }
+    let mut model = input.vm.map(|vm| tree_model(vm, &engine_exclusive)).unwrap_or_default();
 
     // host time samples (the run thread's CPU milliseconds, and wall ticks of a millisecond) and allocations (bytes) into the model
     let (mut time_total, mut wall_total) = (0.0, 0.0);
@@ -674,6 +929,13 @@ pub fn write(input: &Input) -> Result<String, String> {
         "run": {
             "command": input.run.command, "status": input.run.status, "harness": input.run.harness, "frames": input.run.frames,
             "seconds": input.run.seconds, "fps": input.run.fps, "elapsed": input.elapsed,
+            // (the harness's contents hashed: two copies of one harness in other folders are the same harness. The text its
+            // module loaded, hashed as source_hashes hashes it, so that a profile from before this field, compared by that
+            // entry, reads the same harness as the same; the file's bytes where no module of its name loaded)
+            "harness_hash": input.run.harness.as_ref().and_then(|path| match Path::new(path).file_stem().and_then(|stem| input.sources.get(&format!("{HARNESS_FOLDER}.{}", stem.to_string_lossy()))) {
+                Some(source) => Some(format!("{:016x}", fxhash(&source.text))),
+                None => std::fs::read(path).ok().map(|bytes| format!("{:016x}", fxhash(&bytes))),
+            }),
             "script_timeouts": input.run.script_timeouts, "host_backstop_timeouts": input.run.host_backstop_timeouts,
         },
         "phases": input.phases,
@@ -693,20 +955,27 @@ pub fn write(input: &Input) -> Result<String, String> {
     for callers in inlined_into.values_mut() {
         callers.sort_by(|a, b| b.1.work.total_cmp(&a.1.work).then(b.1.calls.cmp(&a.1.calls)).then(a.0.cmp(&b.0)));
     }
-    // each function's figures per phase: [self work, total work, calls, self instructions, self work on the harness's side]
     let phase_name = |phase: u32| input.phases.get(phase as usize).cloned().unwrap_or_else(|| "startup".to_string());
-    let mut by_phase: FxHashMap<i32, BTreeMap<u32, [f64; 5]>> = FxHashMap::default();
+    let mut by_phase: FxHashMap<i32, BTreeMap<u32, FunctionPhase>> = FxHashMap::default();
     for (&(id, phase, harness), &(work, calls, insns)) in &model.phase_self {
         let figures = by_phase.entry(id).or_default().entry(phase).or_default();
-        figures[0] += work;
-        figures[2] += calls as f64;
-        figures[3] += insns as f64;
+        figures.self_work += work;
+        figures.calls += calls;
+        figures.self_insns += insns;
         if harness {
-            figures[4] += work;
+            figures.harness_self_work += work;
+        }
+        if let Some(split) = model.phase_split.get(&(id, phase, harness)) {
+            figures.cold += split.cold();
+            figures.saving += split.saving(work);
+            figures.collector += split.kinds[vm::COLLECTOR];
+            if harness {
+                figures.harness_cold += split.cold();
+            }
         }
     }
     for (&(id, phase, _), &total) in &model.phase_total {
-        by_phase.entry(id).or_default().entry(phase).or_default()[1] += total;
+        by_phase.entry(id).or_default().entry(phase).or_default().total_work += total;
     }
     // the phases the summary reports, and their self work on each side
     let scope = reported_phases(input.config.phases.as_deref(), input.phases);
@@ -765,6 +1034,9 @@ pub fn write(input: &Input) -> Result<String, String> {
             "module": function.map(|f| module_name(&f.source).to_string()),
             "line": function.map(|f| f.line),
             "last_line": function.and_then(|f| f.lines.iter().copied().max()),
+            // (what pairs a function across an edit that moved it: its code as compiled, and its text)
+            "code_hash": function.and_then(code_hash),
+            "source_hash": function.and_then(|f| source_hash(input.sources, f)),
             "kind": match function { Some(f) if f.exempt() => "engine Luau", Some(_) => "Luau", None if id <= ENGINE_STEP_BASE => "engine step", None => "C" },
             "native": function.is_some_and(vm::Function::native),
             // (the harness's own code, under HARNESS_FOLDER; tool: ree's own, never the game's nor a user's: the engine's chunks
@@ -776,14 +1048,24 @@ pub fn write(input: &Input) -> Result<String, String> {
             // (per phase; harness_self_work_ms is the part done for the harness's code: all of a harness function's, a C
             // function's or the engine's Luau when the harness called it)
             "phases": by_phase.get(&id).map(|phases| phases.iter().map(|(phase, f)| (phase_name(*phase), json!({
-                "self_work_ms": ms(f[0]), "total_work_ms": ms(f[1]), "calls": f[2] as u64, "insns": f[3] as u64, "harness_self_work_ms": ms(f[4]),
+                "self_work_ms": ms(f.self_work), "total_work_ms": ms(f.total_work), "calls": f.calls, "insns": f.self_insns, "harness_self_work_ms": ms(f.harness_self_work),
+                "cold_work_ms": ms(f.cold), "saving_ms": ms(f.saving), "collector_ms": ms(f.collector), "harness_cold_work_ms": ms(f.harness_cold),
             }))).collect::<serde_json::Map<_, _>>()),
             "native_entries": function.map_or(0, |f| f.native_entries),
             "native_work_ms": function.map_or(0.0, |f| ms(f.native_work)),
             "calls": figures.calls,
-            // (time_ms: host time, the run thread's CPU milliseconds where its cycles can be read; wall_ms: the wall clock's)
-            "self": {"insns": figures.self_insns, "work_ms": ms(figures.self_work), "time_ms": figures.self_time, "wall_ms": figures.self_wall, "alloc_bytes": figures.self_alloc.round(), "allocs": figures.self_allocs.round()},
-            "total": {"insns": figures.total_insns, "work_ms": ms(figures.total_work), "time_ms": figures.total_time, "wall_ms": figures.total_wall, "alloc_bytes": figures.total_alloc.round(), "allocs": figures.total_allocs.round()},
+            "self": {
+                "insns": figures.self_insns, "work_ms": ms(figures.self_work), "time_ms": figures.self_time, "wall_ms": figures.self_wall, "alloc_bytes": figures.self_alloc.round(), "allocs": figures.self_allocs.round(),
+                // (of work_ms: the cold and first-use charges, the collector's, the engine's dispatch of its handlers and resumptions of its
+                // threads, and by where the prices came from; saving_ms is what cutting it saves: hot work and unshared cold charges)
+                "cold_work_ms": ms(figures.self_split[vm::COLD]), "collector_ms": ms(figures.self_split[vm::COLLECTOR]), "dispatch_ms": ms(figures.self_split[vm::DISPATCH]),
+                "exclusive_cold_ms": ms(figures.self_exclusive), "saving_ms": ms(figures.saving()),
+                "by_provenance_ms": {
+                    "client": ms((figures.self_work - figures.self_split[vm::STUDIO] - figures.self_split[vm::DEFAULTED]).max(0.0)),
+                    "studio": ms(figures.self_split[vm::STUDIO]), "defaulted": ms(figures.self_split[vm::DEFAULTED]),
+                },
+            },
+            "total": {"insns": figures.total_insns, "work_ms": ms(figures.total_work), "cold_work_ms": ms(figures.total_cold), "time_ms": figures.total_time, "wall_ms": figures.total_wall, "alloc_bytes": figures.total_alloc.round(), "allocs": figures.total_allocs.round()},
             // (inlined by -O2 into the functions in `into`: its calls through those copies, and the instructions and work on
             // its own lines there, which are also theirs)
             // (a C function: where it was called from, by the calling function and line)
@@ -800,10 +1082,26 @@ pub fn write(input: &Input) -> Result<String, String> {
         })
     };
     json["functions"] = Json::Array(function_rows.iter().map(|(id, figures)| function_json(*id, figures)).collect());
+    // the reported phases' cold and collector work on both sides, and what cutting the game's code saves
+    let (mut scope_cold, mut scope_collector, mut scope_saving_game) = (0.0, 0.0, 0.0);
+    for (&(id, phase, harness_side), split) in &model.phase_split {
+        if !scope.contains(&phase) {
+            continue;
+        }
+        scope_cold += split.cold();
+        scope_collector += split.kinds[vm::COLLECTOR];
+        if !harness_side {
+            let work = model.phase_self.get(&(id, phase, harness_side)).map_or(0.0, |figures| figures.0);
+            scope_saving_game += split.saving(work);
+        }
+    }
     json["scope"] = json!({
         "phases": scope.iter().map(|phase| phase_name(*phase)).collect::<Vec<_>>(),
         "game_self_ms": ms(game_self),
         "harness_self_ms": ms(harness_self),
+        "cold_work_ms": ms(scope_cold),
+        "collector_ms": ms(scope_collector),
+        "game_saving_ms": ms(scope_saving_game),
         "harness_folder": HARNESS_FOLDER,
         "engine": scope_engine.as_ref().map(engine_json),
     });
@@ -821,6 +1119,8 @@ pub fn write(input: &Input) -> Result<String, String> {
                     "function": function, "line": line, "insns": figures.insns, "work_ms": ms(figures.work), "c_work_ms": ms(figures.c_work), "self_work_ms": ms(line_self(figures)), "total_work_ms": ms(figures.total_work),
                     "total_insns": figures.total_insns, "time_ms": figures.time, "total_time_ms": figures.total_time, "wall_ms": figures.wall, "total_wall_ms": figures.total_wall,
                     "alloc_bytes": figures.alloc.round(), "allocs": figures.allocs.round(),
+                    "cold_work_ms": ms(figures.cold), "collector_ms": ms(figures.collector),
+                    "phases": figures.phases.iter().map(|(phase, f)| (phase_name(*phase), json!({"work_ms": ms(f.work), "self_work_ms": ms(f.work + f.c_work), "c_work_ms": ms(f.c_work), "total_work_ms": ms(f.total_work), "insns": f.insns, "cold_work_ms": ms(f.cold)}))).collect::<serde_json::Map<_, _>>(),
                     "ops": figures.ops.iter().map(|(op, count)| (vm::opcode_name(*op).to_string(), json!(count))).collect::<serde_json::Map<_, _>>(),
                     "inlined": model.line_inlined.get(&(*function, *line)),
                 })
@@ -838,7 +1138,8 @@ pub fn write(input: &Input) -> Result<String, String> {
         rows
     });
 
-    // the call tree for the flame graph: [parent, function, calls, self work in us, self instructions, label, the calling line]
+    // The call tree: [parent, function, calls, self work in us, self instructions, label].
+    // Keep fractional work so node unions reconcile with the clock.
     if let Some(vm_results) = input.vm {
         json["tree"] = Json::Array(
             vm_results
@@ -855,7 +1156,7 @@ pub fn write(input: &Input) -> Result<String, String> {
                     } else {
                         None
                     };
-                    json!([node.parent, node.function, node.calls, (node.work * 1e6).round(), node.insns, label])
+                    json!([node.parent, node.function, node.calls, node.work * 1e6, node.insns, label])
                 })
                 .collect(),
         );
@@ -904,12 +1205,40 @@ pub fn write(input: &Input) -> Result<String, String> {
         }
         let mut opcode_rows: Vec<_> = opcodes.into_iter().collect();
         opcode_rows.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        // the run's kinds of work (of the total): cold and first-use charges, the collector's, dispatch, Studio-era and defaulted prices
+        let mut kinds_total = [0.0f64; vm::SPLITS];
+        for node in &vm_results.nodes {
+            add_kinds(&mut kinds_total, &node.split);
+        }
+        let collector_objects = input.end.and_then(|end| end.totals).map_or(0.0, |totals| totals.collector / (crate::cost::LUAU_COLLECTOR_OBJECT * 1e-9).max(1e-30));
+        // (the fidelity line weighs what the summary reports: the reported phases' game code, its work by kind)
+        let (scope_work, scope_kinds) = scope_work_kinds(&model, &scope);
+        let fidelity = if scope_work > 0.0 {
+            let luau = scope_luau(input, &scope, scope_work).unwrap_or_else(|| whole_luau(input, total_work, &kinds_total) / total_work.max(1e-12) * scope_work);
+            fidelity_json(input, scope_work, &scope_kinds, luau, &format!("the game's code in {}", scope_phrase(&scope, input.phases)))
+        } else {
+            fidelity_json(input, total_work, &kinds_total, whole_luau(input, total_work, &kinds_total), "the run")
+        };
         json["work"] = json!({
             "total_ms": ms(total_work),
             "outside_instructions_ms": ms(vm_results.engine_work),
             "per_second_ms": if seconds > 0.0 { ms(total_work) / seconds } else { 0.0 },
             "per_frame_ms": ms(total_work) / frames,
-            "fidelity": crate::cost::FIDELITY,
+            "fidelity": fidelity["text"].clone(),
+            "cold_work_ms": ms(kinds_total[vm::COLD]),
+            "collector_ms": ms(kinds_total[vm::COLLECTOR]),
+            "dispatch_ms": ms(kinds_total[vm::DISPATCH]),
+            "by_provenance_ms": {
+                "client": ms((total_work - kinds_total[vm::STUDIO] - kinds_total[vm::DEFAULTED]).max(0.0)),
+                "studio": ms(kinds_total[vm::STUDIO]), "defaulted": ms(kinds_total[vm::DEFAULTED]),
+            },
+            "collector": {
+                // (desktop ns, as work.prices: a phone run's are these times work.units.scale)
+                "object_ns": crate::cost::LUAU_COLLECTOR_OBJECT,
+                "objects": collector_objects.round(),
+                "basis": "every object the scripts' work allocated (its instructions and the library and engine calls it made), each swept once garbage and marked while it lives: the collector's share of the parity bench's churn rows on a heap of about 50 MB (its steps' time in ree's VM, which runs the client's collector) applied to a rendered client's time; booked to the allocating instruction",
+            },
+            "units": {"device": input.device, "scale": price_scale()},
             "script_insns": script_insns,
             "engine_insns": engine_insns,
             "native_functions": natives.iter().map(|f| json!({"name": f.name, "module": module_name(&f.source), "line": f.line, "entries": f.native_entries, "work_ms": ms(f.native_work)})).collect::<Vec<_>>(),
@@ -919,16 +1248,46 @@ pub fn write(input: &Input) -> Result<String, String> {
             "c_calls": true,
             "c_invocations": true,
         });
+        json["fidelity"] = fidelity.clone();
+        // (bytes the clock counts and prices at nothing: a large buffer's fresh memory, a buffer call's bytes past a core's caches)
+        let (fresh, big) = match (input.marks.first().and_then(|mark| mark.totals), input.end.and_then(|end| end.totals)) {
+            (Some(first), Some(last)) => (last.buffer_fresh.saturating_sub(first.buffer_fresh), last.buffer_big.saturating_sub(first.buffer_big)),
+            _ => (0, 0),
+        };
+        json["work"]["unpriced"] = json!({
+            "buffer_fresh_bytes": fresh,
+            "buffer_big_bytes": big,
+            "basis": "bytes of new buffers past Luau's own pages (over 1 KB) and of buffer copies, fills and string writes in calls over 64 KB: their bytes are priced as a small buffer's are, their memory past a core's caches at nothing (no price a byte fits a client's sizes), so the clock reads such work low",
+        });
         let _ = writeln!(
             summary,
-            "work clock {:.2} ms of Studio time ({:.2} ms/s, {:.3} ms a frame); {:.2} ms charged outside any instruction (event dispatch, resumptions)",
+            "work clock {:.2} ms ({:.2} ms/s, {:.3} ms a frame) at {}; {:.2} ms charged outside any instruction",
             ms(total_work),
             if seconds > 0.0 { ms(total_work) / seconds } else { 0.0 },
             ms(total_work) / frames,
+            fidelity["prices"].as_str().unwrap_or_default(),
             ms(vm_results.engine_work)
         );
+        let _ = writeln!(
+            summary,
+            "of it: cold and first-use charges {:.2} ms, the collector {:.2} ms, dispatch of handlers and resumptions {:.2} ms; priced from a client {:.0} %, from Studio-era measurements {:.0} %, borrowed (defaulted) {:.0} %",
+            ms(kinds_total[vm::COLD]),
+            ms(kinds_total[vm::COLLECTOR]),
+            ms(kinds_total[vm::DISPATCH]),
+            100.0 * (total_work - kinds_total[vm::STUDIO] - kinds_total[vm::DEFAULTED]).max(0.0) / total_work.max(1e-12),
+            100.0 * kinds_total[vm::STUDIO] / total_work.max(1e-12),
+            100.0 * kinds_total[vm::DEFAULTED] / total_work.max(1e-12)
+        );
+        if fresh + big > 0 {
+            let _ = writeln!(
+                summary,
+                "unpriced: {} of new buffers past Luau's own pages and {} moved by buffer copies, fills and string writes of over 64 KB a call: the clock prices their bytes as a small buffer's and their memory past a core's caches at nothing, so it reads this work low",
+                bytes(fresh as f64),
+                bytes(big as f64)
+            );
+        }
         // (what the clock is beside a client's own time: read before taking its milliseconds as a client's)
-        let _ = writeln!(summary, "{}", crate::cost::FIDELITY);
+        let _ = writeln!(summary, "{}", fidelity["text"].as_str().unwrap_or_default());
         let _ = writeln!(summary, "instructions: {} by scripts, {} by the engine's own Luau", group_digits(script_insns), group_digits(engine_insns));
         if natives.is_empty() {
             let _ = writeln!(summary, "natively compiled functions: none ran natively (every instruction is counted)");
@@ -973,10 +1332,21 @@ pub fn write(input: &Input) -> Result<String, String> {
             let _ = writeln!(summary, "{}", engine_line(&scope_label, ops));
         }
         // one side's functions in the reported phases: (id, self work, total work, calls, self instructions)
+        // each game function's cold charges and saving in the reported phases
+        let mut game_cold: FxHashMap<i32, ColdAndSaving> = FxHashMap::default();
+        for (&(id, phase, harness_side), split) in &model.phase_split {
+            if harness_side || !scope.contains(&phase) {
+                continue;
+            }
+            let work = model.phase_self.get(&(id, phase, harness_side)).map_or(0.0, |figures| figures.0);
+            let row = game_cold.entry(id).or_default();
+            row.cold += split.cold();
+            row.saving += split.saving(work);
+        }
         let side_rows = |harness: bool| -> Vec<(i32, f64, f64, u64, u64)> {
             let mut rows: FxHashMap<i32, (f64, f64, u64, u64)> = FxHashMap::default();
             for (&(id, phase, side), &(work, calls, insns)) in &model.phase_self {
-                if side == harness && scope.contains(&phase) && !names.engine(id) {
+                if side == harness && scope.contains(&phase) && !names.engine(id) && !names.binding(id) {
                     let row = rows.entry(id).or_default();
                     row.0 += work;
                     row.2 += calls;
@@ -994,11 +1364,15 @@ pub fn write(input: &Input) -> Result<String, String> {
         };
         let (game_rows, harness_rows) = (side_rows(false), side_rows(true));
         let top = input.config.top;
-        let _ = writeln!(summary, "\ntop functions by self work: the game's code, {scope_label} (ms of Studio time; total includes callees)");
-        let _ = writeln!(summary, "{:>9} {:>9} {:>10} {:>12}  function", "self ms", "total ms", "calls", "insns");
+        let _ = writeln!(
+            summary,
+            "\ntop functions by self work: the game's code, {scope_label} (ms of the work clock; cold: its cold and first-use charges; saving: what cutting it saves, its hot work and the cold charges for objects nothing else touched that frame; total includes callees)"
+        );
+        let _ = writeln!(summary, "{:>9} {:>8} {:>9} {:>9} {:>10} {:>12}  function", "self ms", "cold ms", "saving ms", "total ms", "calls", "insns");
         // (rows that print as zero are left out)
         for (id, work, total, calls, insns) in game_rows.iter().filter(|row| row.1 >= 5e-7).take(top) {
-            let _ = writeln!(summary, "{:>9.3} {:>9.3} {:>10} {:>12}  {}", ms(*work), ms(*total), group_digits(*calls), group_digits(*insns), names.label(*id));
+            let ColdAndSaving { cold, saving } = game_cold.get(id).copied().unwrap_or(ColdAndSaving { cold: 0.0, saving: *work });
+            let _ = writeln!(summary, "{:>9.3} {:>8.3} {:>9.3} {:>9.3} {:>10} {:>12}  {}", ms(*work), ms(cold), ms(saving), ms(*total), group_digits(*calls), group_digits(*insns), names.label(*id));
         }
         let mut by_total: Vec<&(i32, f64, f64, u64, u64)> = game_rows.iter().filter(|row| row.0 >= 0).collect();
         by_total.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
@@ -1044,23 +1418,57 @@ pub fn write(input: &Input) -> Result<String, String> {
                 );
             }
         }
-        // (a line's figures are counted per instruction for the whole run, not per phase)
-        let _ = writeln!(summary, "\ntop lines by self work: the game's code, {}", if every_phase { "every phase" } else { "every phase (lines are not counted per phase)" });
-        let _ = writeln!(summary, "(self: the line's own instructions and the C functions it called, theirs in C; a Luau function a C function called is its own lines')");
-        let _ = writeln!(summary, "{:>9} {:>9} {:>11} {:>12}  line  (opcodes)", "self ms", "in C ms", "total ms", "insns");
-        for ((function, line), figures) in line_rows.iter().filter(|(key, figures)| line_self(figures) >= 5e-7 && !names.engine(key.0) && !names.harness(key.0)).take(top) {
+        // each line's figures in the reported phases, the heaviest first
+        let mut scoped_lines: Vec<ScopedLine> = Vec::new();
+        for &(&(function, line), figures) in line_rows.iter() {
+            scoped_lines.push(ScopedLine { function, line, figures, phase: figures.within(&scope) });
+        }
+        scoped_lines.sort_by(|a, b| b.phase.self_work().total_cmp(&a.phase.self_work()).then((a.function, a.line).cmp(&(b.function, b.line))));
+        let _ = writeln!(summary, "\ntop lines by self work: the game's code, {scope_label}");
+        let _ = writeln!(summary, "{:>9} {:>8} {:>11} {:>12}  line  (opcodes)", "self ms", "cold ms", "total ms", "insns");
+        let is_game_line = |line: &&ScopedLine| {
+            line.phase.self_work() >= 5e-7 && !names.engine(line.function) && !names.harness(line.function) && !names.binding(line.function)
+        };
+        for ScopedLine { function, line, figures, phase } in scoped_lines.iter().filter(is_game_line).take(top) {
             let ops: Vec<String> = {
                 let mut ops: Vec<_> = figures.ops.iter().collect();
                 ops.sort_by(|a, b| b.1.cmp(a.1));
                 ops.iter().take(4).map(|(op, count)| format!("{} {}", vm::opcode_name(**op), group_digits(**count))).collect()
             };
             let module = names.function(*function).map_or(String::new(), |f| names.short(&f.source).to_string());
-            let _ = writeln!(summary, "{:>9.3} {:>9.3} {:>11.3} {:>12}  {module}:{line}  ({})", ms(line_self(figures)), ms(figures.c_work), ms(figures.total_work), group_digits(figures.insns), ops.join(", "));
+            let _ = writeln!(summary, "{:>9.3} {:>8.3} {:>11.3} {:>12}  {module}:{line}  ({})", ms(phase.self_work()), ms(phase.cold), ms(phase.total_work), group_digits(phase.insns), ops.join(", "));
         }
-        // inline caches and builtin calls
+        attribution_sections(input, &names, &mut summary, &mut json, top);
+        // inline caches
         if input.config.kinds.has(super::Kinds::CACHES) {
             inline_caches(input, vm_results, &names, top, &mut summary, &mut json);
         }
+    }
+
+    // the work clock's price of one count of the counters an issue prices what it names by (ns, at desktop prices: a phone run's
+    // are these times work.units.scale): an allocated object, a byte of table storage, a key a table's growth rehashed, a C
+    // function a script called, a comparison table.sort made and a call of its comparison function; a byte any script work
+    // allocated, a key a growth put back into a hash part, a block over 1 KB, an object a library call made, and the
+    // collector's charge an object (in work.collector_ms, not in the others)
+    if json["work"].is_object() {
+        let price = |set: fn(&mut crate::cost::VmCounters)| -> f64 {
+            let mut counters: crate::cost::VmCounters = unsafe { std::mem::zeroed() };
+            set(&mut counters);
+            crate::cost::luau(&counters) * 1e9
+        };
+        json["work"]["prices"] = json!({
+            "object_ns": price(|c| c.objects = 1),
+            "stored_byte_ns": price(|c| c.stored = 1),
+            "rehashed_key_ns": price(|c| c.rehashed = 1),
+            "c_call_ns": price(|c| c.ccalls = 1),
+            "sort_compare_ns": price(|c| c.sortcompares = 1),
+            "sort_call_ns": price(|c| c.sortcalls = 1),
+            "allocated_byte_ns": price(|c| c.hostops[crate::cost::ALLOCBYTES_SLOT] = 1),
+            "hash_rehashed_key_ns": price(|c| c.hostops[crate::cost::HASHREHASHED_SLOT] = 1),
+            "large_block_ns": price(|c| c.hostops[crate::cost::LARGEBLOCKS_SLOT] = 1),
+            "library_object_ns": price(|c| c.hostops[crate::cost::LIBOBJECTS_SLOT] = 1),
+            "collector_object_ns": price(|c| c.hostops[crate::cost::GCOBJECTS_SLOT] = 1),
+        });
     }
 
     // host time
@@ -1370,53 +1778,99 @@ pub fn write(input: &Input) -> Result<String, String> {
     // the timeline
     if !input.rows.is_empty() {
         let rows = input.rows;
-        let work: Vec<f64> = rows.iter().map(|row| row.work_ms).collect();
-        let (worst, worst_work) = work.iter().enumerate().fold((0, 0.0), |best, (index, &value)| if value > best.1 { (index, value) } else { best });
-        let mean = work.iter().sum::<f64>() / work.len() as f64;
+        // (a frame a phase mark split is one frame here: its parts summed)
+        struct Whole {
+            frame: u64,
+            work: f64,
+            sides: Option<(f64, f64)>,
+        }
+        let mut frames_work: Vec<Whole> = Vec::new();
+        for row in rows {
+            let work = row.work_ms * price_scale();
+            let sides = row_sides_ms(row);
+            match frames_work.last_mut().filter(|last| last.frame == row.frame && row.part > 1) {
+                Some(last) => {
+                    last.work += work;
+                    last.sides = add_sides(last.sides, sides);
+                }
+                None => frames_work.push(Whole { frame: row.frame, work, sides }),
+            }
+        }
+        let count = frames_work.len() as f64;
+        let (worst, worst_work) = frames_work.iter().fold((0, 0.0), |best, whole| if whole.work > best.1 { (whole.frame, whole.work) } else { best });
+        let mean = frames_work.iter().map(|whole| whole.work).sum::<f64>() / count;
+        let sides = frames_work.iter().all(|whole| whole.sides.is_some()).then(|| frames_work.iter().filter_map(|whole| whole.sides).fold((0.0, 0.0), |sum, (game, harness)| (sum.0 + game / count, sum.1 + harness / count)));
         let (first, last) = (&rows[0], rows.last().unwrap());
         // (a frame's host time and cycles: its own, else the cpu pass's for the same frame, else none: a kind slowed the run)
-        let host = |row: &Row| row.host_ms.map(|host| (host, row.cycles.unwrap_or(0))).or_else(|| cpu_by_frame.get(&row.frame).copied());
-        let hosts: Vec<f64> = rows.iter().filter_map(|row| host(row).map(|(host, _)| host)).collect();
-        let host_text = if hosts.len() == rows.len() {
-            format!("host a frame mean {:.2} ms{}", hosts.iter().sum::<f64>() / hosts.len() as f64, if rows[0].host_ms.is_none() { " (the cpu pass's)" } else { "" })
+        let host = |row: &Row| row.host_ms.map(|host| (host, row.cycles.unwrap_or(0))).or_else(|| (row.part == 0).then(|| cpu_by_frame.get(&row.frame).copied()).flatten());
+        let mut own_hosts: BTreeMap<u64, Option<f64>> = BTreeMap::new();
+        for row in rows {
+            let whole = own_hosts.entry(row.frame).or_insert(Some(0.0));
+            *whole = whole.zip(row.host_ms).map(|(before, part)| before + part);
+        }
+        let hosts: Vec<f64> = own_hosts.iter().filter_map(|(frame, own)| own.or_else(|| cpu_by_frame.get(frame).map(|(host, _)| *host))).collect();
+        let host_text = if hosts.len() == count as usize {
+            format!("host a frame mean {:.2} ms{}", hosts.iter().sum::<f64>() / count, if rows[0].host_ms.is_none() { " (the cpu pass's)" } else { "" })
         } else {
             "host time a frame not taken (a kind slowed the run: --profile cpu takes it in a pass of its own)".to_string()
         };
         let threads_made: u64 = rows.iter().map(|row| row.threads_made).sum();
         let reachable_threads: Vec<String> = input.snapshots.iter().filter_map(|snapshot| snapshot.by_type.iter().find(|(name, _, _)| name == "thread").map(|(_, count, _)| format!("{} {}", snapshot.label, group_digits(*count)))).collect();
-        let _ = writeln!(
-            summary,
-            "\ntimeline ({} frames): work a frame mean {:.3} ms, max {:.3} ms (frame {}); {host_text}; VM heap with its garbage {} -> {}; instances in the DataModel {} -> {}, alive outside it {} -> {}, destroyed awaiting collection {} -> {}; connections {} -> {}; threads made {} ({:.1} a frame){}",
-            rows.len(),
-            mean,
-            worst_work,
-            rows[worst].frame,
-            bytes(first.heap_bytes as f64),
-            bytes(last.heap_bytes as f64),
-            group_digits(first.instances.0),
-            group_digits(last.instances.0),
-            group_digits(first.instances.1),
-            group_digits(last.instances.1),
-            group_digits(first.instances.2),
-            group_digits(last.instances.2),
-            group_digits(first.connections),
-            group_digits(last.connections),
-            group_digits(threads_made),
-            threads_made as f64 / rows.len() as f64,
-            if reachable_threads.is_empty() { String::new() } else { format!("; threads reachable at the heap snapshots: {}", reachable_threads.join(", ")) }
-        );
+        let detailed = input.config.kinds.has(super::Kinds::TIMELINE);
+        if detailed {
+            let _ = writeln!(
+                summary,
+                "\ntimeline ({} frames{}): work a frame mean {:.3} ms{}, max {:.3} ms (frame {}); {host_text}; VM heap with its garbage {} -> {}; instances in the DataModel {} -> {}, alive outside it {} -> {}, destroyed awaiting collection {} -> {}; connections {} -> {}; threads made {} ({:.1} a frame){}",
+                count as usize,
+                if rows.len() > count as usize { format!(", {} rows split by phase marks", rows.len()) } else { String::new() },
+                mean,
+                sides.map_or(String::new(), |(game, harness)| format!(" (the game's code {game:.3} ms, the harness's {harness:.3} ms)")),
+                worst_work,
+                worst,
+                bytes(first.heap_bytes as f64),
+                bytes(last.heap_bytes as f64),
+                group_digits(first.instances.0),
+                group_digits(last.instances.0),
+                group_digits(first.instances.1),
+                group_digits(last.instances.1),
+                group_digits(first.instances.2),
+                group_digits(last.instances.2),
+                group_digits(first.connections),
+                group_digits(last.connections),
+                group_digits(threads_made),
+                threads_made as f64 / count,
+                if reachable_threads.is_empty() { String::new() } else { format!("; threads reachable at the heap snapshots: {}", reachable_threads.join(", ")) }
+            );
+        } else {
+            let _ = writeln!(summary, "\nframe work ({} frames): mean {mean:.3} ms, max {worst_work:.3} ms (frame {worst})", count as usize);
+        }
+        let split = rows.iter().all(|row| row.sides.is_some());
         json["timeline"] = json!({
-            "columns": ["frame", "seconds", "phase", "host_ms", "work_ms", "instructions", "heap_bytes", "allocated_bytes", "allocations", "gc_steps", "gc_ms", "gc_freed", "instances_in_datamodel", "instances_outside", "instances_destroyed", "connections", "threads_made", "cycles"],
+            "columns": ["frame", "seconds", "phase", "host_ms", "work_ms", "instructions", "heap_bytes", "allocated_bytes", "allocations", "gc_steps", "gc_ms", "gc_freed", "instances_in_datamodel", "instances_outside", "instances_destroyed", "connections", "threads_made", "cycles", "part", "game_ms", "harness_ms", "collector_ms"],
             "about": {
                 "host_ms": "the frame's host time and cycles: this run's, else the cpu pass's for the same frame (a kind that slows the run makes its own not the run's), else null",
                 "instances_in_datamodel": "live instances at the frame's end in the DataModel's tree; instances_outside: alive outside it; instances_destroyed: destroyed and kept until the VM collects the userdata that holds them",
                 "threads_made": "threads the VM made in the frame (coroutines, task threads, handlers' threads); the reachable ones are the heap snapshots' (by_type thread)",
             },
-            "rows": rows.iter().map(|row| {
-                let host = host(row);
-                json!([row.frame, round(row.seconds, 4), row.phase, host.map(|(ms, _)| round(ms, 4)), round(row.work_ms, 5), row.instructions, row.heap_bytes, row.allocated_bytes, row.allocations, row.gc_steps, round(row.gc_ms, 4), row.gc_freed, row.instances.0, row.instances.1, row.instances.2, row.connections, row.threads_made, host.map(|(_, cycles)| cycles)])
-            }).collect::<Vec<_>>(),
+            "rows": rows.iter().map(|row| timeline_row(row, host(row))).collect::<Vec<_>>(),
         });
+        if !detailed {
+            json["timeline"]["columns"] = json!(["frame", "seconds", "phase", "work_ms", "part", "game_ms", "harness_ms", "collector_ms"]);
+            json["timeline"]["rows"] = json!(rows.iter().map(compact_timeline_row).collect::<Vec<_>>());
+            json["timeline"]["about"] = json!({"work_ms": "compact frame work for issue summaries and hitch attribution; timeline records the other frame metrics"});
+        }
+        // Summaries retain small events; heavy frames retain exact node and site contributions
+        if split {
+            let (stats, heavy, site_frames) = frame_evidence(rows, &scope, input.run.fps);
+            json["timeline"]["function_stats"] = stats;
+            json["timeline"]["node_frames"] = heavy;
+            json["timeline"]["site_frames"] = site_frames;
+        }
+    }
+
+    if let Some(vm_results) = input.vm {
+        price_builtin_fixes(vm_results, input.rows, &scope, input.run.fps, &mut json);
+        write_issue_summaries(vm_results, input.rows, &scope, input.run.fps, &mut json);
     }
 
     // the CPU
@@ -1601,7 +2055,19 @@ pub fn write(input: &Input) -> Result<String, String> {
     let text = serde_json::to_string(&json).map_err(|error| error.to_string())?;
     write_file(&out.join("profile.json"), text.as_bytes())?;
     write_file(&out.join("summary.txt"), summary.as_bytes())?;
-    write_file(&out.join("report.html"), html(&text).as_bytes())?;
+    // (the page never reads each frame's functions, the bulk of a big profile: it is left out of the page's copy)
+    if let Some(timeline) = json.get_mut("timeline").and_then(Json::as_object_mut) {
+        timeline.remove("functions");
+        timeline.remove("function_runs");
+        timeline.remove("function_stats");
+        timeline.remove("issue_stats");
+        timeline.remove("node_frames");
+        timeline.remove("site_frames");
+        timeline.remove("replacement_frames");
+        timeline.remove("function_contexts");
+    }
+    let page = serde_json::to_string(&json).map_err(|error| error.to_string())?;
+    write_file(&out.join("report.html"), html(&page).as_bytes())?;
     Ok(summary)
 }
 
@@ -1644,7 +2110,8 @@ pub const OUTCOME_INFO: [(&str, &str, &str); vm::CACHE_OUTCOMES] = [
 ];
 
 /// What a declined builtin call can do instead, where an equivalent call takes the fast path: (builtin, reason, advice)
-const BUILTIN_ADVICE: [(&str, usize, &str); 7] = [
+const BUILTIN_ADVICE: [(&str, usize, &str); 8] = [
+    ("math.abs", vm::DECLINE_TYPES, "Pass the existing numeric value directly instead of its string form; this saving includes no added conversion"),
     ("string.byte", vm::DECLINE_RESULTS, "string.byte(s, i, j) whose results go to a list or a call goes the full way when the range holds more than one byte: as many locals as bytes (local a, b = string.byte(s, i, i + 1)), or string.byte(s, k) for each index, take the fast path"),
     ("string.byte", vm::DECLINE_ARGS, "string.byte(s) goes the full way: string.byte(s, 1) takes the fast path"),
     ("string.sub", vm::DECLINE_ARGS, "string.sub(s, i) goes the full way: string.sub(s, i, #s) takes the fast path"),
@@ -1659,9 +2126,11 @@ pub fn builtin_advice(name: &str, reason: usize) -> Option<&'static str> {
     BUILTIN_ADVICE.iter().find(|(builtin, why, _)| (*builtin == name || *builtin == "*") && *why == reason).map(|(_, _, advice)| *advice)
 }
 
-/// The frames the reported phases ran: each of their marks' frame to the next mark's (the last to the run's end); the run's
-/// frames when the marks name none of them
+/// Physical frames in the reported phases. Marks are a fallback for inputs without timeline rows.
 fn scope_frames(input: &Input, scope: &[u32]) -> f64 {
+    // Phase marks can split a frame, and their counters include the frame before steady starts.
+    let row_frames: std::collections::BTreeSet<u64> = input.rows.iter().filter(|row| scope.contains(&row.phase)).map(|row| row.frame).collect();
+    if !row_frames.is_empty() { return row_frames.len() as f64; }
     let names: Vec<&str> = scope.iter().filter_map(|phase| input.phases.get(*phase as usize).map(String::as_str)).collect();
     let end = input.end.map_or(input.run.frames, |end| end.frame.max(input.run.frames));
     let mut frames = 0u64;
@@ -1718,15 +2187,14 @@ fn inline_caches(input: &Input, vm_results: &vm::Results, names: &Names, top: us
     let every_phase = scope.len() >= input.phases.len().max(1);
     let scope_names: Vec<String> = scope.iter().map(|phase| input.phases.get(*phase as usize).cloned().unwrap_or_default()).collect();
     let scope_label = if every_phase { "every phase".to_string() } else { format!("{} {}", if scope.len() == 1 { "phase" } else { "phases" }, scope_names.join(", ")) };
-    // (the work clock's desktop prices, as its totals in this profile are)
-    let scale = 1.0;
+    let scale = price_scale();
 
     // each instruction's records in the reported phases, summed, and apart by the call-tree node they ran in
     let absorb = |entry: &mut vm::CacheSite, site: &vm::CacheSite| {
         entry.op = site.op;
-        entry.charged += site.charged;
-        entry.first_touch += site.first_touch;
-        entry.presized += site.presized;
+        entry.charged += site.charged * scale;
+        entry.first_touch += site.first_touch * scale;
+        entry.presized += site.presized * scale;
         for (sum, count) in entry.outcomes.iter_mut().zip(site.outcomes) {
             *sum += count;
         }
@@ -1911,7 +2379,7 @@ Luau inline caches, {scope_label}: what each lookup did, as the interpreter did 
             "sites": tool_sites,
             "by_kind": tool_kinds.iter().enumerate().filter(|(_, totals)| totals.outcomes.iter().any(|n| *n > 0)).map(|(kind, totals)| kind_json(kind, totals)).collect::<Vec<_>>(),
         },
-        "sites": sites.iter().take(2000).map(|row| {
+        "sites": sites.iter().map(|row| {
             let (function, site) = (row.function, &row.site);
             let f = &vm_results.functions[function as usize];
             let (hits, misses, slow, other) = legacy(&site.outcomes);
@@ -1969,8 +2437,9 @@ Luau inline caches, {scope_label}: what each lookup did, as the interpreter did 
     impl Calls {
         fn absorb(&mut self, site: &vm::BuiltinSite) {
             self.fast += site.fast;
-            self.charged += site.charged;
-            self.fast_equivalent += site.fast_equivalent;
+            let scale = price_scale();
+            self.charged += site.charged * scale;
+            self.fast_equivalent += site.fast_equivalent * scale;
             for (sum, count) in self.declines.iter_mut().zip(site.declines) {
                 *sum += count;
             }
@@ -2070,7 +2539,7 @@ builtin calls (the compiler's fast calls), {scope_label}: {} calls, {} served by
                     "fast_equivalent_us": round(b.all.fast_equivalent * 1e6, 4), "fast_equivalent_us_per_frame": round(b.all.fast_equivalent * 1e6 / frames, 5),
                     "fast_equivalent_ns": (n > 0).then(|| round(b.all.fast_equivalent * 1e9 / n as f64, 3)),
                     "advice": Json::Object(b.all.declines.iter().enumerate().filter(|(_, n)| **n > 0).filter_map(|(reason, _)| builtin_advice(&name, reason).map(|advice| (vm::DECLINE_NAMES[reason].to_string(), json!(advice)))).collect()),
-                    "sites": b.sites.iter().take(200).map(|(&(function, pc), at)| {
+                    "sites": b.sites.iter().map(|(&(function, pc), at)| {
                         let f = &vm_results.functions[function as usize];
                         let (mut charged, mut fast_equivalent) = (round(at.charged * 1e6, 4), round(at.fast_equivalent * 1e6, 4));
                         // (a site that declined, apart by call-tree node: its figures their rounded sums, so they add up exactly)
@@ -2087,6 +2556,7 @@ builtin calls (the compiler's fast calls), {scope_label}: {} calls, {} served by
                             (charged, fast_equivalent) = (sum("decline_charged_us"), sum("fast_equivalent_us"));
                         }
                         json!({
+                            "fallback_end_pc": fallback_end_pc(f, pc),
                             "function": function, "line": f.lines.get(pc).copied().unwrap_or(0), "pc": pc, "calls": at.fast + at.declined(), "fast": at.fast,
                             "declines": declines_json(&at.declines), "decline_charged_us": charged, "fast_equivalent_us": fast_equivalent,
                             "nodes": (!nodes.is_empty()).then_some(nodes),
@@ -2104,10 +2574,13 @@ fn mark_json(mark: &Mark) -> Json {
     let mut json = json!({"phase": mark.phase, "frame": mark.frame, "seconds": mark.seconds, "work_ms": ms(mark.work), "host_ms": mark.host * 1e3, "cycles": mark.cycles});
     if let Some(totals) = &mark.totals {
         json["insns"] = json!(totals.insns);
+        json["cold_ms"] = json!(ms(totals.cold));
+        json["collector_ms"] = json!(ms(totals.collector));
         json["vm"] = json!({
             "objects": totals.objects, "allocated": totals.allocated, "stored": totals.stored, "rehashed": totals.rehashed,
             "cold_tables": totals.cold_tables, "cold_closures": totals.cold_closures, "cold_protos": totals.cold_protos, "cold_code": totals.cold_code,
             "sort_compares": totals.sort_compares, "sort_calls": totals.sort_calls,
+            "buffer_fresh_bytes": totals.buffer_fresh, "buffer_big_bytes": totals.buffer_big,
         });
         if let (Some(bytes), Some(count)) = (totals.alloc_bytes, totals.allocs) {
             json["alloc_bytes"] = json!(bytes);
@@ -2132,6 +2605,409 @@ fn mark_json(mark: &Mark) -> Json {
         json["engine"] = engine_json(ops);
     }
     json
+}
+
+/// The reported phases' game code: its self work, and each kind's share of it (vm::SPLITS)
+fn scope_work_kinds(model: &Model, scope: &[u32]) -> (f64, [f64; vm::SPLITS]) {
+    let mut work = 0.0;
+    for (&(_, phase, harness_side), figures) in &model.phase_self {
+        if !harness_side && scope.contains(&phase) {
+            work += figures.0;
+        }
+    }
+    let mut kinds = [0.0f64; vm::SPLITS];
+    for (&(_, phase, harness_side), split) in &model.phase_split {
+        if !harness_side && scope.contains(&phase) {
+            add_kinds(&mut kinds, &split.kinds);
+        }
+    }
+    (work, kinds)
+}
+
+/// The phases `scope` names, as the summary's tables name them
+fn scope_phrase(scope: &[u32], phases: &[String]) -> String {
+    let names: Vec<&str> = scope.iter().filter_map(|phase| phases.get(*phase as usize).map(String::as_str)).collect();
+    match names.len() {
+        0 => "every phase".to_string(),
+        1 => format!("phase {}", names[0]),
+        _ => format!("phases {}", names.join(", ")),
+    }
+}
+
+/// The Luau part of `scope_work` (the reported phases' game code): the VM's priced work less its cold and the collector's charges,
+/// as a share of every script's work in those phases (each phase's mark to the next one's), applied to it; None without marks
+fn scope_luau(input: &Input, scope: &[u32], scope_work: f64) -> Option<f64> {
+    let (mut work, mut luau) = (0.0, 0.0);
+    let mut seen = false;
+    for (index, mark) in input.marks.iter().enumerate() {
+        let Some(phase) = input.phases.iter().position(|name| *name == mark.phase) else { continue };
+        if !scope.contains(&(phase as u32)) {
+            continue;
+        }
+        let next = input.marks.get(index + 1).or(input.end)?;
+        let (start, end) = (mark.totals?, next.totals?);
+        work += (next.work - mark.work).max(0.0);
+        luau += ((end.luau - start.luau) - (end.vm_cold - start.vm_cold) - (end.collector - start.collector)).max(0.0);
+        seen = true;
+    }
+    (seen && work > 0.0).then(|| (luau / work).min(1.0) * scope_work)
+}
+
+/// The Luau part of the whole run's work (its first mark to its end), for a profile without phases' figures
+fn whole_luau(input: &Input, total: f64, kinds: &[f64; vm::SPLITS]) -> f64 {
+    match (input.marks.first().and_then(|mark| mark.totals), input.end.and_then(|end| end.totals)) {
+        (Some(first), Some(last)) => ((last.luau - first.luau) - (last.vm_cold - first.vm_cold) - kinds[vm::COLLECTOR]).clamp(0.0, total),
+        _ => 0.0,
+    }
+}
+
+/// One kind of work in a fidelity line: its share of the code's work and its band (cost.rs BENCH_BANDS)
+struct FidelityComponent {
+    name: &'static str,
+    share: f64,
+    low: f64,
+    high: f64,
+    rows: usize,
+}
+
+impl FidelityComponent {
+    /// A kind of work with the band cost.rs keeps for it; a kind without one reads 0.5-1.5x
+    fn new(name: &'static str, share: f64) -> Self {
+        match crate::cost::BENCH_BANDS.iter().find(|band| band.component == name) {
+            Some(band) => FidelityComponent { name, share, low: band.low, high: band.high, rows: band.rows },
+            None => FidelityComponent { name, share, low: 0.5, high: 1.5, rows: 0 },
+        }
+    }
+
+    /// What the band is made of (profile.json's `basis`)
+    fn basis(&self) -> String {
+        let rows = self.rows;
+        match self.name {
+            "cold" => format!("{rows} held-out macro-bench rows: the whole work clock on a game's code where its cold charges weigh most, measured with the prices before the size fit, not a test of the cold charges alone"),
+            "studio" => format!("the range of {rows} interpreted bench rows against the Studio playtest prices"),
+            "defaulted" => format!("{rows} measured method rows against the borrowed CALL price"),
+            _ => format!("{rows} held-out parity-bench rows"),
+        }
+    }
+
+    /// The same, short, for the fidelity text
+    fn rows_text(&self) -> String {
+        let rows = self.rows;
+        match self.name {
+            "cold" => format!("{rows} macro-bench rows of the whole clock, previous prices"),
+            "studio" => format!("the range of {rows} rows"),
+            _ => format!("{rows} rows"),
+        }
+    }
+}
+
+/// The kinds of work a fidelity line weighs (`total`: all the code's work, `kinds`: its split by kind, `luau`: its Luau part), each with
+/// its share. What was priced from a client is split among the Luau, engine, cold, collector and dispatch parts; what was priced from
+/// Studio-era measurements and what was borrowed are shares of the whole. Parts with no work are left out.
+fn fidelity_components(total: f64, kinds: &[f64; vm::SPLITS], luau: f64, studio: f64, defaulted: f64) -> Vec<FidelityComponent> {
+    let cold = kinds[vm::COLD];
+    let collector = kinds[vm::COLLECTOR];
+    let dispatch = kinds[vm::DISPATCH];
+    let luau = luau.clamp(0.0, total);
+    let engine = (total - luau - cold - collector - dispatch).max(0.0);
+    // (the provenance axis comes out first: what is left was priced from a client)
+    let client_share = (total - studio - defaulted).max(0.0) / total;
+    let client_parts = (luau + engine + cold + collector + dispatch).max(1e-12);
+    let mut components = vec![
+        FidelityComponent::new("luau", client_share * luau / client_parts),
+        FidelityComponent::new("engine", client_share * engine / client_parts),
+        FidelityComponent::new("cold", client_share * cold / client_parts),
+        FidelityComponent::new("collector", client_share * collector / client_parts),
+        FidelityComponent::new("dispatch", client_share * dispatch / client_parts),
+        FidelityComponent::new("studio", studio / total),
+        FidelityComponent::new("defaulted", defaulted / total),
+    ];
+    components.retain(|component| component.share > 0.0);
+    components
+}
+
+/// What the work clock is beside a client's own time for `what` (the reported phases' game code): each component's band (ree /
+/// client on rows no fit saw, cost.rs BENCH_BANDS, each with what it is), weighted by that code's work in each (`total`, its kinds
+/// `kinds` and its Luau part `luau`), with the work priced from Studio-era measurements and by borrowed prices at their own bands, and
+/// a phone's factor's measured spread folded into the band.
+fn fidelity_json(input: &Input, total: f64, kinds: &[f64; vm::SPLITS], luau: f64, what: &str) -> Json {
+    let total = total.max(1e-12);
+    let studio = kinds[vm::STUDIO].min(total);
+    let defaulted = kinds[vm::DEFAULTED].min(total - studio);
+    let components = fidelity_components(total, kinds, luau, studio, defaulted);
+
+    // the bands' mean, weighted by each component's share of the work
+    let weight: f64 = components.iter().map(|component| component.share).sum::<f64>().max(1e-12);
+    let (mut clock_lo, mut clock_hi) = (0.0, 0.0);
+    for component in &components {
+        clock_lo += component.share / weight * component.low;
+        clock_hi += component.share / weight * component.high;
+    }
+
+    let device = input.device;
+    let phone = device == "phone";
+    let (device_lo, device_hi) = if phone { crate::cost::PHONE_SCRIPTS_BAND } else { (1.0, 1.0) };
+    // (against a phone: the figures are the desktop prices times PHONE_SCRIPTS where a phone's factor lies within the band)
+    let (ratio_lo, ratio_hi) = if phone { (crate::cost::PHONE_SCRIPTS / device_hi, crate::cost::PHONE_SCRIPTS / device_lo) } else { (1.0, 1.0) };
+    let (lo, hi) = (clock_lo * ratio_lo, clock_hi * ratio_hi);
+    let device_note = if phone {
+        format!(
+            "; a phone's figures are the desktop prices times {:.2}, a factor measured at {:.2}-{:.2} over phones and scenes, so against a phone they read {:.2}-{:.2}x again, which the band includes",
+            crate::cost::PHONE_SCRIPTS, device_lo, device_hi, ratio_lo, ratio_hi
+        )
+    } else {
+        String::new()
+    };
+
+    let mut parts: Vec<String> = Vec::new();
+    for component in &components {
+        parts.push(format!(
+            "{} {:.0} % at {:.2}-{:.2}x ({})",
+            component.name,
+            component.share / weight * 100.0,
+            component.low,
+            component.high,
+            component.rows_text()
+        ));
+    }
+    let text = format!(
+        "fidelity: the work clock reads about {lo:.2}-{hi:.2}x a client's time on {what}: each component's error on rows no fit saw (ree / client from the 10th to the 90th percentile, the Studio-era prices' over the range of their rows), weighted by that code's work: {}{device_note}. Size a cut in a client",
+        parts.join(", ")
+    );
+    let prices = if phone {
+        format!("phone prices: {} times {:.2}", crate::cost::REFERENCE_CLIENT, crate::cost::PHONE_SCRIPTS)
+    } else {
+        format!("desktop prices: {}", crate::cost::REFERENCE_CLIENT)
+    };
+
+    let mut component_json = serde_json::Map::new();
+    for component in &components {
+        let row = json!({"share": round(component.share / weight, 4), "band": [component.low, component.high], "rows": component.rows, "basis": component.basis()});
+        component_json.insert(component.name.to_string(), row);
+    }
+    json!({
+        "text": text,
+        "band": [round(lo, 3), round(hi, 3)],
+        "clock_band": [round(clock_lo, 3), round(clock_hi, 3)],
+        "weighted": what,
+        "components": component_json,
+        "unmeasured_share": round(defaulted / total, 4),
+        "studio_share": round(studio / total, 4),
+        "device": {"name": device, "scale": price_scale(), "band": [device_lo, device_hi], "ratio_band": [round(ratio_lo, 3), round(ratio_hi, 3)]},
+        "prices": prices,
+        "reference": crate::cost::REFERENCE_CLIENT,
+    })
+}
+
+/// The line of source the instruction `pc` of `function` is on
+fn source_line(names: &Names, function: i32, pc: i32) -> Option<i32> {
+    names.function(function).and_then(|f| f.lines.get(pc.max(0) as usize).copied())
+}
+
+/// "module:line" for the instruction `pc` of `function`; "(engine)" for the engine's own work
+fn line_label(names: &Names, function: i32, pc: i32) -> String {
+    match names.function(function) {
+        Some(f) => format!("{}:{}", short_module(module_name(&f.source)), f.lines.get(pc.max(0) as usize).copied().unwrap_or(f.line)),
+        None if function < 0 => "(engine)".to_string(),
+        None => names.frame(function),
+    }
+}
+
+/// The five dearest instructions that paid cold charges, for profile.json
+fn payers_json(names: &Names, payers: &[vm::Payer]) -> Vec<Json> {
+    let mut rows = Vec::new();
+    for payer in payers.iter().take(5) {
+        rows.push(json!({"function": payer.function, "line": source_line(names, payer.function, payer.pc), "cost_ms": ms(payer.cost)}));
+    }
+    rows
+}
+
+/// A row of the summary's table of cold charges by object
+struct ColdRow {
+    cost: f64,
+    kind: String,
+    name: String,
+    charges: u64,
+    /// Charges in frames where other code touched the object too
+    shared: u64,
+    /// The line that paid most
+    first_payer: String,
+}
+
+/// The rows' total cost, then the rows sorted for display: the dearest first, ties by kind and name. The total is added in the
+/// order the rows were listed in, before the sort: profile.json keeps this sum unrounded, and a sum in display order can
+/// differ from it in its last bits.
+fn sum_then_sort_cold_rows(rows: &mut [ColdRow]) -> f64 {
+    let total = rows.iter().map(|row| row.cost).sum();
+    rows.sort_by(|a, b| b.cost.total_cmp(&a.cost).then(a.kind.cmp(&b.kind)).then(a.name.cmp(&b.name)));
+    total
+}
+
+/// The cold and first-use charges by object, from the VM's (tables, C and engine functions) and the engine's (instances, members,
+/// engine paths): the summary's table and profile.json's `cold`. How often other code shared each object in a frame shows what cutting
+/// its first payer would really save.
+fn cold_object_section(input: &Input, names: &Names, summary: &mut String, json: &mut Json, top: usize) {
+    let mut rows: Vec<ColdRow> = Vec::new();
+    let mut objects: Vec<Json> = Vec::new();
+    if let Some(vm_results) = input.vm {
+        for object in &vm_results.cold_objects {
+            let (kind, name) = match object.kind {
+                vm::COLD_TABLE if object.function >= 0 => ("table", format!("made at {}", line_label(names, object.function, object.pc))),
+                vm::COLD_TABLE => ("table", "made before the profile".to_string()),
+                vm::COLD_CFUNCTION => ("C function", vm_results.cfunctions.get(object.function.max(0) as usize).cloned().unwrap_or_default()),
+                _ => ("engine function", names.label(object.function)),
+            };
+            let first_payer = object.payers.first().map(|payer| line_label(names, payer.function, payer.pc)).unwrap_or_default();
+            rows.push(ColdRow { cost: object.cost, kind: kind.to_string(), name: name.clone(), charges: object.frames, shared: object.shared_frames, first_payer });
+            objects.push(json!({
+                "kind": kind, "name": name, "cost_ms": ms(object.cost), "frames": object.frames, "shared_frames": object.shared_frames,
+                "payers": payers_json(names, &object.payers),
+            }));
+        }
+    }
+    if let Some(attribution) = input.attribution {
+        for object in &attribution.cold {
+            let first_payer = object.payers.first().map(|payer| line_label(names, payer.function, payer.pc)).unwrap_or_default();
+            rows.push(ColdRow { cost: object.cost, kind: object.kind.to_string(), name: object.name.clone(), charges: object.charges, shared: object.shared, first_payer });
+            objects.push(json!({
+                "kind": object.kind, "name": object.name, "cost_ms": ms(object.cost), "frames": object.charges, "shared_frames": object.shared,
+                "payers": payers_json(names, &object.payers),
+            }));
+        }
+    }
+    if rows.is_empty() {
+        return;
+    }
+    let total = sum_then_sort_cold_rows(&mut rows);
+    // (the run's cold charges: the objects' and what no object carries, a function's own code, closure and first run, which each
+    // function's cold column holds)
+    let run_cold = match (input.marks.first().and_then(|mark| mark.totals), input.end.and_then(|end| end.totals)) {
+        (Some(first), Some(last)) => (last.cold - first.cold).max(total),
+        _ => total,
+    };
+    let _ = writeln!(
+        summary,
+        "\ncold and first-use charges by object: {:.3} ms of the run's {:.3} ms, every phase (the rest is functions' own code, closures and first runs, in their cold column; shared: frames in which other code also touched it, so cutting the first payer moves the charge rather than saving it)",
+        ms(total),
+        ms(run_cold)
+    );
+    let _ = writeln!(summary, "{:>9} {:>8} {:>8}  object  (first paid by)", "ms", "charges", "shared");
+    for row in rows.iter().take(top.min(12)) {
+        let shared_percent = if row.charges > 0 { row.shared as f64 / row.charges as f64 * 100.0 } else { 0.0 };
+        let _ = writeln!(summary, "{:>9.3} {:>8} {:>7.0}%  {} {}  ({})", ms(row.cost), group_digits(row.charges), shared_percent, row.kind, row.name, row.first_payer);
+    }
+    // (the dearest first; equal costs keep their order of listing)
+    objects.sort_by(|a, b| b["cost_ms"].as_f64().unwrap_or(0.0).total_cmp(&a["cost_ms"].as_f64().unwrap_or(0.0)));
+    objects.truncate(500);
+    json["cold"] = json!({"total_ms": ms(run_cold), "objects_ms": ms(total), "objects": objects});
+}
+
+/// The handlers by the site that connected them: the engine's dispatch to each, and the runs' whole work
+fn handler_section(attribution: &attribution::Results, names: &Names, summary: &mut String, json: &mut Json, top: usize) {
+    if attribution.handlers.is_empty() {
+        return;
+    }
+    let _ = writeln!(summary, "\nhandlers by the site that connected them (dispatch: the engine's delivery to each handler, booked to it; work: the runs' whole work, dispatch included)");
+    let _ = writeln!(summary, "{:>9} {:>11} {:>8} {:>11}  signal  (connected at)", "work ms", "dispatch ms", "runs", "connections");
+    for site in attribution.handlers.iter().take(top.min(10)) {
+        let _ = writeln!(
+            summary,
+            "{:>9.3} {:>11.3} {:>8} {:>11}  {}  ({})",
+            ms(site.work),
+            ms(site.dispatch),
+            group_digits(site.runs),
+            group_digits(site.connections as u64),
+            site.signal,
+            line_label(names, site.function, site.pc)
+        );
+    }
+    let mut sites = Vec::new();
+    for site in &attribution.handlers {
+        sites.push(json!({
+            "signal": site.signal, "function": site.function, "line": source_line(names, site.function, site.pc),
+            "connections": site.connections, "runs": site.runs, "dispatch_ms": ms(site.dispatch), "work_ms": ms(site.work),
+        }));
+    }
+    json["handlers"] = Json::Array(sites);
+}
+
+/// The resumptions of parked threads, by the line each waited on
+fn resumption_section(attribution: &attribution::Results, names: &Names, summary: &mut String, json: &mut Json, top: usize) {
+    if attribution.resumes.is_empty() {
+        return;
+    }
+    let count: u64 = attribution.resumes.iter().map(|site| site.count).sum();
+    let cost: f64 = attribution.resumes.iter().map(|site| site.cost).sum();
+    let _ = writeln!(summary, "\nresumptions of parked threads (task.wait, wait, task.delay): {} costing {:.3} ms, booked to the line each waited on", group_digits(count), ms(cost));
+    for site in attribution.resumes.iter().take(top.min(6)) {
+        let _ = writeln!(summary, "{:>9.3} ms {:>8}  {}", ms(site.cost), group_digits(site.count), line_label(names, site.function, site.pc));
+    }
+    let mut sites = Vec::new();
+    for site in &attribution.resumes {
+        sites.push(json!({"function": site.function, "line": source_line(names, site.function, site.pc), "count": site.count, "cost_ms": ms(site.cost)}));
+    }
+    json["resumptions"] = Json::Array(sites);
+}
+
+/// Whether a line that read os.clock is a budget loop's check: it read the clock more than once a run of its function, and two of its
+/// reads in one run made an interval
+fn is_budget_loop(line: &attribution::ClockLine) -> bool {
+    line.reads > line.runs && line.intervals > 0
+}
+
+/// A budget loop's work an iteration in microseconds: the clock's advance between two reads by one run, its callees' included
+fn iteration_us(line: &attribution::ClockLine) -> Option<f64> {
+    if line.intervals > 0 { Some(line.between / line.intervals as f64 * 1e6) } else { None }
+}
+
+/// The lines that read os.clock more than once a run of their function (a call, or what is left of one after its thread yielded): a
+/// budget loop's check, whose work is set by the clock (on a frozen clock it does other work than a client's). A read after a yield
+/// starts a run, so a loop that waits each iteration is none.
+fn clock_section(attribution: &attribution::Results, names: &Names, summary: &mut String, json: &mut Json, top: usize) {
+    let budget_loops: Vec<&attribution::ClockLine> = attribution.clock_reads.iter().filter(|line| is_budget_loop(line)).collect();
+    if !budget_loops.is_empty() {
+        let _ = writeln!(
+            summary,
+            "\nos.clock budget loops (lines that read the clock more than once a run of their function, a call or what is left of one after a yield: the loop's work is set by its budget, so compare its work an iteration, and profile on the work clock, not a frozen one)"
+        );
+        let _ = writeln!(summary, "{:>10} {:>8} {:>8} {:>10} {:>16}  line", "reads", "runs", "frames", "per run", "us an iteration");
+        for line in budget_loops.iter().take(top.min(8)) {
+            let _ = writeln!(
+                summary,
+                "{:>10} {:>8} {:>8} {:>10.1} {:>16.3}  {}",
+                group_digits(line.reads),
+                group_digits(line.runs),
+                group_digits(line.frames),
+                line.reads as f64 / line.runs.max(1) as f64,
+                iteration_us(line).unwrap_or(0.0),
+                line_label(names, line.function, line.pc)
+            );
+        }
+    }
+    let mut lines = Vec::new();
+    for line in &attribution.clock_reads {
+        lines.push(json!({
+            "function": line.function, "line": source_line(names, line.function, line.pc),
+            "reads": line.reads, "frames": line.frames, "runs": line.runs, "iterations": line.intervals,
+            "iteration_us": iteration_us(line), "budget_loop": is_budget_loop(line),
+        }));
+    }
+    json["clock_reads"] = Json::Array(lines);
+}
+
+/// The summary's and profile.json's attributions: the cold and first-use charges by object (the VM's: tables by the line that made them,
+/// C and engine functions; the engine's: instances by class, members, engine paths), with how often other code shared each in a frame;
+/// handlers by the site that connected them; resumptions by the line threads waited on; events priced by a borrowed price
+fn attribution_sections(input: &Input, names: &Names, summary: &mut String, json: &mut Json, top: usize) {
+    cold_object_section(input, names, summary, json, top);
+    let Some(attribution) = input.attribution else { return };
+    handler_section(attribution, names, summary, json, top);
+    resumption_section(attribution, names, summary, json, top);
+    clock_section(attribution, names, summary, json, top);
+    if attribution.unmeasured_fires > 0 {
+        let _ = writeln!(summary, "events of kinds no bench measured fired {} times with handlers: each priced as a heard BindableEvent's (a borrowed price, in the defaulted share)", group_digits(attribution.unmeasured_fires));
+        json["unmeasured_fires"] = json!(attribution.unmeasured_fires);
+    }
 }
 
 /// What the scripts asked the engine to do (cost::EngineOps), each count by name
@@ -2517,6 +3393,63 @@ fn function_key(names: &Names, id: i32) -> String {
     }
 }
 
+/// A function's bytecode hashed as the compiler wrote it (profile.json `code_hash`): the same code hashes the same wherever
+/// it moves in its file, so `ree profile diff` pairs a function across an edit that moved it (an anonymous function's key
+/// carries its line). What a run changes in the code is taken out: the slot a table-key, global or method instruction
+/// predicts (the VM patches it into the instruction's C field), and the loader's GETUDATAKS / SETUDATAKS / NAMECALLUDATA
+/// forms, which read as the GETTABLEKS / SETTABLEKS / NAMECALL they stand for (the profile writes the plain form once a
+/// site runs). A second word (an aux) is hashed as it is. Line numbers live outside the code, so a move changes nothing
+fn code_hash(function: &vm::Function) -> Option<String> {
+    if function.code.is_empty() {
+        return None;
+    }
+    let op = |name: &str| vm::OPCODES.iter().position(|op| *op == name).map_or(u32::MAX, |index| index as u32);
+    let rewritten = [(op("GETUDATAKS"), op("GETTABLEKS")), (op("SETUDATAKS"), op("SETTABLEKS")), (op("NAMECALLUDATA"), op("NAMECALL"))];
+    let slotted = [op("GETGLOBAL"), op("SETGLOBAL"), op("GETTABLEKS"), op("SETTABLEKS"), op("NAMECALL")];
+    // (Luau's BytecodeUtils.h getOpLength: the instructions followed by an aux word)
+    let with_aux: Vec<u32> = [
+        "GETGLOBAL", "SETGLOBAL", "GETIMPORT", "GETTABLEKS", "SETTABLEKS", "NAMECALL", "JUMPIFEQ", "JUMPIFLE", "JUMPIFLT", "JUMPIFNOTEQ", "JUMPIFNOTLE", "JUMPIFNOTLT", "NEWTABLE", "SETLIST", "FORGLOOP", "LOADKX",
+        "FASTCALL2", "FASTCALL2K", "FASTCALL3", "JUMPXEQKNIL", "JUMPXEQKB", "JUMPXEQKN", "JUMPXEQKS", "GETUDATAKS", "SETUDATAKS", "NAMECALLUDATA", "NEWCLASSMEMBER", "CALLFB", "CMPPROTO", "NEWCLASS", "CONSTRUCT",
+        "GETPRIVATEFIELD", "SETPRIVATEFIELD",
+    ]
+    .iter()
+    .map(|name| op(name))
+    .collect();
+    let mut bytes: Vec<u8> = Vec::with_capacity(function.code.len() * 4);
+    let mut pc = 0;
+    while pc < function.code.len() {
+        let insn = function.code[pc];
+        let loaded = insn & 0xff;
+        let opcode = rewritten.iter().find(|(from, _)| *from == loaded).map_or(loaded, |(_, to)| *to);
+        let mut word = (insn & !0xff) | opcode;
+        if slotted.contains(&opcode) {
+            word &= 0x00ff_ffff;
+        }
+        bytes.extend_from_slice(&word.to_le_bytes());
+        if with_aux.contains(&loaded) {
+            if let Some(aux) = function.code.get(pc + 1) {
+                bytes.extend_from_slice(&aux.to_le_bytes());
+            }
+            pc += 2;
+        } else {
+            pc += 1;
+        }
+    }
+    Some(format!("{:016x}", fxhash(&bytes)))
+}
+
+/// A function's source text hashed (profile.json `source_hash`): its lines from where it starts to its last instruction's,
+/// each trimmed, so a function moved or re-indented hashes the same and one whose text changed does not. None when the
+/// profile did not keep its module's source
+fn source_hash(sources: &FxHashMap<String, Source>, function: &vm::Function) -> Option<String> {
+    let source = sources.get(module_name(&function.source))?;
+    let text = String::from_utf8_lossy(&source.text);
+    let first = function.line.max(1) as usize;
+    let last = function.lines.iter().copied().max().unwrap_or(function.line).max(function.line).max(1) as usize;
+    let span: Vec<&str> = text.lines().skip(first - 1).take(last + 1 - first).map(str::trim).collect();
+    (!span.is_empty()).then(|| format!("{:016x}", fxhash(span.join("\n").as_bytes())))
+}
+
 fn fxhash(bytes: &[u8]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = rustc_hash::FxHasher::default();
@@ -2610,7 +3543,436 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::write(path, bytes).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-/// The self-contained report page: the template with the profile's JSON in it
+/// The work a source edit adds that the VM's fast-path counterfactual does not hold. Explicit optional arguments change
+/// setup and prototype size outside the builtin itself. The rule for pricing them is kept here, in one place.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct FixWork {
+    /// The warm instructions the edit adds to every declined call, in seconds over all the calls
+    pub instructions: f64,
+    /// The cold instructions the edit adds, in seconds; unknown when the replacement's executed PCs are unavailable
+    pub cold: Option<f64>,
+}
+
+/// What the work clock charges one interpreted instruction (ns)
+fn interpreted_op_ns(opcode_name: &str) -> f64 {
+    let index = vm::OPCODES.iter().position(|candidate| *candidate == opcode_name).expect("priced opcode");
+    crate::cost::INTERPRETED_OPS[index]
+}
+
+/// What advising explicit arguments adds to a builtin's call, or None when the advice has no measured cost
+/// (`name` is the builtin and `op` the opcode of the call site)
+pub(super) fn builtin_extra_work(name: &str, op: u8, declined_calls: u64) -> Option<FixWork> {
+    if declined_calls == 0 {
+        return Some(FixWork { instructions: 0.0, cold: Some(0.0) });
+    }
+    let opcode = vm::opcode_name(op);
+    // The warm cost is nominal: register moves and the original argument expression are not recovered here.
+    let warm_ns_per_call = match (name, opcode) {
+        ("string.sub", "FASTCALL2") => interpreted_op_ns("LENGTH"),
+        ("string.sub", "FASTCALL2K") => interpreted_op_ns("LENGTH") + interpreted_op_ns("LOADN"),
+        ("string.sub", _) => return None,
+        ("string.byte", "FASTCALL") => return None,
+        ("table.insert" | "table.unpack", _) => return None,
+        _ => 0.0,
+    };
+    // These two rewrites add argument code to the function. Cold charges follow the instruction headers that execute, not
+    // code size or function activity, and the edit can add dead fallback words while removing executed instructions, so
+    // neither gives the replacement's cold cost.
+    let adds_argument_code = matches!((name, opcode), ("string.sub", "FASTCALL2" | "FASTCALL2K") | ("string.byte", "FASTCALL1"));
+    let cold = if adds_argument_code { None } else { Some(0.0) };
+    let instructions = warm_ns_per_call * declined_calls as f64 * 1e-9 * price_scale();
+    Some(FixWork { instructions, cold })
+}
+
+/// A frame whose work reaches this share of the frame budget is heavy: it keeps its call-tree nodes' and sites' work in
+/// the profile, so a hitch can be traced to them
+const HEAVY_FRAME_SHARE: f64 = 0.5;
+
+/// A frame's time at the run's rate (ms); 60 fps where the run recorded none
+fn frame_budget_ms(fps: f64) -> f64 {
+    1000.0 / if fps > 0.0 { fps } else { 60.0 }
+}
+
+/// Milliseconds of desktop-price work as microseconds at the run's prices, which is how the frame evidence stores them
+fn microseconds(ms: f64) -> f64 {
+    ms * 1000.0 * price_scale()
+}
+
+/// A row's work in the code (ms): the game's and the harness's, where the row splits them
+fn row_code_work_ms(row: &Row) -> f64 {
+    row.sides.map_or(row.work_ms, |(game, harness)| game + harness) * price_scale()
+}
+
+/// Each frame's work in the code (ms), the parts a phase mark split it into added together
+fn whole_frame_work(rows: &[Row]) -> BTreeMap<u64, f64> {
+    let mut whole: BTreeMap<u64, f64> = BTreeMap::new();
+    for row in rows {
+        *whole.entry(row.frame).or_default() += row_code_work_ms(row);
+    }
+    whole
+}
+
+/// The frames each function was active in, from the timeline's function summaries (stat: id, total, active, ...)
+fn active_frames_by_function(json: &Json) -> BTreeMap<i32, u64> {
+    let mut active = BTreeMap::new();
+    let Some(stats) = json["timeline"]["function_stats"].as_array() else { return active };
+    for stat in stats {
+        if let (Some(function), Some(frames)) = (stat[0].as_i64(), stat[2].as_u64()) {
+            active.insert(function as i32, frames);
+        }
+    }
+    active
+}
+
+/// The calls a builtin site (or one context of it) had declined
+fn declined_calls(site: &Json) -> u64 {
+    let Some(counts) = site["declines"].as_object() else { return 0 };
+    counts.values().map(|count| count.as_u64().unwrap_or(0)).sum()
+}
+
+/// What pricing one builtin site's fix found: the fix it belongs to and the cold code it adds
+struct PricedSite {
+    function: i64,
+    /// The source edit this site belongs to: the builtin, function and line
+    fix: String,
+    /// The cold code the edit adds for one active frame (seconds): None when it cannot be known, 0 when it adds none.
+    /// Only the first site of an edit carries it, as the edit pays it once.
+    cold_per_frame: Option<f64>,
+}
+
+/// The last instruction of a declined builtin call's fallback, inclusive: the CALL that runs the full function. The fast
+/// call's instruction (at `pc`) says in its top byte how far ahead that CALL is. The instructions between the two (a global
+/// or import lookup, argument loads) run only in the fallback, and the work clock charges them inside the decline.
+fn fallback_end_pc(function: &vm::Function, pc: usize) -> Option<usize> {
+    let fast_call = function.code.get(pc)?;
+    let distance_to_call = ((fast_call >> 24) & 255) as usize;
+    Some(pc + distance_to_call)
+}
+
+/// Whether a builtin's fix adds code to the source (an argument the script left out). The instructions that code costs
+/// are priced from the opcode alone, which does not recover the source expression or the fixed form's register layout, so
+/// the price of such a fix is not exact (`fix_cost_exact`). The profile viewer lists the same builtins.
+fn builtin_fix_adds_source_code(name: &str) -> bool {
+    matches!(name, "string.sub" | "string.byte" | "table.insert" | "table.unpack")
+}
+
+/// Writes a builtin site's fix costs into its JSON (`fix_instructions_us`, `fix_cold_us`, and `fix_unpriced` where one is
+/// unknown). None for a site the VM's results do not describe. `edits_seen` holds the edits already priced.
+fn price_builtin_site(vm_results: &vm::Results, name: &str, site: &mut Json, active_frames: &BTreeMap<i32, u64>, edits_seen: &mut BTreeSet<String>) -> Option<PricedSite> {
+    let (function, pc) = (site["function"].as_i64()?, site["pc"].as_u64()?);
+    let prototype = vm_results.functions.get(function as usize)?;
+    site["fix_cost_exact"] = json!(!builtin_fix_adds_source_code(name));
+    let op = (*prototype.code.get(pc as usize)? & 255) as u8;
+    let line = site["line"].as_i64().unwrap_or(0);
+    let fix = format!("builtin:{name}:{function}:{line}");
+    let calls = declined_calls(site);
+    let frames = active_frames.get(&(function as i32)).copied();
+    let extra_work = builtin_extra_work(name, op, calls);
+    let cold_per_frame = if calls > 0 && edits_seen.insert(fix.clone()) { extra_work.and_then(|work| work.cold) } else { Some(0.0) };
+
+    let mut instructions_us = extra_work.map(|work| work.instructions * 1e6);
+    if let Some(contexts) = site["nodes"].as_array_mut() {
+        // (each context pays for its own calls' instructions; the site's is their sum, unknown if any is)
+        for context in contexts.iter_mut() {
+            let own = builtin_extra_work(name, op, declined_calls(context));
+            context["fix_instructions_us"] = own.map_or(Json::Null, |work| json!(work.instructions * 1e6));
+        }
+        let per_context: Option<Vec<f64>> = contexts.iter().map(|context| context["fix_instructions_us"].as_f64()).collect();
+        instructions_us = per_context.map(|values| values.iter().sum());
+    }
+    let cold_is_known = cold_per_frame.is_some_and(|cold| cold == 0.0) || (cold_per_frame.is_some() && frames.is_some());
+    site["fix_instructions_us"] = instructions_us.map_or(Json::Null, |us| json!(us));
+    site["fix_cold_us"] = cold_per_frame.filter(|_| cold_is_known).map_or(Json::Null, |seconds| json!(seconds * frames.unwrap_or(0) as f64 * 1e6));
+    if extra_work.is_none() {
+        site["fix_unpriced"] = json!("the advised argument rewrite has no measured instruction cost");
+    } else if !cold_is_known {
+        site["fix_unpriced"] = json!("added cold-code work needs the replacement's executed instructions in each frame");
+    }
+    Some(PricedSite { function, fix, cold_per_frame })
+}
+
+/// Consecutive frame numbers as inclusive (first, last) ranges
+fn frame_ranges(frames: impl IntoIterator<Item = u64>) -> Vec<(u64, u64)> {
+    let mut ranges: Vec<(u64, u64)> = Vec::new();
+    for frame in frames {
+        match ranges.last_mut() {
+            Some((_, last)) if frame == *last + 1 => *last = frame,
+            _ => ranges.push((frame, frame)),
+        }
+    }
+    ranges
+}
+
+/// For every call-tree context of a function whose edit adds cold code, the frames it ran in as `[function, node, first
+/// frame, last frame, ...]`. A partial fix can remove one caller's frames: the cold code is kept only on the callers left.
+fn function_contexts(vm_results: &vm::Results, rows: &[Row], scope: &[u32], cold_functions: &BTreeSet<i32>) -> Json {
+    let mut contexts = Vec::new();
+    for (node, context) in vm_results.nodes.iter().enumerate() {
+        if !cold_functions.contains(&context.function) {
+            continue;
+        }
+        let in_scope = rows.iter().filter(|row| scope.contains(&row.phase));
+        let frames: BTreeSet<u64> = in_scope.filter(|row| row.nodes.iter().any(|(id, ms)| *id == node && *ms > 0.0)).map(|row| row.frame).collect();
+        if frames.is_empty() {
+            continue;
+        }
+        let mut cells = vec![json!(context.function), json!(node)];
+        for (first, last) in frame_ranges(frames) {
+            cells.extend([json!(first), json!(last)]);
+        }
+        contexts.push(Json::Array(cells));
+    }
+    Json::Array(contexts)
+}
+
+/// Prices the source-level replacement work of every builtin fix into the profile's JSON, apart from the VM's fast-path
+/// counterfactual. The prototype cost belongs to the site as a whole: dividing it between callers would turn an exact
+/// overlap into an estimate.
+fn price_builtin_fixes(vm_results: &vm::Results, rows: &[Row], scope: &[u32], fps: f64, json: &mut Json) {
+    let active_frames = active_frames_by_function(json);
+    let whole = whole_frame_work(rows);
+    let heavy_from_ms = frame_budget_ms(fps) * HEAVY_FRAME_SHARE;
+    let mut replacement_frames = Vec::new();
+    let mut cold_functions: BTreeSet<i32> = BTreeSet::new();
+    let mut edits_seen: BTreeSet<String> = BTreeSet::new();
+    if let Some(builtins) = json["builtins"].as_array_mut() {
+        for builtin in builtins {
+            let name = builtin["name"].as_str().unwrap_or("").to_string();
+            let Some(sites) = builtin["sites"].as_array_mut() else { continue };
+            for site in sites {
+                let Some(priced) = price_builtin_site(vm_results, &name, site, &active_frames, &mut edits_seen) else { continue };
+                let Some(cold_seconds) = priced.cold_per_frame.filter(|cold| *cold > 0.0) else { continue };
+                cold_functions.insert(priced.function as i32);
+                // (the edit's cold code is paid in each heavy frame the function was active in, once)
+                let mut frames_seen = BTreeSet::new();
+                for (index, row) in rows.iter().enumerate() {
+                    let function_ran = row.functions.iter().any(|(id, ms, _)| *id == priced.function as i32 && *ms > 0.0);
+                    if !scope.contains(&row.phase) || !function_ran || !frames_seen.insert(row.frame) {
+                        continue;
+                    }
+                    if whole[&row.frame] >= heavy_from_ms {
+                        replacement_frames.push(json!([index, priced.fix, cold_seconds * 1e6]));
+                    }
+                }
+            }
+        }
+    }
+    if json["timeline"].is_object() {
+        json["timeline"]["replacement_frames"] = Json::Array(replacement_frames);
+        json["timeline"]["function_contexts"] = function_contexts(vm_results, rows, scope, &cold_functions);
+    }
+}
+
+/// What each issue contributed to each frame (ms), by the issue's key (`function:3`, `sort:3:12`, `builtin:math.abs:3:12`,
+/// `cache:3:5`): the keys the profile viewer's issues carry as `summary_key`
+type FrameContributions = BTreeMap<String, BTreeMap<u64, f64>>;
+
+/// A frame's work (ms) on the game's side and on the harness's
+type FrameSides = (f64, f64);
+
+/// Writes `timeline.issue_stats`: for each issue key, the frames it was active in, its largest frame and that frame's
+/// number, and its largest contribution to a frame over the budget. It reads every physical frame of the reported
+/// phases, before the timeline drops detail, so what the viewer lists and how severe it grades never depends on which
+/// frames the timeline happened to keep.
+fn write_issue_summaries(vm: &vm::Results, rows: &[Row], scope: &[u32], fps: f64, json: &mut Json) {
+    if !json["timeline"].is_object() {
+        return;
+    }
+    let sort_keys = sort_keys_by_node(vm);
+    let mut contributions = FrameContributions::new();
+    let mut frame_work: BTreeMap<u64, FrameSides> = BTreeMap::new();
+    for row in rows.iter().filter(|row| scope.contains(&row.phase)) {
+        // (a row that does not split its work by side is all the game's)
+        let (game, harness) = row_sides_ms(row).unwrap_or((row.work_ms * price_scale(), 0.0));
+        let sides = frame_work.entry(row.frame).or_default();
+        sides.0 += game;
+        sides.1 += harness;
+        add_row_contributions(vm, row, &sort_keys, &mut contributions);
+    }
+    let (game, harness) = frame_work.values().fold((0.0, 0.0), |sum, sides| (sum.0 + sides.0, sum.1 + sides.1));
+    // (a frame's total is the game's work alone when the harness's is set apart, else both sides' together)
+    let harness_apart = harness > 0.0 && game >= 0.01 * (game + harness);
+    let budget = frame_budget_ms(fps);
+
+    let mut summaries = Vec::new();
+    for (key, frames) in &contributions {
+        if let Some(summary) = summarize_frames(key, frames, &frame_work, harness_apart, budget) {
+            summaries.push(summary);
+        }
+    }
+    json["timeline"]["issue_stats"] = Json::Array(summaries);
+}
+
+/// For every call-tree node, the keys of the sorts it sits under, as `sort:<calling function>:<line>`. A node under a sort
+/// is part of that sort's call site, however deep, and under every sort of a nested pair.
+fn sort_keys_by_node(vm: &vm::Results) -> Vec<BTreeSet<String>> {
+    let mut sort_keys: Vec<BTreeSet<String>> = Vec::new();
+    // Each node's nearest script function: a C function's work belongs to the script that called it
+    let mut owners: Vec<Option<i32>> = Vec::new();
+    for (index, node) in vm.nodes.iter().enumerate() {
+        let parent = usize::try_from(node.parent).ok().filter(|parent| *parent < index);
+        let parent_owner = parent.and_then(|parent| owners[parent]);
+        owners.push(if node.function >= 0 { Some(node.function) } else { parent_owner });
+
+        let mut keys = match parent {
+            Some(parent) => sort_keys[parent].clone(),
+            None => BTreeSet::new(),
+        };
+        if node_is_table_sort(vm, node.function)
+            && let Some(caller) = parent_owner
+        {
+            let line = call_line(vm, caller, node.callpc).unwrap_or(-1);
+            keys.insert(format!("sort:{caller}:{line}"));
+        }
+        sort_keys.push(keys);
+    }
+    sort_keys
+}
+
+/// Whether a call-tree node's function is the C function `table.sort` (a negative function below -1 is a C function)
+fn node_is_table_sort(vm: &vm::Results, function: i32) -> bool {
+    if function >= -1 {
+        return false;
+    }
+    let c_function = (-2 - function) as usize;
+    vm.cfunctions.get(c_function).is_some_and(|name| name == "table.sort")
+}
+
+/// The source line of the instruction of `function` that made a call (None for a call from C or native code)
+fn call_line(vm: &vm::Results, function: i32, callpc: i32) -> Option<i64> {
+    let pc = usize::try_from(callpc).ok()?;
+    let line = vm.functions.get(function as usize)?.lines.get(pc)?;
+    Some(*line as i64)
+}
+
+/// Adds a row's work to the issues it counts toward: each script function, each sort its nodes sit under, and each charged
+/// builtin or cache site
+fn add_row_contributions(vm: &vm::Results, row: &Row, sort_keys: &[BTreeSet<String>], contributions: &mut FrameContributions) {
+    let mut add = |key: String, ms: f64| {
+        *contributions.entry(key).or_default().entry(row.frame).or_default() += ms;
+    };
+    for &(function, ms, _) in &row.functions {
+        add(format!("function:{function}"), ms * price_scale());
+    }
+    for &(node, ms) in &row.nodes {
+        for key in sort_keys.get(node).into_iter().flatten() {
+            add(key.clone(), ms * price_scale());
+        }
+    }
+    for site in &row.sites {
+        if let Some(key) = site_issue_key(vm, site) {
+            add(key, site.saving_ms * price_scale());
+        }
+    }
+}
+
+/// The key of the issue a charged site belongs to: a builtin site's is its edit's (`builtin:<name>:<function>:<line>`, which
+/// all the compiled copies on that line share), a cache site's its own. None for a site the VM's results do not describe.
+fn site_issue_key(vm: &vm::Results, site: &super::SiteWork) -> Option<String> {
+    if site.kind != "builtin" {
+        return Some(format!("cache:{}:{}", site.function, site.pc));
+    }
+    let prototype = vm.functions.get(site.function as usize)?;
+    let code = prototype.code.get(site.pc)?;
+    let builtin_id = ((code >> 8) & 255) as i32;
+    let name = vm::builtin_name(builtin_id).unwrap_or("?");
+    let line = prototype.lines.get(site.pc).copied().unwrap_or(-1);
+    Some(format!("builtin:{name}:{}:{line}", site.function))
+}
+
+/// One issue's summary row, `[key, active frames, largest us, that frame, largest us in a frame over the budget]`. None
+/// when it was never active
+fn summarize_frames(key: &str, frames: &BTreeMap<u64, f64>, frame_work: &BTreeMap<u64, FrameSides>, harness_apart: bool, budget_ms: f64) -> Option<Json> {
+    let mut active_frames = 0;
+    let mut largest_ms = 0.0;
+    let mut largest_frame = 0;
+    let mut largest_over_budget_ms: f64 = 0.0;
+    for (&frame, &ms) in frames {
+        if ms <= 0.0 {
+            continue;
+        }
+        active_frames += 1;
+        if ms > largest_ms {
+            largest_ms = ms;
+            largest_frame = frame;
+        }
+        let (game, harness) = frame_work[&frame];
+        let frame_total = if harness_apart { game } else { game + harness };
+        if frame_total > budget_ms {
+            largest_over_budget_ms = largest_over_budget_ms.max(ms);
+        }
+    }
+    if active_frames == 0 {
+        return None;
+    }
+    Some(json!([key, active_frames, largest_ms * 1000.0, largest_frame, largest_over_budget_ms * 1000.0]))
+}
+
+/// What the timeline keeps of a function over the reported phases (the summary the issue list reads)
+#[derive(Default)]
+struct FunctionFrames {
+    /// Its work in all (ms)
+    total: f64,
+    /// The frames it did any work in
+    active: u64,
+    /// Its work in its busiest frame (ms), and that frame
+    largest: f64,
+    peak_frame: u64,
+    /// The frame last counted, and the function's work in it so far (a frame's parts add up)
+    last_frame: Option<u64>,
+    work_in_last_frame: f64,
+}
+
+/// Every function keeps sufficient statistics over the reported phases. Detailed nodes are needed only on heavy
+/// whole frames. Retention is by frame, never by part or by a function's mean, so a phase mark cannot hide an event.
+/// Returns the function summaries, the heavy frames' node work and their sites' savings, as the profile stores them.
+fn frame_evidence(rows: &[Row], scope: &[u32], fps: f64) -> (Json, Json, Json) {
+    let whole = whole_frame_work(rows);
+    let mut by_function: BTreeMap<i32, FunctionFrames> = BTreeMap::new();
+    for row in rows.iter().filter(|row| scope.contains(&row.phase)) {
+        for &(function, ms, _) in row.functions.iter().filter(|(_, ms, _)| *ms > 0.0) {
+            let stat = by_function.entry(function).or_default();
+            if stat.last_frame != Some(row.frame) {
+                stat.active += 1;
+                stat.work_in_last_frame = 0.0;
+                stat.last_frame = Some(row.frame);
+            }
+            stat.total += ms;
+            stat.work_in_last_frame += ms;
+            if stat.work_in_last_frame > stat.largest {
+                stat.largest = stat.work_in_last_frame;
+                stat.peak_frame = row.frame;
+            }
+        }
+    }
+    let heavy_from_ms = frame_budget_ms(fps) * HEAVY_FRAME_SHARE;
+    let is_heavy = |row: &Row| whole[&row.frame] >= heavy_from_ms;
+    // (a heavy row: its index, then each node and its work in us)
+    let mut heavy_rows = Vec::new();
+    let mut site_frames = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        if !is_heavy(row) {
+            continue;
+        }
+        let mut cells = vec![json!(index)];
+        for &(node, ms) in &row.nodes {
+            cells.extend([json!(node), json!(microseconds(ms))]);
+        }
+        heavy_rows.push(Json::Array(cells));
+    }
+    for (index, row) in rows.iter().enumerate().filter(|(_, row)| is_heavy(row)) {
+        for site in &row.sites {
+            site_frames.push(json!([index, site.kind, site.function, site.pc, site.node, microseconds(site.saving_ms)]));
+        }
+    }
+    let stats = by_function
+        .into_iter()
+        .map(|(id, stat)| json!([id, microseconds(stat.total), stat.active, microseconds(stat.largest), stat.peak_frame]))
+        .collect();
+    (Json::Array(stats), Json::Array(heavy_rows), Json::Array(site_frames))
+}
+
+// The self-contained report page: the template with the profile's JSON in it
 pub fn html(profile_json: &str) -> String {
     const TEMPLATE: &str = include_str!("report.html");
     // (`</` cannot end the script element the data sits in)
@@ -2621,6 +3983,52 @@ pub fn html(profile_json: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn op(name: &str) -> u32 {
+        vm::OPCODES.iter().position(|op| *op == name).unwrap() as u32
+    }
+
+    /// A function's code hash stays as compiled whatever a run made of it: the slot a GETTABLEKS predicts (its C byte,
+    /// which the VM patches) and the loader's GETUDATAKS form hash as the plain instruction; its lines, which a move
+    /// changes, are not in it; a changed operand is
+    #[test]
+    fn a_code_hash_ignores_what_a_run_patches_and_where_the_function_lies() {
+        let function = |words: Vec<u32>, line: i32| vm::Function { code: words, line, lines: vec![line; 4], ..vm::Function::default() };
+        // GETTABLEKS A=1 B=0 C=slot, aux 7; then RETURN
+        let get = |opcode: u32, slot: u32| (slot << 24) | (1 << 8) | opcode;
+        let ret = op("RETURN") | (1 << 16);
+        let loaded = code_hash(&function(vec![get(op("GETTABLEKS"), 0), 7, ret], 10)).unwrap();
+        assert_eq!(code_hash(&function(vec![get(op("GETTABLEKS"), 5), 7, ret], 10)).unwrap(), loaded, "a predicted slot");
+        assert_eq!(code_hash(&function(vec![get(op("GETUDATAKS"), 3), 7, ret], 10)).unwrap(), loaded, "the loader's form");
+        assert_eq!(code_hash(&function(vec![get(op("GETTABLEKS"), 0), 7, ret], 13)).unwrap(), loaded, "moved three lines");
+        assert_ne!(code_hash(&function(vec![get(op("GETTABLEKS"), 0), 8, ret], 10)).unwrap(), loaded, "another key");
+        assert!(code_hash(&vm::Function::default()).is_none());
+    }
+
+    #[test]
+    fn cold_object_total_keeps_listing_order_before_display_sort() {
+        let smallest = 200e-9;
+        let largest = 2500e-9;
+        let middle = 1400e-9;
+        let mut rows = Vec::new();
+        for cost in [smallest, largest, middle] {
+            rows.push(ColdRow {
+                cost,
+                kind: "table".into(),
+                name: String::new(),
+                charges: 1,
+                shared: 0,
+                first_payer: String::new(),
+            });
+        }
+        let total = sum_then_sort_cold_rows(&mut rows);
+        // Added in the order listed (200, 2500, 1400 ns), the three come to exactly this double
+        let expected_total_ms = 0.0041f64;
+        assert_eq!(ms(total).to_bits(), expected_total_ms.to_bits());
+        assert_eq!(rows[0].cost, largest);
+        assert_eq!(rows[1].cost, middle);
+        assert_eq!(rows[2].cost, smallest);
+    }
 
     /// A hardware-counter profile cut short by the service's slice limit says so, with the seconds captured, in its
     /// summary and in profile.json
@@ -2637,6 +4045,7 @@ mod tests {
             run: &run,
             elapsed: 0.0,
             vm: None,
+            attribution: None,
             allocations: None,
             time: None,
             phases: &[],
@@ -2656,11 +4065,185 @@ mod tests {
             phase_timing: None,
             phase_tree: None,
             warnings: &[],
+            price_scale: 1.0,
+            device: "desktop",
         };
         let names = Names { vm: None, steps: Vec::new(), outside: Vec::new(), shorts: FxHashMap::default() };
         let mut summary = String::new();
         let json = counters(&input, &hw, &names, &mut summary, &mut Vec::new());
         assert_eq!(json["cut_short"], json!(12.345));
         assert!(summary.contains("WARNING: hardware-counter profile CUT SHORT after 12.345 s"), "{summary}");
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+
+    #[test]
+    fn issue_summaries_keep_small_sort_peaks_across_unrelated_retention_changes() {
+        let mut vm = vm::Results { functions: vec![vm::Function::default(); 8], cfunctions: vec!["table.sort".into()], ..Default::default() };
+        vm.functions[7].lines = vec![12];
+        vm.nodes = vec![
+            vm::Node { parent: -1, function: -1, ..Default::default() },
+            vm::Node { parent: 0, function: 7, ..Default::default() },
+            vm::Node { parent: 1, function: -2, callpc: 0, ..Default::default() },
+        ];
+        for other in [7.063333, 7.063343, 20.0] {
+            let mut event = row(30, 1, 1.27 + other);
+            event.functions = vec![(7, 1.27, false), (6, other, false)];
+            event.nodes = vec![(2, 1.27)];
+            let mut json = json!({"timeline": {}});
+            write_issue_summaries(&vm, &[event], &[1], 60.0, &mut json);
+            let sort = json["timeline"]["issue_stats"].as_array().unwrap().iter().find(|stat| stat[0] == "sort:7:12").unwrap();
+            assert_eq!(sort[1], 1);
+            assert_eq!(sort[2], 1270.0);
+            assert_eq!(sort[3], 30);
+            assert_eq!(sort[4], if other == 20.0 { 1270.0 } else { 0.0 });
+        }
+    }
+
+    /// A row of one frame's work in one phase, all of it in function 7 under call-tree node 3
+    fn row(frame: u64, phase: u32, ms: f64) -> Row {
+        Row { frame, phase, work_ms: ms, sides: Some((ms, 0.0)), functions: vec![(7, ms, false)], nodes: vec![(3, ms)], ..Row::default() }
+    }
+
+    /// The `function_stats` row of a function: [function, total us, active frames, largest frame us, that frame]
+    fn stats_row(function: i32, total_ms: f64, active_frames: u64, largest_ms: f64, frame: u64) -> Json {
+        json!([function, total_ms * 1000.0, active_frames, largest_ms * 1000.0, frame])
+    }
+
+    #[test]
+    fn summaries_retain_the_120_fps_event_and_combine_phase_parts() {
+        // an event of 0.3 ms at 120 fps (an 8.3 ms frame): too small to keep node detail, so only its summary is kept
+        let event_ms = 0.30094479;
+        let rows = vec![row(30, 1, event_ms)];
+        let (stats, nodes, _) = frame_evidence(&rows, &[1], 120.0);
+        assert_eq!(stats, json!([stats_row(7, event_ms, 1, event_ms, 30)]));
+        assert_eq!(nodes, json!([]));
+
+        // a frame a phase mark split in two: its parts are one active frame, and their work adds up
+        let first_part_ms = 0.30365224;
+        let second_part_ms = 0.30094479;
+        let rows = vec![row(120, 1, first_part_ms), row(120, 2, second_part_ms)];
+        let (stats, nodes, _) = frame_evidence(&rows, &[1, 2], 60.0);
+        let whole_frame_us = (first_part_ms + second_part_ms) * 1000.0;
+        assert_eq!(stats[0][2], 1);
+        assert!((stats[0][1].as_f64().unwrap() - whole_frame_us).abs() < 1e-9);
+        assert!((stats[0][3].as_f64().unwrap() - whole_frame_us).abs() < 1e-9);
+        assert_eq!(stats[0][4], 120);
+        assert_eq!(nodes, json!([]));
+    }
+
+    #[test]
+    fn heavy_frames_keep_every_node_and_every_phase_part_at_the_recorded_fps() {
+        // A frame is heavy from half the frame budget: 8.3 ms at 60 fps, 4.2 ms at 120 fps. Frame 2 is two parts of 4.2 ms,
+        // which together are heavy at both rates. Frame 1's 5 ms is heavy only at 120 fps.
+        let rows = vec![row(1, 1, 5.0), row(2, 1, 4.2), row(2, 2, 4.2)];
+        // (a heavy row lists its index, then each node and its work in us)
+        let (_, at_sixty, _) = frame_evidence(&rows, &[1, 2], 60.0);
+        assert_eq!(at_sixty, json!([[1, 3, 4200.0], [2, 3, 4200.0]]));
+        let (_, at_one_twenty, _) = frame_evidence(&rows, &[1, 2], 120.0);
+        assert_eq!(at_one_twenty, json!([[0, 3, 5000.0], [1, 3, 4200.0], [2, 3, 4200.0]]));
+    }
+
+    #[test]
+    fn heavy_frames_keep_the_sites_net_work_beside_their_context_nodes() {
+        let mut heavy = row(60, 1, 30.0);
+        let saving_ms = 20.0;
+        heavy.sites.push(super::super::SiteWork { kind: "builtin", function: 7, pc: 12, node: 3, saving_ms });
+        let (_, _, sites) = frame_evidence(&[heavy], &[1], 60.0);
+        assert_eq!(sites, json!([[0, "builtin", 7, 12, 3, saving_ms * 1000.0]]));
+    }
+
+    #[test]
+    fn frame_evidence_and_issue_peaks_use_the_devices_units() {
+        let scale = crate::cost::PHONE_SCRIPTS;
+        let desktop_scale = SCALE.with(|value| value.replace(scale));
+        // Frame 1 is two parts of 2 ms, frame 2 one part of 2 ms. A cache site saved 0.8 ms in frame 1's first part.
+        let mut rows = vec![row(1, 1, 2.0), row(1, 2, 2.0), row(2, 1, 2.0)];
+        rows[0].sites.push(super::super::SiteWork { kind: "cache", function: 7, pc: 12, node: 3, saving_ms: 0.8 });
+        let scope = [1, 2];
+        let fps = 60.0;
+
+        // Frame 1 is heavy at phone prices (4 ms desktop is over half of 16.7 ms once scaled); frame 2 is below half its budget.
+        let (stats, nodes, sites) = frame_evidence(&rows, &scope, fps);
+        let function_us = 6_000.0 * scale;
+        let largest_frame_us = 4_000.0 * scale;
+        let part_us = 2_000.0 * scale;
+        let site_saving_us = 800.0 * scale;
+        assert_eq!(stats, json!([[7, function_us, 2, largest_frame_us, 1]]));
+        assert_eq!(nodes, json!([[0, 3, part_us], [1, 3, part_us]]));
+        assert_eq!(sites, json!([[0, "cache", 7, 12, 3, site_saving_us]]));
+
+        let mut json = json!({"timeline": {}});
+        write_issue_summaries(&vm::Results::default(), &rows, &scope, fps, &mut json);
+        let issue_stats = json["timeline"]["issue_stats"].as_array().unwrap();
+        let function_issue = issue_stats.iter().find(|stat| stat[0] == "function:7").unwrap();
+        assert_eq!(function_issue, &json!(["function:7", 2, largest_frame_us, 1, 0.0]));
+        assert_eq!(row_sides_ms(&rows[0]), Some((2.0 * scale, 0.0)));
+        SCALE.with(|value| value.set(desktop_scale));
+    }
+
+    #[test]
+    fn substring_replacement_prices_the_added_argument_instructions() {
+        let op = |name: &str| vm::OPCODES.iter().position(|candidate| *candidate == name).unwrap() as u8;
+        let declined_calls = 600_000;
+        let extra = |builtin: &str, opcode: &str| builtin_extra_work(builtin, op(opcode), declined_calls).unwrap();
+        // `string.sub(s, 2)` gains an explicit end, one LENGTH instruction in each call, and a LOADN more where the start is
+        // a constant
+        assert!((extra("string.sub", "FASTCALL2K").instructions - 0.001758).abs() < 1e-12);
+        assert!((extra("string.sub", "FASTCALL2").instructions - 0.001470).abs() < 1e-12);
+        // `string.byte(s)` gains an explicit index: no nominal added warm instruction in a call
+        assert_eq!(extra("string.byte", "FASTCALL1").instructions, 0.0);
+        // Added words do not establish the replacement's executed instructions, even with an active-frame count.
+        assert_eq!(extra("string.sub", "FASTCALL2K").cold, None);
+        assert_eq!(extra("string.byte", "FASTCALL1").cold, None);
+        // a call shape the rewrite does not apply to has no measured cost
+        assert!(builtin_extra_work("string.sub", op("FASTCALL"), 1).is_none());
+    }
+
+    #[test]
+    fn builtin_setup_needs_the_replacements_executed_instructions_for_cold_work() {
+        let op = vm::OPCODES.iter().position(|name| *name == "FASTCALL2K").unwrap() as u32;
+        let function = 7;
+        let line = 12;
+        let first_context_node = 3;
+        let second_context_node = 5;
+        let mut vm_results = vm::Results { functions: vec![vm::Function::default(); 8], ..vm::Results::default() };
+        let builtin = (0..256).find(|id| vm::builtin_name(*id) == Some("string.sub")).unwrap() as u32;
+        // (two string.sub calls in the function, each a FASTCALL2K and its argument word, on the same source line)
+        let code = op | (builtin << 8);
+        vm_results.functions[function].code = vec![code, 0, code, 0];
+        vm_results.functions[function].lines = vec![line; 4];
+        vm_results.nodes = vec![vm::Node::default(); 6];
+        vm_results.nodes[first_context_node].function = function as i32;
+        vm_results.nodes[second_context_node].function = function as i32;
+        // Frame 1 is heavy and has two parts, one in each phase; the function runs in both, under the first node and under
+        // the second. It runs in frame 2 as well (under the first node), which is light. Frame 3 is a phase outside the
+        // report.
+        let mut parts = vec![row(1, 1, 10.0), row(1, 2, 10.0), row(2, 1, 1.0), row(3, 9, 12.0)];
+        parts[1].nodes = vec![(second_context_node, 10.0)];
+        let (stats, _, _) = frame_evidence(&parts, &[1, 2], 60.0);
+        let mut json = json!({"timeline": {"function_stats": stats}, "builtins": [{
+            "name": "string.sub", "sites": [{"function": function, "pc": 0, "line": line,
+                "declines": {"args": 1000}, "decline_charged_us": 30, "fast_equivalent_us": 5,
+                "nodes": [
+                    {"node": first_context_node, "declines": {"args": 600}, "decline_charged_us": 10, "fast_equivalent_us": 2},
+                    {"node": second_context_node, "declines": {"args": 400}, "decline_charged_us": 20, "fast_equivalent_us": 3}
+                ]}]
+        }]});
+        price_builtin_fixes(&vm_results, &parts, &[1, 2], 60.0, &mut json);
+        let site = &json["builtins"][0]["sites"][0];
+        // 1000 declined calls at the warm cost of a LENGTH and a LOADN each
+        assert!((site["fix_instructions_us"].as_f64().unwrap() - 2.93).abs() < 1e-12);
+        // Neither dead compiled copies nor the prototype's active frames establish which replacement PCs would run.
+        assert_eq!(site["fix_cold_us"], Json::Null);
+        assert!(site["fix_unpriced"].as_str().unwrap().contains("executed instructions"));
+        assert_eq!(site["fast_equivalent_us"], 5);
+        assert_eq!(site["nodes"][0]["fast_equivalent_us"], 2);
+        // (a context is [function, node, first frame, last frame]: the frames the node ran in, in the reported phases)
+        assert_eq!(json["timeline"]["function_contexts"], json!([]));
+        assert_eq!(json["timeline"]["replacement_frames"], json!([]));
     }
 }

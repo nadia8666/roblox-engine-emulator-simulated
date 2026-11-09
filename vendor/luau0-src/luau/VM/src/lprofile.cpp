@@ -26,6 +26,7 @@
 #include "ltable.h"
 #include "ltm.h"
 #include "lgc.h"
+#include "Luau/BytecodeUtils.h"
 #include "ldebug.h"
 #include "lbytecode.h"
 #include "Luau/BytecodeUtils.h"
@@ -93,6 +94,46 @@ struct ProfFunction
     std::vector<int> fallbackof;
     // each site record by (pc, call-tree node, phase): siteof's value for it (siteof holds the record the last step used)
     std::unordered_map<uint64_t, int> sitekeys;
+    // what of each instruction's work was of each kind (LUA_PROFILE_SPLITS an instruction), and of its cold charges those for objects
+    // nothing else touched in their frame (lua_profilesplit; made at the first booking)
+    std::vector<double> split;
+    std::vector<double> exclusive;
+    // each phase's own counts, work and cold work per instruction (lines per phase), the last one used first
+    std::vector<lua_ProfilePhaseLines> phaselines;
+    std::vector<std::vector<uint64_t>> phasecounts;
+    std::vector<std::vector<double>> phasework;
+    std::vector<std::vector<double>> phasecold;
+    int lastphaseline = -1;
+    // a helper chunk of the host's binding (mlua's "=__mlua..."): its instructions are a script's but its work is booked to the
+    // script instruction that called it, as an engine call's is
+    bool binding = false;
+};
+
+// a cold charge for an object in the frame now (luaP_cold): who paid it (function, instruction, tree node) and the object's name for
+// the totals (a table by its maker, a C function, a host function), and whether anything else touched it since
+struct ColdRecord
+{
+    int kind;
+    int payer;
+    int pc;
+    int node;
+    double cost;
+    bool shared;
+    int sitefunction;
+    int sitepc;
+};
+
+// an object's cold charges over the profile (lua_profilecoldobjects)
+struct ColdTotal
+{
+    int kind = 0;
+    int function = -1;
+    int pc = -1;
+    double cost = 0;
+    uint64_t frames = 0;
+    uint64_t sharedframes = 0;
+    std::unordered_map<uint64_t, double> payers;
+    std::vector<lua_ProfileColdPayer> listed;
 };
 
 // the functions of one chunk the profile registered, and the innermost of them that carries each line
@@ -116,6 +157,8 @@ struct ProfNode
     uint64_t calls;
     uint64_t insns;
     double work;
+    double split[LUA_PROFILE_SPLITS];
+    double exclusive;
 };
 
 struct ProfFrame
@@ -471,6 +514,8 @@ struct lua_ProfileState
     const double* hostwork = NULL;
     const double* hostdrained = NULL;
     double lasthost = 0;
+    // Library table storage the fast path would also charge as instruction storage.
+    uint64_t callstored = 0;
     lua_WorkCounters last;
     // the instruction dispatched last, and the counts its dispatch is in: ops for a script's function, nativeops for one a code
     // generator would compile (LUAU_PROTO_WORK_NATIVE), hostops for a host's own
@@ -488,10 +533,6 @@ struct lua_ProfileState
     // none), and what its first touch in the frame was charged since the last booking (luaP_coldtouch): its site's firsttouch
     LuaTable* owntable = NULL;
     double owntouch = 0;
-    // work the counters left to a call since the last booking (luaP_uncounted): what a builtin's fast path would count
-    uint64_t callobjects = 0;
-    uint64_t callstored = 0;
-    uint64_t callrehashed = 0;
     double enginework = 0;
     // the frame the last step ran in
     lua_State* lastL = NULL;
@@ -504,7 +545,7 @@ struct lua_ProfileState
     int hosttarget = -1;
     int hosttargetpc = 0;
     int hosttargetnode = 0;
-    // the node a thread's outermost frame hangs from: the root, or the current phase's node (lua_profilephase)
+    // the node a thread's outermost frame hangs from: the root, or the current phase's node (lua_profilephase), and the phase
     int phaseroot = 0;
     // the phase what runs belongs to (lua_profilephase): a cache or builtin site keeps a record for each phase it ran in
     int phase = 0;
@@ -526,6 +567,8 @@ struct lua_ProfileState
     std::vector<ProfNode> nodes;
     std::unordered_map<NodeKey, int, NodeKeyHash> children;
     std::unordered_map<lua_State*, std::vector<ProfFrame>> threads;
+    // each thread's resumptions while stepping (lua_profileresumes)
+    std::unordered_map<lua_State*, unsigned long long> resumes;
     // while stepping, every function of a chunk is registered when the first one is seen (by the chunk's source), so a
     // function's copies inlined into another are known by the lines they carry even when it never runs itself
     std::vector<ProfChunk> chunks;
@@ -552,6 +595,20 @@ struct lua_ProfileState
     // the interpreter entered and left (lua_setprofilevm)
     void (*vm)(void* ud, lua_State* L, int entered) = NULL;
     void* vmud = NULL;
+    // the kinds of work kept apart (lua_profilesplit): each slot's kind (-1 none), the host's running totals of its own by kind and
+    // their values at the last booking
+    bool splitting = false;
+    std::vector<signed char> kinds;
+    const double* hostkinds = NULL;
+    double lasthostkinds[LUA_PROFILE_SPLITS] = {};
+    // the slots booked to the function a call enters rather than the call (a closure's, a function's first touch; its code's first
+    // run in a while), and the slot of a function's cold code, booked instruction by instruction (luaP_coldcode)
+    std::vector<int> calleeslots;
+    int coldcodeslot = -1;
+    // the frame's cold charges for objects (luaP_cold), their totals over the profile, and the instruction that made each table
+    std::unordered_map<GCObject*, ColdRecord> coldframe;
+    std::unordered_map<uint64_t, ColdTotal> coldtotals;
+    std::unordered_map<const void*, uint64_t> tablesites;
     // the host's hook around the calls it samples (lua_setprofilecalls), and each function's sampling, by function id
     void (*callhook)(void* ud, lua_State* L, int event, int function, int every, int depth) = NULL;
     void* callud = NULL;
@@ -623,7 +680,10 @@ static int functionof(lua_ProfileState* s, Proto* p)
         f.name = getstr(p->debugname);
     f.linedefined = p->linedefined;
     f.flags = ((p->flags & LUAU_PROTO_WORK_EXEMPT) ? LUA_PROFILE_EXEMPT : 0) | (p->execdata ? LUA_PROFILE_NATIVE : 0);
+    f.binding = p->source && p->source->len >= 7 && memcmp(getstr(p->source), "=__mlua", 7) == 0;
     f.code.assign(p->code, p->code + p->sizecode);
+    for (int pc = 0; pc < p->sizecode; pc += Luau::getOpLength(LuauOpcode(LUAU_INSN_OP(f.code[pc]))))
+        f.code[pc] &= ~Instruction(LUAU_INSN_COLD);
     f.lines.resize(p->sizecode);
     f.lastline = p->linedefined;
     for (int pc = 0; pc < p->sizecode; ++pc)
@@ -916,7 +976,7 @@ static int cfunctionof(lua_ProfileState* s, Closure* cl, CallInfo* ci, CallInfo*
     int callpc = 0;
     if (env && !((ci - 1)->flags & LUA_CALLINFO_NATIVE))
     {
-        caller = clvalue((ci - 1)->func)->l.p;
+        caller = (ci - 1)->p;
         callpc = pcRel((ci - 1)->savedpc, caller);
     }
     return cfunctionid(s, cl->c.f, cnameof(s, cl, method, env, caller, callpc));
@@ -941,7 +1001,7 @@ static int child(lua_ProfileState* s, int parent, int function, int callpc)
     auto found = s->children.find(key);
     if (found != s->children.end())
         return found->second;
-    ProfNode node = {parent, function, callpc, 0, 0, 0.0};
+    ProfNode node = {parent, function, callpc, 0, 0, 0.0, {}, 0.0};
     s->nodes.push_back(node);
     int id = int(s->nodes.size() - 1);
     s->children.emplace(key, id);
@@ -968,6 +1028,14 @@ static void reconcile(lua_ProfileState* s, lua_State* L)
             frames->pop_back();
             continue;
         }
+        // Specialization can replace a prototype while keeping its closure and frame.
+        Closure* cl = clvalue(ci->func);
+        int function = cl->isC ? -2 - cfunctionof(s, cl, ci, L->base_ci) : functionof(s, ci->p);
+        if (s->nodes[top.node].function != function)
+        {
+            frames->pop_back();
+            continue;
+        }
         break;
     }
     int parent = frames->empty() ? s->phaseroot : frames->back().node;
@@ -977,13 +1045,13 @@ static void reconcile(lua_ProfileState* s, lua_State* L)
         if (!ttisfunction(ci->func))
             continue;
         Closure* cl = clvalue(ci->func);
-        int function = cl->isC ? -2 - cfunctionof(s, cl, ci, L->base_ci) : functionof(s, cl->l.p);
+        int function = cl->isC ? -2 - cfunctionof(s, cl, ci, L->base_ci) : functionof(s, ci->p);
         int callpc = -1;
         if (d > 0)
         {
             CallInfo* up = ci - 1;
             if (isLua(up) && !(up->flags & LUA_CALLINFO_NATIVE))
-                callpc = pcRel(up->savedpc, ci_func(up)->l.p);
+                callpc = pcRel(up->savedpc, up->p);
         }
         int node = child(s, parent, function, callpc);
         s->nodes[node].calls++;
@@ -997,10 +1065,10 @@ static void reconcile(lua_ProfileState* s, lua_State* L)
     s->hosttarget = -1;
     for (auto it = frames->rbegin(); it != frames->rend(); ++it)
     {
-        if (it->cl->isC || (it->cl->l.p->flags & LUAU_PROTO_WORK_EXEMPT))
-            continue;
-        Proto* p = it->cl->l.p;
         CallInfo* ci = L->base_ci + it->depth;
+        Proto* p = ci->p;
+        if (!p || (p->flags & LUAU_PROTO_WORK_EXEMPT) || s->functions[functionof(s, p)].binding)
+            continue;
         s->hosttarget = functionof(s, p);
         s->hosttargetpc = (ci->flags & LUA_CALLINFO_NATIVE) ? -1 : pcRel(ci->savedpc, p);
         s->hosttargetnode = it->node;
@@ -1008,16 +1076,80 @@ static void reconcile(lua_ProfileState* s, lua_State* L)
     }
 }
 
-static void add(lua_ProfileState* s, double delta)
+// a slot's price in each kind its mask names (lua_profilesplit: a slot can be of one kind of each axis, such as cold and Studio-era)
+static void addmask(double* kinds, signed char mask, double moved)
+{
+    for (int k = 0; k < LUA_PROFILE_SPLITS; ++k)
+        if (mask & (1 << k))
+            kinds[k] += moved;
+}
+
+// the arrays of `f` for the profile's current phase (lines per phase)
+static int phaselinesof(lua_ProfileState* s, ProfFunction& f)
+{
+    if (f.lastphaseline >= 0 && f.phaselines[f.lastphaseline].phase == s->phase)
+        return f.lastphaseline;
+    for (size_t i = 0; i < f.phaselines.size(); ++i)
+        if (f.phaselines[i].phase == s->phase)
+            return f.lastphaseline = int(i);
+    size_t n = f.code.size();
+    f.phasecounts.emplace_back(n, 0);
+    f.phasework.emplace_back(n, 0.0);
+    f.phasecold.emplace_back(n, 0.0);
+    f.phaselines.push_back(lua_ProfilePhaseLines{s->phase, NULL, NULL, NULL});
+    return f.lastphaseline = int(f.phaselines.size() - 1);
+}
+
+// a cold charge that is the function's own (its code's first run, its closure's and prototype's first touch): cutting the function saves
+// it, whatever else ran in the frame
+static void addexclusive(lua_ProfileState* s, int function, int pc, int node, double cost)
+{
+    if (cost == 0)
+        return;
+    if (function >= 0 && pc >= 0)
+    {
+        ProfFunction& f = s->functions[function];
+        LUAU_ASSERT(size_t(pc) < f.code.size());
+        if (f.exclusive.empty())
+            f.exclusive.assign(f.code.size(), 0.0);
+        f.exclusive[pc] += cost;
+    }
+    s->nodes[node].exclusive += cost;
+}
+
+// adds a booking's kinds to an instruction's and a node's (`kinds`: LUA_PROFILE_SPLITS seconds, or NULL for none)
+static void addkinds(lua_ProfileState* s, int function, int pc, int node, const double* kinds)
+{
+    if (!kinds)
+        return;
+    if (function >= 0 && pc >= 0)
+    {
+        ProfFunction& f = s->functions[function];
+        LUAU_ASSERT(size_t(pc) < f.code.size());
+        if (f.split.empty())
+            f.split.assign(f.code.size() * LUA_PROFILE_SPLITS, 0.0);
+        for (int k = 0; k < LUA_PROFILE_SPLITS; ++k)
+            f.split[size_t(pc) * LUA_PROFILE_SPLITS + k] += kinds[k];
+        f.phasecold[phaselinesof(s, f)][pc] += kinds[LUA_PROFILE_COLD];
+    }
+    for (int k = 0; k < LUA_PROFILE_SPLITS; ++k)
+        s->nodes[node].split[k] += kinds[k];
+}
+
+static void add(lua_ProfileState* s, double delta, const double* kinds = NULL)
 {
     if (s->target >= 0)
     {
         ProfFunction& f = s->functions[s->target];
         if (s->targetpc >= 0 && size_t(s->targetpc) < f.work.size())
+        {
             f.work[s->targetpc] += delta;
+            f.phasework[phaselinesof(s, f)][s->targetpc] += delta;
+        }
         else
             f.nativework += delta;
         s->nodes[s->targetnode].work += delta;
+        addkinds(s, s->target, s->targetpc, s->targetnode, kinds);
     }
     else
     {
@@ -1043,23 +1175,44 @@ static lua_ProfileBuiltinSite* fallbacksite(ProfFunction& f, int at, int node, i
 // books what the work counters and the host's charges moved since the last booking: the instruction dispatched since
 // (one count in its function's instruction array) and what it did (allocations, calls, the host's charges); while a C
 // function's node is the target, what it did past the instruction's own dispatch is that function's
+// whether a builtin's fast path would count the work of `slot` too: the strings it makes, and the objects, bytes and rehashed keys of
+// what it allocates, which the library counts hold for a call that was declined
+static bool isFastPathCounter(int slot)
+{
+    if (slot == kNewStringsSlot || slot == kNumToStrSlot || slot == kObjectsSlot || slot == kStoredSlot || slot == kRehashedSlot)
+        return true;
+
+    int hostop = slot - kHostOpsSlot;
+    return hostop == LUA_WORK_LIBOBJECTS || hostop == LUA_WORK_GCOBJECTS || hostop == LUA_WORK_ALLOCBYTES || hostop == LUA_WORK_LARGEBLOCKS ||
+           hostop == LUA_WORK_HASHREHASHED || hostop == LUA_WORK_STRBYTES;
+}
+
 static void book(lua_ProfileState* s, lua_State* L)
 {
     if (!s->pricing)
         return;
     double dispatch = 0;
     double rest = 0;
+    double dispatchkinds[LUA_PROFILE_SPLITS] = {};
+    double restkinds[LUA_PROFILE_SPLITS] = {};
     if (s->hostwork && s->hostdrained)
     {
         double host = *s->hostwork + *s->hostdrained;
         rest = host - s->lasthost;
         s->lasthost = host;
     }
+    if (s->splitting && s->hostkinds)
+    {
+        for (int kind = 0; kind < LUA_PROFILE_SPLITS; ++kind)
+        {
+            restkinds[kind] = s->hostkinds[kind] - s->lasthostkinds[kind];
+            s->lasthostkinds[kind] = s->hostkinds[kind];
+        }
+    }
     const uint64_t* now = reinterpret_cast<const uint64_t*>(&s->g->work);
     uint64_t* last = reinterpret_cast<uint64_t*>(&s->last);
     if (s->nativeseen && (L != s->lastL || L->ci != s->lastci))
     {
-        // (native code may have run since the last step and moved any instruction count)
         for (int i = 0; i < LOP__COUNT; ++i)
         {
             for (int base : {kOpsSlot, kHostOpsSlot, kNativeOpsSlot})
@@ -1067,7 +1220,10 @@ static void book(lua_ProfileState* s, lua_State* L)
                 int slot = base + i;
                 if (now[slot] != last[slot])
                 {
-                    dispatch += s->prices[slot] * double(int64_t(now[slot] - last[slot]));
+                    double moved = s->prices[slot] * double(int64_t(now[slot] - last[slot]));
+                    dispatch += moved;
+                    if (s->splitting)
+                        addmask(dispatchkinds, s->kinds[slot], moved);
                     last[slot] = now[slot];
                 }
             }
@@ -1078,30 +1234,30 @@ static void book(lua_ProfileState* s, lua_State* L)
         int slot = s->lastbase + s->lastop;
         if (now[slot] != last[slot])
         {
-            dispatch += s->prices[slot] * double(int64_t(now[slot] - last[slot]));
+            double moved = s->prices[slot] * double(int64_t(now[slot] - last[slot]));
+            dispatch += moved;
+            if (s->splitting)
+                addmask(dispatchkinds, s->kinds[slot], moved);
             last[slot] = now[slot];
         }
     }
-    // (of it, what a builtin's fast path would count too: a new string, a number made a string; and the allocations the counters
-    // left to a call, which the fast path counts as its own)
-    double fastwork = double(s->callobjects) * s->prices[kObjectsSlot] + double(s->callstored) * s->prices[kStoredSlot] +
-                      double(s->callrehashed) * s->prices[kRehashedSlot];
-    s->callobjects = 0;
+    // Both paths pay for the same results. Use the charged counters so allocations
+    // inside the library include the fast path's object and byte prices too.
+    double fastwork = double(s->callstored) * s->prices[kStoredSlot];
     s->callstored = 0;
-    s->callrehashed = 0;
     for (int slot : s->scalars)
     {
         if (now[slot] != last[slot])
         {
             double charge = s->prices[slot] * double(int64_t(now[slot] - last[slot]));
             rest += charge;
-            if (slot == kNewStringsSlot || slot == kNumToStrSlot)
+            if (s->splitting)
+                addmask(restkinds, s->kinds[slot], charge);
+            if (isFastPathCounter(slot))
                 fastwork += charge;
             last[slot] = now[slot];
         }
     }
-    // (a declined builtin call's fallback: its instructions' charges, and what the function its CALL reached was charged, are its
-    // site's too: the host's own Luau books to that CALL, a C function to its node, which hangs under the caller's at the CALL)
     if ((dispatch + rest != 0 || fastwork != 0) && s->target >= 0 && s->targetpc >= 0)
     {
         if (lua_ProfileBuiltinSite* site = fallbacksite(s->functions[s->target], s->targetpc, s->targetnode, s->phase))
@@ -1125,14 +1281,18 @@ static void book(lua_ProfileState* s, lua_State* L)
     if (s->ctarget >= 0)
     {
         if (dispatch != 0)
-            add(s, dispatch);
+            add(s, dispatch, s->splitting ? dispatchkinds : NULL);
         if (rest != 0)
+        {
             s->nodes[s->ctarget].work += rest;
+            addkinds(s, s->nodes[s->ctarget].function, -1, s->ctarget, s->splitting ? restkinds : NULL);
+        }
     }
     else if (dispatch + rest != 0)
     {
-        add(s, dispatch + rest);
-        // (an instruction with an inline cache: what it was charged past its dispatch is its site's, in the phase it ran in)
+        for (int kind = 0; kind < LUA_PROFILE_SPLITS; ++kind)
+            restkinds[kind] += dispatchkinds[kind];
+        add(s, dispatch + rest, s->splitting ? restkinds : NULL);
         if (rest != 0 && s->target >= 0 && s->targetpc >= 0)
         {
             ProfFunction& f = s->functions[s->target];
@@ -1145,6 +1305,33 @@ static void book(lua_ProfileState* s, lua_State* L)
         }
     }
     s->owntouch = 0;
+}
+
+// books what the slots of a call's callee moved (a closure's and a function's first touch in a frame, its code's first run in a while)
+// to the instruction about to run: the callee's first, not the call
+static void bookcallee(lua_ProfileState* s)
+{
+    if (!s->pricing || s->calleeslots.empty())
+        return;
+    const uint64_t* now = reinterpret_cast<const uint64_t*>(&s->g->work);
+    uint64_t* last = reinterpret_cast<uint64_t*>(&s->last);
+    double delta = 0;
+    double kinds[LUA_PROFILE_SPLITS] = {};
+    for (int slot : s->calleeslots)
+    {
+        if (now[slot] != last[slot])
+        {
+            double moved = s->prices[slot] * double(int64_t(now[slot] - last[slot]));
+            delta += moved;
+            addmask(kinds, s->kinds[slot], moved);
+            last[slot] = now[slot];
+        }
+    }
+    if (delta != 0)
+    {
+        add(s, delta, kinds);
+        addexclusive(s, s->target, s->targetpc, s->targetnode, kinds[LUA_PROFILE_COLD]);
+    }
 }
 
 static bool slothit(LuaNode* n, const TValue* kv)
@@ -1257,10 +1444,10 @@ static void addhandler(lua_ProfileCacheSite& site, int type)
 }
 
 // the key an instruction with an inline cache uses (a name id, -1 for none): a table key, a method, a global, an import's path
-static int keyof(lua_ProfileState* s, Closure* cl, const Instruction* pc, int op)
+static int keyof(lua_ProfileState* s, Proto* p, const Instruction* pc, int op)
 {
-    TValue* k = cl->l.p->k;
-    int sizek = cl->l.p->sizek;
+    TValue* k = p->k;
+    int sizek = p->sizek;
     uint32_t aux = pc[1];
     switch (op)
     {
@@ -1495,10 +1682,10 @@ static void tableop(lua_ProfileState* s, lua_State* L, const Instruction* pc, in
 static void cacheop(lua_ProfileState* s, lua_State* L, Closure* cl, const Instruction* pc, int op, ProfFunction& f, int function, int at, int node)
 {
     Instruction insn = *pc;
-    TValue* k = cl->l.p->k;
+    TValue* k = L->ci->p->k;
     // (the site, with the key it uses, made the first time it runs in this call-tree node and phase)
     if (f.siteof.empty() || f.siteof[at] <= 0 || f.cachesites[f.siteof[at] - 1].phase != s->phase || f.cachesites[f.siteof[at] - 1].node != node)
-        cachesite(f, at, op, keyof(s, cl, pc, op), s->phase, node);
+        cachesite(f, at, op, keyof(s, L->ci->p, pc, op), s->phase, node);
     // (the table it reaches first: its first touch in the frame is told apart from what its outcome costs, luaP_coldtouch)
     if (op == LOP_GETGLOBAL || op == LOP_SETGLOBAL || op == LOP_GETIMPORT)
         s->owntable = cl->env;
@@ -1620,7 +1807,7 @@ static int declinereason(lua_State* L, Closure* cl, const Instruction* pc, int o
     case LOP_FASTCALL2K:
         nparams = 2;
         fixed[0] = base + LUAU_INSN_B(insn);
-        fixed[1] = &cl->l.p->k[pc[1]];
+        fixed[1] = &L->ci->p->k[pc[1]];
         break;
     case LOP_FASTCALL3:
         nparams = 3;
@@ -1759,7 +1946,7 @@ static void callop(lua_ProfileState* s, lua_State* L, Closure* cl, const Instruc
     if (exempt || !ttisfunction(ra) || !clvalue(ra)->isC)
         return;
     Closure* ccl = clvalue(ra);
-    int cnode = child(s, node, -2 - cfunctionid(s, ccl->c.f, cnameof(s, ccl, method, cl->env, cl->l.p, at)), at);
+    int cnode = child(s, node, -2 - cfunctionid(s, ccl->c.f, cnameof(s, ccl, method, cl->env, L->ci->p, at)), at);
     s->nodes[cnode].calls++;
     if (s->lastframes)
     {
@@ -1774,7 +1961,7 @@ static void callop(lua_ProfileState* s, lua_State* L, Closure* cl, const Instruc
 static void markfresh(lua_ProfileState* s, lua_State* L)
 {
     CallInfo* ci = L->ci;
-    if (!isLua(ci) || ci->savedpc != ci_func(ci)->l.p->code)
+    if (!isLua(ci) || ci->savedpc != ci->p->code)
         return;
     std::vector<ProfFrame>* frames = NULL;
     if (L == s->lastL && s->lastframes)
@@ -1798,7 +1985,7 @@ void luaP_step(lua_State* L, Closure* cl, const Instruction* pc)
     lua_ProfileState* s = luaP_state;
     if (!s->stepping || s->g != L->global)
         return;
-    Proto* p = cl->l.p;
+    Proto* p = L->ci->p;
     int op = LUAU_INSN_OP(*pc);
 
     if (s->pending.kind != PENDING_NONE)
@@ -1821,11 +2008,15 @@ void luaP_step(lua_State* L, Closure* cl, const Instruction* pc)
     }
 
     int function = functionof(s, p);
-    if (L != s->lastL || L->ci != s->lastci || (s->lastframes && !s->lastframes->empty() && s->lastframes->back().returning))
+    // the stack moved without a step seeing it, or the last instruction returned
+    bool lastReturned = s->lastframes && !s->lastframes->empty() && s->lastframes->back().returning;
+    if (L != s->lastL || L->ci != s->lastci || s->nodes[s->lastnode].function != function || lastReturned)
         reconcile(s, L);
     ProfFunction& f = s->functions[function];
     int node = s->lastnode;
     bool exempt = (p->flags & LUAU_PROTO_WORK_EXEMPT) != 0;
+    // (the binding's helper chunks book like the host's own Luau, though their instructions count as a script's)
+    bool booksbelow = exempt || s->functions[function].binding;
     int at = -1;
 
     if (op == LOP_NATIVECALL)
@@ -1841,6 +2032,7 @@ void luaP_step(lua_State* L, Closure* cl, const Instruction* pc)
         if (unsigned(at) >= unsigned(f.counts.size()))
             return;
         f.counts[at]++;
+        f.phasecounts[phaselinesof(s, f)][at]++;
         s->nodes[node].insns++;
         if (!f.inlinesfound)
             findinlines(s, function);
@@ -1911,7 +2103,7 @@ void luaP_step(lua_State* L, Closure* cl, const Instruction* pc)
         }
     }
 
-    if (exempt)
+    if (booksbelow)
     {
         s->target = s->hosttarget;
         s->targetpc = s->hosttargetpc;
@@ -1925,6 +2117,57 @@ void luaP_step(lua_State* L, Closure* cl, const Instruction* pc)
     }
     s->lastop = op;
     s->lastbase = exempt ? kHostOpsSlot : (p->flags & LUAU_PROTO_WORK_NATIVE) ? kNativeOpsSlot : kOpsSlot;
+    bookcallee(s);
+
+    // an object a cold charge was paid for in this frame, touched by another function: a cut of the payer leaves the charge here
+    if (!s->coldframe.empty() && at >= 0)
+    {
+        GCObject* touched = NULL;
+        StkId base = L->base;
+        Instruction insn = *pc;
+        switch (op)
+        {
+        case LOP_GETTABLEKS:
+        case LOP_SETTABLEKS:
+        case LOP_GETTABLE:
+        case LOP_SETTABLE:
+        case LOP_GETTABLEN:
+        case LOP_SETTABLEN:
+        case LOP_NAMECALL:
+        case LOP_LENGTH:
+        {
+            StkId rb = base + LUAU_INSN_B(insn);
+            if (ttistable(rb))
+                touched = gcvalue(rb);
+            break;
+        }
+        case LOP_FORGLOOP:
+        {
+            StkId ra = base + LUAU_INSN_A(insn);
+            if (ttistable(ra + 1))
+                touched = gcvalue(ra + 1);
+            break;
+        }
+        case LOP_CALL:
+        case LOP_CALLFB:
+        {
+            StkId ra = base + LUAU_INSN_A(insn);
+            if (ttisfunction(ra))
+                touched = gcvalue(ra);
+            break;
+        }
+        }
+        if (touched)
+        {
+            auto found = s->coldframe.find(touched);
+            if (found != s->coldframe.end())
+            {
+                int payer = found->second.kind == LUA_COLD_CFUNCTION && s->ctarget >= 0 ? s->nodes[s->ctarget].function : s->target;
+                if (found->second.payer != payer)
+                    found->second.shared = true;
+            }
+        }
+    }
 }
 
 void luaP_nativeenter(lua_State* L, Closure* cl)
@@ -1935,14 +2178,15 @@ void luaP_nativeenter(lua_State* L, Closure* cl)
     book(s, L);
     s->ctarget = -1;
     s->owntable = NULL;
-    int function = functionof(s, cl->l.p);
+    int function = functionof(s, L->ci->p);
     if (L != s->lastL || L->ci != s->lastci)
         reconcile(s, L);
     ProfFunction& f = s->functions[function];
     f.nativeentries++;
     f.flags |= LUA_PROFILE_NATIVE;
     s->nativeseen = true;
-    if (cl->l.p->flags & LUAU_PROTO_WORK_EXEMPT)
+    // (the host's own Luau and the binding's helper chunks, natively compiled too, book to the script line that called them)
+    if ((L->ci->p->flags & LUAU_PROTO_WORK_EXEMPT) || f.binding)
     {
         s->target = s->hosttarget;
         s->targetpc = s->hosttargetpc;
@@ -1956,6 +2200,7 @@ void luaP_nativeenter(lua_State* L, Closure* cl)
     }
     // (native code dispatches no instruction: none is priced at the next booking)
     s->lastop = -1;
+    bookcallee(s);
 }
 
 // The C stack grows down on every target ree builds for: a frame called later sits at a lower address
@@ -2067,6 +2312,7 @@ void luaP_threadgone(lua_State* L, lua_State* L1)
         if (s->namecalls[i].L == L1)
             s->namecalls.erase(s->namecalls.begin() + i);
     s->threads.erase(L1);
+    s->resumes.erase(L1);
     // (a freed thread's sampled calls are gone without a word: their functions' counts give them up; a reset one's left
     // first, lua_resetthread)
     auto open = s->callopen.find(L1);
@@ -2079,11 +2325,230 @@ void luaP_threadgone(lua_State* L, lua_State* L1)
     }
 }
 
+void luaP_resumed(lua_State* L)
+{
+    lua_ProfileState* s = stateof(L);
+    if (s && s->stepping)
+        s->resumes[L]++;
+}
+
+unsigned long long lua_profileresumes(lua_State* L)
+{
+    lua_ProfileState* s = stateof(L);
+    if (!s || !s->stepping)
+        return 0;
+    auto found = s->resumes.find(L);
+    return found == s->resumes.end() ? 0 : found->second;
+}
+
 void luaP_freed(lua_State* L, GCObject* o)
 {
     lua_ProfileState* s = stateof(L);
     if (s && s->freed)
         s->freed(s->freedud, o);
+}
+
+void luaP_coldcode(lua_State* L, Proto* p, int pc)
+{
+    lua_ProfileState* s = stateof(L);
+    if (!s || !s->stepping || !s->pricing || s->coldcodeslot < 0)
+        return;
+    double price = s->prices[s->coldcodeslot];
+    int function = functionof(s, p);
+    if (L != s->lastL || L->ci != s->lastci || s->nodes[s->lastnode].function != function)
+        reconcile(s, L);
+    // luaP_step has reconciled this executing frame. A binding helper's normal work
+    // can target its caller, but the helper's code still belongs to this frame.
+    int node = s->lastnode;
+    LUAU_ASSERT(s->nodes[node].function == function);
+    ProfFunction& f = s->functions[function];
+    LUAU_ASSERT(unsigned(pc) < f.work.size());
+    f.work[pc] += price;
+    f.phasework[phaselinesof(s, f)][pc] += price;
+    s->nodes[node].work += price;
+    double kinds[LUA_PROFILE_SPLITS] = {};
+    kinds[LUA_PROFILE_COLD] = price;
+    addkinds(s, function, pc, node, kinds);
+    addexclusive(s, function, pc, node, price);
+    if (lua_ProfileBuiltinSite* site = fallbacksite(f, pc, node, s->phase))
+        site->charged += price;
+}
+
+void luaP_cold(lua_State* L, GCObject* o, int kind, int slot)
+{
+    lua_ProfileState* s = stateof(L);
+    if (!s || !s->stepping || !s->pricing || s->target < 0 || slot < 0 || size_t(slot) >= s->prices.size())
+        return;
+    ColdRecord record = {kind, s->target, s->targetpc, s->targetnode, s->prices[slot], false, -1, -1};
+    if (kind == LUA_COLD_TABLE)
+    {
+        auto site = s->tablesites.find(o);
+        if (site != s->tablesites.end())
+        {
+            record.sitefunction = int(int64_t(site->second) >> 32);
+            record.sitepc = int(uint32_t(site->second));
+        }
+    }
+    else if (kind == LUA_COLD_CFUNCTION)
+    {
+        record.sitefunction = cfunctionof(s, gco2cl(o), L->ci, L->base_ci);
+        if (s->ctarget >= 0)
+        {
+            record.payer = s->nodes[s->ctarget].function;
+            record.pc = -1;
+            record.node = s->ctarget;
+        }
+    }
+    else
+        record.sitefunction = functionof(s, gco2cl(o)->l.p);
+    s->coldframe[o] = record;
+}
+
+// settles the frame's cold charges for objects: their totals, and the payers' charges nothing else shared
+static void coldsettle(lua_ProfileState* s)
+{
+    for (auto& entry : s->coldframe)
+    {
+        const ColdRecord& r = entry.second;
+        uint64_t key = (uint64_t(uint32_t(r.kind)) << 60) ^ (uint64_t(uint32_t(r.sitefunction)) << 28) ^ uint64_t(uint32_t(r.sitepc) & 0x0fffffff);
+        ColdTotal& total = s->coldtotals[key];
+        total.kind = r.kind;
+        total.function = r.sitefunction;
+        total.pc = r.sitepc;
+        total.cost += r.cost;
+        total.frames++;
+        total.sharedframes += r.shared ? 1 : 0;
+        total.payers[(uint64_t(uint32_t(r.payer)) << 32) | uint32_t(r.pc)] += r.cost;
+        if (!r.shared && r.node >= 0 && size_t(r.node) < s->nodes.size())
+            addexclusive(s, r.payer, r.pc, r.node, r.cost);
+    }
+    s->coldframe.clear();
+}
+
+void luaP_coldframe(lua_State* L)
+{
+    lua_ProfileState* s = stateof(L);
+    if (s && s->stepping)
+        coldsettle(s);
+}
+
+void luaP_tablemade(lua_State* L, LuaTable* t)
+{
+    lua_ProfileState* s = stateof(L);
+    if (!s || !s->stepping)
+        return;
+    s->tablesites[t] = (uint64_t(uint32_t(s->target)) << 32) | uint32_t(s->target >= 0 ? s->targetpc : -1);
+}
+
+void lua_profilesplit(lua_State* L, const signed char* kinds, int nkinds, const double* hostkinds)
+{
+    lua_ProfileState* s = stateof(L);
+    if (!s || !s->pricing || nkinds != kWorkSlots)
+        return;
+    s->splitting = true;
+    s->kinds.assign(kinds, kinds + nkinds);
+    s->hostkinds = hostkinds;
+    if (hostkinds)
+        for (int k = 0; k < LUA_PROFILE_SPLITS; ++k)
+            s->lasthostkinds[k] = hostkinds[k];
+    // the callee's slots and the cold code's leave the per-step booking
+    s->calleeslots = {int(offsetof(lua_WorkCounters, coldclosures) / sizeof(uint64_t)), int(offsetof(lua_WorkCounters, coldprotos) / sizeof(uint64_t)),
+        kHostOpsSlot + LUA_WORK_RAREPROTOS};
+    s->coldcodeslot = int(offsetof(lua_WorkCounters, coldcode) / sizeof(uint64_t));
+    std::vector<int> scalars;
+    for (int slot : s->scalars)
+        if (slot != s->coldcodeslot && std::find(s->calleeslots.begin(), s->calleeslots.end(), slot) == s->calleeslots.end())
+            scalars.push_back(slot);
+    s->scalars = scalars;
+}
+
+int lua_profilecoldobjects(lua_State* L, void (*each)(void* ud, const lua_ProfileColdObject* o), void* ud)
+{
+    lua_ProfileState* s = stateof(L);
+    if (!s)
+        return 0;
+    coldsettle(s);
+    int count = 0;
+    for (auto& entry : s->coldtotals)
+    {
+        ColdTotal& total = entry.second;
+        total.listed.clear();
+        for (auto& payer : total.payers)
+            total.listed.push_back(lua_ProfileColdPayer{int(int64_t(payer.first) >> 32), int(uint32_t(payer.first)), payer.second});
+        // the dearest payer first; payers that cost the same by function and then pc, so the order does not depend on the map's
+        std::sort(total.listed.begin(), total.listed.end(), [](const lua_ProfileColdPayer& a, const lua_ProfileColdPayer& b) {
+            if (a.cost != b.cost)
+                return a.cost > b.cost;
+            if (a.function != b.function)
+                return a.function < b.function;
+            return a.pc < b.pc;
+        });
+        lua_ProfileColdObject out = {total.kind, total.function, total.pc, total.cost, total.frames, total.sharedframes, int(total.listed.size()),
+            total.listed.empty() ? NULL : total.listed.data()};
+        each(ud, &out);
+        count++;
+    }
+    return count;
+}
+
+void lua_profilebooknext(lua_State* L, lua_State* co)
+{
+    lua_ProfileState* s = stateof(L);
+    if (!s || !s->stepping || !co)
+        return;
+    // (what was charged so far is the last instruction's or the engine's)
+    book(s, L);
+    for (CallInfo* ci = co->ci; ci > co->base_ci; --ci)
+    {
+        if (!isLua(ci))
+            continue;
+        reconcile(s, co);
+        Proto* p = ci->p;
+        if ((p->flags & LUAU_PROTO_WORK_EXEMPT) || s->functions[functionof(s, p)].binding)
+        {
+            s->target = s->hosttarget;
+            s->targetpc = s->hosttargetpc;
+            s->targetnode = s->hosttargetnode;
+            return;
+        }
+        int function = functionof(s, p);
+        int depth = int(ci - co->base_ci);
+        int node = s->lastnode;
+        for (const ProfFrame& frame : *s->lastframes)
+            if (frame.depth == depth)
+                node = frame.node;
+        s->target = function;
+        s->targetpc = (ci->flags & LUA_CALLINFO_NATIVE) ? -1 : pcRel(ci->savedpc, p);
+        s->targetnode = node;
+        return;
+    }
+    // not started: the function on top of its stack runs as the thread's outermost frame
+    if (co->top > co->stack && ttisfunction(co->top - 1) && !clvalue(co->top - 1)->isC)
+    {
+        Proto* p = clvalue(co->top - 1)->l.p;
+        if (p->flags & LUAU_PROTO_WORK_EXEMPT)
+            return;
+        int function = functionof(s, p);
+        s->target = function;
+        s->targetpc = 0;
+        s->targetnode = child(s, s->phaseroot, function, -1);
+    }
+}
+
+int lua_profilecurrent(int* function, int* pc, int* node, unsigned long long* calls)
+{
+    lua_ProfileState* s = luaP_state;
+    if (!s || !s->stepping)
+        return 0;
+    if (function)
+        *function = s->target;
+    if (pc)
+        *pc = s->targetpc;
+    if (node)
+        *node = s->targetnode;
+    if (calls)
+        *calls = s->targetnode >= 0 && size_t(s->targetnode) < s->nodes.size() ? s->nodes[s->targetnode].calls : 0;
+    return 1;
 }
 
 int lua_profilestart(lua_State* L, int stepping, const double* prices, int nprices, const double* hostwork, const double* hostdrained)
@@ -2113,7 +2578,7 @@ int lua_profilestart(lua_State* L, int stepping, const double* prices, int npric
         s->lasthost = hostwork && hostdrained ? *hostwork + *hostdrained : 0;
     }
     s->last = L->global->work;
-    ProfNode root = {-1, -1, -1, 0, 0, 0.0};
+    ProfNode root = {-1, -1, -1, 0, 0, 0.0, {}, 0.0};
     s->nodes.push_back(root);
     luaP_allockind = 0;
     luaP_allocblock = NULL;
@@ -2129,6 +2594,8 @@ void lua_profilestop(lua_State* L)
     // (an outcome the next step would have told is not known)
     s->pending.kind = PENDING_NONE;
     book(s, L);
+    bookcallee(s);
+    coldsettle(s);
     s->stepping = false;
 }
 
@@ -2158,6 +2625,18 @@ int lua_profilefunctions(lua_State* L, void (*each)(void* ud, int id, const lua_
         out.nativework = f.nativework;
         out.ninlines = int(f.inlines.size());
         out.inlines = f.inlines.empty() ? NULL : f.inlines.data();
+        out.split = f.split.empty() ? NULL : f.split.data();
+        out.exclusive = f.exclusive.empty() ? NULL : f.exclusive.data();
+        ProfFunction& lined = s->functions[i];
+        for (size_t k = 0; k < lined.phaselines.size(); ++k)
+        {
+            lined.phaselines[k].counts = lined.phasecounts[k].data();
+            lined.phaselines[k].work = lined.phasework[k].data();
+            lined.phaselines[k].cold = lined.phasecold[k].data();
+        }
+        out.nphaselines = int(lined.phaselines.size());
+        out.phaselines = lined.phaselines.empty() ? NULL : lined.phaselines.data();
+        out.binding = f.binding ? 1 : 0;
         each(ud, int(i), &out);
     }
     return int(s->functions.size());
@@ -2171,7 +2650,9 @@ int lua_profilenodes(lua_State* L, void (*each)(void* ud, int id, const lua_Prof
     for (size_t i = 0; i < s->nodes.size(); ++i)
     {
         const ProfNode& n = s->nodes[i];
-        lua_ProfileNode out = {n.parent, n.function, n.callpc, n.calls, n.insns, n.work};
+        lua_ProfileNode out = {n.parent, n.function, n.callpc, n.calls, n.insns, n.work, {}, n.exclusive};
+        for (int k = 0; k < LUA_PROFILE_SPLITS; ++k)
+            out.split[k] = n.split[k];
         each(ud, int(i), &out);
     }
     return int(s->nodes.size());
@@ -2357,7 +2838,7 @@ int lua_profilestack(lua_State* L, int* functions, int* lines, int max)
         }
         else
         {
-            Proto* p = cl->l.p;
+            Proto* p = ci->p;
             functions[n] = functionof(s, p);
             lines[n] = (ci->flags & LUA_CALLINFO_NATIVE) ? -1 : luaG_getline(p, pcRel(ci->savedpc, p));
         }
@@ -2378,7 +2859,7 @@ int lua_profilepc(lua_State* L, int* function)
             continue;
         if (ci->flags & LUA_CALLINFO_NATIVE)
             return -1;
-        Proto* p = clvalue(ci->func)->l.p;
+        Proto* p = ci->p;
         *function = functionof(s, p);
         return pcRel(ci->savedpc, p);
     }
@@ -2418,7 +2899,7 @@ int lua_profileop(lua_State* L)
     CallInfo* ci = L->ci;
     if (!isLua(ci) || (ci->flags & LUA_CALLINFO_NATIVE) || !ci->savedpc)
         return -1;
-    Proto* p = ci_func(ci)->l.p;
+    Proto* p = ci->p;
     if (ci->savedpc <= p->code || ci->savedpc > p->code + p->sizecode)
         return -1;
     return LUAU_INSN_OP(ci->savedpc[-1]);
@@ -2522,7 +3003,12 @@ void luaP_rehash(lua_State* L, LuaTable* t, int oldarray, int oldnodes, int keys
         {
             int nodes = t->node == &luaH_dummynode ? 0 : sizenode(t);
             double bytes = double(std::max(0, t->sizearray - oldarray)) * sizeof(TValue) + double(std::max(0, nodes - oldnodes)) * sizeof(LuaNode);
-            f.cachesites[slot - 1].presized += bytes * s->prices[kStoredSlot];
+            // Presizing pays for the final storage once, including allocations outside
+            // the VM's pages. Repeated growth pays for each intermediate allocation.
+            int blocks = (t->sizearray * sizeof(TValue) > 1024) - (oldarray * sizeof(TValue) > 1024) +
+                         (nodes * sizeof(LuaNode) > 1024) - (oldnodes * sizeof(LuaNode) > 1024);
+            f.cachesites[slot - 1].presized += bytes * (s->prices[kStoredSlot] + s->prices[kHostOpsSlot + LUA_WORK_ALLOCBYTES]) +
+                                                   blocks * s->prices[kHostOpsSlot + LUA_WORK_LARGEBLOCKS];
         }
     }
     if (!s->rehash)
@@ -2531,14 +3017,11 @@ void luaP_rehash(lua_State* L, LuaTable* t, int oldarray, int oldnodes, int keys
     s->rehash(s->rehashud, L, t, oldarray, oldnodes, t->sizearray, nodes, keys, luaE_scriptinsn(L) ? 1 : 0);
 }
 
-void luaP_uncounted(lua_State* L, int objects, size_t bytes, int keys)
+void luaP_callstorage(lua_State* L, size_t bytes)
 {
-    lua_ProfileState* s = luaP_state;
-    if (!s || !s->stepping || !s->pricing || s->g != L->global || !luaE_scriptwork(L))
-        return;
-    s->callobjects += uint64_t(objects);
-    s->callstored += uint64_t(bytes);
-    s->callrehashed += uint64_t(keys);
+    lua_ProfileState* s = stateof(L);
+    if (s && s->stepping && s->pricing && luaE_scriptwork(L) && !luaE_hostcall(L))
+        s->callstored += bytes;
 }
 
 void luaP_coldtouch(lua_State* L, GCObject* o)

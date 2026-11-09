@@ -12,7 +12,7 @@
 │   function                                               calls  Studio work   share                                  │
 │   sort [C]                                                 120     5.040 ms   58.3% ██████████████████▋              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭ Hottest lines  own Studio work ──────────────────────────────────────────────────────────────────────────────────────╮
+╭ Hottest lines  own Studio work · the whole run (lines are not counted per phase) ────────────────────────────────────╮
 │     line        own  share                code                                         instructions                  │
 │       21   2.880 ms  21.8% ██████████████ for _, item in items do records[#records + 1 NEWTABLE 12.0K · SETTABLEKS … │
 │       22   0.720 ms   5.5% ███▌           table.sort(records, function(a, b) return a. CALL 120 · DUPCLOSURE 120     │

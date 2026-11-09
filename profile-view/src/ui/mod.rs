@@ -92,8 +92,17 @@ fn header(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         if app.profiles.len() == 2 {
             spans.push(Span::styled(format!("{}  ", app.side_name(app.shown)), bar.add_modifier(Modifier::BOLD)));
         }
-        let ok = run.status == "ok";
-        spans.push(Span::styled(if ok { "✓ " } else { "✗ " }, Style::new().fg(if ok { theme.good } else { theme.critical }).bg(theme.raised)));
+        // (✗ only for a run that failed or timed out: a harness still waiting when the run ends, `yielded`, is a run's
+        // usual end)
+        let failed = matches!(run.status.as_str(), "error" | "failed") || run.status.contains("timeout") || run.status.contains("timed out");
+        let (icon, color) = if run.status == "ok" {
+            ("✓ ", theme.good)
+        } else if failed {
+            ("✗ ", theme.critical)
+        } else {
+            ("○ ", theme.muted)
+        };
+        spans.push(Span::styled(icon, Style::new().fg(color).bg(theme.raised)));
         let mut what = vec![format!("{} {}", run.command, run.status)];
         if let Some(harness) = p.harness() {
             what.push(harness);
@@ -103,7 +112,17 @@ fn header(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         spans.push(Span::styled(what.join(" · "), Style::new().fg(theme.ink2).bg(theme.raised)));
         let metric = app.metric;
         right.push(Span::styled(format!("{} ", metric.label(p)), Style::new().fg(theme.muted).bg(theme.raised)));
-        right.push(Span::styled(format!("{} ", fmt::value(metric.unit(), metric.total(p))), bar.add_modifier(Modifier::BOLD)));
+        // (a metric the profile's kinds did not measure is said so, never shown as 0; the timeline's frames still carry
+        // the work clock without the work kind)
+        let frames_work = p.raw.timeline.as_ref().and_then(|t| t.values("work_ms")).map(|values| values.iter().sum::<f64>());
+        let total = if crate::metric::Metric::available(p).contains(&metric) {
+            fmt::value(metric.unit(), metric.total(p))
+        } else if let Some(work) = frames_work.filter(|_| metric == crate::metric::Metric::Work) {
+            format!("{} in frames", fmt::ms(work))
+        } else {
+            "not measured".into()
+        };
+        right.push(Span::styled(format!("{total} "), bar.add_modifier(Modifier::BOLD)));
     } else if let Some(compare) = &app.compare {
         spans.push(Span::styled(compare.title.clone(), Style::new().fg(theme.ink2).bg(theme.raised)));
     }

@@ -723,8 +723,9 @@ fn the_work_clocks_charges_and_the_uncharged_prices_never_overlap() {
             }
             "__index function" => {
                 assert!(body > 0.0, "the function's own instructions are in its row: {body} ms");
-                // (its first run in each frame it ran in, whose frame before did not run it)
-                assert!(ns(charged, runs) >= crate::cost::LUAU_RARE_PROTO, "the site's charge holds the function's first run in each: {} ns a run", ns(charged, runs));
+                // The callee owns its first-use charges along with its dispatched code.
+                assert!(ns(body, runs) >= crate::cost::LUAU_RARE_PROTO, "the callee's row holds its first run in each frame: {} ns a run", ns(body, runs));
+                assert!(charged.abs() < 1e-9, "the read's site does not own the callee's code: {charged} ms");
                 let price = crate::profiler::prices::outcome(3, vm::METAFUNCTION, 1.0).unwrap();
                 let full = price.ns + crate::cost::INTERPRETED_OPS[crate::profiler::prices::OP_LOADN] + crate::cost::INTERPRETED_OPS[crate::profiler::prices::OP_RETURN];
                 assert!(price.ns < full && (price.within_noise && w.noisy as f64 == outcomes || (w.extra - outcomes * price.ns / 1e6).abs() < 1e-6), "the call's price leaves the body out: {} ms", w.extra);
@@ -781,8 +782,9 @@ fn a_rehash_sites_presized_figure_is_what_presizing_saves() {
     );
     assert!(presize > 0.0 && presize < outcome, "presizing costs something, less than the rehashes: {presize} of {outcome} µs");
     assert!((outcome - presize - saves).abs() < 1e-3, "outcome_charged_us - presized_us is the clock's saving: {outcome} - {presize} µs against {saves} µs");
-    // (a slot holds 32 bytes: the 4 more an 8-slot table holds, at the clock's price for a byte of storage)
-    assert!((presize * 1e3 / tables - 4.0 * 32.0 * crate::cost::LUAU_STORED).abs() < 1e-6, "{} ns a table", presize * 1e3 / tables);
+    // Four more 32-byte slots pay both the storage and allocated-byte prices.
+    let expected = 4.0 * 32.0 * (crate::cost::LUAU_STORED + crate::cost::LUAU_ALLOCATED_BYTE);
+    assert!((presize * 1e3 / tables - expected).abs() < 1e-6, "{} ns a table", presize * 1e3 / tables);
 }
 
 /// What a declined builtin call would cost on the fast path (fast_equivalent_us: its fast call and the builtin's own counted
@@ -874,9 +876,12 @@ fn a_declined_builtins_fast_equivalent_is_what_a_fix_still_pays() {
             declines_fixed
         );
         assert_eq!(declines as f64, calls, "{}: every call of the declining form declines", case.name);
-        // (the fast path is no free lunch: its dispatch at least; it can cost the clock more than the call, whose C function's
-        // allocations count with its call)
+        // Both paths pay for result allocations. Declining adds fallback instructions
+        // and a C call instead of hiding the string's object and byte costs in that call.
         assert!(fast > 0.0, "{}: the fast path would charge something: {fast} ms", case.name);
+        if case.builtin == "string.sub" {
+            assert!(charged > fast, "a declined substring must cost more than its fast equivalent: {charged} vs {fast} ms");
+        }
         let saving = (charged - fast) - (charged_fixed - fast_fixed);
         let lines = |json: &Json| -> String {
             let loop_row = function(json, "fastpath", "loop");

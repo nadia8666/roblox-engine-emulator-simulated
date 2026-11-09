@@ -681,6 +681,9 @@ pub fn install(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
     if let Some(counters) = counters {
         crate::cost::install_gc_clock(lua, counters)?;
     }
+    crate::scheduler::start_cold_tracking(lua, engine);
+    // (the engine's own C functions, mlua's callback among them: the objects they make for a script are priced with their operation)
+    crate::cost::mark_host_functions(lua, &[meta_index, meta_newindex, meta_namecall, meta_tostring, create_instance, instance_new, table_namecall, typeof_c])?;
 
     // Parent changes that move a subtree into or out of the DataModel re-anchor its userdata
     engine.hooks.borrow_mut().hierarchy_changed.push(Box::new(move |state, id, old, new| {
@@ -991,6 +994,7 @@ unsafe extern "C-unwind" fn instance_new(state: *mut ffi::lua_State) -> c_int {
                     let class = dom_state.dom.at(id).class;
                     let cost = crate::cost::created(&engine.reflection, class);
                     api.charge(cost);
+                    api.touched.borrow().book_kinds_with(cost, || crate::cost::created_kinds(&engine.reflection, class));
                     if crate::boundary::active() && api.muted.get() == 0 {
                         crate::boundary::record_named(crate::boundary::Kind::Create, "Instance", &format!("new({})", engine.reflection.class(class).name), cost);
                     }
@@ -1115,14 +1119,17 @@ unsafe fn push_value(state: *mut ffi::lua_State, api: &Api, dom_state: &State, i
 
 unsafe extern "C-unwind" fn meta_index(state: *mut ffi::lua_State) -> c_int {
     crate::boundary::enter(state);
+    crate::boundary::access_begin(state);
     // (host time: the call's time is its line's)
     let _time = crate::luau_profile::ApiCall::new(state);
     let out = guard(|| unsafe { index_fast(state) });
-    match out {
+    let count = match out {
         Out::Ret(count) => count,
         Out::Raise(message, level) => unsafe { raise(state, message, level) },
         _ => unsafe { index_slow(state) },
-    }
+    };
+    crate::boundary::access_end(state, false);
+    count
 }
 
 /// What a read's value adds to its price (cost.rs `read_value`), charged and booked to the read's boundary crossing
@@ -1284,6 +1291,7 @@ unsafe fn index_slow(state: *mut ffi::lua_State) -> c_int {
 unsafe extern "C-unwind" fn meta_newindex(state: *mut ffi::lua_State) -> c_int {
     crate::trace::enter(state);
     crate::boundary::enter(state);
+    crate::boundary::access_begin(state);
     // (host time: the call's time is its line's)
     let _time = crate::luau_profile::ApiCall::new(state);
     let out = guard(|| unsafe { newindex_fast(state) });
@@ -1297,6 +1305,7 @@ unsafe extern "C-unwind" fn meta_newindex(state: *mut ffi::lua_State) -> c_int {
             sync_if_moved(state, api);
         }
     }
+    crate::boundary::access_end(state, true);
     0
 }
 
@@ -1596,6 +1605,8 @@ unsafe fn namecall_fast(state: *mut ffi::lua_State) -> Out {
         let serial = engine.state.borrow().dom.at(id).serial;
         let cost = {
             let mut touched = api.touched.borrow_mut();
+            // (where the method's own price came from: cost.rs method_kinds)
+            touched.book_kinds_with(member.cost as f64, || crate::cost::method_kinds(engine.reflection.name(name)));
             // (the method's code, cold at its first call in the frame: cost.rs FIRST_CALL)
             member.cost as f64 + touched.touch(id.index, class, serial) + touched.first_use(crate::cost::MemberUse::Call, name) + lower_first
         };

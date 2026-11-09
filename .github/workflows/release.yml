@@ -1,0 +1,216 @@
+# Public releases build from a mirrored tag. Main and manual runs only upload workflow artifacts.
+#
+# Jobs: version (checks the tag), build and smoke (once per platform), notes, then publish, which alone may write.
+# The scripts are in tools/release/ (README.md there). Release builds start clean: no cache is restored.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+    # Applies to branch pushes only. Tags always run.
+    paths:
+      - '.github/workflows/release.yml'
+      - 'tools/release/**'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/build.rs'
+      - '.cargo/config.toml'
+      - 'tools/vendor.mjs'
+      - 'patches/**'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'THIRD_PARTY_NOTICES.md'
+      - 'licenses/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per ref. A newer push to main replaces an older dry run, a tag run is never cancelled.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  version:
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out the full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # The manifests and Cargo.lock must agree. A tag must be exactly v<version> and on main.
+      - name: Read the version and check the tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_TYPE" = tag ]; then
+            version=$(node tools/release/version.mjs --tag "$GITHUB_REF_NAME")
+            git fetch --no-tags origin main
+            git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD
+          else
+            version=$(node tools/release/version.mjs)
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    if: ${{ !github.event.repository.private }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, os: windows, arch: x86_64, target: x86_64-pc-windows-msvc, binary: ree.exe }
+          - { runner: ubuntu-22.04, os: linux, arch: x86_64, target: x86_64-unknown-linux-gnu, binary: ree }
+          - { runner: macos-15, os: macos, arch: aarch64, target: aarch64-apple-darwin, binary: ree }
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      RELEASE_OS: ${{ matrix.os }}
+      ARCH: ${{ matrix.arch }}
+      TARGET: ${{ matrix.target }}
+      BINARY: ${{ matrix.binary }}
+      # One executable also on a Windows machine without the Visual C++ redistributable.
+      RUSTFLAGS: ${{ matrix.os == 'windows' && '-C target-feature=+crt-static' || '' }}
+      # Mimalloc's TLS hook precedes static CRT initialization; its CRT/FLS path starts after it.
+      # Spelled -D, not /D: the build step runs in Git Bash, which rewrites an environment value that starts with / into
+      # a Windows path, so cl.exe never saw the define. MSVC accepts both spellings.
+      CXXFLAGS_x86_64_pc_windows_msvc: ${{ matrix.os == 'windows' && '-DMI_WIN_INIT_USE_FLS=1' || '' }}
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust 1.90.0, the version ci.yml builds with
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-16
+        with:
+          toolchain: "1.90.0"
+      - name: Vendored VM matches its patches
+        run: node tools/vendor.mjs --check
+      - name: Release script tests
+        run: node --test tools/release/test.mjs
+      - name: Build with public default features and no cache
+        shell: bash
+        run: cargo build --release --locked --bin ree --target "$TARGET"
+      # A bad static-CRT or mimalloc setup builds fine and then crashes at startup. Run it here so that fails the build
+      # job, not only the smoke job after the zip is uploaded.
+      - name: Check the built Windows executable starts
+        if: ${{ matrix.os == 'windows' }}
+        shell: bash
+        run: '"target/$TARGET/release/$BINARY" --version'
+      - name: Licenses and package (checks binary order, checksums and Unix modes)
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/release/licenses.mjs --target "$TARGET" --out "$RUNNER_TEMP/THIRD_PARTY_LICENSES.txt"
+          node tools/release/package.mjs --binary "target/$TARGET/release/$BINARY" --version "$VERSION" --os "$RELEASE_OS" --arch "$ARCH" --licenses "$RUNNER_TEMP/THIRD_PARTY_LICENSES.txt" --out dist
+      - name: Upload the zip
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ree-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  smoke:
+    if: ${{ !github.event.repository.private }}
+    needs: [version, build]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, os: windows, arch: x86_64 }
+          - { runner: ubuntu-22.04, os: linux, arch: x86_64 }
+          - { runner: macos-15, os: macos, arch: aarch64 }
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      RELEASE_OS: ${{ matrix.os }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      # The checkout goes into inputs/ for the smoke script and its harness. The binary is run from a temporary
+      # folder. The smoke script puts an unrelated Cargo project above the binary there, which checkout detection
+      # must ignore.
+      - name: Check out the smoke script and its harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: inputs
+      - name: Download the zip this platform built
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ree-${{ matrix.os }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/release-assets
+      # Every platform runs an offline harness, a recording and the copied service. No GPU or Studio needed.
+      # The smoke script extracts outside the workspace, redirects user caches, and checks input/output boundaries.
+      - name: Run the installed executable outside any checkout
+        shell: bash
+        run: node inputs/tools/release/smoke.mjs --archive "$RUNNER_TEMP/release-assets/ree-$VERSION-$RELEASE_OS-$ARCH.zip" --version "$VERSION"
+
+  notes:
+    if: ${{ !github.event.repository.private && github.event_name == 'push' && github.ref_type == 'tag' }}
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out the full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Notes from public commit subjects
+        shell: bash
+        run: node tools/release/notes.mjs --tag "$GITHUB_REF_NAME" --out "$RUNNER_TEMP/release-notes.md"
+      - name: Upload the notes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes.md
+          if-no-files-found: error
+
+  publish:
+    if: ${{ !github.event.repository.private && github.event_name == 'push' && github.ref_type == 'tag' }}
+    needs: [version, build, smoke, notes]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      # This job executes no repository code and does not check out the repository.
+      - name: Download the zips of every platform
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ree-*
+          path: assets
+          merge-multiple: true
+      - name: Download the release notes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: notes
+      - name: SHA-256 for every release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd assets
+          sha256sum -- *.zip > SHA256SUMS
+      - name: Attest the build provenance of the zips
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: assets/*.zip
+      # The tag already exists, mirrored from the private repository: this creates the release for it and no tag.
+      - name: Publish the existing tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" --verify-tag --title "ree $TAG" --notes-file notes/release-notes.md -R "$GITHUB_REPOSITORY" assets/*.zip assets/SHA256SUMS

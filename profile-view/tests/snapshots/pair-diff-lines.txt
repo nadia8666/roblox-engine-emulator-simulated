@@ -22,7 +22,6 @@
 │ collector freed                       2.29 MB → 2.29 MB            same                                              │
 │ Studio work a frame (mean)           0.121 ms → 0.121 ms           same                                              │
 │ Studio work a frame (worst)          2.000 ms → 2.000 ms           same                                              │
-│ host time a frame (mean, noisy)      0.400 ms → 0.400 ms           same                                              │
 │ frames                                    120 → 120                same                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭ Moved  2 · own Studio work · by the largest change ──────────────────────────────────────────────────────────────────╮
@@ -31,6 +30,7 @@
 │                                                 before       after        change                                     │
 │ ▌ Main:22                                     5.520 ms    1.115 ms ▼   -4.405 ms   -79.8% █████████████│             │
 │   Main:21                                     2.880 ms    1.098 ms ▼   -1.782 ms   -61.9%         █████│             │
+│                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

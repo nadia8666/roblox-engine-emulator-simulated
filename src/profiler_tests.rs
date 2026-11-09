@@ -13,6 +13,8 @@ use crate::{
     scheduler,
 };
 
+mod cold;
+
 /// Profiles share process-wide switches with luau_profile's (the caches' switch, the ticker): one test at a time
 fn lock() -> std::sync::MutexGuard<'static, ()> {
     crate::luau_profile::TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -57,6 +59,46 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("ree-profile-{name}-{}-{stamp}", std::process::id()))
 }
 
+/// A handler queued while no profile ran still knows, when a profile later delivers it, that its price is a Studio-era one: the job
+/// keeps its signal kind, not the kind bits of the moment it was queued.
+#[test]
+fn a_handler_queued_before_a_profile_keeps_its_price_provenance() {
+    let _lock = lock();
+    let (lua, engine) = start();
+    let script = {
+        let mut state = engine.state.borrow_mut();
+        let class = engine.reflection.class_id("ModuleScript").unwrap();
+        crate::instance::create_named(&mut state, &engine.reflection, class, "Queued")
+    };
+    let env = engine_lua::modules::environment(&lua, &engine, script).unwrap();
+    // A direct call leaves the handler queued; Engine.Call would flush it before profiling begins.
+    let source = r#"
+        local Part = Instance.new("Part")
+        Part:GetPropertyChangedSignal("Transparency"):Connect(function() end)
+        Part.Transparency = 0.5
+    "#;
+    lua.load(source).set_name("=queue-before-profile").set_environment(env).exec().unwrap();
+    assert!(engine.state.borrow().sched.kinds.is_none());
+
+    let config = Config { print: false, ..Config::new(Kinds::WORK, temp_dir("queued-before-profile")) };
+    let session = profiler::Session::begin(config);
+    profiler::install(&lua);
+    scheduler::flush_deferred(&lua, &engine).unwrap();
+    let totals = engine.state.borrow().sched.kinds.as_ref().unwrap().totals();
+    profiler::collect(&lua);
+    let run = profiler::Run { command: "test".into(), status: "ok".into(), ..Default::default() };
+    session.finish(run).unwrap();
+
+    // (the order of cost.rs `kind`'s bits)
+    let [_cold, _collector, studio, defaulted, dispatch] = totals;
+    let property_handler_dispatch = 452.01e-9;
+    let tolerance = 1e-18;
+    println!("queued before profile: dispatch {dispatch} s, Studio {studio} s");
+    assert!((dispatch - property_handler_dispatch).abs() < tolerance);
+    assert!((studio - property_handler_dispatch).abs() < tolerance, "the delivered property handler keeps its Studio price");
+    assert_eq!(defaulted, 0.0);
+}
+
 /// Every instruction a script dispatches is counted on its own instruction, exactly what the VM's counters count;
 /// a loop's lines carry its iterations, calls are counted per callee, and the call tree's totals hold the callees'.
 #[test]
@@ -73,7 +115,7 @@ fn the_instruction_profile_counts_every_instruction_the_vm_counts() {
     function.call::<()>(()).unwrap();
     vm::stop(state);
     let after = ops(&lua);
-    let results = vm::results(state);
+    let results = unsafe { vm::results(state) };
     vm::free(state);
     assert_eq!(lua.globals().get::<f64>("result").unwrap(), 10.0 * 2.0 * 5050.0);
     let counted: u64 = results.functions.iter().filter(|f| !f.exempt()).flat_map(|f| f.counts.iter()).sum();
@@ -124,7 +166,7 @@ fn booked_work_adds_up_to_the_work_clock_and_leaves_it_unchanged() {
         let mut booked = 0.0;
         if profiled {
             vm::stop(state);
-            let results = vm::results(state);
+            let results = unsafe { vm::results(state) };
             vm::free(state);
             booked = results.nodes.iter().map(|node| node.work).sum::<f64>() + results.engine_work;
         }
@@ -153,7 +195,7 @@ fn inline_caches_tell_what_each_lookup_did() {
     assert!(vm::start(state, true, None, None));
     function.call::<()>(()).unwrap();
     vm::stop(state);
-    let results = vm::results(state);
+    let results = unsafe { vm::results(state) };
     vm::free(state);
     let main = results.functions.iter().find(|f| f.source == "caches" && f.line == 0).unwrap_or_else(|| &results.functions[0]);
     let outcomes = |line: i32, op: &str| -> ([u64; vm::CACHE_OUTCOMES], [u64; vm::CACHE_DEPTHS]) {
@@ -601,6 +643,133 @@ fn the_timeline_has_a_row_a_frame() {
     assert!(rows.iter().all(|row| row[column("work_ms")].as_f64().unwrap() > 0.0), "each frame's handler did work");
 }
 
+/// Runs `ree run` in this process on a harness (`source`), with a game module mounted at ReplicatedStorage.Game.Spin
+/// (`game`), under `--profile <kinds>`: profile.json and the report page
+fn run_profiled_page(name: &str, source: &str, game: &str, kinds: &str, seconds: &str) -> (serde_json::Value, String) {
+    let dir = temp_dir(name);
+    std::fs::create_dir_all(dir.join("game")).unwrap();
+    let harness = dir.join(format!("{name}.luau"));
+    std::fs::write(&harness, source).unwrap();
+    std::fs::write(dir.join("game").join("Spin.luau"), game).unwrap();
+    let out = dir.join("profile");
+    let mount = format!("ReplicatedStorage/Game={}", dir.join("game").to_string_lossy().replace('\\', "/"));
+    let args: Vec<String> = ["--harness", harness.to_str().unwrap(), "--mount", &mount, "--seconds", seconds, "--profile", kinds, "--profile-out", out.to_str().unwrap()].iter().map(|arg| arg.to_string()).collect();
+    // (on a thread with a service worker's stack, as the ree binary runs its commands)
+    let code = std::thread::Builder::new().stack_size(64 << 20).spawn(move || crate::record::run::cli(&args, &crate::launch::Host::default(), false)).unwrap().join().unwrap();
+    assert_eq!(code, 0, "ree run {name}");
+    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(out.join("profile.json")).unwrap()).unwrap();
+    let page = std::fs::read_to_string(out.join("report.html")).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    (json, page)
+}
+
+/// A phase mark inside a frame splits the frame's timeline row: the frame so far is the phase before's row (part 1), the
+/// rest the new phase's (part 2), both under the frame's number. With work, each row's work splits between the game's code
+/// and the harness's as the summary splits a phase (over the steady rows they add up to the summary's own figures), and a
+/// row names its heaviest functions
+#[test]
+fn a_mark_inside_a_frame_splits_its_row_and_each_row_splits_its_work_by_side() {
+    let _lock = lock();
+    let harness = "return function(Context)\n\tlocal RunService = game:GetService(\"RunService\")\n\tlocal Spin = require(game.ReplicatedStorage.Game.Spin)\n\tlocal frame = 0\n\tRunService.Heartbeat:Connect(function()\n\t\tframe += 1\n\t\tif frame == 3 then\n\t\t\tlocal x = 0\n\t\t\tfor i = 1, 20000 do\n\t\t\t\tx += i % 5\n\t\t\tend\n\t\t\tContext.ProfilePhase(\"steady\")\n\t\tend\n\t\tSpin.spin(if frame == 6 then 300000 else 300)\n\tend)\n\ttask.wait(Context.Seconds)\nend\n";
+    let game = "local M = {}\nfunction M.spin(n)\n\tlocal x = 0\n\tfor i = 1, n do\n\t\tx += i % 7\n\tend\n\treturn x\nend\nreturn M\n";
+    let (json, page) = run_profiled_page("split", harness, game, "work,timeline", "0.25");
+    let timeline = &json["timeline"];
+    let columns: Vec<&str> = timeline["columns"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
+    let column = |name: &str| columns.iter().position(|c| *c == name).unwrap_or_else(|| panic!("no {name} in {columns:?}"));
+    let rows = timeline["rows"].as_array().unwrap();
+    let get = |row: &serde_json::Value, name: &str| row[column(name)].as_f64().unwrap();
+    let phases: Vec<&str> = json["phases"].as_array().unwrap().iter().map(|p| p.as_str().unwrap()).collect();
+    let steady = phases.iter().position(|p| *p == "steady").unwrap() as f64;
+    // the frame the harness marked steady in: two rows, one number, the part before the mark the phase before's
+    let first = rows.iter().position(|row| get(row, "phase") == steady).unwrap();
+    let (before, after) = (&rows[first - 1], &rows[first]);
+    assert_eq!(get(before, "frame"), get(after, "frame"), "{before} {after}");
+    assert_eq!((get(after, "part") - get(before, "part")), 1.0);
+    assert!(get(before, "part") >= 1.0 && get(before, "phase") != steady);
+    // the harness's 20,000 steps before the mark are the phase before's, in its part of the frame
+    let typical_harness = get(&rows[first + 2], "harness_ms");
+    assert!(get(before, "harness_ms") > 20.0 * typical_harness.max(1e-6), "{before} against {}", rows[first + 2]);
+    assert!(get(after, "harness_ms") < get(before, "harness_ms"), "{after}");
+    // a row's sides are the work booked to code: never more than the row's work (the rest charged outside instructions)
+    for row in rows {
+        assert!(get(row, "game_ms") + get(row, "harness_ms") <= get(row, "work_ms") + 1e-4, "{row}");
+    }
+    // over the steady rows, each side adds up to the summary's own split of the phase (each row rounded to 10 ns)
+    let sum = |name: &str| rows.iter().filter(|row| get(row, "phase") == steady).map(|row| get(row, name)).sum::<f64>();
+    let tolerance = 1e-5 * rows.len() as f64;
+    assert!((sum("game_ms") - json["scope"]["game_self_ms"].as_f64().unwrap()).abs() <= tolerance, "game {} against {}", sum("game_ms"), json["scope"]);
+    assert!((sum("harness_ms") - json["scope"]["harness_self_ms"].as_f64().unwrap()).abs() <= tolerance, "harness {} against {}", sum("harness_ms"), json["scope"]);
+    // the frame the game spun 300,000 steps in names spin first, on the game's side
+    let functions: std::collections::HashMap<i64, &serde_json::Value> = json["functions"].as_array().unwrap().iter().map(|f| (f["id"].as_i64().unwrap(), f)).collect();
+    let spike = (0..rows.len()).filter(|&i| get(&rows[i], "phase") == steady).max_by(|&a, &b| get(&rows[a], "game_ms").total_cmp(&get(&rows[b], "game_ms"))).unwrap();
+    // Small events keep their peak and active count even when their frames need no node history.
+    let stat = timeline["function_stats"].as_array().unwrap().iter().find(|stat| {
+        functions[&stat[0].as_i64().unwrap()]["name"].as_str().is_some_and(|name| name == "spin" || name.ends_with(".spin"))
+    }).unwrap();
+    let function = functions[&stat[0].as_i64().unwrap()];
+    assert_eq!(function["harness"], false);
+    assert_eq!(stat[4].as_f64().unwrap(), get(&rows[spike], "frame"));
+    assert!((stat[3].as_f64().unwrap() / 1e3 - get(&rows[spike], "game_ms")).abs() <= 0.01 * get(&rows[spike], "game_ms"));
+    assert!(page.contains("\"timeline\":{") && !page.contains("\"function_stats\":"), "the page leaves summaries out");
+    assert!(!page.contains("\"node_frames\":"));
+    // the summary counts frames, not the parts of one
+    let summary = json["summary"].as_str().unwrap();
+    assert!(summary.contains("split by phase marks") && summary.contains("the game's code"), "{summary}");
+}
+
+/// Function activity unions callers and new closures, but cannot price a replacement's unobserved executed code.
+#[test]
+fn builtin_argument_setup_counts_frames_across_callers_and_new_closures() {
+    let _lock = lock();
+    let harness = r#"return function(Context)
+    local M = require(game.ReplicatedStorage.Game.Spin)
+    local frame = 0
+    task.wait()
+    Context.ProfilePhase("steady")
+    game:GetService("RunService").Heartbeat:Connect(function()
+        frame += 1
+        local read = M.make(frame)
+        M.left(read, if frame % 2 == 0 then "abcdefgh" else nil)
+        M.right(read, nil)
+    end)
+    task.wait(Context.Seconds)
+end"#;
+    let game = r#"local M = {}
+function M.make(seed)
+    local function Read(value)
+        if value then return string.sub(value, 2) end
+        return seed
+    end
+    return Read
+end
+function M.left(read, value) return read(value) end
+function M.right(read, value) return read(value) end
+return M"#;
+    let (json, _) = run_profiled_page("builtin-cold-union", harness, game, "work,caches", "0.2");
+    let functions = json["functions"].as_array().unwrap();
+    let reads: Vec<_> = functions.iter().filter(|function| function["name"] == "Read").collect();
+    assert_eq!(reads.len(), 1, "new closures share their prototype: {reads:?}");
+    let function = reads[0]["id"].as_i64().unwrap();
+    let stats = json["timeline"]["function_stats"].as_array().unwrap();
+    let stat = stats.iter().find(|stat| stat[0].as_i64() == Some(function)).unwrap();
+    let caller_frames = |name: &str| {
+        let caller = functions.iter().find(|function| function["name"].as_str().is_some_and(|label| label == name || label.ends_with(&format!(".{name}")))).unwrap();
+        stats.iter().find(|stat| stat[0] == caller["id"]).unwrap()[2].as_u64().unwrap()
+    };
+    let frames = caller_frames("left");
+    assert!(frames >= 10);
+    assert_eq!(json["luau_caches"]["frames"].as_f64(), Some(frames as f64), "cache rates use the same physical frames as the function summary");
+    assert_eq!(caller_frames("right"), frames);
+    assert_eq!(stat[2].as_u64(), Some(frames), "both callers and skipped builtin frames count once");
+    let builtin = json["builtins"].as_array().unwrap().iter().find(|builtin| builtin["name"] == "string.sub").unwrap();
+    let site = builtin["sites"].as_array().unwrap().iter().find(|site| site["function"].as_i64() == Some(function)).unwrap();
+    let declines: u64 = site["declines"].as_object().unwrap().values().map(|count| count.as_u64().unwrap()).sum();
+    assert!(declines > 0 && declines < frames, "the site skips half the frames");
+    assert!(site["fix_cold_us"].is_null());
+    assert!(site["fix_unpriced"].as_str().unwrap().contains("executed instructions"));
+    assert!(site["fix_instructions_us"].as_f64().unwrap() > 0.0);
+}
+
 /// Host time (`time`): the ticker's ticks are milliseconds, booked to the function that ran when they passed, and they
 /// add up to about the wall time the run took.
 #[test]
@@ -724,6 +893,8 @@ fn ree_caches_count_hits_and_misses() {
 fn profile_options_keep_the_old_forms() {
     let args = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
     assert_eq!(Kinds::parse("all").unwrap(), Kinds::ALL);
+    // (the boundary's crossings are in `all`: one profile holds one issue list; host time and the counters are not)
+    assert!(Kinds::ALL.has(Kinds::BOUNDARY) && !Kinds::ALL.has(Kinds::TIME) && !Kinds::ALL.has(Kinds::HW));
     assert!(Kinds::parse("instructions").unwrap().has(Kinds::WORK));
     assert!(Kinds::parse("memory").unwrap().has(Kinds::HEAP));
     assert!(Kinds::parse("nonsense").unwrap_err().contains("nonsense"));
@@ -1825,4 +1996,629 @@ fn nesting_levels_follow_what_a_table_holds() {
     let distribution = memory::Distribution::of(&mut sizes, true);
     assert_eq!((distribution.total, distribution.used, distribution.min, distribution.median, distribution.max), (23, 13, 0, 3, 16));
     assert_eq!(distribution.hist, vec![(0, 1), (4, 2), (16, 1)]);
+}
+
+/// A Luau source written as a raw string that starts on the line after its opening quotes
+fn luau(text: &str) -> &str {
+    text.strip_prefix('\n').unwrap_or(text)
+}
+
+/// A work profile of `source` (chunk `=name`) run once, then `frames` frames of the scheduler in phase steady: the summary and
+/// profile.json. `options` set the engine (a device); `frozen` freezes the clock (REE_FROZEN_CLOCK).
+fn stepped_profile(name: &str, source: &str, frames: u32, options: Options, frozen: bool) -> (String, serde_json::Value) {
+    stepped_profile_kinds(name, source, frames, options, frozen, Kinds::WORK)
+}
+
+fn stepped_profile_kinds(name: &str, source: &str, frames: u32, options: Options, frozen: bool, kinds: Kinds) -> (String, serde_json::Value) {
+    // (a playing client: one Heartbeat a frame; edit mode beats at 240 Hz)
+    let engine = Engine::new(Options { mode: "play".into(), ..options }).expect("engine");
+    let lua = Lua::new();
+    engine_lua::start(&lua, &engine).expect("start");
+    engine_lua::modules::interpret_all(&lua, &engine);
+    engine.state.borrow_mut().sched.frozen_clock = frozen;
+    let config = Config { print: false, ..Config::new(kinds, temp_dir(name)) };
+    let session = profiler::Session::begin(config.clone());
+    crate::luau_profile::install(&lua);
+    scheduler::step(&lua, &engine, Some(1.0 / 60.0)).unwrap();
+    run(&lua, &engine, name, source);
+    profiler::phase("steady");
+    for _ in 0..frames {
+        scheduler::step(&lua, &engine, Some(1.0 / 60.0)).unwrap();
+    }
+    profiler::collect(&lua);
+    let summary = session
+        .finish(profiler::Run { command: "test".into(), status: "ok".into(), frames: u64::from(frames), seconds: f64::from(frames) / 60.0, fps: 60.0, ..Default::default() })
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(config.out.join("profile.json")).unwrap()).unwrap();
+    let _ = std::fs::remove_dir_all(&config.out);
+    (summary, json)
+}
+
+/// profile.json's function named `name` (a table's function `M.name` is named `name`)
+fn function_named<'a>(json: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+    json["functions"].as_array().unwrap().iter().find(|f| f["name"] == name).unwrap_or_else(|| panic!("no function {name}"))
+}
+
+/// A function's figure in phase steady (`self_work_ms`, `cold_work_ms`, `saving_ms`, `calls` ...)
+fn steady(function: &serde_json::Value, figure: &str) -> f64 {
+    function["phases"]["steady"][figure].as_f64().unwrap_or(0.0)
+}
+
+/// Two identical walkers over the same records, run in both orders a frame (the audit: 24.27 and 0.66 ms by call order). The first
+/// pays the frame's cold charges for the records and its cold column says so; neither one's saving counts them, as cutting either
+/// would move them to the other, so both read the same saving whichever runs first, and so do their hot figures.
+#[test]
+fn the_cold_split_and_a_cuts_saving_do_not_depend_on_which_walker_runs_first() {
+    let _lock = lock();
+    // Two walkers over the same 400 records; `$first` runs before `$second` in each frame
+    let walkers_source = luau(r#"
+        local Records = {}
+        for I = 1, 400 do
+            Records[I] = { Value = I, Weight = I % 7 }
+        end
+        local Walkers = {}
+        function Walkers.A()
+            local Sum = 0
+            for _, Record in Records do
+                Sum += Record.Value * Record.Weight
+            end
+            return Sum
+        end
+        function Walkers.B()
+            local Sum = 0
+            for _, Record in Records do
+                Sum += Record.Value * Record.Weight
+            end
+            return Sum
+        end
+        game:GetService("RunService").Heartbeat:Connect(function()
+            Walkers.$first()
+            Walkers.$second()
+        end)
+    "#);
+    let walkers = |first: &str, second: &str| walkers_source.replace("$first", first).replace("$second", second);
+    let mut savings = Vec::new();
+    for (first, second) in [("A", "B"), ("B", "A")] {
+        let (summary, json) = stepped_profile("walkers", &walkers(first, second), 12, Options::default(), false);
+        let (a, b) = (function_named(&json, first), function_named(&json, second));
+        assert_eq!(steady(a, "calls"), steady(b, "calls"));
+        // the first pays the records' cold charges (400 tables a frame), the second next to none
+        assert!(steady(a, "cold_work_ms") > 50.0 * steady(b, "cold_work_ms").max(1e-6), "{summary}");
+        let hot = |f: &serde_json::Value| steady(f, "self_work_ms") - steady(f, "cold_work_ms");
+        assert!((hot(a) - hot(b)).abs() <= 1e-9 * hot(a), "hot work {} and {}", hot(a), hot(b));
+        assert!((steady(a, "saving_ms") - steady(b, "saving_ms")).abs() <= 1e-9 * steady(a, "saving_ms"), "{summary}");
+        assert!(steady(a, "saving_ms") < 0.2 * steady(a, "self_work_ms"), "the records' charges are not the first walker's to save");
+        // the records: touched by both every frame, so shared in every frame they were charged
+        let records = json["cold"]["objects"].as_array().unwrap().iter().find(|o| o["name"] == "made at walkers:3").unwrap_or_else(|| panic!("{}", json["cold"]));
+        assert_eq!(records["frames"], records["shared_frames"], "{records}");
+        savings.push((steady(function_named(&json, "A"), "saving_ms"), steady(function_named(&json, "B"), "saving_ms")));
+    }
+    assert!((savings[0].0 - savings[1].0).abs() <= 1e-9 * savings[0].0 && (savings[0].1 - savings[1].1).abs() <= 1e-9 * savings[0].1, "{savings:?}");
+}
+
+/// One operation's charges for one object add up: a write charges its instance's first touch and then the dirtying, under the same
+/// object (the review: the second replaced the first, so a lone writer of 50 parts read 0.1009 ms of exclusive cold charges where they
+/// were 0.1257). A function alone in touching its parts owns every cold charge it pays: its saving is its self work.
+#[test]
+fn a_lone_writers_cold_charges_are_all_its_own() {
+    let _lock = lock();
+    let source = luau(r#"
+        local Parts = {}
+        for I = 1, 50 do
+        	Parts[I] = Instance.new("Part")
+        end
+        local M = {}
+        function M.Write()
+        	for _, P in Parts do
+        		P.Transparency = math.random()
+        	end
+        end
+        game:GetService("RunService").Heartbeat:Connect(M.Write)
+    "#);
+    let (summary, json) = stepped_profile("writer", source, 11, Options::default(), false);
+    let write = function_named(&json, "Write");
+    let (cold, exclusive) = (write["self"]["cold_work_ms"].as_f64().unwrap(), write["self"]["exclusive_cold_ms"].as_f64().unwrap());
+    assert!(cold > 0.0 && (exclusive - cold).abs() < 1e-9, "cold {cold} ms, exclusive {exclusive} ms\n{summary}");
+    let (work, saving) = (write["self"]["work_ms"].as_f64().unwrap(), write["self"]["saving_ms"].as_f64().unwrap());
+    assert!((saving - work).abs() < 1e-9, "saving {saving} ms of {work} ms");
+    let random = function_named(&json, "math.random");
+    let (cold, exclusive) = (random["self"]["cold_work_ms"].as_f64().unwrap(), random["self"]["exclusive_cold_ms"].as_f64().unwrap());
+    assert!(cold > 0.0 && (cold - exclusive).abs() < 1e-9, "repeated calls keep the C function's charge on its own row: {random}");
+    // (each part's object row adds its first touch and its dirtying: 50 parts a frame, from the frame after the one that made them)
+    let parts = json["cold"]["objects"].as_array().unwrap().iter().find(|o| o["kind"] == "instance" && o["name"] == "Part").unwrap_or_else(|| panic!("{}", json["cold"]));
+    let charges = parts["frames"].as_u64().unwrap();
+    assert!(charges == 500 && parts["shared_frames"].as_u64() == Some(0), "{parts}");
+    // (parts made together in one loop: the plain first touch, and a part's Transparency dirtying on top)
+    let each = parts["cost_ms"].as_f64().unwrap() * 1e-3 / charges as f64;
+    let expected = crate::cost::COLD_TOUCH + crate::cost::cold_write_extra(crate::cost::ColdKind::Part, "Transparency");
+    assert!((each - expected).abs() < 1e-12, "{each} s a charge against {expected}");
+}
+
+/// A callee's cold code is its own, and only the code it ran: a 6,000-instruction function that returns at its second instruction
+/// pays for a few instructions a frame, where the caller's CALL line used to pay for all 6,000 (5.1 us a frame); run to its end it
+/// pays for them.
+#[test]
+fn a_callee_that_returns_early_pays_for_the_code_it_ran() {
+    let _lock = lock();
+    // Big runs 6,000 increments unless Early; Caller calls it every frame
+    let early_source = r#"
+        local M = {}
+        function M.Big(Early)
+            if Early then
+                return 0
+            end
+            local X = 0
+            $body
+            return X
+        end
+        function M.Caller()
+            return M.Big($early)
+        end
+        game:GetService("RunService").Heartbeat:Connect(M.Caller)
+    "#
+    .replace("$body", &"X += 1\n".repeat(6000));
+    let source = |early: bool| early_source.replace("$early", &early.to_string());
+    let frames = 10u32;
+    let cold_a_frame = |early: bool| {
+        let (summary, json) = stepped_profile("early", &source(early), frames, Options::default(), false);
+        let (big, caller) = (function_named(&json, "Big"), function_named(&json, "Caller"));
+        assert_eq!(steady(big, "calls"), f64::from(frames), "{summary}");
+        // Code pays at dispatch even in the frame that compiled it; object first touches are separate.
+        let cold_frames = f64::from(frames);
+        (steady(big, "cold_work_ms") / cold_frames * 1e3, steady(caller, "cold_work_ms") / cold_frames * 1e3)
+    };
+    let ((early_us, early_caller_us), (full_us, full_caller_us)) = (cold_a_frame(true), cold_a_frame(false));
+    let code_us = 6000.0 * crate::cost::LUAU_COLD_CODE * 1e-3;
+    assert!(full_us >= 0.95 * code_us, "run to its end it pays for its code: {full_us} us a frame against {code_us}");
+    assert!(early_us < 0.02 * code_us, "returning early it pays for a few instructions: {early_us} us a frame");
+    // (the caller pays for its own cold touches, its function and the table M among them, and nothing of the callee's code, either way)
+    assert!(early_caller_us < 0.1 * code_us && (full_caller_us - early_caller_us).abs() < 1e-6, "caller {early_caller_us} / {full_caller_us} us");
+}
+
+/// Recursion adds nothing twice: fib(15)'s recursive line and its fib -> fib edge hold no more than fib's own total (the audit: a line
+/// total of 16.24 ms and an edge of 14.94 on a run of 3.01)
+#[test]
+fn recursion_adds_a_lines_and_an_edges_work_once() {
+    let _lock = lock();
+    let source = luau(r#"
+        local M = {}
+        function M.fib(N)
+        	if N < 2 then
+        		return N
+        	end
+        	return M.fib(N - 1) + M.fib(N - 2)
+        end
+        game:GetService("RunService").Heartbeat:Once(function()
+        	result = M.fib(15)
+        end)
+    "#);
+    let (summary, json) = stepped_profile("fib", source, 2, Options::default(), false);
+    let fib = function_named(&json, "fib");
+    let (id, total) = (fib["id"].clone(), fib["total"]["work_ms"].as_f64().unwrap());
+    assert_eq!(fib["calls"].as_f64(), Some(1973.0), "fib(15) makes 1,973 calls");
+    let lines: Vec<f64> = json["lines"].as_array().unwrap().iter().filter(|l| l["function"] == id).map(|l| l["total_work_ms"].as_f64().unwrap()).collect();
+    let line_max = lines.iter().copied().fold(0.0, f64::max);
+    assert!(line_max <= total * (1.0 + 1e-9) && line_max >= 0.9 * total, "the recursive line {line_max} ms of fib's {total}\n{summary}");
+    let edge = json["edges"].as_array().unwrap().iter().find(|e| e["caller"] == id && e["callee"] == id).expect("fib -> fib");
+    assert!(edge["work_ms"].as_f64().unwrap() <= total * (1.0 + 1e-9), "{edge}");
+    assert!(total <= json["work"]["total_ms"].as_f64().unwrap());
+}
+
+/// A parked thread's resumption is charged as a client resumes it and booked to the line that waited: 500 threads waiting three
+/// times each are 1,500 resumptions at 0.35 us (the audit: 30,000 resumptions charged nothing)
+#[test]
+fn resumptions_are_charged_to_the_line_that_waited() {
+    let _lock = lock();
+    let source = luau(r#"
+        for I = 1, 500 do
+        	task.spawn(function()
+        		for J = 1, 3 do
+        			task.wait()
+        		end
+        	end)
+        end
+    "#);
+    let (summary, json) = stepped_profile("waits", source, 6, Options::default(), false);
+    let rows = json["resumptions"].as_array().unwrap_or_else(|| panic!("{summary}"));
+    let at_wait: Vec<&serde_json::Value> = rows.iter().filter(|row| row["line"] == 4).collect();
+    let count: f64 = at_wait.iter().map(|row| row["count"].as_f64().unwrap()).sum();
+    let cost: f64 = at_wait.iter().map(|row| row["cost_ms"].as_f64().unwrap()).sum();
+    assert_eq!(count, 1500.0, "{rows:?}");
+    assert!((cost - 1500.0 * crate::cost::RESUMED_WAIT * 1e3).abs() < 1e-9, "{cost} ms");
+    assert!(summary.contains("resumptions of parked threads"), "{summary}");
+}
+
+/// An event's dispatch is booked to each handler, with the line that connected it: 300 Heartbeat handlers and 200 handlers of a
+/// property's changed signal (the audit: 67 % of the work outside any instruction, no connect site named)
+#[test]
+fn handlers_are_booked_to_the_site_that_connected_them() {
+    let _lock = lock();
+    let source = luau(r#"
+        local RunService = game:GetService("RunService")
+        local Part = Instance.new("Part")
+        for I = 1, 300 do
+        	RunService.Heartbeat:Connect(function() end)
+        end
+        for I = 1, 200 do
+        	Part:GetPropertyChangedSignal("Transparency"):Connect(function() end)
+        end
+        RunService.Heartbeat:Connect(function()
+        	Part.Transparency = math.random()
+        end)
+    "#);
+    let frames = 5u32;
+    let (summary, json) = stepped_profile("handlers", source, frames, Options::default(), false);
+    let sites = json["handlers"].as_array().unwrap_or_else(|| panic!("{summary}"));
+    let heartbeat = sites.iter().find(|site| site["line"] == 4).unwrap_or_else(|| panic!("{sites:?}"));
+    assert_eq!((heartbeat["connections"].as_u64(), heartbeat["runs"].as_u64()), (Some(300), Some(300 * u64::from(frames))), "{heartbeat}");
+    assert!(heartbeat["signal"].as_str().unwrap().contains("Heartbeat") && heartbeat["dispatch_ms"].as_f64().unwrap() > 0.0, "{heartbeat}");
+    let changed = sites.iter().find(|site| site["line"] == 7).unwrap_or_else(|| panic!("{sites:?}"));
+    assert_eq!(changed["connections"].as_u64(), Some(200), "{changed}");
+    assert!(changed["runs"].as_u64().unwrap() >= 200 * u64::from(frames - 1) && changed["dispatch_ms"].as_f64().unwrap() > 0.0, "{changed}");
+    let (total, outside) = (json["work"]["total_ms"].as_f64().unwrap(), json["work"]["outside_instructions_ms"].as_f64().unwrap());
+    assert!(outside < 0.01 * total, "{outside} of {total} ms outside any instruction");
+    assert!(section(&summary, "handlers by the site that connected them").contains("(handlers:4)"), "{summary}");
+}
+
+/// A phone's profile reads in the units its clock ran on (the desktop prices times cost::PHONE_SCRIPTS), names its device and
+/// gives the factor's band (the audit: 0.78 ms on a phone against 1.42 on a desktop, no device named)
+#[test]
+fn a_phone_profile_reads_in_its_clocks_units() {
+    let _lock = lock();
+    let source = luau(r#"
+        local Parts = {}
+        for I = 1, 50 do
+        	Parts[I] = Instance.new("Part")
+        end
+        game:GetService("RunService").Heartbeat:Connect(function()
+        	for _, P in Parts do
+        		P.Transparency = math.random()
+        	end
+        end)
+    "#);
+    let (desktop_summary, desktop) = stepped_profile("desktop", source, 6, Options::default(), false);
+    let (phone_summary, phone) = stepped_profile("phone", source, 6, Options { device: "phone".into(), ..Options::default() }, false);
+    let work = |json: &serde_json::Value| json["work"]["total_ms"].as_f64().unwrap();
+    assert!((work(&phone) / work(&desktop) - crate::cost::PHONE_SCRIPTS).abs() < 1e-6, "{} against {}", work(&phone), work(&desktop));
+    assert_eq!(phone["work"]["units"], serde_json::json!({"device": "phone", "scale": crate::cost::PHONE_SCRIPTS}));
+    assert_eq!(phone["fidelity"]["device"]["band"], serde_json::json!([crate::cost::PHONE_SCRIPTS_BAND.0, crate::cost::PHONE_SCRIPTS_BAND.1]));
+    // (the band folds the factor's spread in: against a phone the figures read PHONE_SCRIPTS over its band's ends again)
+    let (band, clock) = (&phone["fidelity"]["band"], &phone["fidelity"]["clock_band"]);
+    let low = clock[0].as_f64().unwrap() * crate::cost::PHONE_SCRIPTS / crate::cost::PHONE_SCRIPTS_BAND.1;
+    let high = clock[1].as_f64().unwrap() * crate::cost::PHONE_SCRIPTS / crate::cost::PHONE_SCRIPTS_BAND.0;
+    assert!((band[0].as_f64().unwrap() - low).abs() < 2e-3 && (band[1].as_f64().unwrap() - high).abs() < 2e-3, "{}", phone["fidelity"]);
+    assert_eq!(desktop["fidelity"]["band"], desktop["fidelity"]["clock_band"]);
+    assert_eq!(phone["fidelity"]["weighted"], "the game's code in phase steady");
+    assert!(phone_summary.contains("at phone prices") && desktop_summary.contains("at desktop prices"), "{phone_summary}");
+}
+
+#[test]
+fn cache_and_builtin_prices_use_the_same_device_units_as_the_clock() {
+    let _lock = lock();
+    let source = luau(r#"
+        getfenv()
+        local M = {}
+        function M.Frame()
+        local T = setmetatable({}, {__index = {Value = 1}})
+        local S = string.rep("a", 128)
+        for I = 2, 64 do
+        local X = T.Value
+        local Part = string.sub(S, I, #S)
+        end
+        end
+        game:GetService("RunService").Heartbeat:Connect(M.Frame)
+    "#);
+    let kinds = Kinds::parse("work,caches").unwrap();
+    let (_, desktop) = stepped_profile_kinds("device-sites", source, 4, Options::default(), false, kinds);
+    let (_, phone) = stepped_profile_kinds("device-sites", source, 4, Options { device: "phone".into(), ..Options::default() }, false, kinds);
+    assert_eq!(phone["luau_caches"]["prices"]["scale"], crate::cost::PHONE_SCRIPTS);
+    for field in ["charged_work_us", "extra_work_us"] {
+        let sum = |json: &serde_json::Value| json["luau_caches"]["sites"].as_array().unwrap().iter().map(|site| site[field].as_f64().unwrap()).sum::<f64>();
+        let (desktop, phone) = (sum(&desktop), sum(&phone));
+        assert!(desktop > 0.0);
+        assert!((phone - desktop * crate::cost::PHONE_SCRIPTS).abs() < 1e-3, "{field}: desktop {desktop}, phone {phone}");
+    }
+    let sub = |json: &serde_json::Value| json["builtins"].as_array().unwrap().iter().find(|row| row["name"] == "string.sub").unwrap().clone();
+    for field in ["decline_charged_us", "fast_equivalent_us"] {
+        let (desktop, phone) = (sub(&desktop)[field].as_f64().unwrap(), sub(&phone)[field].as_f64().unwrap());
+        assert!(desktop > 0.0);
+        assert!((phone - desktop * crate::cost::PHONE_SCRIPTS).abs() < 1e-3, "{field}: desktop {desktop}, phone {phone}");
+    }
+}
+
+/// profile.json's work.prices give each count's price on the work clock, the ones the issues price memory and calls by:
+/// what the clock charges one of each (cost::luau of a counter set holding one), the collector's apart from the allocation's
+#[test]
+fn work_prices_give_each_counts_price() {
+    let _lock = lock();
+    let (_, json) = stepped_profile("prices", "result = {}\n", 1, Options::default(), false);
+    let prices = &json["work"]["prices"];
+    let close = |key: &str, ns: f64| {
+        let value = prices[key].as_f64().unwrap_or_else(|| panic!("no {key} in {prices}"));
+        assert!((value - ns).abs() < 1e-9, "{key} {value} against {ns}");
+    };
+    close("object_ns", crate::cost::LUAU_OBJECT);
+    close("stored_byte_ns", crate::cost::LUAU_STORED);
+    close("rehashed_key_ns", crate::cost::LUAU_REHASHED);
+    close("c_call_ns", crate::cost::LUAU_CCALL);
+    close("sort_compare_ns", crate::cost::LUAU_SORT_COMPARE);
+    close("sort_call_ns", crate::cost::LUAU_SORT_CALL);
+    close("allocated_byte_ns", crate::cost::LUAU_ALLOCATED_BYTE);
+    close("hash_rehashed_key_ns", crate::cost::LUAU_HASH_REHASHED);
+    close("large_block_ns", crate::cost::LUAU_LARGE_BLOCK);
+    close("library_object_ns", crate::cost::LUAU_LIBRARY_OBJECT);
+    close("collector_object_ns", crate::cost::LUAU_COLLECTOR_OBJECT);
+    assert_eq!(json["work"]["units"], serde_json::json!({"device": "desktop", "scale": 1.0}));
+}
+
+/// A loop that spends an os.clock budget does what the budget buys on the work clock, the same in every run, and the profile names
+/// it with its work an iteration (the clock's advance between two reads by one call, its callees' included); on a frozen clock it does
+/// what the clock's busy-loop allowance lets it instead (the audit: a 0.2 ms budget loop did 66.80 ms of work normally and 321.26
+/// frozen), so the game's wrappers profile on the work clock. A function that reads the clock once a call, however often it is called,
+/// is no budget loop (the review: a clock accessor, a rate limiter and a cache timestamp were listed)
+#[test]
+fn a_budget_loop_is_named_and_does_what_its_budget_buys() {
+    let _lock = lock();
+    // (line 7 is the loop's check; Work is a callee the iteration's work includes; Stamp reads the clock once a call, three calls a
+    // frame, at line 17; a thread that waits each iteration reads it once an iteration at line 21, and a generator resumed five times a
+    // frame once a resumption at line 27: across a yield the clock's advance is everything else that ran, no iteration's work)
+    let source = luau(r#"
+        Units = 0
+        local M = {}
+        function M.Work() local T = {} for I = 1, 20 do T[I] = I end return T end
+        game:GetService("RunService").Heartbeat:Connect(function()
+        	local Start = os.clock()
+        	local Done = 0
+        	while os.clock() - Start < 0.0002 and Done < 2000 do
+        		M.Work()
+        		Done += 1
+        	end
+        	Units += Done
+        	for _ = 1, 3 do
+        		M.Stamp()
+        	end
+        end)
+        function M.Stamp()
+        	return os.clock()
+        end
+        task.spawn(function()
+        	while true do
+        		local Now = os.clock()
+        		task.wait()
+        	end
+        end)
+        local Next = coroutine.wrap(function()
+        	while true do
+        		local Now = os.clock()
+        		coroutine.yield()
+        	end
+        end)
+        game:GetService("RunService").Heartbeat:Connect(function()
+        	for _ = 1, 5 do
+        		Next()
+        	end
+        end)
+    "#);
+    let frames = 6u32;
+    let (summary, normal) = stepped_profile("budget", source, frames, Options::default(), false);
+    let (_, frozen) = stepped_profile("budget-frozen", source, frames, Options::default(), true);
+    let per_frame = |json: &serde_json::Value| json["work"]["total_ms"].as_f64().unwrap() / f64::from(frames);
+    assert!(per_frame(&normal) >= 0.2 && per_frame(&normal) < 0.25, "the budget buys 0.2 ms a frame: {}", per_frame(&normal));
+    assert!((per_frame(&frozen) / per_frame(&normal) - 1.0).abs() > 0.5, "frozen, the loop does other work: {} against {}", per_frame(&frozen), per_frame(&normal));
+    let line = |number: u64| normal["clock_reads"].as_array().unwrap().iter().find(|row| row["line"] == number).cloned().unwrap_or_else(|| panic!("{}", normal["clock_reads"]));
+    let check = line(7);
+    assert_eq!(check["budget_loop"], true, "{check}");
+    assert_eq!(check["runs"].as_u64(), Some(u64::from(frames)), "{check}");
+    assert!(check["reads"].as_u64().unwrap() > 10 * check["runs"].as_u64().unwrap(), "{check}");
+    // (an iteration: the check and M.Work's 20 stores, about a twentieth of a microsecond to a few: never the 0 that dividing the
+    // loop's own self work gave)
+    let iteration = check["iteration_us"].as_f64().unwrap();
+    let per_read = per_frame(&normal) * 1e3 / (check["reads"].as_f64().unwrap() / f64::from(frames));
+    assert!(iteration > 0.0 && (iteration / per_read - 1.0).abs() < 0.2, "{iteration} us an iteration, {per_read} us a read");
+    let stamp = line(17);
+    assert_eq!(stamp["budget_loop"], false, "{stamp}");
+    assert_eq!((stamp["reads"].as_u64(), stamp["runs"].as_u64()), (Some(3 * u64::from(frames)), Some(3 * u64::from(frames))), "{stamp}");
+    // (each read after a yield starts a run: none of them is an iteration of a budget loop)
+    for (number, least) in [(21, u64::from(frames)), (27, 5 * u64::from(frames))] {
+        let waits = line(number);
+        assert_eq!(waits["budget_loop"], false, "{waits}");
+        assert_eq!(waits["iterations"].as_u64(), Some(0), "{waits}");
+        assert!(waits["reads"].as_u64().unwrap() >= least && waits["runs"] == waits["reads"], "{waits}");
+    }
+    let table = section(&summary, "os.clock budget loops");
+    assert!(table.contains("us an iteration") && table.contains("budget:7"), "{summary}");
+    assert!(!table.contains("budget:17") && !table.contains("budget:21") && !table.contains("budget:27"), "{summary}");
+}
+
+/// A loop that yields each iteration pays for its body's code every frame (the review: a 300-instruction body that waited each frame
+/// was charged in its first frame only, as each later frame's stretch began after the wait and ended before it): task.wait, an
+/// event's Wait, and a wait in a helper the loop calls, which returns into the loop in a frame the loop never entered
+#[test]
+fn a_loop_that_yields_pays_for_its_body_every_frame() {
+    let _lock = lock();
+    let frames = 30u32;
+    let code_us = 300.0 * crate::cost::LUAU_COLD_CODE * 1e-3;
+    for (wait, helper) in [
+        ("task.wait()", ""),
+        ("game:GetService(\"RunService\").Heartbeat:Wait()", ""),
+        ("Sleep()", "local function Sleep()\n\ttask.wait()\nend\n"),
+    ] {
+        let cold_a_frame = |lines: usize| {
+            let source = r#"
+                $helper
+                local function Loop()
+                    local X = 0
+                    while true do
+                        $body
+                        $wait
+                    end
+                end
+                task.spawn(Loop)
+            "#
+            .replace("$helper", helper)
+            .replace("$body", &"X += 1\n".repeat(lines))
+            .replace("$wait", wait);
+            let (summary, json) = stepped_profile("yields", &source, frames, Options::default(), false);
+            // (the first frame runs the function the script made just before it: an object made in the frame is not cold)
+            (steady(function_named(&json, "Loop"), "cold_work_ms") / f64::from(frames - 1) * 1e3, summary)
+        };
+        // (the body's 300 instructions each frame, beyond what the loop's wait and its few other instructions are charged cold)
+        let ((with_us, summary), (without_us, _)) = (cold_a_frame(300), cold_a_frame(0));
+        let body_us = with_us - without_us;
+        assert!(body_us >= 0.95 * code_us && body_us <= 1.05 * code_us, "{wait}: {with_us} us a frame with the body, {without_us} without, against {code_us}\n{summary}");
+    }
+}
+
+/// A function that errors pays for the code it ran (the review: a pcall'd function that raised was never charged, its stretch never
+/// closed): raised by error() or by an instruction, caught by pcall, or ending the thread it ran on
+#[test]
+fn a_function_that_errors_pays_for_the_code_it_ran() {
+    let _lock = lock();
+    let frames = 10u32;
+    let code_us = 300.0 * crate::cost::LUAU_COLD_CODE * 1e-3;
+    for (raise, call) in [
+        ("error(\"no\")", "pcall(M.Fails)"),
+        ("local T = nil\n\tT.Field = X", "pcall(M.Fails)"),
+        ("error(\"no\")", "task.spawn(M.Fails)"),
+    ] {
+        let cold_a_frame = |lines: usize| {
+            let source = r#"
+                local M = {}
+                function M.Fails()
+                    local X = 0
+                    $body
+                    $raise
+                end
+                game:GetService("RunService").Heartbeat:Connect(function()
+                    $call
+                end)
+            "#
+            .replace("$body", &"X += 1\n".repeat(lines))
+            .replace("$raise", raise)
+            .replace("$call", call);
+            let (summary, json) = stepped_profile("errors", &source, frames, Options::default(), false);
+            assert_eq!(steady(function_named(&json, "Fails"), "calls"), f64::from(frames), "{summary}");
+            // Code pays at dispatch in every frame, including code loaded during that frame.
+            (steady(function_named(&json, "Fails"), "cold_work_ms") / f64::from(frames) * 1e3, summary)
+        };
+        // (the 300 instructions it ran before the error, beyond what raising it is charged cold)
+        let ((with_us, summary), (without_us, _)) = (cold_a_frame(300), cold_a_frame(0));
+        let body_us = with_us - without_us;
+        assert!(body_us >= 0.95 * code_us && body_us <= 1.05 * code_us, "{raise} / {call}: {with_us} us a frame with the body, {without_us} without, against {code_us}\n{summary}");
+    }
+}
+
+/// Large buffer work the clock prices at nothing is printed as unpriced with its bytes (the review: a 4 MB copy read as a small one,
+/// with nothing to say so): copies and fills of over 64 KB a call and new buffers past Luau's pages; small buffers print nothing
+#[test]
+fn large_buffer_work_is_printed_as_unpriced() {
+    let _lock = lock();
+    let frames = 3u32;
+    let source = |size: u64| format!("local A, B = buffer.create({size}), buffer.create({size})\ngame:GetService(\"RunService\").Heartbeat:Connect(function()\n\tbuffer.copy(A, 0, B)\n\tbuffer.fill(A, 0, 7)\n\tlocal _ = buffer.create({size})\nend)\n");
+    let size = 256 * 1024u64;
+    let (summary, json) = stepped_profile("buffers-large", &source(size), frames, Options::default(), false);
+    let unpriced = &json["work"]["unpriced"];
+    assert_eq!(unpriced["buffer_big_bytes"].as_u64(), Some(2 * size * u64::from(frames)), "{unpriced}");
+    let fresh = unpriced["buffer_fresh_bytes"].as_u64().unwrap();
+    assert!(fresh >= size * u64::from(frames) && fresh <= size * u64::from(frames + 2), "{unpriced}");
+    let line = summary.lines().find(|line| line.starts_with("unpriced: ")).unwrap_or_else(|| panic!("{summary}"));
+    assert!(line.contains("1.50 MB moved by buffer copies, fills and string writes"), "{line}");
+    let (small, json) = stepped_profile("buffers-small", &source(1024), frames, Options::default(), false);
+    assert_eq!((json["work"]["unpriced"]["buffer_big_bytes"].as_u64(), json["work"]["unpriced"]["buffer_fresh_bytes"].as_u64()), (Some(0), Some(0)));
+    assert!(!small.contains("unpriced: "), "{small}");
+}
+
+/// A frame event's first handler that runs pays no FRAME_HANDLER, whatever its list holds ahead of it (the review: a cancelled thread
+/// waiting on the event ahead of a lone handler made the handler pay as a second one)
+#[test]
+fn a_frame_events_first_handler_that_runs_pays_no_frame_handler() {
+    let _lock = lock();
+    let source = luau(r#"
+        local RunService = game:GetService("RunService")
+        RunService.Heartbeat:Connect(function() end)
+        local Waiter = task.spawn(function()
+        	RunService.Heartbeat:Wait()
+        end)
+        task.cancel(Waiter)
+    "#);
+    let (summary, json) = stepped_profile("first-handler", source, 3, Options::default(), false);
+    let sites = json["handlers"].as_array().unwrap_or_else(|| panic!("{summary}"));
+    let site = sites.iter().find(|site| site["line"] == 2).unwrap_or_else(|| panic!("{sites:?}"));
+    assert_eq!(site["runs"].as_u64(), Some(3), "{site}");
+    assert_eq!(site["dispatch_ms"].as_f64(), Some(0.0), "{site}");
+}
+
+/// A declined allocating builtin pays for the same result as its fast path. Its fallback's
+/// instructions and C call add work; moving the allocation into C must not make it cheaper.
+#[test]
+fn declined_substrings_pay_the_same_for_their_result_strings() {
+    let _lock = lock();
+    let measure = |decline: bool| {
+        let lua = Lua::new();
+        lua.enable_jit(false);
+        lua.globals().set_safeenv(true);
+        if decline {
+            lua.load("getfenv()").exec().unwrap();
+        }
+        let function: LuaFunction = lua.load("return function(S) local Total = 0 for I = 2, 257 do local Part = string.sub(S, I, #S) Total += #Part end return Total end").eval().unwrap();
+        let source = lua.create_string("a".repeat(512)).unwrap();
+        // Unique suffix lengths make every result new; no collector step can force a fast call to decline.
+        lua.gc_stop();
+        let counters = unsafe { crate::cost::lua_workcounters(main_state(&lua)) };
+        let before = unsafe { &*counters };
+        let (objects, library, bytes, work, calls) = (before.objects, before.hostops[crate::cost::LIBOBJECTS_SLOT], before.hostops[crate::cost::ALLOCBYTES_SLOT], crate::cost::luau(before), before.ccalls);
+        assert_eq!(function.call::<i32>(source).unwrap(), (511 + 256) * 256 / 2);
+        let after = unsafe { &*counters };
+        (after.objects - objects, after.hostops[crate::cost::LIBOBJECTS_SLOT] - library, after.hostops[crate::cost::ALLOCBYTES_SLOT] - bytes, crate::cost::luau(after) - work, after.ccalls - calls)
+    };
+    let (fast_objects, fast_library, fast_bytes, fast_work, fast_calls) = measure(false);
+    let (slow_objects, slow_library, slow_bytes, slow_work, slow_calls) = measure(true);
+    assert_eq!((fast_objects, fast_library, fast_calls), (256, 0, 0));
+    assert_eq!((slow_objects, slow_library, slow_calls), (0, 256, 256));
+    assert_eq!(fast_bytes, slow_bytes);
+    assert_eq!(crate::cost::LUAU_OBJECT, crate::cost::LUAU_LIBRARY_OBJECT);
+    assert!(slow_work > fast_work, "declined {slow_work} s, fast {fast_work} s");
+}
+
+/// An advised explicit argument adds code words to each compiled call site of the builtin: one for `string.sub`'s end, two
+/// for `string.byte`'s index
+#[test]
+fn substring_argument_fixes_add_the_expected_warm_instructions_and_code_words() {
+    let _lock = lock();
+    // The prototype of `Read`, which calls the builtin ten times, with the call as the source gives it
+    let measure_read = |call: &str| {
+        let lua = Lua::new();
+        lua.enable_jit(false);
+        let state = main_state(&lua);
+        assert!(vm::start(state, true, None, None));
+        let is_byte = call.starts_with("string.byte");
+        // (string.sub returns a string, whose length is summed; string.byte returns a number)
+        let summed = if is_byte { call.to_string() } else { format!("#{call}") };
+        let source = format!("local M = {{}}\nfunction M.Read(s, index)\n local sum = 0\n for i = 1, 10 do sum += {summed} end\n return sum\nend\nreturn M.Read(\"abcdef\", 2)\n");
+        let result = lua.load(&source).set_name("=substring-shape").set_compiler(engine_lua::modules::compiler()).eval::<f64>().unwrap();
+        let expected_sum = if is_byte { 970.0 } else { 50.0 };
+        assert_eq!(result, expected_sum);
+        vm::stop(state);
+        let results = unsafe { vm::results(state) };
+        vm::free(state);
+        results.functions.iter().find(|function| function.name == "Read").unwrap().clone()
+    };
+    let rewrites = [
+        ("string.sub(s, 2)", "string.sub(s, 2, #s)", 1),
+        ("string.sub(s, index)", "string.sub(s, index, #s)", 1),
+        ("string.byte(s)", "string.byte(s, 1)", 2),
+    ];
+    for (declined_call, fixed_call, code_words_per_site) in rewrites {
+        let declined = measure_read(declined_call);
+        let fixed = measure_read(fixed_call);
+        // (the compiled call sites that ran: each is a FASTCALL instruction)
+        let mut compiled_sites = 0;
+        for (code, count) in declined.code.iter().zip(&declined.counts) {
+            if *count > 0 && vm::opcode_name((*code & 255) as u8).starts_with("FASTCALL") {
+                compiled_sites += 1;
+            }
+        }
+        let added_words = fixed.code.len() - declined.code.len();
+        assert_eq!(added_words, code_words_per_site * compiled_sites, "{declined_call}: {} to {} words across {compiled_sites} compiled sites", declined.code.len(), fixed.code.len());
+    }
 }

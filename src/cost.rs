@@ -123,7 +123,7 @@ pub const COLD_TOUCH_ALONE: f64 = 0.32e-6;
 /// BulkMoveTo 25-30, Emit 5.2, QueryDescendants 7.4, GetDescendants 4.8 (with its call), an emitter's Enabled write 3.8. Headless
 /// clients read the same within 20 % (a frame's first entry 21 for a part). Once a path ran in a frame, a second use costs only what
 /// a cold instance adds ([`clone_cold`], [`PIVOT_COLD_PART`] and the rest) over the hot prices.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Path {
     Clone = 0,
     Destroy = 1,
@@ -249,11 +249,12 @@ pub const QUERY_COLD: f64 = 4.6e-6;
 /// a match place's client, the medians of its runs, per write fitted from the totals at 100 and 300 instances, less the same writes on
 /// one instance: Transparency +388 ns, Color +357, CFrame +773, Name +559, SetAttribute +830,
 /// against ree's 280 (a read's miss). This table is the rest, so the roster of a HUD or a rig lands within 1.3x of Studio's per-write
-/// slope. NOT modeled: the fixed cost a frame's first writes pay (a first_write probe: the first changed write of a frame
-/// 14.1 us, a property written for the first time in it 4-18 us more, then 1-2 us for the next instance and 0.3 once a loop runs; it
-/// is cold code after the render and physics steps). It belongs to the frame, not to the script that happens to write first: charged to
-/// that script it would land on whichever module runs first and inflate any cut that removes it by up to 10 us a frame (a measured pair
-/// of such writes is 17 us), so ree leaves it out and a roster of 100 reads that much low in total, 10-20 % for a Transparency roster.
+/// slope. A frame's first writes pay a fixed cost on top (a first_write probe: the first changed write of a frame 14.1 us, a property
+/// written for the first time in it 4-18 us more, then 1-2 us for the next instance and 0.3 once a loop runs; it is cold code after the
+/// render and physics steps): [`FIRST_WRITE`] and its kin charge a member's first use in a frame, and the first touches of instances
+/// and engine paths theirs. Those charges belong to the frame's first user, not to a cut of it: each is booked as a cold charge to the
+/// object it is for (the member, the instance's class, the engine path) with who paid it and whether other code touched it that frame
+/// ([`Touched`], src/profiler/attribution.rs), so a profile's saving for a cut (`saving_ms`) counts it only when nothing else used it.
 ///
 /// A GuiObject (`part` false; the same bench's `Frame` rows, five runs: Size +475..525, Position +600, BackgroundTransparency +380 over
 /// the hot write, noisier than the Parts': Position's n100 readings span 781-1550 ns) is dearer on Size and Position and close on the
@@ -304,7 +305,7 @@ impl ColdKind {
 }
 
 /// What a script uses of an instance's members, for the first use of each in a frame ([`Touched::first_use`])
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum MemberUse {
     Read = 0,
     Write = 1,
@@ -407,6 +408,64 @@ impl EngineOps {
     }
 }
 
+/// The kinds of work a profile keeps apart (profiler/vm.rs SPLITS), as bits of a mask: what a charge is (a cold or first-use charge,
+/// the collector's, the engine's dispatch of a handler or resumption of a thread) and where its price came from (a Studio-era
+/// measurement, or a price borrowed from another call: defaulted). A price with neither of the last two was measured in a client.
+pub mod kind {
+    pub const COLD: u8 = 1 << 0;
+    pub const COLLECTOR: u8 = 1 << 1;
+    pub const STUDIO: u8 = 1 << 2;
+    pub const DEFAULTED: u8 = 1 << 3;
+    pub const DISPATCH: u8 = 1 << 4;
+}
+
+/// Running totals of the engine's charges of each kind ([`kind`]; profiler/vm.rs SPLITS cells), beside the work clock's own total
+/// (Scheduler::work and work_drained): the profile books what they moved with each instruction's work. One per engine, shared like
+/// the work cell.
+#[repr(C)]
+#[derive(Default)]
+pub struct WorkKinds {
+    cells: [std::cell::Cell<f64>; 5],
+}
+
+impl WorkKinds {
+    /// Adds `seconds` to each kind `mask` names
+    #[inline]
+    pub fn add(&self, mask: u8, seconds: f64) {
+        if mask == 0 {
+            return;
+        }
+        for (bit, cell) in self.cells.iter().enumerate() {
+            if mask & (1 << bit) != 0 {
+                cell.set(cell.get() + seconds);
+            }
+        }
+    }
+
+    /// The cells as the VM's profile reads them (lua_profilesplit's `hostkinds`)
+    pub fn as_ptr(&self) -> *const f64 {
+        self.cells.as_ptr() as *const f64
+    }
+
+    /// Each kind's total so far
+    pub fn totals(&self) -> [f64; 5] {
+        std::array::from_fn(|bit| self.cells[bit].get())
+    }
+}
+
+/// What a cold or first-use charge of the engine is for ([`Touched::cold`]): an instance's first touch in a frame (by slot; its class
+/// names it in the totals), a member's first use, an engine path's first use, a class's first clone or destroy in the frame. A profile
+/// keeps who paid each and whether other code touched the same thing in the frame (profiler::engine_cold): a cut of the payer leaves
+/// a shared charge to the other.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ColdKey {
+    Instance(u32, ClassId),
+    Member(MemberUse, crate::reflection::NameId),
+    Path(Path),
+    Cloned(ClassId),
+    Destroyed(ClassId),
+}
+
 /// The frame each instance slot was last touched in (one per engine: the scheduler owns it, the Instance API's C metamethods
 /// share it like the work cell), the frame each member was last used in ([`Touched::first_use`]), each engine path and each class
 /// was last cloned or destroyed in ([`Touched::first_path`]), and the frame each instance entered the Workspace in.
@@ -446,10 +505,14 @@ pub struct Touched {
     /// above 0 while the engine's own Luau prices a whole call (Scheduler::muted), whose inner operations are not counted
     ops: EngineOps,
     muted: std::rc::Rc<std::cell::Cell<u32>>,
+    /// The engine's charges by kind (Scheduler::kinds): the cold ones are booked there as they are priced
+    work_kinds: Option<std::rc::Rc<WorkKinds>>,
+    /// A profile keeps who paid each cold charge and what else touched its object (profiler::engine_cold)
+    pub profiling: bool,
 }
 
 impl Touched {
-    /// `muted`: the scheduler's mute (Scheduler::muted)
+    /// `muted`: the scheduler's mute (Scheduler::muted). Kind totals are attached only while a work profile runs.
     pub fn new(muted: std::rc::Rc<std::cell::Cell<u32>>) -> Self {
         Touched {
             frame: 1,
@@ -472,7 +535,79 @@ impl Touched {
             pivot_to: None,
             ops: EngineOps::default(),
             muted,
+            work_kinds: None,
+            profiling: false,
         }
+    }
+
+    /// Starts (`Some`) or ends (`None`) the booking of cold charges by kind and by payer: a work profile does it while it steps
+    pub(crate) fn profile_work(&mut self, kinds: Option<std::rc::Rc<WorkKinds>>) {
+        self.profiling = kinds.is_some();
+        self.work_kinds = kinds;
+    }
+
+    /// Books a cold or first-use charge of `seconds` that the caller adds to its price: the cold kind of the engine's charges, and while a
+    /// profile steps, who paid it for `key` (profiler::engine_cold). Nothing while the engine's own Luau prices a whole call (its charges
+    /// are dropped). Returns `seconds`.
+    /// (these hooks run in every engine call: inline they are a flag test, and what a profile keeps is out of line, as their bodies
+    /// inline cost an unprofiled engine call 5 % in cycle measurements)
+    #[inline]
+    pub fn cold(&mut self, seconds: f64, key: ColdKey) -> f64 {
+        // (kinds and attributions are a profile's: nothing to keep when none steps)
+        if self.profiling {
+            self.cold_profiled(seconds, key);
+        }
+        seconds
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn cold_profiled(&self, seconds: f64, key: ColdKey) {
+        let Some(totals) = &self.work_kinds else { return };
+        if seconds > 0.0 && self.muted.get() == 0 {
+            totals.add(kind::COLD, seconds);
+            crate::profiler::attribution::engine_cold(key, seconds);
+        }
+    }
+
+    /// Books the kinds of a charge of `seconds` the caller makes (a Studio-era or a borrowed price: [`kind`] bits); nothing while the
+    /// engine's own Luau prices a whole call
+    #[inline]
+    pub fn book_kinds(&self, kinds: u8, seconds: f64) {
+        if self.profiling {
+            self.book_kinds_profiled(kinds, seconds);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn book_kinds_profiled(&self, kinds: u8, seconds: f64) {
+        let Some(totals) = &self.work_kinds else { return };
+        if kinds != 0 && seconds != 0.0 && self.muted.get() == 0 {
+            totals.add(kinds, seconds);
+        }
+    }
+
+    /// [`book_kinds`](Self::book_kinds) of kinds worked out only while a profile keeps them (a lookup by class or name)
+    #[inline]
+    pub fn book_kinds_with(&self, seconds: f64, kinds: impl FnOnce() -> u8) {
+        if self.profiling {
+            self.book_kinds_profiled(kinds(), seconds);
+        }
+    }
+
+    /// Code touched `key`'s object again in this frame (a profile tells a charge other code shared: profiler::engine_touch)
+    #[inline]
+    fn seen(&self, key: ColdKey) {
+        if self.profiling {
+            Self::seen_profiled(key);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn seen_profiled(key: ColdKey) {
+        crate::profiler::attribution::engine_touch(key);
     }
 
     /// Counts an engine operation a script asked for ([`EngineOps`]). Not while the engine's own Luau prices a whole call: a
@@ -509,10 +644,11 @@ impl Touched {
     pub fn first_path(&mut self, path: Path) -> f64 {
         let stamp = &mut self.paths[path as usize];
         if *stamp == self.frame {
+            self.seen(ColdKey::Path(path));
             0.0
         } else {
             *stamp = self.frame;
-            PATH_FIRST[path as usize]
+            self.cold(PATH_FIRST[path as usize], ColdKey::Path(path))
         }
     }
 
@@ -546,11 +682,15 @@ impl Touched {
         }
         if self.cloned[slot] != self.frame {
             self.cloned[slot] = self.frame;
-            price += self.class_price(class, 0);
+            price += self.cold(self.class_price(class, 0), ColdKey::Cloned(class));
+        } else {
+            self.seen(ColdKey::Cloned(class));
         }
         let marked = self.mark(index);
         if cold.unwrap_or(marked) {
-            price += self.class_price(class, 2);
+            price += self.cold(self.class_price(class, 2), ColdKey::Instance(index, class));
+        } else {
+            self.seen(ColdKey::Instance(index, class));
         }
         price
     }
@@ -565,7 +705,9 @@ impl Touched {
         }
         if self.destroyed[slot] != self.frame {
             self.destroyed[slot] = self.frame;
-            price += self.class_price(class, 1);
+            price += self.cold(self.class_price(class, 1), ColdKey::Destroyed(class));
+        } else {
+            self.seen(ColdKey::Destroyed(class));
         }
         let live = self.entered.get(index as usize).is_some_and(|&entered| entered != 0 && entered != self.frame);
         if live {
@@ -633,9 +775,12 @@ impl Touched {
         std::mem::take(&mut self.last_cold)
     }
 
-    /// Frame `frame` begins (every instance is cold again).
+    /// Frame `frame` begins (every instance is cold again); a profile settles the frame's cold charges.
     pub fn begin_frame(&mut self, frame: u64) {
         self.frame = frame as u32 + 1;
+        if self.profiling {
+            crate::profiler::attribution::engine_frame();
+        }
     }
 
     /// What a script's use of member `name` (a read, a write or a method call) adds for the engine's code being cold: its first use in
@@ -643,19 +788,38 @@ impl Touched {
     /// [`CHILD_LOOKUP`].
     #[inline]
     pub fn first_use(&mut self, kind: MemberUse, name: crate::reflection::NameId) -> f64 {
+        // (every engine call takes this: a profile's bookkeeping is a separate instantiation, out of line)
+        if self.profiling { self.first_use_profiled(kind, name) } else { self.first_use_in::<false>(kind, name) }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn first_use_profiled(&mut self, kind: MemberUse, name: crate::reflection::NameId) -> f64 {
+        self.first_use_in::<true>(kind, name)
+    }
+
+    #[inline]
+    fn first_use_in<const PROFILE: bool>(&mut self, kind: MemberUse, name: crate::reflection::NameId) -> f64 {
         let price = self.first_prices[kind as usize];
         if price == 0.0 {
             return 0.0;
         }
+        let frame = self.frame;
         let stamps = &mut self.members[kind as usize];
         let slot = if name == CHILD_LOOKUP { 0 } else { name as usize + 1 };
         if stamps.len() <= slot {
             stamps.resize(slot + 1 + slot / 2, 0);
         }
-        if stamps[slot] == self.frame {
+        if stamps[slot] == frame {
+            if PROFILE {
+                Self::seen_profiled(ColdKey::Member(kind, name));
+            }
             0.0
         } else {
-            stamps[slot] = self.frame;
+            stamps[slot] = frame;
+            if PROFILE {
+                self.cold_profiled(price, ColdKey::Member(kind, name));
+            }
             price
         }
     }
@@ -665,12 +829,27 @@ impl Touched {
     /// creation order) pays [`COLD_TOUCH_ALONE`].
     #[inline]
     pub fn touch(&mut self, index: u32, class: ClassId, serial: u32) -> f64 {
+        // (every engine call takes this: a profile's bookkeeping is a separate instantiation, out of line)
+        if self.profiling { self.touch_profiled(index, class, serial) } else { self.touch_in::<false>(index, class, serial) }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn touch_profiled(&mut self, index: u32, class: ClassId, serial: u32) -> f64 {
+        self.touch_in::<true>(index, class, serial)
+    }
+
+    #[inline]
+    fn touch_in<const PROFILE: bool>(&mut self, index: u32, class: ClassId, serial: u32) -> f64 {
         let slot = index as usize;
         if self.stamps.len() <= slot {
             self.stamps.resize(slot + 1 + slot / 2, 0);
         }
         if self.stamps[slot] == self.frame {
             self.last_cold = false;
+            if PROFILE {
+                Self::seen_profiled(ColdKey::Instance(index, class));
+            }
             0.0
         } else {
             self.last_prev = std::mem::replace(&mut self.stamps[slot], self.frame);
@@ -679,7 +858,11 @@ impl Touched {
             let together = serial.abs_diff(self.last_serial) == 1 || self.last_prev + 1 >= self.frame;
             self.last_serial = serial;
             let price = self.prices.get(class as usize).copied().unwrap_or(COLD_TOUCH);
-            if together || price != COLD_TOUCH { price } else { COLD_TOUCH_ALONE }
+            let price = if together || price != COLD_TOUCH { price } else { COLD_TOUCH_ALONE };
+            if PROFILE {
+                self.cold_profiled(price, ColdKey::Instance(index, class));
+            }
+            price
         }
     }
 }
@@ -737,6 +920,22 @@ pub const WRITE_QUIET: f64 = 0.055e-6;
 /// A method call the table below does not name, beyond the Luau around it (the parity bench, its whole-corpus sessions: FindFirstChild's
 /// first of 20 children 58 ns, FindFirstAncestorOfClass 60; a Studio playtest client read 45 over the Luau of the older prices)
 pub const CALL: f64 = 0.058e-6;
+/// HttpService:JSONEncode and JSONDecode by what they handle, beyond [`method`]'s price for the call ([`JSON_CALL`]), in seconds: a byte
+/// of the JSON text written or parsed and a value written or made (each table, string, number and boolean of the document). What a
+/// decode makes and an encode's text are the engine's own allocations (a host function's: lua_sethostcfunction), so these prices carry
+/// them, and the VM's library counts leave them out. The parity bench's `json` rows, lists of 10 to 10,000 records (about 105 bytes and
+/// 9 values a record), fitted the prices (tools/cost-parity/fit.py sizes): a flat 0.69 us read 413 bytes and 468 KB alike.
+pub fn json(bytes: usize, values: u64, decode: bool) -> f64 {
+    let (byte, value) = if decode { (JSON_DECODE_BYTE, JSON_DECODE_VALUE) } else { (JSON_ENCODE_BYTE, JSON_ENCODE_VALUE) };
+    1e-9 * (bytes as f64 * byte + values as f64 * value)
+}
+pub const JSON_CALL: f64 = 0.35e-6;
+/// Nanoseconds a byte and a value cost an encode and a decode
+pub const JSON_ENCODE_BYTE: f64 = 0.0;
+pub const JSON_ENCODE_VALUE: f64 = 62.1;
+pub const JSON_DECODE_BYTE: f64 = 8.15;
+pub const JSON_DECODE_VALUE: f64 = 1.50;
+
 /// An instance destroyed, beyond leaving the DataModel ([`moved`]): a Folder out of the tree 0.41 us with the call, in the parity bench.
 /// The Studio capture's 1.0 (a grass patch 4.9 us an instance with its leaving) had the Explorer's work in it.
 pub const DESTROYED: f64 = 0.36e-6;
@@ -767,6 +966,12 @@ pub const LOG_CALL: f64 = 1.0e-6;
 /// earlier job's parts too: three stacks of 24, which the first fit read as a ray's or a query's dearness.)
 pub const RAY_MET: f64 = 0.175e-6;
 pub const RAY_CROSSED: f64 = 0.0424e-6;
+/// A Spherecast's and a Blockcast's part after the first it crosses (the bench's `workspace.Spherecast.hit_stack` and
+/// `Blockcast.hit_stack`, a 1-stud ball and a 2-stud box through the stack of 24: 9.68 and 6.35 us at the fastest of six sessions,
+/// their misses 0.18 and 0.22 like a ray's). A shape sweeps more of each part than a ray does; Shapecast, unmeasured, borrows the
+/// Blockcast's (a defaulted price).
+pub const SPHERE_CROSSED: f64 = 0.405e-6;
+pub const BLOCK_CROSSED: f64 = 0.259e-6;
 /// A part GetPartBoundsInBox returns and one GetPartBoundsInRadius returns (the same geometry: an empty box 0.15 us whether it is 4
 /// studs or 40 across, a line of 10 parts in a box 1.54, a radius that touches 2 parts 0.33; held out: a box of 24 parts 3.80)
 pub const QUERY_BOX_PART: f64 = 0.14e-6;
@@ -844,8 +1049,9 @@ pub enum SignalKind {
 /// (Studio's figures scaled by [`signal_costs`]'s quarter: no row of the parity bench has several handlers)
 pub const EXTRA_HANDLER_QUEUED: f64 = 0.45e-6 * 0.247;
 pub const EXTRA_HANDLER_THREAD: f64 = 0.95e-6 * 0.247;
-/// One more handler of a frame event (PreSimulation, Heartbeat, PreRender, ...): 100 handlers on one event, the span from the first
-/// handler's first line to the last, over 99 (a match place's client, three runs: PreSimulation 0.73, Heartbeat 0.63, PreRender 0.71 us).
+/// One more handler of a frame event (PreSimulation, Heartbeat, PreRender, ...), charged for each handler after the first (the first
+/// one's dispatch is the frame's) and booked to it: 100 handlers on one event, the span from the first handler's first line to the last,
+/// over 99 (a match place's client, three runs: PreSimulation 0.73, Heartbeat 0.63, PreRender 0.71 us).
 /// The parity bench (tools/cost-parity, a rendered client of a game's match place in roblox-sim): 100 Heartbeat handlers 0.49-0.51 us apart.
 pub const FRAME_HANDLER: f64 = 0.50e-6;
 
@@ -876,10 +1082,45 @@ pub fn signal_costs(kind: SignalKind) -> (f64, f64) {
         SignalKind::DescendantRemoving => (0.35e-6, 1.58e-6),
         SignalKind::AncestryChanged => (0.65e-6, 2.17e-6),
         SignalKind::Bindable => (0.58e-6, 1.73e-6),
-        SignalKind::Unmeasured => (0.0, 0.0),
+        // (an event no bench measured: a heard BindableEvent's, a borrowed price: signal_kinds)
+        SignalKind::Unmeasured => (0.58e-6, 1.73e-6),
     };
     (queue * STUDIO_HOOKS, thread * STUDIO_HOOKS)
 }
+
+/// Where [`signal_costs`]' two prices came from (cost.rs [`kind`] bits for the queueing and for each handler's thread): Changed's
+/// queueing the parity bench measured; a heard BindableEvent's pair is the bench's total split as Studio split it; the other measured
+/// kinds are Studio's figures scaled by the bench's Bindable row (Studio-era); an event no bench measured borrows the Bindable's
+/// (defaulted, and counted: a profile's `unmeasured signal fires`)
+pub fn signal_kinds(signal: SignalKind) -> SignalKinds {
+    match signal {
+        SignalKind::Changed | SignalKind::Property => SignalKinds { queue: 0, thread: kind::STUDIO },
+        SignalKind::Bindable => SignalKinds { queue: 0, thread: 0 },
+        SignalKind::Unmeasured => SignalKinds { queue: kind::DEFAULTED, thread: kind::DEFAULTED },
+        _ => SignalKinds { queue: kind::STUDIO, thread: kind::STUDIO },
+    }
+}
+
+/// The [`kind`] bits of [`signal_costs`]' two prices (none: 0, what a run keeps when no profile reads them)
+#[derive(Clone, Copy, Default)]
+pub struct SignalKinds {
+    /// The firer's queueing of the event
+    pub queue: u8,
+    /// Each handler's thread
+    pub thread: u8,
+}
+
+/// What resuming a thread parked in task.wait (or wait) and in task.delay costs a client beyond the thread's own instructions, booked
+/// to the line it waited on (scheduler.rs run_timers): the parity bench's `task.wait.resume_spacing` and `task.delay.resume_spacing`,
+/// 100 threads resumed in one frame, the span from the first one's stamp to the last's over 99, less the instructions each runs (a
+/// rendered client of a game's match place, roblox-sim, Studio 0.744, the fastest of four sessions). Charged nothing before: 30,000
+/// resumptions were free.
+pub const RESUMED_WAIT: f64 = 0.35e-6;
+pub const RESUMED_DELAY: f64 = 0.20e-6;
+/// A thread parked in a signal's Wait, resumed by a fire (the bench's `task.signal_wait.resume_spacing`, the same way: 100 threads
+/// waiting on one BindableEvent, 515 ns apart at the fastest session, less their instructions), booked to its Wait; a handler's thread
+/// keeps [`signal_costs`]' price
+pub const RESUMED_SIGNAL_WAIT: f64 = 0.445e-6;
 /// A thread made for task.spawn / defer / delay (the parity bench: task.spawn(noop) 0.72 us,
 /// task.delay 0.86 (the timer: [`DELAYED`] more); a Studio playtest client read 1.15), and a thread handed to them: a client resumes a
 /// coroutine parked in a yield through task.spawn at what a new function's thread costs (notes/macro pathprobe, rendered match-place
@@ -1173,13 +1414,12 @@ pub fn method(name: &str) -> f64 {
         "GetAttribute" => 0.039,
         "Create" => 1.31,
         "Raycast" => 0.27,
-        // (not measured: a ray's)
+        // (the bench's misses: a ray's; what they cross: SPHERE_CROSSED, BLOCK_CROSSED)
         "Blockcast" | "Spherecast" | "Shapecast" => 0.27,
         "GetPartBoundsInBox" | "GetPartBoundsInRadius" => 0.15,
         "GetPartsInPart" => 0.243,
-        // (HttpService:JSONEncode of `{ a = 1, b = "two", c = { 1, 2, 3 } }` 0.69 us; JSONDecode's row, of that table's text, is
-        // held out: the same price)
-        "JSONEncode" | "JSONDecode" => 0.69,
+        // (HttpService:JSONEncode and JSONDecode: the call, and by what they handle [`json`])
+        "JSONEncode" | "JSONDecode" => JSON_CALL * 1e6,
         // (TweenService:GetValue of a linear alpha 51.8 ns whole, 27 beyond the Luau around it)
         "GetValue" => 0.027,
         // ReflectionService:GetClass's lookup; the entry it makes is [`REFLECTED_CLASS`]'s
@@ -1203,6 +1443,67 @@ pub fn method(name: &str) -> f64 {
     }
 }
 
+/// Where [`method`]'s price for `name` came from ([`kind`] bits): a method the table does not name borrows [`CALL`] and Shapecast the
+/// Blockcast's (defaulted); EditableMesh's methods, IsDescendantOf / IsAncestorOf and the Luau-served model queries were measured in a
+/// Studio capture or playtest (Studio-era); the rest in the parity bench's client sessions.
+pub fn method_kinds(name: &str) -> u8 {
+    match name {
+        "IsA" | "GetFullName" | "GetPlayers" | "HasTag" | "GetTags" | "AddTag" | "Emit" | "WorldToViewportPoint" | "WorldToScreenPoint" | "ViewportPointToRay"
+        | "ScreenPointToRay" | "GetAttribute" | "Create" | "Raycast" | "Blockcast" | "Spherecast" | "GetPartBoundsInBox" | "GetPartBoundsInRadius"
+        | "GetPartsInPart" | "JSONEncode" | "JSONDecode" | "GetValue" | "GetClass" | "Fire" | "GetPivot" | "GetScale" | "GetBoundingBox"
+        | "GetExtentsSize" | "PivotTo" | "ScaleTo" => 0,
+        "Shapecast" => kind::DEFAULTED,
+        "IsDescendantOf" | "IsAncestorOf" | "GetVertexBoneWeights" | "GetVertexBones" | "GetFaceVertices" | "GetFaceColors" | "GetFaceNormals"
+        | "GetFaceUVs" | "GetPosition" | "GetNormal" | "GetUV" | "GetBoneName" | "GetColor" | "GetColorAlpha" | "SetColorAlpha" | "SetColor"
+        | "SetFaceColors" | "SetFaceNormals" | "SetFaceUVs" | "SetPosition" | "SetNormal" | "SetUV" | "RemoveFace" => kind::STUDIO,
+        _ => kind::DEFAULTED,
+    }
+}
+
+/// Where [`write`]'s price came from: a part's Size in the Workspace is Studio's ratio to CFrame applied to the bench's CFrame
+/// (defaulted), and a property of a class the table does not name borrows 0.30 us (defaulted); a changed Text write with AutoLocalize is
+/// the bench's; the rest the parity bench measured.
+pub fn write_kinds(reflection: &Reflection, class: ClassId, property: &str, changed: bool, placed: bool) -> u8 {
+    if !changed || property == "Name" {
+        return 0;
+    }
+    if reflection.is_a(class, "BasePart") {
+        return if placed && property == "Size" { kind::DEFAULTED } else { 0 };
+    }
+    let named = (property == "Transform" && (reflection.is_a(class, "Motor6D") || reflection.is_a(class, "Bone")))
+        || ((property == "C0" || property == "C1") && reflection.is_a(class, "JointInstance"))
+        || (property == "Text" && matches!(&*reflection.class(class).name, "TextLabel" | "TextButton" | "TextBox"))
+        || (&*reflection.class(class).name == "Camera" && property == "CFrame")
+        || reflection.is_a(class, "Attachment")
+        || reflection.is_a(class, "GuiObject")
+        || reflection.is_a(class, "UIComponent")
+        || ["ParticleEmitter", "Beam", "Trail", "Light", "Highlight", "Fire", "Smoke", "Sparkles"].iter().any(|kind| reflection.is_a(class, kind));
+    if named { 0 } else { kind::DEFAULTED }
+}
+
+/// Where [`created`]'s price came from: Humanoid, Animator and SurfaceAppearance keep a Studio client's figures (Studio-era)
+pub fn created_kinds(reflection: &Reflection, class: ClassId) -> u8 {
+    match &*reflection.class(class).name {
+        "Humanoid" | "Animator" | "SurfaceAppearance" => kind::STUDIO,
+        _ => 0,
+    }
+}
+
+/// Where [`cloned`]'s price came from: Humanoid, Motor6D, Sound, ScrollingFrame, an image or a GUI card's parts, the layouts and the
+/// Value, Constraint and light classes keep the edit place's figures (Studio-era); a class the table does not name borrows 1.8 us
+/// (defaulted)
+pub fn cloned_kinds(reflection: &Reflection, class: ClassId) -> u8 {
+    match &*reflection.class(class).name {
+        "TextLabel" | "TextButton" | "TextBox" | "MeshPart" | "ParticleEmitter" | "UIGradient" | "Model" | "Folder" | "Attachment" | "Beam" => 0,
+        "Humanoid" | "ScrollingFrame" | "ImageLabel" | "ImageButton" | "Motor6D" | "UIListLayout" | "ScreenGui" | "CanvasGroup" | "BillboardGui" | "SurfaceGui"
+        | "Sound" => kind::STUDIO,
+        _ if reflection.is_a(class, "BasePart") => 0,
+        _ if reflection.is_a(class, "GuiObject") || reflection.is_a(class, "UIComponent") => kind::STUDIO,
+        _ if reflection.is_a(class, "ValueBase") || reflection.is_a(class, "Constraint") || reflection.is_a(class, "Light") => kind::STUDIO,
+        _ => kind::DEFAULTED,
+    }
+}
+
 /// A subtree entering or leaving the DataModel: [`MOVE_BASE`] once and an instance of it by class, in the parity bench
 /// (a move in and a move out, averaged): a Folder 0.52 us, a Folder of 10 NumberValues 0.96 (so 0.044 an instance), a Part 1.47, a
 /// Model of 3 parts 4.12 (so 1.10 a part, the lone Part 1.0), a Frame into a ScreenGui 1.17, an Attachment into a part 0.58. A Studio
@@ -1220,6 +1521,48 @@ pub fn moved(reflection: &Reflection, class: ClassId) -> f64 {
     }
 }
 pub const MOVE_BASE: f64 = 0.47e-6;
+
+/// The client the prices were measured in, as the profile's headline names it: the parity bench's sessions (tools/cost-parity,
+/// reference/), a roblox-sim client (Studio 0.744 engine) rendering a game's match place on one desktop PC, not Studio
+pub const REFERENCE_CLIENT: &str = "a rendered roblox-sim client (Studio 0.744 engine) of a game's match place, one desktop PC";
+
+/// A component's band in [`BENCH_BANDS`]
+pub struct BenchBand {
+    pub component: &'static str,
+    /// The rows it was measured on
+    pub rows: usize,
+    /// ree / client at the 10th and the 90th percentile (the range, for Studio-era)
+    pub low: f64,
+    pub high: f64,
+}
+
+/// ree / client by component of the work clock, on rows no fit saw ([`BenchBand`]: rows, 10th percentile, 90th percentile). Luau, engine,
+/// dispatch and collector are the parity bench's held-out rows (a third of the corpus by a hash of the names; each row against the
+/// fastest of the reference sessions in tools/cost-parity/reference): Luau the language and library rows the clock prices (lang, native,
+/// lib, libsize, loop; the large buffer rows, which count bytes it prices at nothing, are left out, as a profile prints those bytes as
+/// unpriced: [`LUAU_BUFFER_FRESH_BYTE`]), engine the engine calls' families (read, write, method, find, attr, create, clone, parent, destroy, tween, datatype, json),
+/// dispatch the signal and task rows, collector the churn rows (gc). Cold is not a test of the cold charges alone: it is the macro
+/// bench's 13 held-out rows (notes/macro: nine attacks' casts, a card grid and a server loop), the whole work clock on a game's code
+/// where cold charges weigh most, against a client's script time, measured with the prices before the size fit. Studio-era is the
+/// Studio playtest client's prices against the bench's interpreted rows (their range: the only rows that test a Studio-era price), and
+/// defaulted what a borrowed price reads against what the bench measured for the calls it would stand in for (the 55 method rows at
+/// CALL's 58 ns). A profile weighs them by its own work (profiler/report.rs fidelity_json).
+pub const BENCH_BANDS: &[BenchBand] = &[
+    BenchBand { component: "luau", rows: 69, low: 0.52, high: 1.38 },
+    BenchBand { component: "engine", rows: 94, low: 0.58, high: 1.27 },
+    BenchBand { component: "collector", rows: 4, low: 0.61, high: 1.04 },
+    BenchBand { component: "cold", rows: 13, low: 0.53, high: 1.06 },
+    BenchBand { component: "dispatch", rows: 6, low: 0.83, high: 1.66 },
+    BenchBand { component: "studio", rows: 35, low: 0.45, high: 2.1 },
+    BenchBand { component: "defaulted", rows: 55, low: 0.01, high: 1.42 },
+];
+/// ree / client over every held-out row of the parity bench the clock prices (173 rows, 10th to 90th percentile; the median 15.2 % off,
+/// where the clock before this fit reads 25.2 % off and its 10th percentile 0.06). The seven held-out large buffer rows it leaves out
+/// count bytes it prices at nothing and read down to 0.08x (a 4 MB fill: [`LUAU_BUFFER_FRESH_BYTE`]); with them, the 180 rows read
+/// 0.52-1.34x and 16.5 % off, against 27.8 % before the fit
+pub const FIDELITY_BAND: (f64, f64) = (0.55, 1.34);
+/// The phone factor's measured spread ([`PHONE_SCRIPTS`]): 2.13-4.16 over the phones and scenes compared
+pub const PHONE_SCRIPTS_BAND: (f64, f64) = (2.13, 4.16);
 
 /// What a device's client takes for a script's work, against the desktop prices above (`--device phone`): a conversion, not a measurement.
 /// Every price in this file is a desktop client's (the parity bench's client, a Studio 0.744 engine on a desktop CPU); a phone's is that
@@ -1256,10 +1599,10 @@ pub const MESH_DECODE_VERTEX: f64 = 1.2e-6;
 /// a game's animations, 11 KB to 2.1 MB: 0.24-0.88 s, median 0.41, one 1.65; no trend with size).
 pub const ANIMATION_FETCH: f64 = 0.45;
 
-/// What the work clock is beside a client's own time, for a profile's summary (profiler/report.rs): the prices are measured one call
-/// at a time and the cold costs of a frame's first touches on the game's own per-frame code (docs/engine.md "Work clock"); what is
-/// not modelled is named, so nobody reads the clock as a client's where it is not one.
-pub const FIDELITY: &str = "fidelity: prices measured in a client, with a frame's cold first touches of tables, functions, engine members and instances (one touched alone costs more) and the first run in a frame of each engine path a script takes (an effect's clone, workspace entry, destroy, pivot, bulk move, emit and query; a library or datatype function; a function not run the frame before); a game's per-frame code reads 0.6-1.2x a client (most 0.8-1.1x), an attack's cast 0.5-1.1x (most 0.6-0.8x). Not modelled: the rest of a cast's cold cost, in its own Luau (0.3-1.0x a client, most 0.5-0.7x) and its engine calls (0.5-0.9x), code and data a client finds cold after frames unused; where data lies in memory (made together in one loop it reads dear), what a layout leaves warm, and the cold of each node a large walk visits (priced once a call). Size a cut in a client";
+/// What the work clock is beside a client's own time where no profile weighs it by its own work (`ree profile try`'s comparison): the
+/// held-out bands above, and what is not modelled. A profile's summary gives its own band (profiler/report.rs fidelity_json), so nobody
+/// reads the clock as a client's where it is not one.
+pub const FIDELITY: &str = "fidelity: the work clock reads 0.55-1.34x a client's time on the parity bench's held-out rows it prices (10th to 90th percentile; Luau 0.52-1.38x, engine calls 0.58-1.27x, the collector 0.61-1.04x, dispatch 0.83-1.66x; large buffer operations, priced in part, read down to 0.08x, and a profile prints their unpriced bytes), and a game's held-out per-frame code and attack casts 0.53-1.06x with their cold charges (measured before the size fit); a profile weighs these by its own work (profile.json fidelity). Not modelled: code and data a client finds cold after frames unused (a held-out cast's own Luau reads 0.3-1.0x a client), where data lies in memory (made together in one loop it reads dear), what a layout leaves warm, and the cold of each node a large walk visits (priced once a call). Size a cut in a client";
 
 /// What the Luau VM did since it started (vendor/luau0-src, patches/luau/02-work-counters.patch: lua_workcounters)
 #[repr(C)]
@@ -1385,6 +1728,27 @@ pub fn collector_work(c: &VmCounters) -> f64 {
         - c.vectormethods as f64 * 9.0)
 }
 
+unsafe extern "C-unwind" {
+    fn lua_sethostcfunctions(functions: *const mlua::ffi::lua_CFunction, count: std::ffi::c_int, trampoline: mlua::ffi::lua_CFunction);
+}
+
+/// Marks the engine's own C functions (`functions`, and the C function mlua's Rust callbacks run through) for the VM's library counts:
+/// the objects one makes for a script are part of the operation the engine prices whole (patches/luau/15-input-size-work.patch
+/// lua_sethostcfunctions), so only the VM's library functions' objects are priced as allocations.
+pub fn mark_host_functions(lua: &mlua::Lua, functions: &[mlua::ffi::lua_CFunction]) -> mlua::Result<()> {
+    // Every function mlua makes from a Rust closure is a C closure of one trampoline. Ask for it through a closure made here, and
+    // register it with the functions in one call, before a script can have a closure classified.
+    let probe = lua.create_function(|_, ()| Ok(()))?;
+    unsafe {
+        lua.exec_raw::<()>(&probe, |state| {
+            if let Some(trampoline) = mlua::ffi::lua_tocfunction(state, -1) {
+                lua_sethostcfunctions(functions.as_ptr(), functions.len() as std::ffi::c_int, trampoline);
+            }
+        })?;
+    }
+    Ok(())
+}
+
 /// The VM's collector paces itself by the scripts' work (`GcClock`); the clock is owned by the Lua state (its app data), so it lives
 /// as long as the collector that reads it.
 pub fn install_gc_clock(lua: &mlua::Lua, counters: *const VmCounters) -> mlua::Result<()> {
@@ -1443,7 +1807,69 @@ pub fn luau(c: &VmCounters) -> f64 {
         + c.coldcode as f64 * LUAU_COLD_CODE
         + c.hostops[COLD_CFUNCS_SLOT] as f64 * LUAU_COLD_CFUNC
         + c.hostops[COLD_HOSTFUNCS_SLOT] as f64 * LUAU_COLD_HOSTFUNC
+        + c.hostops[RARE_PROTOS_SLOT] as f64 * LUAU_RARE_PROTO
+        + c.hostops[SCANNED_SLOT] as f64 * LUAU_SCANNED
+        + c.hostops[MOVED_SLOT] as f64 * LUAU_MOVED
+        + c.hostops[STRBYTES_SLOT] as f64 * LUAU_STRING_BYTE
+        + c.hostops[STRSCANNED_SLOT] as f64 * LUAU_STRING_SCANNED
+        + c.hostops[MATCHSTEPS_SLOT] as f64 * LUAU_MATCH_STEP
+        + c.hostops[BUFBYTES_SLOT] as f64 * LUAU_BUFFER_BYTE
+        + c.hostops[ALLOCBYTES_SLOT] as f64 * LUAU_ALLOCATED_BYTE
+        + c.hostops[GCOBJECTS_SLOT] as f64 * LUAU_COLLECTOR_OBJECT
+        + c.hostops[LIBOBJECTS_SLOT] as f64 * LUAU_LIBRARY_OBJECT
+        + c.hostops[CASEBYTES_SLOT] as f64 * LUAU_CASE_BYTE
+        + c.hostops[UTF8BYTES_SLOT] as f64 * LUAU_UTF8_BYTE
+        + c.hostops[UTF8CHARS_SLOT] as f64 * LUAU_UTF8_CHAR
+        + c.hostops[STRCHARS_SLOT] as f64 * LUAU_STRING_CHAR
+        + c.hostops[BYTEVALUES_SLOT] as f64 * LUAU_BYTE_VALUE
+        + c.hostops[BUFFERS_SLOT] as f64 * LUAU_BUFFER
+        + c.hostops[MATCHCLASSES_SLOT] as f64 * LUAU_MATCH_CLASS
+        + c.hostops[HASHREHASHED_SLOT] as f64 * LUAU_HASH_REHASHED
+        + c.hostops[LARGEBLOCKS_SLOT] as f64 * LUAU_LARGE_BLOCK
+        + c.hostops[BUFFRESH_SLOT] as f64 * LUAU_BUFFER_FRESH_BYTE
+        + c.hostops[BUFBIGCOPY_SLOT] as f64 * LUAU_BUFFER_BIG_COPY_BYTE)
+}
+
+/// The collector's charge so far on the work clock (seconds at desktop prices): the objects the scripts' work allocated at
+/// [`LUAU_COLLECTOR_OBJECT`] (a profile's `collector_ms`; it is inside [`luau`]'s total)
+pub fn collector_seconds(c: &VmCounters) -> f64 {
+    1e-9 * c.hostops[GCOBJECTS_SLOT] as f64 * LUAU_COLLECTOR_OBJECT
+}
+
+/// The VM's cold and first-use charges so far on the work clock (seconds at desktop prices): tables, closures and functions first
+/// touched in a frame, the code functions ran first in it, and the first calls of C and engine functions ([`luau`]'s cold terms)
+pub fn cold_seconds(c: &VmCounters) -> f64 {
+    1e-9 * (c.coldtables as f64 * LUAU_COLD_TABLE
+        + c.coldclosures as f64 * LUAU_COLD_CLOSURE
+        + c.coldprotos as f64 * LUAU_COLD_PROTO
+        + c.coldcode as f64 * LUAU_COLD_CODE
+        + c.hostops[COLD_CFUNCS_SLOT] as f64 * LUAU_COLD_CFUNC
+        + c.hostops[COLD_HOSTFUNCS_SLOT] as f64 * LUAU_COLD_HOSTFUNC
         + c.hostops[RARE_PROTOS_SLOT] as f64 * LUAU_RARE_PROTO)
+}
+
+/// The kinds of each 8-byte slot of [`VmCounters`] for a profile's bookings ([`kind`] bits; profiler/vm.rs `split`): the cold and
+/// first-use counts, the collector's bytes, and the counts whose prices come from a Studio-era measurement (a call into the engine's
+/// Luau, a vector's Magnitude and Unit, a native datatype operation's own charge). Every other count is priced from the parity bench's
+/// client sessions.
+pub fn slot_kinds() -> Vec<i8> {
+    use std::mem::offset_of;
+    let slots = std::mem::size_of::<VmCounters>() / 8;
+    let mut kinds = vec![0i8; slots];
+    let slot = |offset: usize| offset / 8;
+    let hostops = slot(offset_of!(VmCounters, hostops));
+    for offset in [offset_of!(VmCounters, coldtables), offset_of!(VmCounters, coldclosures), offset_of!(VmCounters, coldprotos), offset_of!(VmCounters, coldcode)] {
+        kinds[slot(offset)] = kind::COLD as i8;
+    }
+    for special in [COLD_CFUNCS_SLOT, COLD_HOSTFUNCS_SLOT, RARE_PROTOS_SLOT] {
+        kinds[hostops + special] = kind::COLD as i8;
+    }
+    kinds[hostops + GCOBJECTS_SLOT] = kind::COLLECTOR as i8;
+    // (a datatype operation's own price, hostnanos, is the parity bench's client rows': lune-roblox's datatype_price)
+    for offset in [offset_of!(VmCounters, hostcalls), offset_of!(VmCounters, vectormagnitudes), offset_of!(VmCounters, vectorunits)] {
+        kinds[slot(offset)] = kind::STUDIO as i8;
+    }
+    kinds
 }
 
 /// The slots of [`VmCounters`]'s hostops no opcode reaches, where the VM counts a script's first call in a frame of a C function
@@ -1453,10 +1879,45 @@ pub const COLD_CFUNCS_SLOT: usize = 255;
 pub const COLD_HOSTFUNCS_SLOT: usize = 254;
 /// ... and the functions of a script whose code ran first in a frame without having run in the frame before (LUA_WORK_RAREPROTOS)
 pub const RARE_PROTOS_SLOT: usize = 253;
+/// ... and what the library and engine calls a script makes do by the size of their input (patches/luau/15-input-size-work.patch,
+/// lua.h LUA_WORK_SCANNED and below): table elements table.find compared; elements table.insert / table.remove at a position moved,
+/// table.move copied, table.unpack / table.pack / string.byte pushed and table.clear cleared; bytes of the strings the script's work
+/// made or looked up (built, hashed, compared: concatenation, the string library, the engine's strings); bytes a plain search or a
+/// utf8 function read; the pattern matcher's steps; bytes a buffer function zeroed, filled, copied or wrote; the bytes of every object
+/// and table part the script's work allocated; every object it allocated again, for the collector; objects library calls made for it
+pub const SCANNED_SLOT: usize = 252;
+pub const MOVED_SLOT: usize = 251;
+pub const STRBYTES_SLOT: usize = 250;
+pub const STRSCANNED_SLOT: usize = 249;
+pub const MATCHSTEPS_SLOT: usize = 248;
+pub const BUFBYTES_SLOT: usize = 247;
+pub const ALLOCBYTES_SLOT: usize = 246;
+pub const GCOBJECTS_SLOT: usize = 245;
+pub const LIBOBJECTS_SLOT: usize = 244;
+/// ... bytes string.upper / lower converted, bytes a utf8 function decoded or stepped over, codepoints utf8.char encoded, characters
+/// string.char made, values string.byte pushed, buffers made, and the pattern matcher's steps that tested a character class
+pub const CASEBYTES_SLOT: usize = 243;
+pub const UTF8BYTES_SLOT: usize = 242;
+pub const UTF8CHARS_SLOT: usize = 241;
+pub const STRCHARS_SLOT: usize = 240;
+pub const BYTEVALUES_SLOT: usize = 239;
+pub const BUFFERS_SLOT: usize = 238;
+pub const MATCHCLASSES_SLOT: usize = 237;
+/// ... of the keys a script's table growth rehashed (`rehashed`), those it put in a hash part; and the allocations of a script's work
+/// too large for Luau's own pages (over 1,024 bytes), each a block of the host's allocator
+pub const HASHREHASHED_SLOT: usize = 236;
+pub const LARGEBLOCKS_SLOT: usize = 235;
+/// ... and of the bytes buffer functions handled, a new buffer's past Luau's own pages (over 1 KB) and a copy's, a fill's or a written
+/// string's in a call that moved over 64 KB (lua.h LUA_WORK_BUFFRESH, LUA_WORK_BUFBIGCOPY): priced at nothing
+/// ([`LUAU_BUFFER_FRESH_BYTE`]), so a profile prints them as work it does not price (work.unpriced)
+pub const BUFFRESH_SLOT: usize = 234;
+pub const BUFBIGCOPY_SLOT: usize = 233;
+/// The first of hostops' slots that count something other than an opcode (lua.h LUA_WORK_FIRSTSLOT)
+pub const FIRST_SPECIAL_SLOT: usize = 233;
 
-/// The engine instructions hostops counted: its sum without the cold-call slots
+/// The engine instructions hostops counted: its opcodes' slots, without the slots that count other work
 pub fn host_instructions(c: &VmCounters) -> u64 {
-    c.hostops.iter().sum::<u64>() - c.hostops[COLD_CFUNCS_SLOT] - c.hostops[COLD_HOSTFUNCS_SLOT] - c.hostops[RARE_PROTOS_SLOT]
+    c.hostops[..FIRST_SPECIAL_SLOT].iter().sum::<u64>()
 }
 
 
@@ -1574,24 +2035,84 @@ pub const LUAU_SLOW_IMPORT: f64 = 7.9;
 /// function 9.7 (50 elements 4.7 us); table.create's element 4.3 (100: 0.43 us), table.clone's slot 4.3 (an array of 10: 56 ns),
 /// table.concat's item 7.1 (20: 154 ns); string.split's part 25.4 (five: 140 ns) and string.format's call 102 (an interpolated string is
 /// one: 280 ns with two values, a float's %.2f 335; the specifiers' kinds differ too much for a price by count, and the fit gives them none).
+/// table.create's element and table.concat's item are fitted again with the size prices below, at several sizes (1.95 and 5.0).
 pub const LUAU_NUMBER_STRING: f64 = 18.0;
 pub const LUAU_NEW_STRING: f64 = 171.0;
 pub const LUAU_SORT_COMPARE: f64 = 1.06;
 pub const LUAU_SORT_CALL: f64 = 9.7;
-pub const LUAU_CREATE_ITEM: f64 = 4.3;
+pub const LUAU_CREATE_ITEM: f64 = 1.95;
 pub const LUAU_CLONE_ITEM: f64 = 4.3;
-pub const LUAU_CONCAT_ITEM: f64 = 7.1;
+pub const LUAU_CONCAT_ITEM: f64 = 5.0;
 pub const LUAU_SPLIT_PART: f64 = 25.4;
 pub const LUAU_FORMAT: f64 = 102.0;
 
-/// an object a script's instruction makes ({} 36, a closure 29, a record of three 54)
-pub const LUAU_OBJECT: f64 = 22.0;
-/// a byte of table storage (array and hash parts)
-pub const LUAU_STORED: f64 = 0.4;
-/// a key moved when a table grows (table.insert 38 a call as its list grows)
-pub const LUAU_REHASHED: f64 = 12.0;
-/// a C function call (the Instance API's own costs come on top: READ, CALL, ...)
-pub const LUAU_CCALL: f64 = 5.0;
+/// What library and engine calls do by the size of their input, in nanoseconds (the VM's counts: [`SCANNED_SLOT`] and below), fitted
+/// on the parity bench's `libsize`, `json` and `gc` rows, each workload at three to five sizes (tools/cost-parity/fit.py sizes; numbers
+/// in its comments). A flat price per call read table.find of 100,000 elements and of 10 alike (6 us), `s ..= piece` building 16,000
+/// pieces at 1.0x n where a client's time grows as n^2, and gsub, upper and rep on 1 MB at 6 us where a client takes 0.3-7 ms.
+/// A table element table.find compared, and one table.insert / table.remove at a position moved, table.move copied, table.unpack /
+/// pack / string.byte pushed or table.clear cleared
+pub const LUAU_SCANNED: f64 = 0.357;
+pub const LUAU_MOVED: f64 = 0.226;
+/// A byte of a string a script's work made or looked up (built, hashed and compared; copied when new), a byte a plain search or a utf8
+/// function read without making a string, a step of the pattern matcher (an item tried at a position), a byte a buffer function
+/// zeroed, filled, copied or wrote
+pub const LUAU_STRING_BYTE: f64 = 0.169;
+pub const LUAU_STRING_SCANNED: f64 = 0.024;
+pub const LUAU_MATCH_STEP: f64 = 0.796;
+pub const LUAU_BUFFER_BYTE: f64 = 0.004;
+/// A byte of an object or table part a script's work allocated (its instructions' and its library and engine calls'), beyond the
+/// object's price ([`LUAU_OBJECT`], [`LUAU_LIBRARY_OBJECT`]): what touching fresh memory costs
+pub const LUAU_ALLOCATED_BYTE: f64 = 0.061;
+/// The collector's work for an object a script's work allocated, its instructions' or its library and engine calls' (lua.h
+/// LUA_WORK_GCOBJECTS), booked to the code that allocated it: sweeping it once it is garbage, and marking it while it lives. On the
+/// parity bench's churn rows on a heap of about 50 MB (`gc.churn.*.big_heap`) ree's VM, which runs the client's collector, spends 17.5 %
+/// of a loop of four-slot tables in collector steps, and that share of a client's 49.4 ns is 8.6 ns a table. It is a price an object, not
+/// a byte: a collector frees a large block at once (a client builds a 1 MB string.format, 3.7 MB of buffers, in 271 us in all, where
+/// 0.12 ns a byte read 440 us for the collector alone), and the big-heap rows of 1 KB strings and 128-slot tables read what their small
+/// heap twins read (815 and 832 ns, 551 and 668), so marking a game-sized heap adds little a byte allocated. The collector's own pace is
+/// not this clock's (it stays [`collector_work`]'s).
+pub const LUAU_COLLECTOR_OBJECT: f64 = 8.6;
+/// An object a library or engine call made for a script (a string, a table JSONDecode built, a buffer), beyond its bytes and its
+/// collector's share
+pub const LUAU_LIBRARY_OBJECT: f64 = 5.99;
+/// A byte string.upper or string.lower converted (a C library call a character), a byte a utf8 function decoded, a codepoint
+/// utf8.char encoded, a character string.char made of an argument, a value string.byte pushed, a buffer made (beyond its bytes), a
+/// byte a library function wrote into a string it builds piece by piece or copied as that buffer grew, and a pattern step that tested
+/// a character class
+pub const LUAU_CASE_BYTE: f64 = 1.485;
+pub const LUAU_UTF8_BYTE: f64 = 0.979;
+pub const LUAU_UTF8_CHAR: f64 = 6.71;
+pub const LUAU_STRING_CHAR: f64 = 2.16;
+pub const LUAU_BYTE_VALUE: f64 = 1.46;
+pub const LUAU_BUFFER: f64 = 1774.0;
+pub const LUAU_MATCH_CLASS: f64 = 6.33;
+/// A key a table's growth reinserted into its hash part, beyond [`LUAU_REHASHED`] (an array slot is copied; a key is hashed again)
+pub const LUAU_HASH_REHASHED: f64 = 15.43;
+/// An allocation too large for Luau's own pages (over 1,024 bytes: a string or buffer of 1 KB, a table part of 64 slots or more),
+/// beyond its bytes: a block of the host's allocator, made and freed apart (fitted with the rest)
+pub const LUAU_LARGE_BLOCK: f64 = 79.8;
+/// A byte of a new buffer past Luau's own pages, beyond [`LUAU_BUFFER_BYTE`] (fresh memory its zeroing touches first), and a byte of a
+/// buffer.copy, buffer.fill or buffer.writestring call that moved over 64 KB (past a core's nearest caches): counted, and priced at
+/// nothing, as no price a byte fits a client; a profile prints them as unpriced when a run has any (work.unpriced), and the Luau band
+/// ([`BENCH_BANDS`]) leaves out the bench rows that count them. The parity bench's buffers at 64 KB to 4 MB (tools/cost-parity/reference/client-buffers-1.json and the
+/// kept sessions): a copy costs a client 0.009 ns a byte at 64 KB, 0.020 at 256 KB to 1 MB and 0.045 at 4 MB, a create 0.34 down to
+/// 0.095 from 64 KB to 4 MB, two sessions of one row up to 50 % apart; the prices a byte its fit rows give (0.074 and 0.024) moved the
+/// held-out rows from 18.0 to 20.4 % off at the median (a 256 KB writestring 0.83x to 4.2x, a 1 MB copy 0.27x to 1.45x). A price by
+/// cache tier would need rows between the tiers.
+pub const LUAU_BUFFER_FRESH_BYTE: f64 = 0.0;
+pub const LUAU_BUFFER_BIG_COPY_BYTE: f64 = 0.0;
+
+/// An object a script's instruction makes, beyond its bytes and its collector's share ([`LUAU_ALLOCATED_BYTE`],
+/// [`LUAU_COLLECTOR_OBJECT`]: 14.6 ns an object in all), and a byte of table storage beyond its allocated byte (array and hash parts):
+/// fitted with the size prices (above), where the Studio playtest's fit had 22 and 0.4
+pub const LUAU_OBJECT: f64 = 5.99;
+pub const LUAU_STORED: f64 = 0.079;
+/// A key moved when a table grows, beyond [`LUAU_HASH_REHASHED`] for one put in a hash part: nothing (an array slot's copy is in its
+/// bytes; the Studio playtest's fit had 12, and the bench's held-out list growth read 2.8x a client); a C function call (the Instance
+/// API's own costs come on top: READ, CALL, ...): fitted with the size prices, the library's calls with them
+pub const LUAU_REHASHED: f64 = 0.0;
+pub const LUAU_CCALL: f64 = 5.77;
 /// a datatype's operation the engine's Luau serves (CFrame * CFrame 62, CFrame.new 64, Color3.new 61,
 /// cf * v 18, cf.Position + cf.LookVector 15, v.Magnitude / Unit / Dot 62 for three)
 pub const LUAU_HOSTCALL: f64 = 15.0;

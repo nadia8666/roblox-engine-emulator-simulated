@@ -1,20 +1,18 @@
  ◆ ree profile   ✓ run ok · Fixture.luau · 120 frames · 2.00 s                                     Studio work 13.20 ms
   1 Overview  2 Flame  3 Calls  4 Source  5 Alloc  6 Heap  7 Timeline  8 Caches  9 Issues  d Diff  c Compare
-╭ Issues  12 ──────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│   severity   kind               issue                                                                                │
-│ ▌ ■ critical sort every frame   Sorted every frame: rank  Main:20                                                    │
-│   ▲ serious  repeat reads       Part.Size read again in the frame: 200 a frame at Main:31                            │
-│   ▲ serious  scaling            sortAll in t[v][k] grows as n^1.90                                                   │
-│   ● warning  heap growth        Reachable heap grows: +2.50 MB from steady to end                                    │
-│   ● warning  steady allocation  21.9 KB a frame on average: rank  Main:21                                            │
-│   ● warning  cache misses       GETTABLEKS at Main:31 misses 83.3% of its lookups                                    │
-│   ● warning  unchanged writes   Part.Position set to its own value: 30 a frame at Main:33                            │
-│   ● warning  table growth       Tables regrown: layout  Main:32                                                      │
-│   ● warning  steady allocation  512 B a frame on average: layout  Main:32                                            │
-│   ● warning  gc spike           Collector spikes: 1 frame, worst 400 steps (frame 90)                                │
-│   ● warning  frame spike        Frame spikes: 1 frame, worst 2.000 ms (frame 60)                                     │
-│   ● warning  growth             Connections keep growing: +99 over the 100 frames of the steady phase                │
-│                                                                                                                      │
+╭ Issues  11 ──────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   severity            cost kind               issue                                                                  │
+│ ▌ ○ info     part 42.0 µs… sort calls         Sort calls: rank  Main:20: 42.0 µs a frame                             │
+│   ▲ serious     not priced scaling            sortAll in t[v][k] grows as n^1.90                                     │
+│   ● warning     not priced heap growth        Reachable heap grows: +2.50 MB from steady to end                      │
+│   ● warning     not priced steady allocation  21.9 KB a frame on average: rank  Main:21                              │
+│   ● warning     not priced table growth       Tables regrown: layout  Main:32                                        │
+│   ● warning     not priced steady allocation  512 B a frame on average: layout  Main:32                              │
+│   ● warning     not priced gc spike           Collector spikes: 1 frame, worst 400 steps (frame 90)                  │
+│   ● warning     not priced growth             Connections keep growing: +99 over the 100 frames of the steady phase  │
+│   ○ info        not priced cache misses       GETTABLEKS at Main:31 misses 83.3% of its lookups                      │
+│   ○ info        not priced frame spike        Frame spike: frame 60 took 2.000 ms of work                            │
+│   ○ info         64.0 µs/f work below floor   Work below listing floor: 64.0 µs a frame (floor 41.7 µs a frame)      │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
@@ -24,17 +22,19 @@
 │                                                                                                                      │
 │                                                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭ ■ critical  Sorted every frame: rank  Main:20 ───────────────────────────────────────────────────────────────────────╮
+╭ ○ info  Sort calls: rank  Main:20: 42.0 µs a frame ──────────────────────────────────────────────────────────────────╮
+│ • recorded removable subtotal 42.0 µs a frame; source fix bounded from zero to 0.106 ms including the caller's       │
+│ instructions and the evaluation of its arguments                                                                     │
 │ • table.sort ran 100 times in the 100 frames of the steady phase, 1.0 a frame                                        │
-│ • 42.0 µs a frame in the sorts, 39.6% of the phase's work                                                            │
-│ → Keep the sorted list and sort again only when an item changes                                                      │
+│ • 42.0 µs a frame in the sorts, 39.6% of the code's work; its comparator's calls are counted once a sort, not once a │
+│ run (needs invocation counts)                                                                                        │
+│ • functions whose work this fix saves: rank Main:20 2.0 µs a frame; anonymous Main:22 40.0 µs a frame                │
+│ → Remove these sort calls when the ordering is not needed; this price is the whole removed subtree                   │
 │ ⏎ Calls: rank  Main:20                                                                                               │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭ Not checked  what the issues do not cover ───────────────────────────────────────────────────────────────────────────╮
+╭ Not checked  3 · what the issues do not cover ───────────────────────────────────────────────────────────────────────╮
+│ ○ sorts without a comparator: need C call rows (this profile records a C function only when Luau runs under it)      │
+│ ○ function cadence and hitch attribution: needs frame summaries from a newer profile                                 │
 │ ○ code that waits on memory: needs hw (the CPU's counters), in a run of its own                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
  ↑↓ issue  enter open   │   m metric  f scripts  / find  y copy  t theme  ? help  q quit

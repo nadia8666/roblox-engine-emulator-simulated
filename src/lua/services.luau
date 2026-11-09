@@ -1338,6 +1338,11 @@ local function LogSelf(Self, Member)
 	end
 end
 
+Method("LogService", "GetLogHistory", function(Self)
+	LogSelf(Self, "GetLogHistory")
+	return R.LogHistory()
+end)
+
 -- The thrown error's tostring (measured): its message when that is a string or a number, else "Error occurred"
 local function LogErrorText(Self)
 	local Message = rawget(Self, "message")

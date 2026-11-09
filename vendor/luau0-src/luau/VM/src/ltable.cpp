@@ -729,7 +729,15 @@ static void countstored(lua_State* L, size_t bytes)
     if (luaE_scriptinsn(L))
         L->global->work.stored += bytes;
     else if (luaP_state)
-        luaP_uncounted(L, 0, bytes, 0); // (a profile prices it as a builtin's fast path would)
+        luaP_callstorage(L, bytes);
+    // (a table part a library or engine call allocated for a script counts as its allocation too: table.create, a decoded table)
+    if (luaE_scriptwork(L) && !luaE_hostcall(L))
+    {
+        L->global->work.hostops[LUA_WORK_ALLOCBYTES] += bytes;
+        // (a part too large for Luau's own pages is a block of the host's allocator: lmem.cpp kMaxSmallSizeUsed)
+        if (bytes > 1024)
+            L->global->work.hostops[LUA_WORK_LARGEBLOCKS]++;
+    }
 }
 
 static void setarrayvector(lua_State* L, LuaTable* t, int size)
@@ -1009,9 +1017,10 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
         int nh = hashslotsused(t) + 1;
         // (the keys this rehash moves: the hash part's and the new one; the array part stays)
         if (luaE_scriptinsn(L))
+        {
             L->global->work.rehashed += nh;
-        else if (luaP_state)
-            luaP_uncounted(L, 0, 0, nh); // (a profile prices it as a builtin's fast path would)
+            L->global->work.hostops[LUA_WORK_HASHREHASHED] += nh;
+        }
         // (the hash part's size before, for a profile's rehash hook)
         int oldnodes = t->node == dummynode ? 0 : sizenode(t);
         resize(L, t, t->sizearray, nh);
@@ -1070,9 +1079,11 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
     }
 
     if (luaE_scriptinsn(L))
+    {
         L->global->work.rehashed += totaluse;
-    else if (luaP_state)
-        luaP_uncounted(L, 0, 0, totaluse); // (a profile prices it as a builtin's fast path would)
+        // (the keys that do not go to the array part are reinserted into the hash part)
+        L->global->work.hostops[LUA_WORK_HASHREHASHED] += unsigned(nh);
+    }
 
     // (the sizes before, for a profile's rehash hook)
     int oldasize = t->sizearray;
@@ -1094,6 +1105,8 @@ LuaTable* luaH_new(lua_State* L, int narray, int nhash)
     LuaTable* t = luaM_newgco(L, LuaTable, sizeof(LuaTable), L->activememcat, LUA_TTABLE);
     luaC_init(L, t, LUA_TTABLE);
     luaC_coldmade(L, obj2gco(t));
+    if (luaP_state)
+        luaP_tablemade(L, t);
     t->metatable = NULL;
     t->tmcache = cast_byte(~0);
     t->array = NULL;
@@ -1547,6 +1560,8 @@ LuaTable* luaH_clone(lua_State* L, LuaTable* tt)
     LuaTable* t = luaM_newgco(L, LuaTable, sizeof(LuaTable), L->activememcat, LUA_TTABLE);
     luaC_init(L, t, LUA_TTABLE);
     luaC_coldmade(L, obj2gco(t));
+    if (luaP_state)
+        luaP_tablemade(L, t);
     t->metatable = tt->metatable;
     t->tmcache = tt->tmcache;
     t->array = NULL;

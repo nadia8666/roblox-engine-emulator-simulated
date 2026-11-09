@@ -77,8 +77,8 @@ pub struct RecordArgs {
     /// `--timing-check` (or `REE_TIMING_CHECK=1`): record again with the in-frame clock moved and say whether the recording
     /// changed ([`check_timing`])
     pub timing_check: bool,
-    /// This run is that second recording (Options::clock_moved)
-    pub clock_moved: bool,
+    /// This run is one of its probes: the in-frame clock's multiple of the modelled work (Options::clock_probe)
+    pub clock_probe: Option<f64>,
 }
 
 impl RecordArgs {
@@ -122,6 +122,11 @@ pub fn cli(args: &[String], host: &Host, record: bool) -> i32 {
     let started = std::time::Instant::now();
     let command = if record { "record" } else { "run" };
     let args = launch::split_equals(args);
+    // Profilers and their child passes write before launch::prepare resolves state, so a standalone run resolves it first.
+    if let Err(error) = crate::require_standalone_state(&host.repo) {
+        eprintln!("{} {command}: {error}", host.name);
+        return 1;
+    }
     if let Err(error) = guard_process(command, &args, started) {
         eprintln!("{} {command}: {error}", host.name);
         return 1;
@@ -210,12 +215,17 @@ pub fn cli(args: &[String], host: &Host, record: bool) -> i32 {
     }
 }
 
-/// A profile's directory when `--profile-out` names none: `<out>/profile` for a recording, `ree-profile` here for a run
+/// A profile's directory when `--profile-out` names none: `<out>/profile` for a recording, else `ree-profile` in state
+/// for a standalone run or in the current folder for a host.
 fn default_profile_dir(args: &[String], record: bool) -> PathBuf {
     let value = |key: &str| args.iter().position(|a| a == key).and_then(|i| args.get(i + 1)).cloned();
-    match value("--out").or_else(|| value("--dir")).filter(|_| record) {
+    // A standalone recording takes its output folder the way `parse` does. A host keeps the order and aliases it always
+    // had here, which `parse` does not share.
+    let output_flags: &[&str] = if crate::is_standalone_binary() { &["--dir", "--out", "--dump-scene"] } else { &["--out", "--dir"] };
+    let recording_out = output_flags.iter().find_map(|flag| value(flag)).filter(|_| record);
+    match recording_out {
         Some(out) => PathBuf::from(out).join("profile"),
-        None => PathBuf::from("ree-profile"),
+        None => crate::default_output_path("ree-profile"),
     }
 }
 
@@ -296,7 +306,7 @@ pub fn parse(args: &[String], record: bool) -> Result<RecordArgs, String> {
         .transpose()?;
     let script_timeouts = value("--max-script-timeouts").map(|text| text.parse::<u32>().map_err(|_| "--max-script-timeouts: not a count")).transpose()?;
     let timing_check = record && (args.iter().any(|arg| arg == "--timing-check") || std::env::var("REE_TIMING_CHECK").as_deref() == Ok("1"));
-    Ok(RecordArgs { engine, harness, out, output_log, seconds, fps, context, model_assets, animations, frame_times, script_timeout, script_timeouts, timing_check, clock_moved: false })
+    Ok(RecordArgs { engine, harness, out, seconds, fps, context, model_assets, animations, frame_times, script_timeout, script_timeouts, timing_check, output_log, clock_probe: None })
 }
 
 /// What a command produced: the summary (printed on stdout) and its status line (stderr).
@@ -377,7 +387,7 @@ pub(crate) fn execute_with(args: &RecordArgs, host: &Host, record: bool, spool: 
     finished(&emulator, &history);
     // (a profile reads the VM while it still runs)
     crate::profiler::collect(&emulator.lua);
-    let done = if record && args.timing_check && !args.clock_moved { check_timing(args, host, done) } else { done };
+    let done = if record && args.timing_check && args.clock_probe.is_none() { check_timing(args, host, done) } else { done };
     Ok((done, emulator))
 }
 
@@ -407,7 +417,7 @@ pub(crate) fn start(args: &RecordArgs, host: &Host, listings: bool) -> Result<(E
         None => None,
     };
     let mut options = prepared.options.clone();
-    options.clock_moved = args.clock_moved;
+    options.clock_probe = args.clock_probe;
     let engine = crate::timing::time("engine (reflection)", || (host.new_engine)(options))?;
     if let Some(prefetch) = prefetch {
         modules::use_prefetch(&engine, prefetch);
@@ -454,6 +464,10 @@ pub fn record(args: &RecordArgs, host: &Host) -> Result<Json, String> {
 fn record_in(emulator: &Emulator, args: &RecordArgs, host: &Host) -> Result<Done, String> {
     let recorder = Recorder::install(&emulator.engine, args.fps);
     recorder.set_frame_times(args);
+    // (a timing check compares the work each frame did between the recording and its probes)
+    if args.timing_check || args.clock_probe.is_some() {
+        recorder.track_work();
+    }
     let ran = run(&emulator.lua, &emulator.engine, args, Some(&recorder))?;
     record_done(emulator, args, host, &recorder, ran, emulator.project.started)
 }
@@ -1202,6 +1216,32 @@ fn context_table(lua: &Lua, engine: &Rc<Engine>, checkpoint: &Rc<Checkpoint>, sp
     // a frame did that is the same however fast the host is
     let e = engine.clone();
     context.set("WorkSeconds", lua.create_function(move |_, ()| Ok(e.state.borrow().sched.work_total()))?)?;
+    // Context.FireEvent(Instance, Event, ...): fires an engine event the emulator does not raise itself, to the
+    // connections made to it (Humanoid.Running while a harness walks a character, which nothing simulates here);
+    // nil, booleans, numbers, strings and instances, as a BindableEvent carries them
+    let e = engine.clone();
+    context.set(
+        "FireEvent",
+        lua.create_function(move |_, (target, event, rest): (LuaValue, String, LuaMultiValue)| {
+            let id = engine_lua::instance_id(&target).ok_or_else(|| LuaError::runtime("Context.FireEvent: an Instance first"))?;
+            let name = e.reflection.name_id(&event).ok_or_else(|| LuaError::runtime(format!("Context.FireEvent: no event named {event}")))?;
+            let mut arguments = Vec::with_capacity(rest.len());
+            for value in rest {
+                arguments.push(match value {
+                    LuaValue::Nil => Value::Nil,
+                    LuaValue::Boolean(flag) => Value::Bool(flag),
+                    LuaValue::Integer(number) => Value::Number(number as f64),
+                    LuaValue::Number(number) => Value::Number(number),
+                    LuaValue::String(text) => Value::String(Str::new(&*text.as_bytes())),
+                    other => Value::Instance(
+                        engine_lua::instance_id(&other).ok_or_else(|| LuaError::runtime("Context.FireEvent: arguments are nil, booleans, numbers, strings or instances"))?,
+                    ),
+                });
+            }
+            core::fire_event(&mut e.state.borrow_mut(), id, name, arguments);
+            Ok(())
+        })?,
+    )?;
     // Context.SetJoinData(Player, JoinData): a server run's (`--run-context server`) fake player arrives
     // with the join data a teleport would have given it, which Player:GetJoinData returns (lua/server.luau),
     // so a game that reads its TeleportData there joins the player as live servers do
@@ -1299,31 +1339,87 @@ mod warm_tests {
     }
 }
 
-/// `ree record --timing-check`: records the harness a second time with the in-frame clock moved (twice the modelled work, never
-/// frozen: Options::clock_moved) and compares the two recordings' playback and camera. A script that times itself on
-/// os.clock within a frame (a visual clock's waits, an elapsed-time sum) can draw differently in a client whenever its real
-/// work moves, which ree's modelled work, or a frozen clock, does not follow: when the second recording differs, an A/B whose
-/// recordings read identical has not shown the change keeps the look. The verdict goes into the summary (`timing`) and
-/// `timing.json`, and the status line says from when the recording hinges on sub-frame timing; the second recording's files
-/// are removed.
+// The work clock owns the measured fidelity band; the probes follow its current calibration.
+use crate::cost::{FIDELITY_BAND, PHONE_SCRIPTS_BAND};
+
+/// The in-frame clock factors a timing check probes, each against the modelled work (the run's own device scale already on
+/// it), with what client each stands for: the fastest and the slowest client of the run's device the fidelity band allows,
+/// and for a desktop run the slowest phone as well (a game played on phones runs its scripts 2-4x slower there).
+/// `REE_TIMING_PROBES=a,b` names factors instead.
+pub(crate) fn timing_probes(device: &str) -> Vec<(f64, String)> {
+    if let Ok(given) = std::env::var("REE_TIMING_PROBES") {
+        let factors: Vec<f64> = given.split(',').filter_map(|word| word.trim().parse::<f64>().ok()).filter(|factor| factor.is_finite() && *factor > 0.0).collect();
+        if !factors.is_empty() {
+            return factors.into_iter().map(|factor| (factor, "REE_TIMING_PROBES".to_string())).collect();
+        }
+    }
+    let (low, high) = FIDELITY_BAND;
+    let scale = crate::cost::device_scale(device);
+    if device == "phone" {
+        // (a phone run's clock already carries PHONE_SCRIPTS: the phones' spread around it, and the band's)
+        return vec![(PHONE_SCRIPTS_BAND.0 / (scale * high), "the fastest phone".into()), (PHONE_SCRIPTS_BAND.1 / (scale * low), "the slowest phone".into())];
+    }
+    vec![(1.0 / high, "the fastest desktop client".into()), (1.0 / low, "the slowest desktop client".into()), (PHONE_SCRIPTS_BAND.1 / low, "the slowest phone".into())]
+}
+
+/// `ree record --timing-check`: records the harness again under each of [`timing_probes`] (the in-frame clock on that many
+/// times the modelled work, never frozen: Options::clock_probe), faster and slower clients across the work clock's fidelity
+/// band and a phone's, and compares each recording with the first: playback, camera, events (output and sounds) and the work
+/// each frame did. A script that times itself on os.clock within a frame (a visual clock's waits, an elapsed-time sum, a
+/// work budget) draws, sounds or works differently in a client whenever its real work moves, which ree's modelled work, or a
+/// frozen clock, does not follow: when a probe differs, an A/B whose recordings read identical has not shown the change
+/// keeps the look there. The verdict goes into the summary (`timing`) and `timing.json` with the range tested, and the
+/// status line says under which clocks the recording hinges and from when; the probes' files are removed.
 fn check_timing(args: &RecordArgs, host: &Host, mut done: Done) -> Done {
     let Some(out) = args.out.clone() else { return done };
-    let moved_out = out.join("timing-check");
-    let mut moved = args.clone();
-    moved.out = Some(moved_out.clone());
-    moved.timing_check = false;
-    moved.clock_moved = true;
-    let second = start(&moved, host, false).and_then(|(emulator, _)| {
-        let result = record_in(&emulator, &moved, host);
-        release(emulator);
-        result
+    // (the device as launch.rs resolves it: --device, else REE_DEVICE, else desktop)
+    let device = args.engine.device.clone().or_else(|| std::env::var("REE_DEVICE").ok().filter(|value| !value.is_empty())).unwrap_or_else(|| "desktop".into());
+    let mut probes = Vec::new();
+    for (index, (factor, client)) in timing_probes(&device).into_iter().enumerate() {
+        let probe_out = out.join(format!("timing-check-{index}"));
+        let mut probe = args.clone();
+        probe.out = Some(probe_out.clone());
+        probe.timing_check = false;
+        probe.clock_probe = Some(factor);
+        let recorded = start(&probe, host, false).and_then(|(emulator, _)| {
+            let result = record_in(&emulator, &probe, host);
+            release(emulator);
+            result
+        });
+        let mut verdict = match recorded {
+            Ok(_) => compare_recordings(&out, &probe_out),
+            Err(error) => json!({ "error": error }),
+        };
+        verdict["factor"] = json!((factor * 1000.0).round() / 1000.0);
+        verdict["client"] = json!(client);
+        let _ = std::fs::remove_dir_all(&probe_out);
+        probes.push(verdict);
+    }
+    let failed: Vec<&Json> = probes.iter().filter(|probe| probe["error"].is_string()).collect();
+    let hinging: Vec<&Json> = probes.iter().filter(|probe| probe["hinges"] == true).collect();
+    let rank = |probe: &&Json| difference_rank(probe["first"]["at"].as_f64().unwrap_or(f64::INFINITY), probe["first"]["list"].as_str().unwrap_or(""), args.fps.max(1.0));
+    let first = hinging.iter().min_by(|a, b| rank(a).cmp(&rank(b))).map(|probe| {
+        let mut first = probe["first"].clone();
+        first["factor"] = probe["factor"].clone();
+        first["client"] = probe["client"].clone();
+        first
     });
-    let mut verdict = match second {
-        Ok(_) => compare_recordings(&out, &moved_out),
-        Err(error) => json!({ "error": error }),
-    };
-    verdict["moved"] = json!("the in-frame clock ran on twice the modelled work, never frozen");
-    let _ = std::fs::remove_dir_all(&moved_out);
+    let factors: Vec<f64> = probes.iter().filter_map(|probe| probe["factor"].as_f64()).collect();
+    let (lowest, highest) = (factors.iter().copied().fold(f64::INFINITY, f64::min), factors.iter().copied().fold(0.0f64, f64::max));
+    let mut verdict = json!({
+        "hinges": if failed.len() == probes.len() { Json::Null } else { json!(!hinging.is_empty()) },
+        "first": first,
+        "probes": probes,
+        "range": {
+            "factors": [lowest, highest],
+            "band": [FIDELITY_BAND.0, FIDELITY_BAND.1], "phone": [PHONE_SCRIPTS_BAND.0, PHONE_SCRIPTS_BAND.1], "device": device,
+            "basis": probe_range_basis(),
+        },
+        "moved": format!("the in-frame clock ran on {} the modelled work, never frozen", factors.iter().map(|factor| format!("{}x", trim_factor(*factor))).collect::<Vec<_>>().join(", ")),
+    });
+    if let Some(error) = failed.first().and_then(|probe| probe["error"].as_str()) {
+        verdict["error"] = json!(error);
+    }
     let _ = std::fs::write(out.join("timing.json"), serde_json::to_string_pretty(&verdict).unwrap_or_default());
     if let Ok(text) = std::fs::read_to_string(out.join("summary.json")) {
         if let Ok(mut summary) = serde_json::from_str::<Json>(&text) {
@@ -1331,23 +1427,55 @@ fn check_timing(args: &RecordArgs, host: &Host, mut done: Done) -> Done {
             let _ = std::fs::write(out.join("summary.json"), serde_json::to_string(&summary).unwrap_or(text));
         }
     }
+    let tested = format!("tested {}x to {}x the modelled clock", trim_factor(lowest), trim_factor(highest));
     match (verdict["hinges"].as_bool(), &verdict["first"]) {
         (Some(true), first) => {
+            let under: Vec<String> = hinging.iter().map(|probe| format!("{}x ({})", trim_factor(probe["factor"].as_f64().unwrap_or(0.0)), probe["client"].as_str().unwrap_or("?"))).collect();
+            let steady: Vec<String> = verdict["probes"].as_array().into_iter().flatten().filter(|probe| probe["hinges"] == false).map(|probe| format!("{}x", trim_factor(probe["factor"].as_f64().unwrap_or(0.0)))).collect();
             done.line.push_str(&format!(
-                "; hinges on sub-frame timing from {:.3} s ({}): an identical A/B there is not a pass",
+                "; hinges on sub-frame timing under {} from {:.3} s ({}: {}){}: an identical A/B there is not a pass",
+                under.join(", "),
                 first["at"].as_f64().unwrap_or(0.0),
-                first["what"].as_str().unwrap_or("?")
+                first["list"].as_str().unwrap_or("?"),
+                first["what"].as_str().unwrap_or("?"),
+                if steady.is_empty() { String::new() } else { format!("; no change at {}", steady.join(", ")) }
             ));
         }
-        (Some(false), _) => done.line.push_str("; sub-frame timing: no change"),
+        (Some(false), _) => done.line.push_str(&format!("; sub-frame timing: no change ({tested}: {})", verdict["probes"].as_array().into_iter().flatten().map(|probe| probe["client"].as_str().unwrap_or("?").to_string()).collect::<Vec<_>>().join(", "))),
         _ => done.line.push_str(&format!("; timing check failed: {}", verdict["error"].as_str().unwrap_or("?"))),
     }
     done.summary["timing"] = verdict;
     done
 }
 
-/// Where two recordings of one harness part: each of playback.json's lists (actions, tweens, motion) and camera.json compared
-/// entry by entry, the first difference by time (an entry's `at`, else its `start`), and how many entries differ.
+/// Which of two recordings' differences comes first: by frame, then what a client sees (playback, camera) before what it
+/// hears, then what it prints, then the work a frame did (a budget's last write lands in the frame its work moved)
+fn difference_rank(at: f64, list: &str, fps: f64) -> (i64, u8) {
+    ((at * fps).round() as i64, match list { "sounds" => 1, "output" => 2, "frame work" => 3, _ => 0 })
+}
+
+/// What the probed range rests on, in words: the work clock's fidelity band, as ree's figures against a client's and as a
+/// client's script time against ree's modelled work (the band's inverse), and a phone's script time against a desktop client's
+fn probe_range_basis() -> String {
+    let (ree_over_client_low, ree_over_client_high) = FIDELITY_BAND;
+    let client_over_ree_low = trim_factor(1.0 / ree_over_client_high);
+    let client_over_ree_high = trim_factor(1.0 / ree_over_client_low);
+    let (phone_low, phone_high) = PHONE_SCRIPTS_BAND;
+    format!(
+        "the work clock's fidelity band (ree/client {ree_over_client_low}-{ree_over_client_high}x; client/model {client_over_ree_low}-{client_over_ree_high}x) and phone/desktop script time ({phone_low}-{phone_high}x)"
+    )
+}
+
+/// A clock factor in a few digits: `0.83`, `2`, `8.32`
+fn trim_factor(factor: f64) -> String {
+    let text = format!("{factor:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// Where two recordings of one harness part: each of playback.json's lists (actions, tweens, motion), camera.json and
+/// events.json's (output lines, sounds) compared entry by entry, and the work each frame did (summary.json's
+/// `frame_work_ms`, when both recorded it); the first difference by time (an entry's `at`, else its `start` or `time`), and
+/// how many entries differ.
 pub(crate) fn compare_recordings(a: &Path, b: &Path) -> Json {
     let read = |dir: &Path, file: &str| -> Option<Json> { serde_json::from_str(&std::fs::read_to_string(dir.join(file)).ok()?).ok() };
     let (Some(first), Some(second)) = (read(a, "playback.json"), read(b, "playback.json")) else {
@@ -1355,7 +1483,22 @@ pub(crate) fn compare_recordings(a: &Path, b: &Path) -> Json {
     };
     let mut lists: Vec<(String, Json, Json)> = ["actions", "tweens", "motion"].iter().map(|key| (key.to_string(), first[key].clone(), second[key].clone())).collect();
     lists.push(("camera".into(), read(a, "camera.json").unwrap_or(Json::Null), read(b, "camera.json").unwrap_or(Json::Null)));
-    let time = |entry: &Json| entry["at"].as_f64().or_else(|| entry["start"].as_f64()).unwrap_or(0.0);
+    // (events.json: what the scripts printed, warned and raised, and the sounds they played and stopped, with their times)
+    let (events_a, events_b) = (read(a, "events.json").unwrap_or(Json::Null), read(b, "events.json").unwrap_or(Json::Null));
+    for key in ["output", "sounds"] {
+        lists.push((key.to_string(), events_a[key].clone(), events_b[key].clone()));
+    }
+    // (the work each frame did: a script budgeting its work on os.clock does more or less of it a frame as the clock moves)
+    let frame_work = |dir: &Path| -> Json {
+        let Some(summary) = read(dir, "summary.json") else { return Json::Null };
+        let fps = summary["fps"].as_f64().filter(|fps| *fps > 0.0).unwrap_or(60.0);
+        Json::Array(summary["frame_work_ms"].as_array().cloned().unwrap_or_default().into_iter().enumerate().map(|(frame, ms)| json!({"at": frame as f64 / fps, "ms": ms})).collect())
+    };
+    let (work_a, work_b) = (frame_work(a), frame_work(b));
+    if work_a.as_array().is_some_and(|work| !work.is_empty()) && work_b.as_array().is_some_and(|work| !work.is_empty()) {
+        lists.push(("frame work".into(), work_a, work_b));
+    }
+    let time = |entry: &Json| entry["at"].as_f64().or_else(|| entry["start"].as_f64()).or_else(|| entry["time"].as_f64()).unwrap_or(0.0);
     // (a motion track's keys: where its first differing key is)
     let parted = |x: Option<&Json>, y: Option<&Json>| -> f64 {
         let keys = |entry: Option<&Json>| entry.and_then(|entry| entry["keys"].as_array()).cloned().unwrap_or_default();
@@ -1369,11 +1512,19 @@ pub(crate) fn compare_recordings(a: &Path, b: &Path) -> Json {
             .unwrap_or(0.0)
     };
     let what = |entry: &Json| {
-        let target = entry["target"].as_str().or_else(|| entry["path"].as_str()).unwrap_or("");
-        let property = entry["property"].as_str().or_else(|| entry["kind"].as_str()).unwrap_or("");
-        format!("{target} {property}").trim().to_string()
+        let target = entry["target"].as_str().or_else(|| entry["path"].as_str()).or_else(|| entry["sound"].as_str()).unwrap_or("");
+        let property = entry["property"].as_str().or_else(|| entry["kind"].as_str()).or_else(|| entry["event"].as_str()).unwrap_or("");
+        let mut text = format!("{target} {property}").trim().to_string();
+        if let Some(message) = entry["message"].as_str() {
+            text = format!("{text} {:?}", message.chars().take(60).collect::<String>()).trim().to_string();
+        }
+        text
     };
     let mut differing = serde_json::Map::new();
+    // (the first difference by frame, and within a frame what a client sees or hears before what it prints or works: a
+    // budget's last write lands in the frame its work moved)
+    let fps = read(a, "summary.json").and_then(|summary| summary["fps"].as_f64()).filter(|fps| *fps > 0.0).unwrap_or(60.0);
+    let rank = |at: f64, list: &str| difference_rank(at, list, fps);
     let mut earliest: Option<(f64, String, String)> = None;
     for (name, left, right) in lists {
         let empty = Vec::new();
@@ -1381,14 +1532,24 @@ pub(crate) fn compare_recordings(a: &Path, b: &Path) -> Json {
         let mut count = 0usize;
         for index in 0..left.len().max(right.len()) {
             let (x, y) = (left.get(index), right.get(index));
-            if x == y {
+            // (a frame's work by its figure, to the nanosecond)
+            let same = match (name.as_str(), x, y) {
+                ("frame work", Some(x), Some(y)) => (x["ms"].as_f64().unwrap_or(0.0) - y["ms"].as_f64().unwrap_or(0.0)).abs() <= 1e-6,
+                _ => x == y,
+            };
+            if same {
                 continue;
             }
             count += 1;
             let entry = x.or(y).unwrap();
             let at = parted(x, y);
-            if earliest.as_ref().is_none_or(|(when, _, _)| at < *when) {
-                earliest = Some((at, name.clone(), what(entry)));
+            let described = if name == "frame work" {
+                format!("the frame's work {} ms against {} ms", x.and_then(|x| x["ms"].as_f64()).map_or("-".into(), |ms| format!("{ms:.4}")), y.and_then(|y| y["ms"].as_f64()).map_or("-".into(), |ms| format!("{ms:.4}")))
+            } else {
+                what(entry)
+            };
+            if earliest.as_ref().is_none_or(|(when, list, _)| rank(at, &name) < rank(*when, list)) {
+                earliest = Some((at, name.clone(), described));
             }
         }
         differing.insert(name, json!(count));

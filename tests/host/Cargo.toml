@@ -1,0 +1,13 @@
+[package]
+name = "ree-test-host"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[test]]
+name = "defaults"
+path = "defaults.rs"
+
+[dev-dependencies]
+roblox-engine-emulator = { path = "../.." }
+mimalloc = { version = "=0.1.52", default-features = false, features = ["v2"] }

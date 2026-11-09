@@ -258,10 +258,22 @@ impl Spool {
     }
 }
 
-/// A new file in the temporary directory, read and written, that is gone once closed.
+/// The folder the spool's files go in: `output` in state for a standalone run, which writes only where state is, else the
+/// temporary directory.
+fn spool_directory() -> std::io::Result<std::path::PathBuf> {
+    if !crate::is_standalone_binary() {
+        return Ok(std::env::temp_dir());
+    }
+    let state = crate::try_state_dir(&crate::default_repo()).map_err(std::io::Error::other)?;
+    let directory = state.join("output");
+    std::fs::create_dir_all(&directory)?;
+    Ok(directory)
+}
+
+/// A new file in the spool's folder, read and written, that is gone once closed.
 fn temporary_file() -> std::io::Result<std::fs::File> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let directory = std::env::temp_dir();
+    let directory = spool_directory()?;
     loop {
         let count = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = directory.join(format!("ree-output-{}-{count}.json", std::process::id()));

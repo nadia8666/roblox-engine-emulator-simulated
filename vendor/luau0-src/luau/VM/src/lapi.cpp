@@ -2,6 +2,10 @@
 // This code is based on Lua 5.x implementation licensed under MIT License; see lua_LICENSE.txt for details
 #include "lapi.h"
 
+#include <atomic>
+#include <mutex>
+#include <type_traits>
+
 #include "lbytecode.h"
 #include "lobject.h"
 #include "lstate.h"
@@ -1425,23 +1429,124 @@ void lua_setthreaddata(lua_State* L, void* data)
 ** Garbage-collection function
 */
 
+// The host's own C functions (lua_sethostcfunction) are kept in a chain of fixed-size blocks.
+// Layout: entry i is slot i % kHostFunctionsPerBlock of block i / kHostFunctionsPerBlock. The first block is static; each
+// later block is allocated when the one before it is full, and linked behind it.
+// Lifetime: a block never moves and is never freed, so a reader can scan while a writer appends. That includes exit: an embedder
+// may still run Lua from its own static destructors, so the list has no destructor and the operating system reclaims the blocks.
+// Publishing: a writer holds hostcfunctionlock, fills slots and links, then stores the new count with release. A reader loads the
+// count with acquire and scans only that many entries, so it never reads a slot or a link the writer has not finished.
+static const size_t kHostFunctionsPerBlock = 256;
+
+struct HostFunctionBlock
+{
+    lua_CFunction functions[kHostFunctionsPerBlock] = {};
+    HostFunctionBlock* next = nullptr;
+};
+
+struct HostFunctionList
+{
+    HostFunctionBlock first;
+    HostFunctionBlock* last = &first;
+};
+
+// (a destructor here would free blocks that a host call during another object's static destructor still reads)
+static_assert(std::is_trivially_destructible<HostFunctionList>::value, "the host function list must outlive every static destructor");
+
+static HostFunctionList hostcfunctions;
+static std::atomic<size_t> hostcfunctioncount{0};
+static std::mutex hostcfunctionlock;
+
+// whether `function` is among the first `registered` entries
+static bool hostfunctionregistered(lua_CFunction function, size_t registered)
+{
+    const HostFunctionBlock* block = &hostcfunctions.first;
+    while (registered > 0)
+    {
+        size_t inblock = registered < kHostFunctionsPerBlock ? registered : kHostFunctionsPerBlock;
+        for (size_t i = 0; i < inblock; ++i)
+            if (block->functions[i] == function)
+                return true;
+        registered -= inblock;
+        // (the link is followed only when entries remain beyond this block, so it has been published)
+        if (registered > 0)
+            block = block->next;
+    }
+    return false;
+}
+
+// adds `function` after the `registered` entries unless it is there; returns the new number of entries. Holds the writer lock; the
+// caller publishes the count once its whole batch is in.
+static size_t appendhostfunction(lua_CFunction function, size_t registered)
+{
+    if (hostfunctionregistered(function, registered))
+        return registered;
+    size_t slot = registered % kHostFunctionsPerBlock;
+    // the last block is full: start the next one
+    if (slot == 0 && registered > 0)
+    {
+        HostFunctionBlock* block = new HostFunctionBlock;
+        hostcfunctions.last->next = block;
+        hostcfunctions.last = block;
+    }
+    hostcfunctions.last->functions[slot] = function;
+    return registered + 1;
+}
+
+void lua_sethostcfunction(lua_CFunction f)
+{
+    std::lock_guard<std::mutex> guard(hostcfunctionlock);
+    size_t registered = hostcfunctioncount.load(std::memory_order_relaxed);
+    registered = appendhostfunction(f, registered);
+    hostcfunctioncount.store(registered, std::memory_order_release);
+}
+
+void lua_sethostcfunctions(const lua_CFunction* functions, int count, lua_CFunction trampoline)
+{
+    // a host registers its bindings together at startup, before a script can have a closure classified
+    std::lock_guard<std::mutex> guard(hostcfunctionlock);
+    size_t registered = hostcfunctioncount.load(std::memory_order_relaxed);
+    for (int i = 0; i < count; ++i)
+        registered = appendhostfunction(functions[i], registered);
+    registered = appendhostfunction(trampoline, registered);
+    hostcfunctioncount.store(registered, std::memory_order_release);
+}
+
+bool luaE_hostcall(lua_State* L)
+{
+    if (!L->stack || L->ci <= L->base_ci || !ttisfunction(L->ci->func))
+        return false;
+    Closure* cl = clvalue(L->ci->func);
+    if (!cl->isC)
+        return false;
+    // (the answer is kept in the C closure's preload byte, which only Luau closures use and luaF_newCclosure zeroes: 1 a library
+    // function, 2 a host's; a host marks its functions before its scripts run, as the closures it checks are its scripts')
+    if (cl->preload)
+        return cl->preload == 2;
+    size_t count = hostcfunctioncount.load(std::memory_order_acquire);
+    bool host = hostfunctionregistered(cl->c.f, count);
+    cl->preload = host ? 2 : 1;
+    return host;
+}
+
 const lua_WorkCounters* lua_workcounters(lua_State* L)
 {
     return &L->global->work;
 }
 
-static void setworkexempt(Proto* p)
+static void setworkexempt(lua_State* L, Proto* p)
 {
     p->flags |= LUAU_PROTO_WORK_EXEMPT;
+    luaC_coldprepare(L, p);
     for (int i = 0; i < p->sizep; ++i)
-        setworkexempt(p->p[i]);
+        setworkexempt(L, p->p[i]);
 }
 
 void lua_setworkexempt(lua_State* L, int idx)
 {
     const TValue* o = index2addr(L, idx);
     api_check(L, isLfunction(o));
-    setworkexempt(clvalue(o)->l.p);
+    setworkexempt(L, clvalue(o)->l.p);
 }
 
 void lua_workhostcalls(lua_State* L, int calls)

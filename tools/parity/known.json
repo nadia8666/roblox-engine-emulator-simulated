@@ -225,10 +225,6 @@
 		{
 			"line": "deferred-error |Hear,error(parity-log deferred error;nil),out(MessageError:parity-log deferred error +2 lines)",
 			"why": "ScriptContext.Error: a client fires it when the error is raised, with the script and a `<chunk>, line <n> - function <f>` trace; ree fires it on a server only, with nil and Luau's trace"
-		},
-		{
-			"line": "history got=true:table,MessageWarning:parity-log warn one:number,MessageWarning:parity-log warn two:number,MessageWarning:parity-log warn three:number",
-			"why": "LogService:GetLogHistory is not emulated"
 		}
 	],
 	"logservice_text": [

@@ -702,7 +702,18 @@ fn build_shared(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<LuaTable> {
     let os: LuaTable = exports.get("Os")?;
     let native_os: LuaTable = globals.get("os")?;
     let e = engine.clone();
-    os.raw_set("clock", lua.create_function(move |_, ()| Ok(e.state.borrow_mut().sched.clock()))?)?;
+    os.raw_set(
+        "clock",
+        lua.create_function(move |lua, ()| {
+            let clock = e.state.borrow_mut().sched.clock();
+            // (a profile counts the reads by line and the clock's advance between them: a loop that checks a budget reads it once an
+            // iteration)
+            if crate::profiler::attribution::on() {
+                crate::profiler::attribution::clock_read(lua, clock);
+            }
+            Ok(clock)
+        })?,
+    )?;
     if std::env::var("RUR_REAL_CLOCK").as_deref() == Ok("1") {
         let start = std::time::Instant::now();
         os.raw_set("realclock", lua.create_function(move |_, ()| Ok(start.elapsed().as_secs_f64()))?)?;
@@ -754,9 +765,39 @@ fn build_shared(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<LuaTable> {
                     ("formatspecs", counters.formatspecs),
                     ("newstrings", counters.newstrings),
                     ("slowimports", counters.slowimports),
+                    ("coldtables", counters.coldtables),
+                    ("coldclosures", counters.coldclosures),
+                    ("coldprotos", counters.coldprotos),
+                    ("coldcode", counters.coldcode),
+                    ("scanned", counters.hostops[crate::cost::SCANNED_SLOT]),
+                    ("moved", counters.hostops[crate::cost::MOVED_SLOT]),
+                    ("strbytes", counters.hostops[crate::cost::STRBYTES_SLOT]),
+                    ("strscanned", counters.hostops[crate::cost::STRSCANNED_SLOT]),
+                    ("matchsteps", counters.hostops[crate::cost::MATCHSTEPS_SLOT]),
+                    ("bufbytes", counters.hostops[crate::cost::BUFBYTES_SLOT]),
+                    ("allocbytes", counters.hostops[crate::cost::ALLOCBYTES_SLOT]),
+                    ("libobjects", counters.hostops[crate::cost::LIBOBJECTS_SLOT]),
+                    ("casebytes", counters.hostops[crate::cost::CASEBYTES_SLOT]),
+                    ("utf8bytes", counters.hostops[crate::cost::UTF8BYTES_SLOT]),
+                    ("utf8chars", counters.hostops[crate::cost::UTF8CHARS_SLOT]),
+                    ("strchars", counters.hostops[crate::cost::STRCHARS_SLOT]),
+                    ("bytevalues", counters.hostops[crate::cost::BYTEVALUES_SLOT]),
+                    ("buffers", counters.hostops[crate::cost::BUFFERS_SLOT]),
+                    ("matchclasses", counters.hostops[crate::cost::MATCHCLASSES_SLOT]),
+                    ("hashrehashed", counters.hostops[crate::cost::HASHREHASHED_SLOT]),
+                    ("largeblocks", counters.hostops[crate::cost::LARGEBLOCKS_SLOT]),
+                    ("buffreshbytes", counters.hostops[crate::cost::BUFFRESH_SLOT]),
+                    ("bufbigcopybytes", counters.hostops[crate::cost::BUFBIGCOPY_SLOT]),
+                    ("coldcfuncs", counters.hostops[crate::cost::COLD_CFUNCS_SLOT]),
+                    ("coldhostfuncs", counters.hostops[crate::cost::COLD_HOSTFUNCS_SLOT]),
+                    ("rareprotos", counters.hostops[crate::cost::RARE_PROTOS_SLOT]),
                 ] {
                     result.raw_set(key, value as f64)?;
                 }
+                // (the engine's own counts of what a script asked it for by size: JSON text and values)
+                let json = crate::services::json::counts();
+                result.raw_set("jsonbytes", json.bytes as f64)?;
+                result.raw_set("jsonvalues", json.values as f64)?;
                 Ok(LuaValue::Table(result))
             })?,
         )?;

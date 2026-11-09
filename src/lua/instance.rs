@@ -410,7 +410,8 @@ fn write_touch(state: &State, id: InstanceId, name: NameId, property: &str, chan
     let first = touched.first_use(crate::cost::MemberUse::Write, name);
     let touch = touched.touch(id.index, class, serial);
     if changed && touch > 0.0 {
-        first + touch + crate::cost::cold_write_extra(touched.kind(class), property)
+        let extra = crate::cost::cold_write_extra(touched.kind(class), property);
+        first + touch + touched.cold(extra, crate::cost::ColdKey::Instance(id.index, class))
     } else {
         first + touch
     }
@@ -460,10 +461,15 @@ pub fn script_set_property(engine: &Engine, id: InstanceId, name: NameId, value:
     let price = crate::cost::write(&engine.reflection, class, engine.reflection.name(name), changed, placed)
         * crate::cost::place_write_scale(&engine.options.place_prices, engine.options.place_id, engine.reflection.name(name), placed);
     let mut paid = price + write_touch(&state, id, name, engine.reflection.name(name), changed);
-    state.sched.touched.borrow_mut().count(|ops| {
-        ops.writes += 1;
-        ops.changed += u64::from(changed);
-    });
+    {
+        let mut touched = state.sched.touched.borrow_mut();
+        // (where the write's price came from: cost.rs write_kinds)
+        touched.book_kinds_with(price, || crate::cost::write_kinds(&engine.reflection, class, engine.reflection.name(name), changed, placed));
+        touched.count(|ops| {
+            ops.writes += 1;
+            ops.changed += u64::from(changed);
+        });
+    }
     // (the frame's first geometry write on a part in the Workspace, and its first switch of an effect, run the engine's code for
     // them cold; an effect switched cold reads more: cost.rs Path::Geometry, Path::Toggle, TOGGLE_COLD)
     if changed {
@@ -475,7 +481,8 @@ pub fn script_set_property(engine: &Engine, id: InstanceId, name: NameId, value:
             paid += touched.first_path(crate::cost::Path::Geometry);
         } else if property == "Enabled" && ["ParticleEmitter", "Beam", "Trail"].iter().any(|kind| engine.reflection.is_a(class, kind)) {
             touched.count(|ops| ops.toggles += 1);
-            paid += touched.first_path(crate::cost::Path::Toggle) + if cold { crate::cost::TOGGLE_COLD } else { 0.0 };
+            paid += touched.first_path(crate::cost::Path::Toggle)
+                + if cold { touched.cold(crate::cost::TOGGLE_COLD, crate::cost::ColdKey::Instance(id.index, class)) } else { 0.0 };
         }
     }
     state.sched.charge(paid);
@@ -514,7 +521,13 @@ pub fn set_attribute(engine: &Engine, id: InstanceId, name: Str, value: Value) {
         // (the namecall that got here touched the instance first: a cold one pays the dirtied instance's extra, as a property write does)
         let cold = {
             let mut touched = state.sched.touched.borrow_mut();
-            if touched.take_last_cold() { crate::cost::cold_write_extra(touched.kind(state.dom.at(id).class), "SetAttribute") } else { 0.0 }
+            let class = state.dom.at(id).class;
+            if touched.take_last_cold() {
+                let extra = crate::cost::cold_write_extra(touched.kind(class), "SetAttribute");
+                touched.cold(extra, crate::cost::ColdKey::Instance(id.index, class))
+            } else {
+                0.0
+            }
         };
         state.sched.charge(crate::cost::ATTRIBUTE_CHANGED + cold);
         let hooks = engine.hooks.borrow();
@@ -542,7 +555,9 @@ pub fn fire_immediate(lua: &Lua, engine: &Rc<Engine>, signal: SignalId, args: &[
     fire_immediate_costing(lua, engine, signal, args, 0.0)
 }
 
-/// [`fire_immediate`], charging the clock `per_handler` seconds before each handler after the first (cost.rs `FRAME_HANDLER`)
+/// [`fire_immediate`], charging the clock `per_handler` seconds for each handler's dispatch after the first that runs, booked to the
+/// handler (cost.rs `FRAME_HANDLER`: what one more handler costs; the first one's dispatch is the frame's). A waiting thread that is
+/// cancelled or dead, a handler disconnected before its turn and a parallel one (they run after the serial ones) are not that first.
 pub fn fire_immediate_costing(lua: &Lua, engine: &Rc<Engine>, signal: SignalId, args: &[Value], per_handler: f64) -> LuaResult<()> {
     let handlers = {
         let mut state = engine.state.borrow_mut();
@@ -552,17 +567,22 @@ pub fn fire_immediate_costing(lua: &Lua, engine: &Rc<Engine>, signal: SignalId, 
         state.signals.take_handlers(signal)
     };
     let mut parallel = Vec::new();
-    for (index, handler) in handlers.into_iter().enumerate() {
-        if index > 0 && per_handler > 0.0 {
-            engine.state.borrow_mut().sched.charge_dispatch(per_handler);
-        }
+    let mut dispatched = false;
+    for handler in handlers {
+        // (the first handler that runs is not charged: its dispatch is the frame's)
+        let dispatch_price = if dispatched { per_handler } else { 0.0 };
         let mut values = LuaMultiValue::with_capacity(args.len());
         for value in args {
             values.push_back(convert::to_lua(lua, engine, value)?);
         }
         match handler {
             Handler::Thread(thread) => {
-                scheduler::resume(lua, engine, &thread, values);
+                if !scheduler::can_resume(engine, &thread) {
+                    continue;
+                }
+                scheduler::charge_dispatch_to(lua, engine, &thread, dispatch_price, 0);
+                dispatched = true;
+                scheduler::resume_ready(lua, engine, &thread, values);
             }
             Handler::Connection(connection) => {
                 let census = crate::census::handler_site(engine, connection);
@@ -580,7 +600,10 @@ pub fn fire_immediate_costing(lua: &Lua, engine: &Rc<Engine>, signal: SignalId, 
                     if let Some(site) = census {
                         crate::census::handler_ran(site, &thread);
                     }
-                    scheduler::resume(lua, engine, &thread, values);
+                    // (each handler's dispatch, booked to it, with its run by the site that connected it)
+                    dispatched = true;
+                    let dispatch = scheduler::DispatchPrice { seconds: dispatch_price, kind: scheduler::DispatchKind::Client };
+                    scheduler::run_handler(lua, engine, connection, signal, &thread, values, dispatch);
                     scheduler::end_handler_sample(sample, &thread);
                 }
             }
@@ -669,11 +692,15 @@ pub fn pivot_cold(engine: &Engine, id: InstanceId) -> f64 {
     let mut seconds = touched.first_path(crate::cost::Path::Pivot);
     // (the call touched the root: cold then, and not moved the frame before either)
     if root_cold && !touched.last_cold_was_recent() {
-        seconds += touched.moved_cold(state.dom.at(id).class, crate::cost::PIVOT_COLD_PART, crate::cost::PIVOT_COLD_ATTACHED);
+        let class = state.dom.at(id).class;
+        let extra = touched.moved_cold(class, crate::cost::PIVOT_COLD_PART, crate::cost::PIVOT_COLD_ATTACHED);
+        seconds += touched.cold(extra, crate::cost::ColdKey::Instance(id.index, class));
     }
     for node in state.dom.descendants(id) {
         if touched.mark_moved(node.index) {
-            seconds += touched.moved_cold(state.dom.at(node).class, crate::cost::PIVOT_COLD_PART, crate::cost::PIVOT_COLD_ATTACHED);
+            let class = state.dom.at(node).class;
+            let extra = touched.moved_cold(class, crate::cost::PIVOT_COLD_PART, crate::cost::PIVOT_COLD_ATTACHED);
+            seconds += touched.cold(extra, crate::cost::ColdKey::Instance(node.index, class));
         }
     }
     seconds
@@ -690,7 +717,14 @@ pub fn clone(engine: &Engine, id: InstanceId) -> Option<InstanceId> {
     let mut state = engine.state.borrow_mut();
     let copy = core::clone_instance(&mut state, &engine.reflection, id);
     if let Some(copy) = copy {
-        let mut work: f64 = std::iter::once(copy).chain(state.dom.descendants(copy)).map(|node| crate::cost::cloned(&engine.reflection, state.dom.at(node).class)).sum();
+        let mut work: f64 = 0.0;
+        for node in std::iter::once(copy).chain(state.dom.descendants(copy)) {
+            let class = state.dom.at(node).class;
+            let price = crate::cost::cloned(&engine.reflection, class);
+            work += price;
+            // (where each instance's price came from: cost.rs cloned_kinds)
+            state.sched.touched.borrow().book_kinds_with(price, || crate::cost::cloned_kinds(&engine.reflection, class));
+        }
         // (the frame's first clone, and of each class it holds, runs the engine's code for it cold; a template no code touched this
         // frame is read cold: cost.rs Path::Clone, first_cloned, clone_cold. The copy is made now, so it is hot.)
         {

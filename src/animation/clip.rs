@@ -3,7 +3,8 @@
 //! instances (KeyframeSequenceProvider:RegisterKeyframeSequence), through [`Tree`].
 //!
 //! A Pose names the joint it moves by its own name and its parent Pose's: a Motor6D whose Part0 and
-//! Part1 have those names, else a Bone of the Pose's name. A Pose of weight 0 only holds the
+//! Part1 have those names, else a Bone of the Pose's name whose parent has the parent Pose's name
+//! (a bone under a renamed part is not posed). A Pose of weight 0 only holds the
 //! hierarchy together (the Animation Editor writes them for parents without a key of their own).
 //! Between two keys of a joint the value moves by the earlier key's easing; before the first key
 //! and after the last it holds. The easing (legacy Cubic, Elastic and Bounce run In and Out the

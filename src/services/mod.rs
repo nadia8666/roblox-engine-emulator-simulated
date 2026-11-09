@@ -607,9 +607,9 @@ pub fn install(engine: &Rc<Engine>) {
             for step in snapshot {
                 // Unbound by an earlier callback of this render step: skipped
                 if hook_steps.borrow().iter().any(|s| Rc::ptr_eq(s, &step)) {
-                    // (a binding's call: cost.rs RENDER_STEP_DISPATCH)
-                    engine.state.borrow().sched.charge_dispatch(crate::cost::RENDER_STEP_DISPATCH);
+                    // (a binding's call, booked to it: cost.rs RENDER_STEP_DISPATCH)
                     let thread = lua.create_thread(step.callback.clone())?;
+                    super::scheduler::charge_dispatch_to(lua, engine, &thread, crate::cost::RENDER_STEP_DISPATCH, 0);
                     super::scheduler::resume(lua, engine, &thread, LuaMultiValue::from_iter([LuaValue::Number(delta)]));
                 }
             }
@@ -975,13 +975,17 @@ pub fn install(engine: &Rc<Engine>) {
         // JSONEncode / JSONDecode as a playing client runs them (json.rs), and the disabled requests; their errors carry
         // no position, as Roblox raises them
         if let Some(n) = name(&reflection, "JSONEncode") {
-            behaviors.add_method(http, n, method(|lua, engine, _, args| match json::encode(lua, engine, args.get(1)) {
-                Ok(text) => Ok(values([string_value(lua, &text)?])),
+            behaviors.add_method(http, n, method(|lua, engine, _, args| match json::encode_counted(lua, engine, args.get(1)) {
+                Ok(encoded) => {
+                    // (priced by what it wrote: cost.rs json)
+                    engine.state.borrow().sched.charge(json::priced(encoded.result.len(), encoded.values, false));
+                    Ok(values([string_value(lua, &encoded.result)?]))
+                }
                 Err(message) => raise(message),
             }));
         }
         if let Some(n) = name(&reflection, "JSONDecode") {
-            behaviors.add_method(http, n, method(|lua, _, _, args| {
+            behaviors.add_method(http, n, method(|lua, engine, _, args| {
                 // a number or boolean is read as its text (12.5, true; measured); nil is a missing argument
                 let text = match args.get(1) {
                     LuaValue::String(text) => text.as_bytes().to_vec(),
@@ -992,8 +996,12 @@ pub fn install(engine: &Rc<Engine>) {
                     LuaValue::Table(_) => return Ok(values([LuaValue::Table(lua.create_table()?)])),
                     _ => return raise("Can't parse JSON"),
                 };
-                match json::decode(lua, &text) {
-                    Ok(value) => Ok(values([value])),
+                match json::decode_counted(lua, &text) {
+                    Ok(decoded) => {
+                        // (priced by the text it parsed and the values it made: cost.rs json)
+                        engine.state.borrow().sched.charge(json::priced(text.len(), decoded.values, true));
+                        Ok(values([decoded.result]))
+                    }
                     Err(message) => raise(message),
                 }
             }));

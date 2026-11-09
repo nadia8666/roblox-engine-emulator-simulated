@@ -869,6 +869,7 @@ static int loadsafe(
             offset = protoStartOffset + protoSize;
         }
 
+        luaC_coldprepare(L, p);
         protos[i] = p;
     }
 

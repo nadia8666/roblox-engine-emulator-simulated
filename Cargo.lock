@@ -1476,6 +1476,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ree-test-host"
+version = "0.1.0"
+dependencies = [
+ "mimalloc",
+ "roblox-engine-emulator",
+]
+
+[[package]]
 name = "rmp"
 version = "0.8.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"

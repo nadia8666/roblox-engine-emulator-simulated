@@ -1,40 +1,40 @@
  ◆ ree profile   ✓ run ok · Fixture.luau · 120 frames · 2.00 s                                     Studio work 13.20 ms
   1 Overview  2 Flame  3 Calls  4 Source  5 Alloc  6 Heap  7 Timeline  8 Caches  9 Issues  d Diff  c Compare
-╭ Main  <tmp>/run/Main.luau ──────────────────────────────────────────── 12-40 of 40 ╮
-│    line       work with calls            insns     alloc  misses   code                                              │
-│      12   0.300 ms            ▍           2000                         layout(records)                               │
-│      13                                                            end                                               │
-│      14                                                            -- line 14                                        │
-│      15                                                            -- line 15                                        │
-│      16                                                            -- line 16                                        │
-│      17                                                            -- line 17                                        │
-│      18                                                            -- line 18                                        │
-│      19                                                            -- line 19                                        │
-│      20                                                            local function rank(items)                        │
-│      21   2.880 ms            ████▏      20.0K   2.56 MB               for _, item in items do records[#records + 1] │
-│      22   5.520 ms            ████████  364.0K                         table.sort(records, function(a, b) return a.s │
-│      23                                                                return records                                │
-│      24                                                            -- line 24                                        │
-│      25                                                            -- line 25                                        │
-│      26                                                            -- line 26                                        │
-│      27                                                            -- line 27                                        │
-│      28                                                            -- line 28                                        │
-│      29                                                            -- line 29                                        │
-│      30                                                          │ local function layout(records)                    │
-│ ▌    31   1.700 ms            ██▌         8000              5000 │     local width = item.Size.X + item.Size.X * 0.5 │
-│      32   0.700 ms            █           4000   60.0 KB         │     local buckets = {} for _, r in records do buc │
-│      33                                                          │     item.Position = position                      │
-│      34                                                          │ end                                               │
-│      35                                                            -- line 35                                        │
-│      36                                                            -- line 36                                        │
-│      37                                                            -- line 37                                        │
-│      38                                                            -- line 38                                        │
-│      39                                                            -- line 39                                        │
-│      40                                                            -- line 40                                        │
-╰ share of Studio work ■ <0.1%  0.1% ███████ 1% ███████ 3% ███████ 10% ███████ 30%+ ───────────────────────────────────╯
-╭ Line 31  layout  Main:30 ────────────────────────────────────────────────────────────────────────────────────────────╮
-│ work 1.700 ms    instructions 8,000    cache misses 5,000 of 6,000                                                   │
-│ opcodes GETTABLEKS 6,000 · ADD 2,000                                                                                 │
-│ code local width = item.Size.X + item.Size.X * 0.5                                                                   │
+╭ Heap  3 snapshots · ←→ ──────────────────────────────────────────────────────────────────────────────────────────────╮
+│  start · frame 0 · 500.0 KB  →  steady · frame 20 · 1.00 MB +524.0 KB  →  end · frame 120 · 3.50 MB +2.50 MB         │
+│                                                                                                                      │
+│ reachable 3.50 MB 4000 objects · unswept 50.0 KB  ━━━━━━  the run's own 60.0 KB 1.7% of reachable  ━━━━━━━━━━━━━━━━━ │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ↑↓ line  ←→ hot line  s by heat  enter calls   │   m metric  f scripts  / find  y copy  t theme  ? help  q quit
+╭ Biggest holders  what each keeps alive ──────────────────────────────╮ ╭ By type  3.50 MB reachable ─────────────────╮
+│        keeps       own object             held by                    │ │   type              bytes   count           │
+│ ▌    1.72 MB    4.0 KB table              registry > Items           │ │   table           1.91 MB    3000 █████████ │
+│     214.8 KB    6.6 KB thread             (engine reference)         │ │   function pro…  585.9 KB     200 ██▊       │
+│                                                                      │ │   string         293.0 KB     800 █▍        │
+│                                                                      │ │                                             │
+│                                                                      │ │                                             │
+│                                                                      │ │                                             │
+│                                                                      │ │                                             │
+│                                                                      │ │                                             │
+│                                                                      │ │                                             │
+│                                                                      │ │                                             │
+╰──────────────────────────────────────────────────────────────────────╯ ╰─────────────────────────────────────────────╯
+╭ Allocated by the run, still reachable  60.0 KB, 600 objects, by stack ───────────────────────────────────────────────╮
+│        bytes   objects type               stack, innermost first                                                     │
+│      60.0 KB       120 table              Main:32 ‹ Main:10                                                          │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Collector  3 cycles · 640 steps · 2.29 MB freed · 9.500 ms of host time ─────────────────────────────────────────────╮
+│ propagate 6.000 ms (400 steps)  ·  sweep 3.500 ms (240 steps)                                                        │
+│                                                                                                                      │
+│ steps a frame                                                              ▇                     max 400 steps       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ←→ snapshot  tab pane  ↑↓ row  enter source   │   m metric  f scripts  / find  y copy  t theme  ? help  q quit

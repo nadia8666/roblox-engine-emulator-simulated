@@ -3,9 +3,6 @@
 
 #include "lobject.h"
 
-// A host's profile of this thread's VM (lprofile.cpp, lua.h "profiling"). Off, the interpreter pays one thread-local load
-// per luau_execute entry, and the VM one test of luaP_state where a C function or the host (no script instruction) allocates
-// an object or table storage or rehashes a table (luaP_uncounted's sites in lmem.cpp and ltable.cpp), at a table's first
 // touch in a frame while cold touches are tracked (13-cold-touches), at a chunk's load, at an error a protected call catches
 // and where a thread is freed or reset; a storage allocation also stores what it is for (luaP_allockind).
 struct lua_ProfileState;
@@ -37,20 +34,30 @@ LUAI_FUNC void luaP_leave(lua_State* L, const void* frame);
 LUAI_FUNC void luaP_unwound(lua_State* L, const void* frame);
 // a chunk was loaded (lvmload.cpp): its functions are registered, and the copies its compiler inlined found
 LUAI_FUNC void luaP_loaded(lua_State* L, Proto* main);
-// work the counters leave to a call (a C function's or the host's Luau's, running for a script): the objects it allocates, its
-// table storage bytes and the keys its tables' rehashes move, which a builtin's fast path counts as its own; a profile counts it
-// toward what a declined builtin call would charge on the fast path
-LUAI_FUNC void luaP_uncounted(lua_State* L, int objects, size_t bytes, int keys);
+// A library call allocated table storage. The fast equivalent pays the instruction
+// storage price too, even though the fallback counts these bytes only as allocations.
+LUAI_FUNC void luaP_callstorage(lua_State* L, size_t bytes);
 // a script's work touched the table `o` first in the frame (lgc.cpp's cold touches, counted in lua_WorkCounters' coldtables): the
 // table an instruction with an inline cache reaches first has the charge told apart (lua_ProfileCacheSite.firsttouch)
 LUAI_FUNC void luaP_coldtouch(lua_State* L, GCObject* o);
 // a thread was freed or reset: its frames go
 LUAI_FUNC void luaP_threadgone(lua_State* L, lua_State* L1);
+// a thread resumes (lua_resume, lua_resumeerror): counted for lua_profileresumes
+LUAI_FUNC void luaP_resumed(lua_State* L);
 // an object marked with lua_profilemark is being freed
 LUAI_FUNC void luaP_freed(lua_State* L, GCObject* o);
 // a table rehashed to fit a new key (ltable.cpp rehash, once resized): its array and hash sizes before, and the keys it
 // moved with the new one (what the work counters' `rehashed` counts); the profile's rehash hook (lua_setprofilerehash)
 LUAI_FUNC void luaP_rehash(lua_State* L, LuaTable* t, int oldarray, int oldnodes, int keys);
+// The instruction at pc is being dispatched for the first time in the frame. Its own frame pays the code's cold price.
+LUAI_FUNC void luaP_coldcode(lua_State* L, Proto* p, int pc);
+// a script's work paid a cold charge for an object in work counters' slot `slot` (a table first touched in the frame, a C function's
+// or host function's first call): the profile keeps who paid, and whether anything else touches it in the frame
+LUAI_FUNC void luaP_cold(lua_State* L, GCObject* o, int kind, int slot);
+// a frame began for the cold touches (lua_coldframe): the frame's charges are settled
+LUAI_FUNC void luaP_coldframe(lua_State* L);
+// a table was made (luaH_new, luaH_clone): the instruction that made it, for a cold charge's object
+LUAI_FUNC void luaP_tablemade(lua_State* L, LuaTable* t);
 
 // while a profile's call hook is set (lua_setprofilecalls, global_State::profilecalls) the interpreter calls
 // luaP_callenter as each Luau call's frame is set up: luau_execute then runs an instantiation of its own that asks, so the

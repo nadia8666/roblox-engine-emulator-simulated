@@ -215,10 +215,6 @@
 		{
 			"line": "deferred-error |Hear,error(parity-log deferred error;Instance),out(MessageError:parity-log deferred error +2 lines)",
 			"why": "ScriptContext.Error: a server passes the erroring script as the third argument; ree passes nil"
-		},
-		{
-			"line": "history got=true:table,MessageWarning:parity-log warn one:number,MessageWarning:parity-log warn two:number,MessageWarning:parity-log warn three:number",
-			"why": "LogService:GetLogHistory is not emulated"
 		}
 	],
 	"logservice_text": [

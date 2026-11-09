@@ -32,7 +32,8 @@ src/trace.rs                                     Context.TraceWrites: Luau call 
 src/census.rs                                    Context.Census: live threads, connections, timers, instances by their Luau line
 data/                  reflection.json (Studio's dump; tools/dump-reflection.luau), font-enums.json, text metrics
 vendor/ patches/ tools/vendor.mjs   the patched Luau VM and Lune datatypes
-tools/luau-cost/       the work clock's Luau calibration (run in ree and in Studio, fitted by fit.py)
+tools/cost-parity/     the work clock's calibration: the parity bench (ree against a client), its fits and the kept client sessions
+tools/luau-cost/       the work clock's older Luau calibration (a Studio playtest's, fitted by fit.py), kept for its history
 tools/hw-counters/     the counter service `--profile hw` reads through (a crate of its own) and setup.ps1, its install
 profile-view/          the profile viewer, `ree profile view|render` (a crate and binary of its own, reading profile
                        folders): the terminal UI, its views and issue detectors, and the PNG, SVG and text renderer;

@@ -72,7 +72,9 @@ vendor/ patches/ tools/vendor.mjs   the patched Luau VM and Lune's datatypes
 
 - `cargo test --release`: the engine's unit tests (script-API tests in src/tests.rs, the scheduler,
   datatypes, the world, the recorder, model bundles, the Emulator) and the patched VM's
-  (tests/luau_vm.rs), plus the process guards (tests/process_guards.rs, which run the built `ree`).
+  (tests/luau_vm.rs), plus the process guards (tests/process_guards.rs, which run the built `ree`), the standalone
+  release and worker checks (tests/standalone.rs) and the host compatibility checks (tests/host_worker.rs, tests/host).
+  The standalone and host worker checks need Node.js ([Building](building.md#requirements)).
   Tests build their own scenes in temporary directories; none needs Roblox Studio, a game checkout, a
   GPU or the network.
 - `node tools/vendor.mjs --check`: vendor/ is exactly the pinned archives with patches/ applied (the VM's patches are a
@@ -223,6 +225,54 @@ executable) that answers one JSON request a line on its stdin with one JSON repl
   (the asset as uploaded, written to `out`)
 - a reply with `"error": "<text>"` is a failure; ree passes the worker nothing but the requests and
   `--offline`, and the worker handles any authentication the downloads need itself.
+
+A standalone binary resolves environment paths in the client before it starts a service or moves the worker's working
+folder. Every job stays standalone, including one with `--repo`: that flag names input data, never a host mode.
+
+- Each relative PATH entry is made absolute, because the worker runs in the state dir, where it would name another
+  folder. An empty entry names the client's current folder on Unix, as a Unix search reads it, so it becomes that
+  folder. Windows keeps empty entries as they are: its search skips them and never looks in the current folder.
+- On Windows, the client resolves a bare worker name once: its executable's folder, the system and Windows folders,
+  then PATH, with `.exe` added when the name has no dot. It forwards an absolute path or a lookup failure. A copied
+  service never searches beside its own executable, so a worker in its state folder cannot replace the client's choice.
+- On Unix, worker names without a directory stay bare. Rust's `Command` applies the platform's search and permission
+  rules (a file the caller cannot execute is skipped) with the absolute PATH; it never searches beside the executable.
+- A worker path with a directory is taken from the client's current folder.
+
+Services and direct workers receive the full client environment, including variables that only a custom worker reads.
+The standalone service key hashes that whole environment after normalization: known paths are resolved, Windows variable
+names are folded to uppercase, and RUR_STATE_DIR is the pinned state dir. Any change to the normalized environment
+selects a different service, including a change to RUR_CACHE_DIR when RUR_STATE_DIR decides the state dir. Values are
+never written to the service record.
+
+Ree resolves only the paths it knows, against the client's current folder: the PATH and NODE_PATH lists, per-user and
+temporary folders, state overrides, engine dump, recorded clock, profile outputs and the asset worker executable.
+NODE_PATH ignores empty entries on every platform. Every other value is passed unchanged, because ree cannot tell a path
+from other text; a relative path in one is read from the state dir, the same directly and through a service. No shell
+bookkeeping variables are removed. Hosts keep their existing environment and service keys.
+
+A standalone worker runs in the state dir, so it gets absolute project, manifest and output paths, also when
+`RUR_STATE_DIR` is relative. A relative `file` in an asset or bundle reply is read from that state dir. If an animation
+asset reply names the requested file through a link or another spelling of the same path, the animation loader sees
+that it is the same file (by file identity) and skips the copy. A bundle is imported from the output ree asked for,
+which is in the state dir. If the worker reports another file and did not write the requested one, ree copies the
+reported file there first, so the plan written when the bundle is converted stays in state.
+
+A standalone service started by hand resolves its environment paths before it moves into its state dir, and
+uses the same service key as an automatic one, so `--service` and `serve --warm` find it. Workers always receive the
+pinned state as RUR_STATE_DIR, so a flag-only service shares a key with a client setting that same RUR_STATE_DIR when
+the rest of their environment agrees. Every job and worker the service starts stays standalone and shares its state
+dir. The state dir is chosen once, at the first successful lookup, and kept: the service makes its environment paths
+absolute and moves into its state dir, and a later lookup must not pick another folder. A relative per-user folder variable (`LOCALAPPDATA`, `HOME`,
+`XDG_CACHE_HOME`, `APPDATA`, `USERPROFILE`) is ignored when the cache is chosen. Once the state dir is pinned, these
+folders and the temporary folders (`TMP`, `TEMP`, `TMPDIR`) are made absolute against the client's current folder
+before they reach a service or worker, because those run in the state dir, where a relative spelling would name another
+folder. A relative `XDG_CACHE_HOME`, for example, leaves the `HOME/.cache/ree` fallback on Linux, and a worker still
+sees `XDG_CACHE_HOME` resolved from the client's folder.
+
+A library host or a binary in a checkout keeps the worker lookup, arguments, working directory and spawn errors it had
+before standalone binaries. Its project and output paths, catalog cache keys and service environment key keep their
+original spelling, and the client neither resolves its worker nor passes it a lookup failure.
 
 Bundle files are kept in the state dir as `model-bundles/asset-<AssetId>-v<Version>.rbxm`, named by
 what they hold, so a file that exists is current and one file serves every project that pins that
@@ -450,18 +500,48 @@ plus the script work charged since the frame began. Every Instance read (by what
 reached by its lower-case first letter 40 ns more, `LOWER_FIRST`), write and method call, Instance.new, Clone (per instance), a subtree entering or leaving the DataModel (per instance),
 Destroy, the lists methods return (per element), a find's walk (per child or node looked at), a ray's path
 and a spatial query's results (per part), signals and threads, and EditableMesh's own work are charged what
-they cost in a client, as measured with os.clock (cost.rs gives each price with its measurement). A script's
-own Luau is charged too, from the VM's work counters (patches/luau/02-work-counters.patch `lua_workcounters`: instructions
-by opcode, a `--!native` module's apart, objects and table storage allocated, keys moved as tables grow, C
-calls and calls into the engine's own Luau, imports looked up, and the library's own loops: numbers made
-strings, new strings, sorting, table.create / clone / concat, string.split and string.format). Each
-instruction is priced by its kind, interpreted or native (`INTERPRETED_OPS`, `NATIVE_OPS`). The engine's own
+they cost in a client, as measured with os.clock (cost.rs gives each price with its measurement and where it
+came from). A script's own Luau is charged too, from the VM's work counters (patches/luau/02-work-counters.patch
+`lua_workcounters`: instructions by opcode, a `--!native` module's apart, objects and table storage allocated,
+keys moved as tables grow, C calls and calls into the engine's own Luau, imports looked up, and the library's
+own loops: numbers made strings, new strings, sorting, table.create / clone / concat, string.split and
+string.format). What a library or engine call does by the size of its input is counted in slots of the
+counters' `hostops` that no opcode reaches (patches/luau/15-input-size-work.patch, cost.rs `SCANNED_SLOT` and
+below): the elements table.find compares and table.insert / remove at a position, table.move, unpack, pack and
+clear move; the bytes of every string a script's work makes or looks up; the bytes a plain search reads; the
+pattern matcher's steps; the bytes string.upper / lower convert and a utf8 function decodes; the buffers made
+and the bytes buffer functions write (a large new buffer's, and a copy's, fill's or string write's over 64 KB, apart:
+counted, not priced, as no price a byte fits a client's cache tiers, and a profile prints them as unpriced); and the bytes and objects a script's work allocates, its library
+and engine calls' with its instructions', an allocation too large for the VM's own pages apart. (A flat price a
+call read table.find over 100,000 elements as over 10, and `s ..= piece` grew linearly where a client's time
+grows with the square.) JSONEncode and JSONDecode are priced by the text's bytes and the values they write or
+build (`cost::json`). What the engine's own C functions allocate for a script (a datatype's value, an
+Instance's userdata) is part of the operation the engine prices, so these counts leave it out
+(`lua_sethostcfunction` or `lua_sethostcfunctions`). Registration retains every entry in stable, growable blocks;
+there is no fixed registry capacity. Classification is cached in each C closure, so a host registers its functions
+before scripts can classify them. Each instruction is priced by its kind, interpreted or native (`INTERPRETED_OPS`,
+`NATIVE_OPS`). The engine's own
 Luau (prelude, services, vector3.luau) stands in for Studio's C++ and is not charged. Roblox's datatypes are
 priced by operation where a client pays more than the instructions that reach them (lune-roblox
 `datatype_price`, cframe.rs `price`): a Vector2, UDim or UDim2's arithmetic and `==`, a member that makes a new
 value (a UDim2's X, a keypoint's Value, a Vector2's Unit), a sequence's Keypoints (a new table of new keypoints
 on every read), their constructors and CFrame's methods. A Vector2's X / Y and the deprecated lowercase names
 are plain member reads (an instruction).
+
+A thread the scheduler resumes is charged as a client resumes it: 0.35 us from task.wait or wait, 0.20 from
+task.delay, 0.445 from a signal's Wait (`RESUMED_WAIT`, `RESUMED_DELAY`, `RESUMED_SIGNAL_WAIT`: the parity
+bench's resume-spacing rows), booked to the line it waited on. An event's dispatch to each handler is booked to
+that handler, and a handler keeps the line that connected it (a profile's handlers by connect site); a frame
+event's first handler pays nothing for it, as measured (its dispatch is the frame's). An event kind no bench
+measured is priced as a heard BindableEvent's, a borrowed price a profile counts apart (`unmeasured_fires`).
+Queued handlers keep their signal's provenance even when no profile is active. If profiling begins before delivery,
+the handler's dispatch still carries that provenance; queueing before the profile is outside its totals.
+
+A deferred handler disconnected before it runs keeps its queue charge and pays no handler-thread charge. That is a
+modeling choice: running a callback is measured, but skipping a canceled job has no client timing. To measure it, queue
+heard events in a rendered client, disconnect them before the flush, and bracket the flush with a later live sentinel;
+queue-only and all-live controls, with the firing and disconnecting outside the interval, separate canceled-job scanning
+from callback startup.
 
 The first touch of an instance in a frame (a read, a write or a method call) costs more than the next ones:
 45 ns for a part, 270 ns for a GUI object or UI component, which a client lays out and draws every frame
@@ -508,6 +588,36 @@ loop, 50-70 when other allocations came between them, 140-210 when they were mad
 instances and other allocations: the VM does not see where an object lies, and the price is the made-over-time
 end, where a game's per-frame data is.
 
+The cold and first-use charges are booked apart from the rest (a profile's `cold_work_ms` per function, line
+and phase), to the code that paid them and to the object they were for: a table by the line that made it, a C
+function, a function of the engine's own Luau, an instance's class, a member, an engine path. A function's own
+cold code is charged to the function for the instructions it ran, each once a frame as it runs
+(patches/luau/16-cold-attribution.patch). An opcode marker arms each instruction.
+Its first dispatch charges its code and restores its normal opcode; the next frame rearms only instructions that
+executed. Coverage belongs to the prototype and is shared by its activations and coroutines. Skipped code remains
+uncharged, and the profile books a charge to the executing function, instruction and call-tree node. Auxiliary words
+and closure captures consumed as data are not dispatches. Code compiled during a frame follows the same first-dispatch
+rule; tracking starts before interpreted scripts run, including before the first render.
+
+Armed opcodes use the interpreter's dispatch fallback, keeping the normal switch's opcode range. A cold dispatch
+returns to an outer retry loop, so the compiler keeps cold-helper spills out of the warm dispatch path. The ordinary
+interpreter adds no instruction-epoch check or Luau call hook. First dispatches, interpreter completion checks,
+opcode inspections and frame rearming still do host work. The regression suite checks exact frame-specific code charges, self work and saving
+through waits, re-entry, shared and suspended coroutines, protected calls, errors and yielding iterators; code compiled
+before the first render, breakpoint changes and collected prototypes follow the same rule. Each object's
+charge keeps who paid it and in how many frames other code touched the same
+object, and a cut's saving (`saving_ms`) is its hot work and only the cold charges for objects nothing else
+touched in their frame: of two walkers over the same records, the first pays the frame's cold charges (its cold
+column says so) and cutting it would move them to the second, so both show the same saving whichever runs first.
+
+The collector's work is charged too: 8.6 ns an object the scripts' work allocated, each swept once it is garbage
+and marked while it lives (`LUAU_COLLECTOR_OBJECT`: the collector's share of the parity bench's churn rows on a
+heap of about 50 MB, its steps' time in ree's VM, which runs the client's collector, applied to a client's time),
+booked to the instruction whose allocation drove it (a profile's `collector_ms`, per function, line, phase and
+frame). It is priced an object, not a byte: a collector frees a large block at once, and a client builds a 1 MB
+string.format (3.7 MB of buffers) in 271 us in all, where 0.12 ns a byte read 440 us for its collector alone. The
+price moves nothing: where the collector steps stays the GC clock's (below), whatever it charges.
+
 The prices are measured with the parity bench (`tools/cost-parity`, README there): about 400 workloads that
 run unchanged in ree and in a real client, engine calls by family, the language loops interpreted and as a
 `--!native` module, and a module whose environment getfenv made unsafe; it prints each workload's ree /
@@ -516,7 +626,21 @@ measure what a client has done before (a heap of a game's size makes new strings
 clients that run the whole corpus. A client runs the corpus's groups of families as jobs of one session,
 and each job takes its scene out of the DataModel again (`Corpus.Cleanup`): the scenes left behind had made
 the later groups' spatial queries meet three copies of their geometry. A memory row keeps every round's
-objects alive until the row ends and reads its median round.
+objects alive until the row ends and reads its median round. The reference client is a rendered roblox-sim
+client (Studio 0.744's engine) of a game's match place on one desktop PC (`cost::REFERENCE_CLIENT`); its
+sessions' rows are kept in tools/cost-parity/reference (and two later sessions' for the buffer rows at 256 KB and
+4 MB), and the fits and bands compare each row with its fastest session (`--fastest`: a session's slower rows are
+its own noise, not the client's price).
+
+Every price says where it came from (`cost::kind`): fitted on those client sessions, kept from a Studio
+playtest or capture where the bench has no row (Studio-era: most signal kinds, some classes' clones and
+creations, EditableMesh), or borrowed from another price where nothing measured it (defaulted: a method the
+table does not name, Shapecast, a property of a class it does not name). A profile splits each function's work
+by that (`by_provenance_ms`), and its fidelity line weighs the bench's error by component on rows no fit saw (Luau,
+engine calls, the collector, dispatch: the held-out rows; cold: the macro bench's held-out rows of the whole clock,
+measured before the size fit, not a test of the cold charges alone; `cost::BENCH_BANDS`) and the Studio-era and
+borrowed shares by the work of the code the summary reports (the reported phases' game code), with a phone's
+factor's spread folded into the band (docs/cli.md "Profiles and caches").
 
 What the prices compose to on real per-frame code is a second question, measured on a game's own modules
 timed the same way on both sides: a GUI scroll and gradient step, an effect system's step lists and twelve
@@ -527,17 +651,21 @@ held out of every fit. Without any cold costs the work clock read 0.15-0.53x a c
 alone the casts 0.22-0.67x. With all of them a GUI scroll reads 0.82x, a gradient step 0.78x, the step lists
 0.85-1.17x, the server loop 1.03-1.08x, the card grid 0.63-0.66x, and the casts 0.73-1.10x fitted and
 0.51-0.81x held out (most 0.6-0.75x): a held-out cast's engine calls read 0.5-0.9x a client and its own Luau
-0.3-1.0x (most 0.5-0.7x). What is still missing is named in every profile's summary (`cost::FIDELITY`): the
-rest of a cast's cold cost (code and data a client finds cold after frames unused), where data lies, what a
-layout leaves warm, and the cold of each node a large walk visits. Size a cut in a client.
+0.3-1.0x (most 0.5-0.7x). Those 13 held-out rows are the cold component's band (0.53-1.06x, `cost::BENCH_BANDS`),
+which every profile weighs with the bench's other components by its own work in its fidelity line, naming what is
+still missing: the rest of a cast's cold cost (code and data a client finds cold after frames unused), where data
+lies, what a layout leaves warm, and the cold of each node a large walk visits. Size a cut in a client. With the
+prices fitted at several sizes, a fitted attack's warm cast reads 44.6 ms against a client's 42.3 (44.6 before),
+and of the game's 50 ms in it 27 are cold charges (docs/engine.md).
 
 Within one instruction kind the clock charges an average, so it cannot tell some ways of writing the same thing
 apart where the interpreter does (`ree profile try`, tools/what-if, host time against the clock, 9 interleaved rounds):
 a lookup by a number in a table's array part and by a string in its hash part cost the same on the clock and 1.5-1.8x
 apart in host time (10,000 keys, read 40,000 times); a numeric `for i = 1, #t` over an array reads 1.04x a generalized
 loop on the clock and 1.3-1.7x in host time. Growing a list costs more on the clock than in this machine's interpreter
-(appending 10,000 values to `{}` against `table.create(n)`: 5.5-5.8x on the clock, 1.4-1.9x in host time): the clock's
-prices for the keys a rehash moves and the bytes it stores are a client's.
+(appending 10,000 values to `{}` against `table.create(n)`: 1.7-2.2x on the clock, 1.3-1.6x in host time, where the
+clock read 5.5-5.8x before its allocation prices were fitted at several sizes): the parity bench's list growth rows
+read 1.1-1.3x a client.
 
 A script's environment is safe, as Roblox makes every script's: its imports (`game`, `Vector3.new`,
 `math.floor`) are resolved when it loads and read as constants, builtins (`math.*`, `type`, `typeof`, ...)
@@ -550,8 +678,10 @@ proxies and tables, vectors as Vector3), and the compiler leaves a constant vect
 So a loop that slices its work by an os.clock budget per Heartbeat takes as many frames as in Studio, and
 a frozen clock (`REE_FROZEN_CLOCK=1`: the clock follows the frames only) makes runs of code that differs
 in speed write the same values; a client's os.clock is real time, so a script that times itself on it within a
-frame can draw differently there when its real work moves (`ree record --timing-check` says when a recording
-hinges on that: docs/cli.md). The clock never runs backwards and never falls behind the frame's time.
+frame can draw differently there when its real work moves (`ree record --timing-check` records again under clients
+faster and slower than the model, across the work clock's fidelity band and a phone's, and says under which a recording
+hinges on that: docs/cli.md; `Options::clock_probe` runs the in-frame clock on such a multiple of the modelled work).
+The clock never runs backwards and never falls behind the frame's time.
 A recorded clock (`RUR_CLOCK`) takes no charges; the busy-loop allowance still ends a loop that only reads
 the clock. A frozen clock counts those reads within one resumption only, so every thread that reads it in a
 frame, however many there are, reads the frame's time, as a frame-locked benchmark clock gives them.
@@ -574,13 +704,19 @@ sets `Options::place_prices`.
 
 The prices are a desktop client's. `--device phone` (or `REE_DEVICE=phone`) emulates a touch device and
 scales the script work the clock charges by 2.77, a sim-to-phone calibration for scripts (range
-2.13-4.16): a conversion of the desktop prices, not a measurement on a phone.
+2.13-4.16): a conversion of the desktop prices, not a measurement on a phone. A profile reads in the clock's
+units (a phone run's milliseconds are the scaled ones os.clock advanced by), names the device and the price set,
+and gives the factor's band in its fidelity line. A phone price set of its own would need the parity bench run on
+phones (each family's rows, as roblox-sim runs them on the desktop), which nothing here does yet.
 
 ## Profiling (`src/profiler`, `src/luau_profile.rs`, `src/boundary.rs`)
 
 `--profile <kinds>` (docs/cli.md "Profiles and caches") or a host's `profiler::Session` runs the profilers a
 profile asks for; `profiler::report` writes its files and `ree profile diff` compares two; the profile viewer
-(profile-view/, docs/cli.md "The profile viewer") reads them and nothing else. What each one measures:
+(profile-view/, docs/cli.md "The profile viewer") reads them and nothing else. A diff keeps function identity across a
+source move while leaving out figures whose meaning changed between profile versions. Its price-only tag needs the
+exact cold charges to explain the work change; scoped rows subtract harness work and harness cold charges together.
+What each one measures:
 
 - **The VM's instruction profile** (patches/luau/12-profiling.patch, `lprofile.cpp`, `lua_profilestart`). While a profile
   steps, `luau_execute` runs its single-step variant on every thread of the VM, and the dispatch calls the
@@ -635,6 +771,10 @@ profile asks for; `profiler::report` writes its files and `ree profile diff` com
   any code's. The counters past an opcode range's last opcode (the cold first calls and rare functions' `LUA_WORK_COLDCFUNCS`,
   `LUA_WORK_COLDHOSTFUNCS`, `LUA_WORK_RAREPROTOS`) are booked when they move, with the instruction or C function that moved
   them. `Context.ProfilePhase` starts a phase: the frames hang from a node of the phase's. Natively compiled code keeps running natively:
+  Each booking keeps its kinds apart (`lua_profilesplit`: cold and first-use, collector, dispatch, Studio-era and
+  borrowed prices). Cold charges keep their object and whether another function touched it in the frame.
+  Handler delivery and resumptions are booked to their next instruction. Function and line totals count only
+  the outermost activation on a path, and instruction counts and work are kept per phase.
   a function's entries into its native code and the work booked while it ran are its own, and its
   instructions are not counted (the summary names such functions); a call from native code into natively
   compiled code is not seen, so the callee's work stays with its caller. Luau's `-O2` (modules compile at
@@ -713,6 +853,66 @@ profile asks for; `profiler::report` writes its files and `ree profile diff` com
   ones are the heap snapshots'); its host time and cycles only in a run no kind slows. **ree's caches**: counters at each
   cache (`profiler::caches`, process-wide); a member name's atom misses where the VM looks a new string up by its bytes,
   and the instances a userdata was made for, the modules run and the datatype property reads are the game's facts.
+
+  `timeline.function_stats` holds `[function id, total us, active frames, largest frame us, frame number]` over the
+  reported phases. `timeline.node_frames` holds `[row index, node id, work us, ...]` for every part of a frame whose
+  combined code work reaches half the recorded frame budget (`1000 / fps` ms). Summaries retain small events without
+  keeping their frame history. The viewer also reads the old flat `functions` and run-length `function_runs` arrays.
+  `timeline.issue_stats` holds `[key, active frames, largest us, frame number, largest own us in over-budget frames]`
+  for each issue key (`function:<id>`, `sort:<id>:<line>`, `builtin:<name>:<id>:<line>`, `cache:<id>:<pc>`). It is
+  written from every frame: the parts of a frame that a phase mark splits are added together, and the sites of one
+  source edit are grouped, before the peak is found. What the viewer lists and how it grades therefore never depends on
+  which frames the timeline kept.
+  `site_frames` holds those frames' net site work; `replacement_frames` holds shared replacement work when known.
+  Work and cache profiles keep compact frame work even without the detailed timeline kind. The active frame count
+  unions all of a prototype's callers and newly created closures, including frames where its builtin site did not run.
+  When a replacement's cold work is known, `function_contexts` stores compact inclusive activity ranges
+  `[function id, node id, first frame, last frame, ...]`. A combined fix pays cold work only on the callers' frames
+  left running. No per-frame work history is stored for these ranges. The report page leaves frame evidence out.
+  An argument rewrite's replacement PCs are unknown, so its `fix_cold_us` is null. Prototype size and activity do not
+  price instructions that may never execute. Its operand-preserving site bound subtracts none of the unknown setup.
+
+  Issues are explicit sets of call-tree nodes and charged sites. Every standalone price is the complete observed
+  saving divided by the reported phases' frames, with the advised replacement's cost subtracted. Even one event has a
+  mean rate. Active frames and peak work only describe how the work was spread. Totals count the exact set union, retaining partial
+  intersections and naming every function involved. The closing row covers everything outside the listed union.
+  An issue is shown when its mean reaches the absolute floor (41.7 us a frame) or its own largest frame reaches 2.5% of
+  the frame budget. Its severity is the worse of its mean price and its own work in over-budget frames. The list is
+  sorted by severity, then by price.
+  The largest standalone saving across all candidates alone earns the strongest-saving claim.
+
+  A cache fix retains `first_touch_us`; a rehash saves `outcome_charged_us - presized_us`. A declined builtin saves its
+  charged work less the fast replacement's cost for the same calls. Missing replacement or context evidence leaves
+  the issue explicitly unpriced. A whole sort is priced only when the advice is to remove it if ordering is unneeded.
+  Advice for `math.abs` with numeric strings assumes an existing numeric value, with no conversion added at the call site.
+  Every price states its precision. A charged subtotal with a known replacement is exact. Uncharged calibration work is
+  an estimate with a low and a high, and stays out of the clock totals and the strongest-saving claim. When the setup
+  of a source rewrite is unknown, the price is an upper bound and not an exact saving.
+
+  A removal's recorded part (a sort, a repeat read, an unchanged write) is only part of what its edit changes: removing
+  the statement also removes the evaluation of its arguments and the caller's instructions, which the profile books to
+  other functions. The issue gives the recorded part as its price and the whole scoped code work as the complete edit's
+  upper bound. Every advised source edit uses this whole-code bound by default, cache edits and environment edits
+  included. Only two builtin rewrites keep a site-only bound, because they keep every original operand: adding index 1
+  to `string.byte(s)` and adding the end to `string.sub(s, i)`, each without another advised reason. A zero or negative
+  site part cannot show that the complete edit saves nothing, so the bound stays. A bound never wins the
+  strongest-saving claim, and it counts against another issue's claim even when its own site part has no price.
+
+  A builtin site's `fallback_end_pc` is its fallback's last instruction, the CALL that follows the fast call. The cache
+  lookups between the two are the same work as the decline, and the cache and builtin issues use the same keys for it.
+  An unsafe environment hides the rejection reasons after it, so its builtin bound needs every fast-path condition
+  fixed together. Priced site tables have no cap.
+
+  A phase mark can fall in the middle of a physical frame. The boundary profile counts each physical frame a phase
+  touched, and the issues divide by the profile scope's physical frames. A repeat read is attributed to the function the
+  boundary recorded as executing, which stays correct when the compiler inlined a helper into it.
+  A scheduler step holds the phases marked during it and counts them in the frame it renders; the step's Heartbeat and
+  render parts share that frame. A step that renders no frame counts none, which is the case for the last timer
+  resumptions of a replay to a capture. A mark outside any step, such as one before the first step, adds no frame. So
+  frame zero never enters the boundary profile's frame counts or rate divisors. Recorded-clock replay holds phases the
+  same way, including a replay to a capture point through `run_until`.
+  Call-tree work retains fractional microseconds. Earlier profiles with whole-microsecond nodes keep that recording precision.
+
   **The CPU**: from the run's start (the VM's install), the run thread's cycles (QueryThreadCycleTime: timestamp-counter
   ticks while it ran) in milliseconds at the counter's rate, by phase from the marks and by frame, the process's CPU
   time, page faults, the working set and private bytes at the start and their growth; a run a kind slows takes these in a
@@ -793,9 +993,10 @@ What the memory figures are, beside Roblox's:
 - `Stats:GetMemoryUsageMbForTag` is not emulated. The Developer Console's Luau heap view splits memory by
   memory category (one per script); the profile splits it by the stack that allocated it, by type and by
   Instance class, and gives the biggest objects with their holders, as its snapshot view does.
-- Imports: the engine loads a chunk before it gives it its environment, so imports are never resolved at
-  load and every GETIMPORT looks its global up (the cache profile reports them as misses); Roblox resolves
-  them at load. The work clock charges a GETIMPORT as one instruction either way.
+- Imports: a script's environment is safe, so its imports resolve when the chunk loads and read as constants,
+  as Roblox resolves them (the cache profile's hits); getfenv or setfenv makes that environment unsafe, and then
+  every GETIMPORT looks its global up again (the cache profile's slow ones), which the work clock charges 7.9 ns
+  more (`LUAU_SLOW_IMPORT`).
 
 ## World and recorder (`src/world`, `src/record`)
 
@@ -905,7 +1106,8 @@ KeyframeSequence pages); how a track behaves before its asset arrives is measure
 - The Animator step runs in the play-mode simulation phase right after PreAnimation and before Stepped.
   Per joint, priorities from the highest (Action4 ... Action, Movement, Idle, Core) each take their
   tracks' summed weight of what is left, blended by weight; what is left stays at rest. A Pose moves the
-  Motor6D whose Part0 / Part1 names are its parent Pose's and its own, else the Bone of its name.
+  Motor6D whose Part0 / Part1 names are its parent Pose's and its own, else the Bone of its name whose
+  parent has the parent Pose's name (a bone under a renamed part is not posed).
 - Fetching (measured in Studio playtests): an asset's first request in a session arrives 0.45 s later;
   tracks and preloads of it share the fetch, and one fetched before loads at once. Until it arrives a
   track has Length 0 and never poses. ContentProvider:PreloadAsync waits for the Animations it is given.
@@ -936,6 +1138,12 @@ and `IsRunMode` false; `IsEdit` is refused to game scripts, as on a client. It n
 A print of exactly `@done` ends `ree run` / `ree record` at the end of that frame.
 
 ## Output and LogService
+
+`LogService:GetLogHistory()` returns a fresh array of fresh entry tables, oldest first, with `message`,
+`messageType` (an Enum.MessageType item), and `timestamp` (wall-clock Unix seconds at output). It records print,
+warn, script errors and LogService logging methods immediately, including output inside MessageOut handlers.
+The emulator retains the newest 10,000 entries per engine; this is a documented emulator cap, not a measured
+Roblox limit. The entry shape and warning order are checked by parity probe `logservice`, section 9.
 
 Every line a run outputs has a kind: `print`, `info` (LogService:Info, and Log with MessageInfo), `warn` or
 `error`. LogService.MessageOut gets each line after the frame's Heartbeat handlers and the deferred work they
@@ -969,9 +1177,10 @@ measurements in a playing client.
 - A member a datatype does not have raises another message than Roblox's `<key> is not a valid member of
   <Type>` (some types quote the key), and reads nil on CFrame, Color3, UDim2, Vector2, Ray and the raycast
   and overlap params, where Roblox raises (tools/parity/known.json, probe camelcase).
-- The engine is developed and tested on Windows. Other systems build and run, but some fallbacks are
-  weak: off Windows a `ree serve` record of a dead process is not detected (`alive()` always answers
-  true), and memory is read from `/proc/meminfo` (Linux only).
+- The engine is developed and tested on Windows. The release workflow also builds and smoke-tests Linux and macOS
+  ([Building](building.md#platforms)). Some platform fallbacks are weak: off Windows a
+  `ree serve` record of a dead process is not detected (`alive()` always answers true), and memory is read from
+  `/proc/meminfo` (Linux only).
 
 ## Data files
 
@@ -992,11 +1201,13 @@ measurements in a playing client.
 
 ## Environment
 
-None of these carry credentials; `ree serve` keys a service by an unkeyed 64-bit hash of the `RUR_*`,
-`REE_*` and `ROR_*` variables (and `LOCALAPPDATA`), never their values. The `RUR_*` names are kept from
-rur, whose tools set them.
+The settings below carry no credentials. `ree serve` records only an unkeyed 64-bit environment hash, never the
+values. A library host or checkout binary hashes the `RUR_*`, `REE_*` and `ROR_*` variables and `LOCALAPPDATA`; a
+standalone binary hashes the whole normalized worker environment, custom variables included ("Asset bundles"). The
+`RUR_*` names are kept from rur, whose tools set them.
 
-- `RUR_STATE_DIR` / `RUR_CACHE_DIR` (caches; default `<repo>/.cache`), `RUR_VERBOSE`,
+- `RUR_STATE_DIR` / `RUR_CACHE_DIR` (caches; default `<repo>/.cache` in a checkout, else the per-user `ree` cache
+  in [Building](building.md#release-binaries)), `RUR_VERBOSE`,
   `RUR_ENGINE_TIMINGS`, `RUR_ENGINE_DUMP`, `RUR_EPOCH`, `RUR_CLOCK`, `RUR_CAMERA`, `RUR_PLACE_ID`,
   `RUR_PLAYER`, `RUR_PLAYER_ID`, `RUR_PLAYER_DISPLAY`, `RUR_ROTATION_CLIPPING`, `RUR_PROFILE_CALLBACKS`,
   `RUR_LUAU_PROFILE`, `RUR_LUAU_PROFILE_CLOCK`, `RUR_LUAU_PROFILE_UNIT`, `RUR_LUAU_ALLOC_PROFILE`,
@@ -1007,3 +1218,36 @@ rur, whose tools set them.
   `REE_PROFILE_OUT`, `REE_PROFILE_COUNTERS`, `REE_HW_COUNTERS`, `REE_LUAU_FLAGS`, `REE_VIEW_COLOR` (the profile viewer's colours:
   `truecolor` or `256`), `REE_VIEW_BLESS` (its snapshot tests write their snapshots).
 - Others: `RAYON_NUM_THREADS`, `MIMALLOC_EAGER_COMMIT`, `MIMALLOC_PURGE_DELAY`.
+
+A library host and the `ree` binary get different defaults. A standalone executable is one with no ree checkout above
+it, such as a release install.
+
+- A library host keeps the defaults it was written against. `default_repo()` is the nearest folder above the executable
+  that holds a `Cargo.lock` (whatever the package), else `.`; `checkout_of(exe)` is that same lookup. `Options::default()`
+  and `Host::default()` use this repo, and `set_default_repo` replaces it (the first call counts).
+- The `ree` binary calls `init_binary(source, state)` at startup. `source` is the executable, or a service's starter.
+  A checkout needs a `Cargo.lock` beside a `Cargo.toml` whose `[package]` name is `roblox-engine-emulator`. Otherwise
+  the binary is standalone for its whole lifetime and the default repo is empty. `is_standalone(repo)` reports this
+  process-wide choice, regardless of the input repo. Library hosts never call `init_binary`.
+- In a standalone binary, `--repo <dir>` names input data only (project, places and data). It never switches mode,
+  chooses `<repo>/.cache`, changes worker handling or chooses another service key. The project is `--project`, else
+  the folder holding the first root, else the client's current folder, also for service jobs and warm-up. There are
+  no implicit project roots or snapshots; place content is read only from an explicitly named input repo.
+- Standalone state is `RUR_STATE_DIR`, else `RUR_CACHE_DIR`, else the per-user `ree` cache folder. An explicit
+  `serve --state-dir` takes priority for that service, its engines and its workers. A copied service inherits its
+  starter's standalone choice and state directory. `shared_state_path` never falls back to the input repo's `.cache`.
+- The per-user folder is resolved only when a command needs state. `--help` and `--version` work without it.
+  Runs, profile commands that write files, service clients and warm-up fail plainly when neither a state override
+  nor a usable per-user folder exists, also with `--repo`; the error asks for `RUR_STATE_DIR`.
+- Runs and profile commands resolve standalone state before they start a profiler or a child pass, so a missing cache stops
+  them with nothing written. Outputs that no flag named go in `<state>/ree-profile` (run profiles),
+  `<state>/ree-boundary.json` (boundary reports) and `<state>/what-if/<stem>` (comparisons), and the command prints each
+  path. `profile diff` and `profile report` also write default files in `<state>/ree-profile`; input paths never name
+  output folders. Named outputs are used as given, including `<recording out>/profile` and `profile diff --out`.
+  Output spools use `<state>/output`, with each file deleted on close.
+- A standalone service client makes `--frame-times` absolute against its own current folder, as it does the other input
+  paths, because the service runs elsewhere. Environment paths, including the recorded clock and engine dump, are
+  resolved there too, with the same values used for service keys and launches. Library hosts and checkout builds
+  forward their arguments and environment as before.
+- Hosts and binaries in their own checkout retain their original repo, project, state and worker defaults. In host
+  mode `state_dir(repo)` is `RUR_STATE_DIR`, else `RUR_CACHE_DIR`, else `<repo>/.cache`, even for an empty repo.

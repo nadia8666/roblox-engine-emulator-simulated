@@ -466,6 +466,14 @@ fn connect_as(lua: &Lua, engine: &Rc<Engine>, args: LuaMultiValue, once: bool, p
     if let Some(callback) = noted {
         crate::census::connected(lua, connection, &callback);
     }
+    // (a profile keeps where it was connected: its handlers' dispatch and runs are reported by that site)
+    if crate::profiler::attribution::on()
+        && connection != ConnectionId::DISCONNECTED
+        && let Some(signal) = signal
+    {
+        let label = engine.state.borrow().signals.get(signal).label.to_str_lossy().into_owned();
+        crate::profiler::attribution::connected(connection.slot(), &label);
+    }
     let userdata = lua.create_any_userdata(LConnection(connection))?;
     Ok(values([LuaValue::UserData(userdata)]))
 }

@@ -78,6 +78,63 @@ pub fn is_file(path: &Path) -> bool {
     stamp(path).is_some_and(|stamp| !stamp.directory)
 }
 
+/// Whether two existing paths identify the same file, including links and differently spelled paths. A path that cannot
+/// be read has no identity, so it is never the same file as anything.
+#[cfg(feature = "bundles")]
+pub(crate) fn same_file(left: &Path, right: &Path) -> bool {
+    match (file_id(left), file_id(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// The device and inode that name the file `path` ends at (links followed).
+#[cfg(all(feature = "bundles", unix))]
+fn file_id(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.dev(), metadata.ino()))
+}
+
+/// The volume and file index that name the file `path` ends at (links followed).
+#[cfg(all(feature = "bundles", windows))]
+fn file_id(path: &Path) -> Option<(u64, u64)> {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    /// Windows' BY_HANDLE_FILE_INFORMATION; only the volume and the index are read.
+    #[repr(C)]
+    #[derive(Default)]
+    struct Information {
+        attributes: u32,
+        created: [u32; 2],
+        accessed: [u32; 2],
+        written: [u32; 2],
+        volume: u32,
+        size: [u32; 2],
+        links: u32,
+        index_high: u32,
+        index_low: u32,
+    }
+    unsafe extern "system" {
+        fn GetFileInformationByHandle(file: *mut std::ffi::c_void, information: *mut Information) -> i32;
+    }
+    const NO_ACCESS: u32 = 0;
+    const SHARE_READ_WRITE_DELETE: u32 = 0b111;
+    // Query identity without requesting data access or preventing a worker from keeping its file open.
+    let file = std::fs::OpenOptions::new().access_mode(NO_ACCESS).share_mode(SHARE_READ_WRITE_DELETE).open(path).ok()?;
+    let mut information = Information::default();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+        return None;
+    }
+    let index = (u64::from(information.index_high) << 32) | u64::from(information.index_low);
+    Some((u64::from(information.volume), index))
+}
+
+/// Without an inode or a file index, the canonical path is the best identity there is.
+#[cfg(all(feature = "bundles", not(any(unix, windows))))]
+fn file_id(path: &Path) -> Option<std::path::PathBuf> {
+    std::fs::canonicalize(path).ok()
+}
+
 /// What a thread's engine read from disk while it was noted (record/prepare.rs runs a recording up to
 /// its harness's checkpoint ahead of the job and checks, when the job comes, that what it read then
 /// is as it is now): each path's stamp when it was read (None: it was missing), each listing's names,
@@ -216,6 +273,23 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "bundles")]
+    #[test]
+    fn file_identity_distinguishes_copies_from_hard_links() {
+        let root = std::env::temp_dir().join(format!("ree-file-id-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("file");
+        let link = root.join("link");
+        let copy = root.join("copy");
+        std::fs::write(&file, "same content").unwrap();
+        std::fs::hard_link(&file, &link).unwrap();
+        std::fs::copy(&file, &copy).unwrap();
+        assert!(super::same_file(&file, &link));
+        assert!(!super::same_file(&file, &copy));
+        assert!(!super::same_file(&file, &root.join("missing")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn a_stamp_changes_with_the_file() {
         let file = std::env::temp_dir().join(format!("ree-stamp-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
