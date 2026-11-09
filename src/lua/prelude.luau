@@ -119,7 +119,7 @@ end
 
 local Color3 = Datatypes.Color3
 local Vector2 = Datatypes.Vector2
-local ToLune, ToNative, In, Out, VectorLibraries, VectorLibrary = R.Vector3(R, Datatypes, NativeTypeof) -- (lua/vector3.luau)
+local ToLune, ToNative, In, Out, VectorLibraries, VectorLibrary, RayLibrary = R.Vector3(R, Datatypes, NativeTypeof) -- (lua/vector3.luau)
 local UDim = Datatypes.UDim
 local UDim2 = Datatypes.UDim2
 
@@ -295,7 +295,7 @@ local LibraryExtras = {
 	},
 }
 LibraryExtras.Vector3.fromNormalId = LibraryExtras.Vector3.FromNormalId
-LibraryExtras.Vector3.fromAxis = LibraryExtras.Vector3.FromAxis; for Key, Value in VectorLibrary do ConstructorOverrides.Vector3[Key] = Value end -- (native zero, one, axes, min, max)
+LibraryExtras.Vector3.fromAxis = LibraryExtras.Vector3.FromAxis; for Key, Value in VectorLibrary do ConstructorOverrides.Vector3[Key] = Value end; ConstructorOverrides.Ray = RayLibrary -- (native zero, one, axes, min, max)
 
 local ScriptLibraries = {}
 

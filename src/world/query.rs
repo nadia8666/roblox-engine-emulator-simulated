@@ -965,13 +965,19 @@ fn parts_table(lua: &Lua, engine: &Rc<Engine>, parts: impl IntoIterator<Item = I
 /// The legacy FindPartOnRay family: (part, position, normal, material); the ray's end, a zero
 /// normal and Air when nothing is hit.
 fn find_part_on_ray(lua: &Lua, engine: &Rc<Engine>, ray: &LuaValue, list: &LuaValue, include: bool) -> Result<LuaMultiValue, Flow> {
-    let ray = match ray {
-        LuaValue::UserData(ud) => ud.borrow::<lune::Ray>().ok().map(|ray| dom::Ray::from(*ray)),
+    let parts = match ray {
+        LuaValue::UserData(ud) => ud.borrow::<lune::Ray>().ok().map(|ray| {
+            let ray = dom::Ray::from(*ray);
+            (Vec3::new(ray.origin.x, ray.origin.y, ray.origin.z), Vec3::new(ray.direction.x, ray.direction.y, ray.direction.z))
+        }),
+        LuaValue::Table(table) => {
+            let origin = table.raw_get::<LuaValue>("Origin").unwrap_or(LuaValue::Nil);
+            let direction = table.raw_get::<LuaValue>("Direction").unwrap_or(LuaValue::Nil);
+            vector_arg(&origin).zip(vector_arg(&direction))
+        }
         _ => None,
     };
-    let Some(ray) = ray else { return raise("Unable to cast value to Ray") };
-    let origin = Vec3::new(ray.origin.x, ray.origin.y, ray.origin.z);
-    let direction = Vec3::new(ray.direction.x, ray.direction.y, ray.direction.z);
+    let Some((origin, direction)) = parts else { return raise("Unable to cast value to Ray") };
     let mut filter = query_cache(engine).spare.take();
     filter.read_list(list, include);
     let cached = cached_solids(engine, &filter);
