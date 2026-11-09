@@ -1424,7 +1424,7 @@ fn flush_deferred_upto(lua: &Lua, engine: &Rc<Engine>, processed: &mut usize, up
             std::mem::replace(&mut state.sched.event_depth, job.event_depth)
         };
         let target_label = match &job.target {
-            JobTarget::Handler(connection) => {
+            JobTarget::Handler { connection, .. } => {
                 let signal = engine.state.borrow().signals.get(job.signal).label.to_str_lossy().into_owned();
                 format!("handler signal={signal} connection={}", connection.slot())
             }
