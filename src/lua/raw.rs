@@ -142,6 +142,8 @@ enum Base {
     HasTag,
     /// BindableEvent:Fire (services/mod.rs): fires Event with the arguments
     FireBindable,
+    /// WorldRoot:Raycast (world/query.rs raw_cast)
+    Raycast,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -258,6 +260,8 @@ fn compute_member(engine: &Engine, class: ClassId, key: NameId) -> Member {
                     }
                 } else if owner.is_some() && owner == reflection.class_id("BindableEvent") && name == K::Fire as NameId {
                     member.call = Call::Base(Base::FireBindable);
+                } else if owner.is_some() && reflection.name(name).to_string() == "Raycast" {
+                    member.call = Call::Base(Base::Raycast);
                 }
             }
         }
@@ -1664,6 +1668,34 @@ fn is_a_bytes(engine: &Engine, class: ClassId, wanted: Option<&[u8]>) -> bool {
 }
 
 /// The base Instance methods inline (same semantics as lua/instance.rs install_base).
+/// The three components of the native vector at `index`.
+#[inline]
+unsafe fn stack_vector(state: *mut ffi::lua_State, index: c_int) -> Option<glam::Vec3> {
+    unsafe {
+        let components = ffi::lua_tovector(state, index);
+        if components.is_null() { None } else { Some(glam::Vec3::new(*components, *components.add(1), *components.add(2))) }
+    }
+}
+
+/// Pushes the metatable of a RaycastResult (made once, kept in the bridge table's slot 2); false: none made.
+unsafe fn push_result_meta(state: *mut ffi::lua_State, api: &Api) -> bool {
+    unsafe {
+        ffi::lua_rawgeti_(state, REGISTRY, api.refs.bridge);
+        if ffi::lua_rawgeti_(state, -1, 2) != ffi::LUA_TTABLE {
+            ffi::lua_pop(state, 2);
+            let Some(lua) = api.lua.try_upgrade() else { return false };
+            let Ok(meta) = lua.create_table() else { return false };
+            if meta.set("__type", "RaycastResult").is_err() || meta.set("__metatable", "The metatable is locked").is_err() || api.bridge.raw_set(2, meta).is_err() {
+                return false;
+            }
+            ffi::lua_rawgeti_(state, REGISTRY, api.refs.bridge);
+            ffi::lua_rawgeti_(state, -1, 2);
+        }
+        ffi::lua_remove(state, -2);
+        true
+    }
+}
+
 unsafe fn base_call(state: *mut ffi::lua_State, api: &Api, engine: &Engine, id: InstanceId, class: ClassId, base: Base) -> Out {
     unsafe {
         match base {
@@ -1870,6 +1902,57 @@ unsafe fn base_call(state: *mut ffi::lua_State, api: &Api, engine: &Engine, id: 
                 }
                 core::fire_event_measured(&mut engine.state.borrow_mut(), id, K::Event as NameId, arguments, crate::cost::SignalKind::Bindable);
                 Out::Ret(0)
+            }
+            Base::Raycast => {
+                let (Some(origin), Some(direction)) = (stack_vector(state, 2), stack_vector(state, 3)) else { return Out::General };
+                let Some(method) = engine.reflection.name_id("Raycast") else { return Out::General };
+                let params = match ffi::lua_type(state, 4) {
+                    ffi::LUA_TNONE | ffi::LUA_TNIL => None,
+                    ffi::LUA_TUSERDATA | ffi::LUA_TTABLE => {
+                        ffi::lua_rawgeti_(state, REGISTRY, api.refs.bridge);
+                        ffi::lua_pushvalue(state, 4);
+                        ffi::lua_rawseti_(state, -2, 1);
+                        ffi::lua_pop(state, 1);
+                        match api.bridge.raw_get::<LuaValue>(1) {
+                            Ok(value) => Some(value),
+                            Err(_) => return Out::General,
+                        }
+                    }
+                    _ => return Out::General,
+                };
+                crate::project::before_method(&mut engine.state.borrow_mut(), &engine.reflection, id, method);
+                let hit = crate::world::query::raw_cast(engine, origin, direction, params.as_ref());
+                if params.is_some() {
+                    let _ = api.bridge.raw_set(1, LuaValue::Nil);
+                }
+                let Some((part, position, normal, distance, material)) = hit else {
+                    ffi::lua_pushnil(state);
+                    return Out::Ret(1);
+                };
+                ffi::lua_createtable(state, 0, 5);
+                let table = ffi::lua_gettop(state);
+                push_instance(state, api, None, part);
+                ffi::lua_setfield(state, table, c"Instance".as_ptr());
+                ffi::lua_pushvector(state, position.x, position.y, position.z);
+                ffi::lua_setfield(state, table, c"Position".as_ptr());
+                ffi::lua_pushvector(state, normal.x, normal.y, normal.z);
+                ffi::lua_setfield(state, table, c"Normal".as_ptr());
+                ffi::lua_pushnumber(state, distance as f64);
+                ffi::lua_setfield(state, table, c"Distance".as_ptr());
+                if let Some(item) = material {
+                    ffi::lua_rawgeti_(state, REGISTRY, api.refs.enums);
+                    if ffi::lua_rawgeti_(state, -1, item as c_int + 1) != ffi::LUA_TNIL {
+                        ffi::lua_remove(state, -2);
+                        ffi::lua_setfield(state, table, c"Material".as_ptr());
+                    } else {
+                        ffi::lua_pop(state, 2);
+                    }
+                }
+                if push_result_meta(state, api) {
+                    ffi::lua_setmetatable(state, table);
+                    ffi::lua_setreadonly(state, table, 1);
+                }
+                Out::Ret(1)
             }
             Base::GetFullName => {
                 let name = engine.state.borrow().dom.full_name(&engine.reflection, id);

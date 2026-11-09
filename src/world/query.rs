@@ -1038,6 +1038,23 @@ fn report_raycast_timing() {
     }
 }
 
+/// A Raycast the raw namecall runs (lua/raw.rs Base::Raycast): the hit's part, position, normal, distance and material.
+pub(crate) fn raw_cast(engine: &Engine, origin: Vec3, direction: Vec3, params: Option<&LuaValue>) -> Option<(InstanceId, Vec3, Vec3, f32, Option<u32>)> {
+    let mut clock = timing_on().then(std::time::Instant::now);
+    let filter = take_filter(engine, params.unwrap_or(&LuaValue::Nil));
+    let cached = cached_solids(engine, &filter);
+    lap(&mut clock, 0);
+    let hit = cast_ray_indexed(&cached, origin, direction, 0.0, None);
+    lap(&mut clock, 1);
+    keep_filter(engine, filter);
+    charge_cast(engine, origin, direction, 0.0);
+    lap(&mut clock, 2);
+    if clock.is_some() {
+        report_raycast_timing();
+    }
+    hit.map(|hit| (hit.part, hit.position, hit.normal, hit.distance, material_of(engine, hit.part).map(|m| m as u32)))
+}
+
 /// What a cast pays for the parts its path crosses, whatever its filter admits (cost.rs RAY_MET, RAY_CROSSED): the engine's
 /// broadphase meets them all before the filter is asked
 fn charge_cast(engine: &Engine, origin: Vec3, direction: Vec3, grow: f32, each: f64, kinds: u8) {
