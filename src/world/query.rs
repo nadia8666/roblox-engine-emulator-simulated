@@ -251,6 +251,8 @@ struct QueryCache {
     trace_calls: RefCell<QueryTraceCalls>,
     /// The last query's filter, whose lists the next query reads its params into ([`take_filter`])
     spare: RefCell<Filter>,
+    /// The last params read (their stored fields' identities) and the filter they gave
+    params_seen: RefCell<Option<(Vec<LuaValue>, Filter)>>,
 }
 
 struct CachedSolids {
@@ -423,8 +425,38 @@ fn query_cache(engine: &Engine) -> &QueryCache {
 
 /// A query's filter, read from its params into the spare filter's storage; [`keep_filter`] hands it
 /// back for the next query.
+fn same_value(a: &LuaValue, b: &LuaValue) -> bool {
+    match (a, b) {
+        (LuaValue::Nil, LuaValue::Nil) => true,
+        (LuaValue::Boolean(x), LuaValue::Boolean(y)) => x == y,
+        (LuaValue::Integer(x), LuaValue::Integer(y)) => x == y,
+        (LuaValue::Number(x), LuaValue::Number(y)) => x == y,
+        _ => {
+            let p = a.to_pointer();
+            !p.is_null() && p == b.to_pointer()
+        }
+    }
+}
+
 fn take_filter(engine: &Engine, params: &LuaValue) -> Filter {
-    let mut filter = query_cache(engine).spare.take();
+    let cache = query_cache(engine);
+    let mut filter = cache.spare.take();
+    if let Some((data, true)) = params_data(engine, params) {
+        let mut now: Vec<LuaValue> = Vec::with_capacity(7);
+        now.push(LuaValue::Table(data.clone()));
+        for key in ["FilterType", "MaxParts", "FilterDescendantsInstances", "ExcludeInstances", "IncludeInstances", "RespectCanCollide"] {
+            now.push(data.raw_get::<LuaValue>(key).unwrap_or(LuaValue::Nil));
+        }
+        if let Some((seen, cached)) = &*cache.params_seen.borrow() {
+            if seen.iter().zip(&now).all(|(a, b)| same_value(a, b)) {
+                filter.clone_from(cached);
+                return filter;
+            }
+        }
+        filter.read(engine, params);
+        *cache.params_seen.borrow_mut() = Some((now, filter.clone()));
+        return filter;
+    }
     filter.read(engine, params);
     filter
 }
@@ -865,6 +897,32 @@ fn vector_lua(v: Vec3) -> LuaValue {
 
 /// A RaycastResult (a read-only prelude proxy, typeof "RaycastResult").
 fn result_value(lua: &Lua, engine: &Rc<Engine>, hit: &Hit) -> LuaResult<LuaValue> {
+    const META: &str = "rur.world.RaycastResult.Meta";
+    let meta: LuaTable = match lua.named_registry_value::<LuaValue>(META)? {
+        LuaValue::Table(t) => t,
+        _ => {
+            let t = lua.create_table()?;
+            t.set("__type", "RaycastResult")?;
+            t.set("__metatable", "The metatable is locked")?;
+            lua.set_named_registry_value(META, t.clone())?;
+            t
+        }
+    };
+    let data = lua.create_table_with_capacity(0, 5)?;
+    data.set("Instance", instance_value(lua, engine, hit.part)?)?;
+    data.set("Position", vector_lua(hit.position))?;
+    data.set("Normal", vector_lua(hit.normal))?;
+    data.set("Distance", hit.distance as f64)?;
+    if let Some(material) = material_of(engine, hit.part) {
+        data.set("Material", enum_item_value(lua, engine, material)?)?;
+    }
+    let _ = data.set_metatable(Some(meta));
+    let _ = data.set_readonly(true);
+    Ok(LuaValue::Table(data))
+}
+
+#[allow(dead_code)]
+fn result_value_proxy(lua: &Lua, engine: &Rc<Engine>, hit: &Hit) -> LuaResult<LuaValue> {
     const KEY: &str = "rur.world.RaycastResult";
     let make: LuaFunction = match lua.named_registry_value::<LuaValue>(KEY)? {
         LuaValue::Function(f) => f,
