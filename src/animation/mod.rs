@@ -254,7 +254,7 @@ fn load(lua: &Lua, engine: &Rc<Engine>, shared: &Shared, names: &Names, owner: I
     let clip = match source::resolve(engine, &uri) {
         Ok(clip) => clip,
         Err(error) => {
-            if source::first_failure(engine, &uri) {
+            if !error.contains("manifest bundles need an asset worker") && source::first_failure(engine, &uri) {
                 engine.warn(format!("Failed to load animation {uri}: {error} (its tracks play without keyframes)"));
             }
             None
