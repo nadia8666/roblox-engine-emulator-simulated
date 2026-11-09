@@ -864,17 +864,16 @@ fn result_value(lua: &Lua, engine: &Rc<Engine>, hit: &Hit) -> LuaResult<LuaValue
     let make: LuaFunction = match lua.named_registry_value::<LuaValue>(KEY)? {
         LuaValue::Function(f) => f,
         _ => {
-            let proxy: LuaFunction = engine.prelude().exports.get("Proxy")?;
             let chunk = lua
-                .load("local Proxy = ... return function(Data) return Proxy('RaycastResult', function(_, Key) return Data[Key] end) end")
+                .load("local function ReadOnly(_, Key) error(`{Key} cannot be assigned to`, 0) end return function(Data) local Object = newproxy(true) local Meta = getmetatable(Object) Meta.__metatable = 'The metatable is locked' Meta.__index = Data Meta.__newindex = ReadOnly Meta.__type = 'RaycastResult' return Object end")
                 .set_name("=rur.world")
                 .into_function()?;
-            let builder: LuaFunction = crate::cost::engine_luau(lua, chunk)?.call(proxy)?;
+            let builder: LuaFunction = crate::cost::engine_luau(lua, chunk)?.call(())?;
             lua.set_named_registry_value(KEY, builder.clone())?;
             builder
         }
     };
-    let data = lua.create_table()?;
+    let data = lua.create_table_with_capacity(0, 5)?;
     data.set("Instance", instance_value(lua, engine, hit.part)?)?;
     data.set("Position", vector_lua(hit.position))?;
     data.set("Normal", vector_lua(hit.normal))?;

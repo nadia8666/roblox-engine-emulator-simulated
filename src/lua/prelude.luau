@@ -102,7 +102,7 @@ local function Proxy(TypeName, Index, NewIndex, Extra)
 			Meta[Key] = Value
 		end
 	end
-	Register(Object, TypeName)
+	Meta.__type = TypeName
 	return Object
 end
 
