@@ -341,31 +341,37 @@ impl SpatialIndex {
         if self.fallback { for i in 0..self.boxes.len() { visit(i); } return; }
         if self.nodes.is_empty() && self.extras.is_empty() { return; }
         let inv=Vec3::new(1.0/d.x,1.0/d.y,1.0/d.z); let grow=Vec3::splat(g+1e-4);
+        let (mo,po)=(o+grow,o-grow);
         let mut limit=1.0f32; let mut stack=[0usize;64]; let mut top=if self.nodes.is_empty() {0} else {1};
         for &i in &self.extras {
-            let b=&self.boxes[i]; if b.min.cmpgt(b.max).any() { continue; }
-            let lo=(b.min-grow-o)*inv; let hi=(b.max+grow-o)*inv;
-            if lo.min(hi).max_element().max(0.0)>lo.max(hi).min_element().min(limit) { continue; }
+            let b=&self.boxes[i]; if b.min.x>b.max.x || !slab(b.min,b.max,mo,po,inv,limit) { continue; }
             if let Some(t)=visit(i) { limit=limit.min(t); }
         }
         while top>0 {
             top-=1; let n=&self.nodes[stack[top]];
-            if n.bounds.min.cmpgt(n.bounds.max).any() { continue; }
-            let lo=(n.bounds.min-grow-o)*inv; let hi=(n.bounds.max+grow-o)*inv;
-            let near=lo.min(hi).max_element().max(0.0); let far=lo.max(hi).min_element().min(limit);
-            if near>far { continue; }
+            if n.bounds.min.x>n.bounds.max.x || !slab(n.bounds.min,n.bounds.max,mo,po,inv,limit) { continue; }
             match n.children {
                 Some((l,r))=>{ stack[top]=r; stack[top+1]=l; top+=2; }
                 None=>for &i in &self.order[n.range.clone()] {
-                    let b=&self.boxes[i]; if b.min.cmpgt(b.max).any() { continue; }
-                    let lo=(b.min-grow-o)*inv; let hi=(b.max+grow-o)*inv;
-                    if lo.min(hi).max_element().max(0.0)>lo.max(hi).min_element().min(limit) { continue; }
+                    let b=&self.boxes[i]; if b.min.x>b.max.x || !slab(b.min,b.max,mo,po,inv,limit) { continue; }
                     if let Some(t)=visit(i) { limit=limit.min(t); }
                 }
             }
         }
     }
     fn all(&self)->Vec<usize> { (0..self.boxes.len()).filter(|i| self.alive[*i]).collect() }
+}
+
+/// Whether the ray from `o` (with `inv` its direction's reciprocal; `mo` and `po` the origin moved by the grow each way)
+/// meets the box within `limit` of its length.
+#[inline(always)]
+fn slab(min:Vec3,max:Vec3,mo:Vec3,po:Vec3,inv:Vec3,limit:f32)->bool {
+    let (ax,bx)=((min.x-mo.x)*inv.x,(max.x-po.x)*inv.x);
+    let (ay,by)=((min.y-mo.y)*inv.y,(max.y-po.y)*inv.y);
+    let (az,bz)=((min.z-mo.z)*inv.z,(max.z-po.z)*inv.z);
+    let near=ax.min(bx).max(ay.min(by)).max(az.min(bz)).max(0.0);
+    let far=ax.max(bx).min(ay.max(by)).min(az.max(bz)).min(limit);
+    near<=far
 }
 
 
