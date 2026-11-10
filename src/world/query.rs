@@ -253,6 +253,8 @@ struct QueryCache {
     spare: RefCell<Filter>,
     /// The last params read (their stored fields' identities) and the filter they gave
     params_seen: RefCell<Option<(Vec<LuaValue>, Filter)>>,
+    /// The last params object and its stored data table, so the next cast with the same object skips the lookup
+    params_data: RefCell<Option<(LuaValue, LuaTable)>>,
 }
 
 struct CachedSolids {
@@ -458,20 +460,40 @@ fn same_value(a: &LuaValue, b: &LuaValue) -> bool {
     }
 }
 
+const PARAM_KEYS: [&str; 6] = ["FilterType", "MaxParts", "FilterDescendantsInstances", "ExcludeInstances", "IncludeInstances", "RespectCanCollide"];
+
 fn take_filter(engine: &Engine, params: &LuaValue) -> Filter {
     let cache = query_cache(engine);
     let mut filter = cache.spare.take();
-    if let Some((data, true)) = params_data(engine, params) {
-        let mut now: Vec<LuaValue> = Vec::with_capacity(7);
-        now.push(LuaValue::Table(data.clone()));
-        for key in ["FilterType", "MaxParts", "FilterDescendantsInstances", "ExcludeInstances", "IncludeInstances", "RespectCanCollide"] {
-            now.push(data.raw_get::<LuaValue>(key).unwrap_or(LuaValue::Nil));
+    let data = match params {
+        LuaValue::UserData(_) => {
+            let known = cache.params_data.borrow().as_ref().filter(|(p, _)| same_value(p, params)).map(|(_, t)| t.clone());
+            match known {
+                Some(t) => Some(t),
+                None => match params_data(engine, params) {
+                    Some((t, true)) => {
+                        *cache.params_data.borrow_mut() = Some((params.clone(), t.clone()));
+                        Some(t)
+                    }
+                    _ => None,
+                },
+            }
         }
+        _ => None,
+    };
+    if let Some(data) = data {
         if let Some((seen, cached)) = &*cache.params_seen.borrow() {
-            if seen.iter().zip(&now).all(|(a, b)| same_value(a, b)) {
+            if seen[0].to_pointer() == data.to_pointer()
+                && PARAM_KEYS.iter().enumerate().all(|(n, key)| same_value(&seen[n + 1], &data.raw_get::<LuaValue>(*key).unwrap_or(LuaValue::Nil)))
+            {
                 filter.clone_from(cached);
                 return filter;
             }
+        }
+        let mut now: Vec<LuaValue> = Vec::with_capacity(7);
+        now.push(LuaValue::Table(data.clone()));
+        for key in PARAM_KEYS {
+            now.push(data.raw_get::<LuaValue>(key).unwrap_or(LuaValue::Nil));
         }
         filter.read(engine, params);
         *cache.params_seen.borrow_mut() = Some((now, filter.clone()));
