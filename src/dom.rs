@@ -602,6 +602,8 @@ const UNPINNED_CAP: usize = 1 << 16;
 
 const DIRTY_LOG_CAP: usize = 1 << 16;
 
+const STRUCTURE_LOG_CAP: usize = 1 << 14;
+
 #[derive(Default)]
 pub struct Dom {
     slots: Vec<Slot>,
@@ -621,6 +623,8 @@ pub struct Dom {
     pub write_version: u64,
     dirty_log: Vec<InstanceId>,
     dirty_base: u64,
+    structure_log: Vec<InstanceId>,
+    structure_base: u64,
     /// Bumped on every name change anywhere (a child looked up by name reads its parent's child list and its children's names:
     /// the boundary profiler stamps such a read with both)
     pub name_version: u32,
@@ -974,7 +978,26 @@ impl Dom {
         let parent = self.at_mut(parent);
         parent.children.push(child);
         parent.child_version = parent.child_version.wrapping_add(1);
-        self.structure_version += 1;
+        self.log_structure(&[child]);
+    }
+
+    /// Records the roots of a parent change in the structure log (the structure version moves by their count: what
+    /// `structure_since` hands the query cache is every root moved since a version).
+    fn log_structure(&mut self, ids: &[InstanceId]) {
+        let in_step = self.structure_base + self.structure_log.len() as u64 == self.structure_version;
+        if !in_step || self.structure_log.len() >= STRUCTURE_LOG_CAP {
+            self.structure_log.clear();
+            self.structure_base = self.structure_version;
+        }
+        self.structure_log.extend_from_slice(ids);
+        self.structure_version += ids.len() as u64;
+    }
+
+    pub fn structure_since(&self, since: u64) -> Option<&[InstanceId]> {
+        if self.structure_base + self.structure_log.len() as u64 != self.structure_version || since < self.structure_base {
+            return None;
+        }
+        self.structure_log.get((since - self.structure_base) as usize..)
     }
 
     /// Removes `child` from its parent's children and clears its parent (no events).
@@ -989,7 +1012,7 @@ impl Dom {
         }
         parent_instance.child_version = parent_instance.child_version.wrapping_add(1);
         self.at_mut(child).parent = None;
-        self.structure_version += 1;
+        self.log_structure(&[child]);
     }
 
     /// Replaces `old` by `new` in the same child slot of `parent` (project EnsureChild).
@@ -1002,7 +1025,7 @@ impl Dom {
         parent_instance.child_version = parent_instance.child_version.wrapping_add(1);
         self.at_mut(old).parent = None;
         self.at_mut(new).parent = Some(parent);
-        self.structure_version += 1;
+        self.log_structure(&[old, new]);
     }
 
     /// Whether `ancestor` is a (strict) ancestor of `id`.
