@@ -38,14 +38,61 @@ use super::{
 /// tools/parity/probes/deferred_chains.luau, deferred_points.luau).
 pub const MAX_REENTRANCY: u32 = 80;
 
+fn trace_scheduler_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("REE_TRACE_SCHEDULER").as_deref() == Ok("1"))
+}
+
+pub(crate) fn trace_scheduler(engine: &Engine, label: &str) {
+    if !trace_scheduler_enabled() {
+        return;
+    }
+    let (frame, now) = {
+        let state = engine.state.borrow();
+        (state.sched.frame, state.sched.now)
+    };
+    crate::output::diagnostic(&format!("ree trace frame={frame} time={now:.6} {label}"));
+}
+
+fn trace_scheduler_format(engine: &Engine, label: impl FnOnce() -> String) {
+    if trace_scheduler_enabled() {
+        trace_scheduler(engine, &label());
+    }
+}
+
 /// A job that belongs to no signal.
 pub const NO_SIGNAL: SignalId = SignalId::MAX;
+
+/// Where the price of dispatching to a handler came from. A job keeps this instead of the cost.rs kind bits themselves, because
+/// a profile can begin while the job is queued: the bits are worked out at delivery, when a profile is known to be running.
+#[derive(Clone, Copy)]
+pub enum DispatchKind {
+    /// The first handler of a signal: the price its signal kind has
+    Signal(crate::cost::SignalKind),
+    /// A handler after the first on one signal: a Studio-era price
+    ExtraHandler,
+    /// A handler run at once (an immediate signal): a price measured in a client
+    Client,
+}
+
+impl DispatchKind {
+    /// The cost.rs kind bits for this origin
+    fn bits(self) -> u8 {
+        match self {
+            Self::Signal(kind) => crate::cost::signal_kinds(kind).thread,
+            Self::ExtraHandler => crate::cost::kind::STUDIO,
+            Self::Client => 0,
+        }
+    }
+}
 
 /// A deferred resumption.
 pub enum JobTarget {
     Thread(LuaThread),
-    /// A connection's handler: a fresh thread on its callback, if still connected when it runs
-    Handler(ConnectionId),
+    /// A connection's handler: a fresh thread on its callback, if still connected when it runs. `kind` says where the price of
+    /// starting it came from (cost.rs kind bits). It sits here and not in [`Job`]: the `Thread` variant is larger and leaves room
+    /// for it, where a byte in `Job` would make every queued job bigger (scheduler_tests profiling_does_not_enlarge_queued_jobs).
+    Handler { connection: ConnectionId, kind: DispatchKind },
     /// Destroy's deferred signal cleanup
     DisconnectAll(InstanceId),
 }
@@ -56,8 +103,8 @@ pub struct Job {
     pub event_depth: u32,
     /// The signal whose handler or waiting thread this is (the refusal names it), else `NO_SIGNAL`
     pub signal: SignalId,
-    /// Seconds of script work the thread's resume costs before its first line (cost.rs HANDLER_THREAD for the handlers of the
-    /// signals Studio's bench measured; 0 for a job whose resume is priced elsewhere)
+    /// Seconds of script work the thread's resume costs before its first line (cost.rs signal_costs for a signal's handlers and waiting
+    /// threads; 0 for a job whose resume is priced elsewhere)
     pub resume_cost: f64,
 }
 
@@ -241,6 +288,8 @@ pub struct Scheduler {
     pub work_drained: Rc<std::cell::Cell<f64>>,
     /// The frame each instance was last touched in (cost.rs COLD_TOUCH), shared with the C metamethods like `work`
     pub touched: Rc<std::cell::RefCell<crate::cost::Touched>>,
+    /// The engine's charges by kind (cost.rs WorkKinds: cold, dispatch, Studio-era and defaulted prices), running totals beside `work`'s
+    pub kinds: Option<Rc<crate::cost::WorkKinds>>,
     /// The Luau VM's work counters (lua::raw::install), charged by what they cost Studio (cost::luau)
     pub vm_counters: Option<*const crate::cost::VmCounters>,
     /// Whether the VM counts cold touches (cost::cold_tracking): on from the first frame of a VM whose scripts are interpreted
@@ -393,6 +442,7 @@ impl Scheduler {
             muted: muted.clone(),
             work_drained: Rc::new(std::cell::Cell::new(0.0)),
             touched: Rc::new(std::cell::RefCell::new(crate::cost::Touched::new(muted))),
+            kinds: None,
             vm_counters: None,
             cold_tracking: false,
             vm_charged: 0.0,
@@ -436,8 +486,8 @@ impl Scheduler {
             randoms: Default::default(),
             display_interval_index: None,
             display_beat_clock: None,
-            // (a timing check's second run: twice the modelled work moves os.clock within each frame, record/run.rs)
-            price_scale: crate::cost::device_scale(&options.device) * if options.clock_moved { 2.0 } else { 1.0 },
+            // (a timing check's probe: os.clock within each frame runs on the probe's multiple of the modelled work, record/run.rs)
+            price_scale: crate::cost::device_scale(&options.device) * options.clock_probe.unwrap_or(1.0),
         };
         scheduler.edit_mode = options.edit_mode();
         // Scheduler.Configure: RUR_EPOCH=<Unix seconds or ms> pins the wall clock's start
@@ -448,7 +498,7 @@ impl Scheduler {
         if scheduler.frozen_clock {
             scheduler.freeze_wall_clock();
         }
-        if options.clock_moved {
+        if options.clock_probe.is_some() {
             scheduler.frozen_clock = false;
         }
         // RUR_CLOCK=<file.json> replays a recorded Studio frame clock instead of the ideal one
@@ -513,14 +563,35 @@ impl Scheduler {
     }
 
     /// Charges `seconds` the engine takes for delivering an event to a handler (the boundary profiler keeps these apart from the
-    /// script's own crossings).
+    /// script's own crossings), of the dispatch kind and the price's provenance (`kinds`: cost.rs kind bits).
     #[inline]
-    pub fn charge_dispatch(&self, seconds: f64) {
+    pub fn charge_dispatch(&self, seconds: f64, kinds: u8) {
         if self.muted.get() == 0 {
             crate::cost::tally_charge(seconds);
             crate::boundary::dispatched(seconds);
             self.work.set(self.work.get() + seconds);
+            if let Some(totals) = &self.kinds {
+                totals.add(crate::cost::kind::DISPATCH | kinds, seconds);
+            }
         }
+    }
+
+    /// Charges `seconds` of the kinds `kinds` names (cost.rs kind bits: a Studio-era or a borrowed price)
+    #[inline]
+    pub fn charge_kind(&self, seconds: f64, kinds: u8) {
+        if self.muted.get() == 0 {
+            crate::cost::tally_charge(seconds);
+            crate::boundary::charged(seconds);
+            self.work.set(self.work.get() + seconds);
+            if let Some(totals) = &self.kinds {
+                totals.add(kinds, seconds);
+            }
+        }
+    }
+
+    /// What the clock multiplies script work by (cost.rs device_scale, and a timing check's factor): a profile reports in these units
+    pub fn price_scale(&self) -> f64 {
+        self.price_scale
     }
 
     /// Whether the engine's own Luau is pricing a whole call (charges are dropped)
@@ -1052,13 +1123,31 @@ pub fn error_message(error: &LuaError) -> String {
 /// Scheduler.Resume: resumes a suspended, uncancelled thread; errors go to the output with the
 /// thread's traceback. Returns whether it ran without error.
 pub fn resume(lua: &Lua, engine: &Rc<Engine>, thread: &LuaThread, args: LuaMultiValue) -> bool {
+    resume_thread(lua, engine, thread, args, true)
+}
+
+/// Whether a queued thread can run: not cancelled, and suspended. A caller that charges for the resumption asks this first and then
+/// resumes with [`resume_ready`], so the thread is checked once.
+pub(crate) fn can_resume(engine: &Engine, thread: &LuaThread) -> bool {
+    let state = engine.state.borrow();
+    thread_ready(&state.sched, thread)
+}
+
+fn thread_ready(scheduler: &Scheduler, thread: &LuaThread) -> bool {
+    !scheduler.is_cancelled(thread) && thread.status() == LuaThreadStatus::Resumable
+}
+
+/// Resumes a thread [`can_resume`] has just said can run, with no Luau run in between that could have changed that.
+pub(crate) fn resume_ready(lua: &Lua, engine: &Rc<Engine>, thread: &LuaThread, args: LuaMultiValue) -> bool {
+    resume_thread(lua, engine, thread, args, false)
+}
+
+/// `check_ready`: look at the thread first (`resume`), or trust the caller's [`can_resume`] (`resume_ready`)
+fn resume_thread(lua: &Lua, engine: &Rc<Engine>, thread: &LuaThread, args: LuaMultiValue, check_ready: bool) -> bool {
     let (top_level, _entered) = {
         let mut state = engine.state.borrow_mut();
         let sched = &mut state.sched;
-        if sched.is_cancelled(thread) {
-            return false;
-        }
-        if thread.status() != LuaThreadStatus::Resumable {
+        if check_ready && !thread_ready(sched, thread) {
             return false;
         }
         // Build-time placement: a top-level resumption before the first Heartbeat is (part of) the
@@ -1173,24 +1262,65 @@ pub(crate) fn end_handler_sample(sample: Option<profile::Sample>, thread: &LuaTh
     }
 }
 
+/// Charges the engine's dispatch of a handler or its resumption of a thread, `seconds` of the dispatch kind (and `kinds`' provenance),
+/// booked to `thread` while a profile steps: the line it waited on, or its function's first line (a handler's new thread)
+pub(crate) fn charge_dispatch_to(lua: &Lua, engine: &Rc<Engine>, thread: &LuaThread, seconds: f64, kinds: u8) {
+    if seconds == 0.0 {
+        return;
+    }
+    if crate::profiler::attribution::on() {
+        // (both are the running VM's threads)
+        unsafe { crate::profiler::attribution::book_next(lua.current_thread().state(), thread.state()) };
+    }
+    engine.state.borrow().sched.charge_dispatch(seconds, kinds);
+}
+
+/// What the engine charges to deliver an event to a handler or thread, and where the price came from
+#[derive(Clone, Copy)]
+pub(crate) struct DispatchPrice {
+    pub seconds: f64,
+    pub kind: DispatchKind,
+}
+
+/// A handler of `connection` (on `signal`) runs on `thread` after the engine's dispatch to it, which costs `dispatch`: charges the
+/// dispatch to the handler and, while a profile steps, keeps the run's whole work by the site that connected it
+/// (profiler/attribution.rs)
+pub(crate) fn run_handler(lua: &Lua, engine: &Rc<Engine>, connection: ConnectionId, signal: SignalId, thread: &LuaThread, args: LuaMultiValue, dispatch: DispatchPrice) {
+    let profiling = crate::profiler::attribution::on();
+    // (only a profile reads the work total and the kind bits, so an ordinary run skips both)
+    let mut work_before = 0.0;
+    let mut kinds = 0;
+    if profiling {
+        work_before = engine.state.borrow().sched.work_total();
+        kinds = dispatch.kind.bits();
+    }
+    charge_dispatch_to(lua, engine, thread, dispatch.seconds, kinds);
+    resume(lua, engine, thread, args);
+    if profiling {
+        let work = engine.state.borrow().sched.work_total() - work_before;
+        let label = engine.state.borrow().signals.get(signal).label.to_str_lossy().into_owned();
+        crate::profiler::attribution::handler_ran(connection.slot(), &label, dispatch.seconds, work);
+    }
+}
+
 fn run_job(lua: &Lua, engine: &Rc<Engine>, job: Job) -> LuaResult<()> {
     if job.event_depth > MAX_REENTRANCY && job.signal != NO_SIGNAL {
         return refuse(lua, engine, job);
-    }
-    if job.resume_cost != 0.0 {
-        engine.state.borrow().sched.charge_dispatch(job.resume_cost);
     }
     match job.target {
         JobTarget::Thread(thread) => {
             engine.state.borrow_mut().sched.clear_task_state(&thread);
             let args = job_args(lua, engine, &job.args)?;
             let _scope = crate::microprofile::scope("Resume thread");
+            // (a thread a signal's Wait parked: its resumption is booked to its wait)
+            charge_dispatch_to(lua, engine, &thread, job.resume_cost, 0);
             resume(lua, engine, &thread, args);
         }
-        JobTarget::Handler(connection) => {
+        JobTarget::Handler { connection, kind } => {
             let census = crate::census::handler_site(engine, connection);
             let callback = engine.state.borrow_mut().signals.begin_handler(connection);
             if let Some((callback, signal)) = callback {
+                trace_scheduler_format(engine, || format!("deferred callback {}", handler_label(engine, signal, &callback)));
                 let args = job_args(lua, engine, &job.args)?;
                 let sample = sample_handler(engine, signal, &callback);
                 let _scope = crate::microprofile::enabled()
@@ -1199,7 +1329,8 @@ fn run_job(lua: &Lua, engine: &Rc<Engine>, job: Job) -> LuaResult<()> {
                 if let Some(site) = census {
                     crate::census::handler_ran(site, &thread);
                 }
-                resume(lua, engine, &thread, args);
+                let dispatch = DispatchPrice { seconds: job.resume_cost, kind };
+                run_handler(lua, engine, connection, signal, &thread, args, dispatch);
                 end_handler_sample(sample, &thread);
             }
         }
@@ -1216,7 +1347,7 @@ fn run_job(lua: &Lua, engine: &Rc<Engine>, job: Job) -> LuaResult<()> {
 fn refuse(lua: &Lua, engine: &Rc<Engine>, job: Job) -> LuaResult<()> {
     let label = engine.state.borrow().signals.get(job.signal).label.to_str_lossy().into_owned();
     let mut message = format!("Maximum event re-entrancy depth exceeded for {label}");
-    if let JobTarget::Handler(connection) = job.target {
+    if let JobTarget::Handler { connection, .. } = job.target {
         let begun = engine.state.borrow_mut().signals.begin_handler(connection);
         let Some((callback, _)) = begun else { return Ok(()) };
         let info = callback.info();
@@ -1277,12 +1408,11 @@ fn flush_deferred_upto(lua: &Lua, engine: &Rc<Engine>, processed: &mut usize, up
                 break;
             }
             if *processed >= state.sched.max_deferred_per_flush {
-                let now = state.sched.now;
-                state.output.add(
+                drop(state);
+                engine.output(
                     "error",
-                    "Scheduler: deferred queue exceeded its per-flush budget (runaway re-entrancy?)".into(),
+                    "Scheduler: deferred queue exceeded its per-flush budget (runaway re-entrancy?)",
                     None,
-                    now,
                 );
                 break;
             }
@@ -1293,7 +1423,17 @@ fn flush_deferred_upto(lua: &Lua, engine: &Rc<Engine>, processed: &mut usize, up
             let mut state = engine.state.borrow_mut();
             std::mem::replace(&mut state.sched.event_depth, job.event_depth)
         };
+        let target_label = match &job.target {
+            JobTarget::Handler { connection, .. } => {
+                let signal = engine.state.borrow().signals.get(job.signal).label.to_str_lossy().into_owned();
+                format!("handler signal={signal} connection={}", connection.slot())
+            }
+            JobTarget::Thread(_) => "thread".to_string(),
+            JobTarget::DisconnectAll(instance) => format!("disconnect instance={instance:?}"),
+        };
+        trace_scheduler_format(engine, || format!("deferred {} begin {target_label}", *processed));
         let result = run_job(lua, engine, job);
+        trace_scheduler_format(engine, || format!("deferred {} end {target_label}", *processed));
         engine.state.borrow_mut().sched.event_depth = previous;
         if let Err(error) = result {
             engine.state.borrow_mut().sched.flushing -= 1;
@@ -1347,6 +1487,18 @@ fn run_timers_in(lua: &Lua, engine: &Rc<Engine>, legacy: bool, limit: Option<f64
         // (cancelled entries count too: they are popped and discarded by resume)
         profile::count("timerEntries", 1);
         let elapsed = engine.state.borrow().sched.now - timer.started;
+        // (a client resumes a parked thread at a price of its own, booked to the line it waited on: cost.rs RESUMED_WAIT, RESUMED_DELAY)
+        let resumable = can_resume(engine, &timer.thread);
+        if resumable {
+            let price = match timer.kind {
+                TimerKind::Wait | TimerKind::LegacyWait => crate::cost::RESUMED_WAIT,
+                TimerKind::Delay => crate::cost::RESUMED_DELAY,
+            };
+            charge_dispatch_to(lua, engine, &timer.thread, price, 0);
+            if crate::profiler::attribution::on() {
+                crate::profiler::attribution::resumed(price);
+            }
+        }
         let args = match timer.kind {
             TimerKind::Wait => LuaMultiValue::from_iter([LuaValue::Number(elapsed)]),
             TimerKind::LegacyWait => {
@@ -1358,7 +1510,11 @@ fn run_timers_in(lua: &Lua, engine: &Rc<Engine>, legacy: bool, limit: Option<f64
                 job_args(lua, engine, &timer.args)?
             }
         };
-        resume(lua, engine, &timer.thread, args);
+        trace_scheduler_format(engine, || format!("timer {:?} begin", timer.kind));
+        if resumable {
+            resume_ready(lua, engine, &timer.thread, args);
+        }
+        trace_scheduler_format(engine, || format!("timer {:?} end", timer.kind));
         if flush == TimerFlush::EachResumption {
             flush_deferred(lua, engine)?;
         }
@@ -1379,8 +1535,10 @@ fn run_hooks(lua: &Lua, engine: &Rc<Engine>, phase: Phase, delta: f64) -> LuaRes
     });
     let result = (|| {
         let hooks = engine.state.borrow().sched.hooks_of(phase);
-        for hook in hooks {
+        for (index, hook) in hooks.into_iter().enumerate() {
+            trace_scheduler_format(engine, || format!("phase {phase:?} hook {index} begin"));
             hook(lua, engine, delta)?;
+            trace_scheduler_format(engine, || format!("phase {phase:?} hook {index} end"));
             flush_deferred(lua, engine)?;
         }
         Ok(())
@@ -1454,7 +1612,12 @@ fn step_tweens(lua: &Lua, engine: &Rc<Engine>, delta: f64) -> LuaResult<()> {
 fn run_phase(lua: &Lua, engine: &Rc<Engine>, phase: Phase, label: &'static str, delta: f64) -> LuaResult<()> {
     profile::enter(label);
     let hooks = engine.state.borrow().sched.hooks_of(phase);
-    let result = hooks.into_iter().try_for_each(|hook| hook(lua, engine, delta));
+    let result = hooks.into_iter().enumerate().try_for_each(|(index, hook)| {
+        trace_scheduler_format(engine, || format!("{label} {phase:?} hook {index} begin"));
+        let result = hook(lua, engine, delta);
+        trace_scheduler_format(engine, || format!("{label} {phase:?} hook {index} end"));
+        result
+    });
     profile::leave();
     result
 }
@@ -1527,6 +1690,18 @@ fn heartbeat(lua: &Lua, engine: &Rc<Engine>, at: f64, delta: f64) -> LuaResult<(
     heartbeat_handlers(lua, engine, delta)
 }
 
+/// Start before interpreted scripts run, so work before the first render has a cold-code frame too.
+pub(crate) fn start_cold_tracking(lua: &Lua, engine: &Engine) {
+    let ready = {
+        let state = engine.state.borrow();
+        !state.sched.cold_tracking && state.sched.vm_counters.is_some()
+    };
+    if ready && crate::lua::modules::interprets_scripts(engine) {
+        crate::cost::cold_tracking(lua, true);
+        engine.state.borrow_mut().sched.cold_tracking = true;
+    }
+}
+
 /// The render step: a playing client's bindings, RenderStepped / PreRender, the tween step and one resumption point; edit mode's
 /// bindings, tween step and flush, then RenderStepped / PreRender (a server's tweens step in heartbeat_timers); then the render
 /// hooks (input, layout).
@@ -1545,9 +1720,8 @@ fn render(lua: &Lua, engine: &Rc<Engine>, delta: f64) -> LuaResult<()> {
     let cold = engine.state.borrow().sched.cold_tracking;
     if cold {
         crate::cost::cold_frame(lua);
-    } else if engine.state.borrow().sched.vm_counters.is_some() && crate::lua::modules::interprets_scripts(engine) {
-        crate::cost::cold_tracking(lua, true);
-        engine.state.borrow_mut().sched.cold_tracking = true;
+    } else {
+        start_cold_tracking(lua, engine);
     }
     flush_deferred(lua, engine)?;
     run_phase(lua, engine, Phase::RenderStep, "renderBindings", delta)?;
@@ -1619,6 +1793,9 @@ fn capture(lua: &Lua, engine: &Rc<Engine>, at: f64, event: RecordedEvent) -> Lua
 /// Replays recorded events up to and including the next render step; false when none ran (the
 /// clock ended or reached its capture).
 fn step_recorded(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<bool> {
+    // (the boundary profile counts the phases marked in this step in the frame it renders; `run_until` calls this
+    // directly when it replays up to a capture, and the capture's last step renders nothing)
+    let _boundary_frame = crate::boundary::Frame::begin();
     let events = {
         let mut state = engine.state.borrow_mut();
         if state.sched.track_build {
@@ -1702,6 +1879,8 @@ fn step_recorded(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<bool> {
 /// recorded clock replays its next frame instead while it has one; after its capture nothing
 /// runs.
 pub fn step(lua: &Lua, engine: &Rc<Engine>, duration: Option<f64>) -> LuaResult<()> {
+    // (the boundary profile's step guard; a recorded clock's `step_recorded` below opens a nested one, which does nothing)
+    let _boundary_frame = crate::boundary::Frame::begin();
     // (a profile's timeline: one row a frame; off, one thread-local read)
     if crate::profiler::active() {
         crate::profiler::frame_begin(engine);
@@ -1713,6 +1892,7 @@ pub fn step(lua: &Lua, engine: &Rc<Engine>, duration: Option<f64>) -> LuaResult<
 }
 
 fn step_frame(lua: &Lua, engine: &Rc<Engine>, duration: Option<f64>) -> LuaResult<()> {
+    trace_scheduler(engine, "frame begin");
     {
         let state = engine.state.borrow();
         if state.sched.captured {
@@ -1748,6 +1928,7 @@ fn step_frame(lua: &Lua, engine: &Rc<Engine>, duration: Option<f64>) -> LuaResul
         return Ok(());
     }
     let target = start + delta;
+    trace_scheduler(engine, "heartbeat begin");
     match beats {
         Some(beats) => {
             let mut elapsed = 0.0;
@@ -1760,8 +1941,11 @@ fn step_frame(lua: &Lua, engine: &Rc<Engine>, duration: Option<f64>) -> LuaResul
         }
         None => heartbeat(lua, engine, target, f32r(delta))?,
     }
+    trace_scheduler(engine, "heartbeat end");
     engine.state.borrow_mut().sched.now = target;
+    trace_scheduler(engine, "render begin");
     render(lua, engine, f32r(delta))?;
+    trace_scheduler(engine, "render end");
     let mut state = engine.state.borrow_mut();
     if let Some(index) = state.sched.display_interval_index.as_mut() {
         *index += 1;
@@ -1774,6 +1958,8 @@ fn step_frame(lua: &Lua, engine: &Rc<Engine>, duration: Option<f64>) -> LuaResul
 /// retained across calls, including calls shorter than one beat and switches back to fixed
 /// stepping. Returns the render steps run (0 or 1).
 pub fn step_display_duration(lua: &Lua, engine: &Rc<Engine>, duration: f64) -> LuaResult<u32> {
+    // (the boundary profile's step guard: a step of 0 or 1 render steps counts a frame only if it renders)
+    let _boundary_frame = crate::boundary::Frame::begin();
     {
         let state = engine.state.borrow();
         if state.sched.recorded.is_some() {

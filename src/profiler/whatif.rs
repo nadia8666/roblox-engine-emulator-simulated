@@ -6,7 +6,7 @@
 //! on each.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fmt::Write as _,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -16,12 +16,74 @@ use std::{
 
 use serde_json::{Value as Json, json};
 
+use super::stats;
+
 /// The harness every run of a comparison runs, written into its folder
 pub const HARNESS: &str = include_str!("whatif.luau");
 
 const USAGE: &str = "usage: ree profile try <file.luau> [--out <dir>] [--sizes a,b] [--variants a,b] [--frames <n>] [--rounds <n>]
-                       [--time-ms <ms>] [--jobs <n>] [--no-time] [--no-hw] [--no-check] [--keep-timed] [--script-timeout <s>]
-                       [engine options: --roots, --project, --place, --mount, ...]   (docs/cli.md \"What-if comparisons\")";
+                       [--max-rounds <n>] [--time-ms <ms>] [--jobs <n>] [--no-time] [--no-hw] [--no-check] [--keep-timed]
+                       [--script-timeout <s>] [engine options: --roots, --project, --place, --mount, ...]
+                       (docs/cli.md \"What-if comparisons\")";
+
+/// The kinds each profiled run takes: what compare.json reads (figures by phase from the marks, heap snapshots and table
+/// shapes, the call tree, caches, the timeline)
+const PROFILE_KINDS: &str = "work,caches,alloc,heap,timeline,phases";
+
+/// Rounds added at a time for the host-time pairs still undecided
+const ADDED_ROUNDS: usize = 6;
+/// The smallest host-time gap a verdict names, whatever the noise: below it, how two functions' code happens to lie in
+/// memory can move one against the other as much as their design does
+const HOST_FLOOR: f64 = 0.02;
+/// A 60 fps frame, and the share of it below which a gap in a ms figure is too small to matter at the file's `per_frame`
+/// calls a frame; and the absolute floor a call (no price or clock resolves less)
+const FRAME_MS: f64 = 1000.0 / 60.0;
+const MATERIAL_SHARE: f64 = 0.001;
+const MATERIAL_NS: f64 = 1.0;
+/// The gap in a count from which it matters, in what a frame pays (the gap a call times the file's `per_frame`): this
+/// share of a call's instructions, and at least this many; and the gap in bytes a frame
+const MATERIAL_COUNT_SHARE: f64 = 0.001;
+const MATERIAL_COUNT: f64 = 10.0;
+const MATERIAL_BYTES: f64 = 1024.0;
+
+/// The gap in a ms figure a call from which it matters: 0.1 % of a 60 fps frame over the calls the game makes a frame, and
+/// 1 ns at least
+pub fn ms_floor(per_frame: f64) -> f64 {
+    (MATERIAL_NS * 1e-6).max(FRAME_MS * MATERIAL_SHARE / per_frame.max(1e-9))
+}
+
+/// What a gap is judged against: the ms floor a call ([`ms_floor`]), the calls a frame (the file's `per_frame`), a call's
+/// instructions and inline cache lookups, and the clock the cycles ran at (cycles a ms, measured from the same runs)
+#[derive(Clone, Copy, Debug)]
+struct Floor {
+    ms: f64,
+    per_frame: f64,
+    insns: f64,
+    lookups: f64,
+    cycles_per_ms: Option<f64>,
+}
+
+/// Whether a gap between two variants' figures matters, by the gap itself and never by how large either figure is, and
+/// by what a frame pays, as the ms floor is: a ms figure's from the floor; cycles as the time they take at the clock they
+/// ran at, against the same floor; a count a call (of a per-call figure) times the calls a frame, from 0.1 % of a call's
+/// instructions and 10; bytes so from 1 KB; a hit rate's by the lookups it moves, as a count's; instructions always (they
+/// are the work itself). A figure that is not per call (the heap a phase holds) is judged as it is
+fn material(metric: &Metric, gap: f64, floor: Floor) -> bool {
+    let per_frame = if metric.per_call || metric.key == "cache_hit_rate" { floor.per_frame.max(1e-9) } else { 1.0 };
+    let count_floor = (floor.insns * MATERIAL_COUNT_SHARE).max(MATERIAL_COUNT);
+    match (metric.key, metric.unit) {
+        ("host_cycles" | "hw_cycles", _) => match floor.cycles_per_ms.filter(|rate| *rate > 0.0) {
+            Some(rate) => gap / rate >= floor.ms,
+            None => gap * per_frame >= count_floor,
+        },
+        (_, "ms") => gap >= floor.ms,
+        ("insns", _) => true,
+        (_, "count") => gap * per_frame >= count_floor,
+        (_, "bytes") => gap * per_frame >= MATERIAL_BYTES,
+        ("cache_hit_rate", _) => gap * floor.lookups * per_frame >= count_floor,
+        _ => true,
+    }
+}
 
 const FPS: f64 = 60.0;
 /// What a timed run's prepared inputs may hold (its calls are cut to fit)
@@ -90,8 +152,8 @@ const fn metric(key: &'static str, label: &'static str, unit: &'static str, bett
 
 /// The figures, in the order a table shows them
 pub const METRICS: &[Metric] = &[
-    metric("work_ms", "work clock", "ms", "lower", true, true, true, "the work clock: ms of a client's time for the scripts' work (docs/engine.md \"Work clock\")"),
-    metric("warm_ms", "work clock, warm", "ms", "lower", true, true, true, "the work clock without the frame's cold first touches: what the same work costs when its data is in the CPU's caches, as in a hot loop"),
+    metric("work_ms", "work clock, first in frame", "ms", "lower", true, true, true, "the work clock of the variant's own code (the generated harness's left out), as its first call in a frame pays it: ms of a client's time (docs/engine.md \"Work clock\")"),
+    metric("warm_ms", "work clock, hot in a loop", "ms", "lower", true, true, true, "the variant's work clock without any cold or first-use charge (tables, functions and their code, C and engine functions, instances, members and engine paths): what a call costs when a loop has run it already"),
     metric("host_ms", "host time", "ms", "lower", false, true, true, "this machine's time a call took in ree's interpreter: the fastest of the timed rounds (whatever else runs on the machine only ever slows a round)"),
     metric("host_ms_median", "host time, median round", "ms", "none", false, false, true, "the median of the timed rounds: above host time by what slowed the rounds"),
     metric("host_cycles", "host cycles", "count", "lower", false, false, true, "the run thread's CPU cycles a call took (reference cycles): the fastest of the timed rounds"),
@@ -99,22 +161,27 @@ pub const METRICS: &[Metric] = &[
     metric("alloc_bytes", "allocated", "bytes", "lower", true, true, true, "bytes the VM allocated: objects, table parts, stacks"),
     metric("allocs", "allocations", "count", "lower", true, true, true, "objects the VM allocated: tables, closures, strings, userdata, threads"),
     metric("heap_bytes", "heap held", "bytes", "lower", true, true, false, "the reachable heap at the phase's end beyond its start: what the phase still holds"),
-    metric("gc_steps", "collector steps", "count", "lower", true, true, true, "the collector's steps (it paces itself by the scripts' work, so they are the same every run); the work clock does not charge them"),
+    metric("gc_steps", "collector steps", "count", "lower", true, true, true, "the collector's steps (it paces itself by the scripts' work, so they are the same every run); the work clock charges their work in the work figure, and gc_ms is their host time"),
     metric("gc_freed", "collector freed", "bytes", "lower", true, false, true, "bytes the collector freed"),
     metric("gc_ms", "collector host time", "ms", "none", false, false, true, "host time of the collector's steps in the profiled run (its profilers slow it: a guide, not a measure)"),
-    metric("cache_hit_rate", "inline cache hits", "ratio", "higher", true, false, false, "Luau's inline caches: hits of the lookups (misses and slow paths the rest)"),
-    metric("cache_misses", "inline cache misses", "count", "lower", true, true, true, "inline cache misses and slow paths"),
+    metric("cache_hit_rate", "inline cache hits", "ratio", "higher", true, false, false, "Luau's inline caches: hits of the lookups a table serves (a value another type's metamethod serves is no cache's)"),
+    metric("cache_uncharged_ms", "inline caches' uncharged work", "ms", "lower", true, true, true, "what the inline caches' outcomes the work clock does not charge cost over hits at the committed prices (profiler/prices.rs), in the work clock's ms, beyond work_ms: a reprediction, an absent key, an insert with room, a metatable walk by its depth; a rehash and a looked-up import are the clock's own charge, already in work_ms; prices within the noise are left out"),
+    metric("cache_lookups", "inline cache lookups", "count", "none", true, false, true, "the lookups a table serves"),
     metric("cache_hits", "inline cache hit count", "count", "none", true, false, true, "inline cache hits"),
-    metric("cold_tables", "cold tables", "count", "lower", true, true, true, "tables the frame touched first that were made before it (a client finds them out of its CPU's caches)"),
-    metric("cold_ms", "cold touches' work", "ms", "lower", true, false, true, "what the work clock charged for the frame's cold first touches of tables, closures and functions"),
+    metric("cold_tables", "cold tables", "count", "lower", true, true, true, "tables the frame touched first that were made before it, the whole phase's with the harness's (a client finds them out of its CPU's caches)"),
+    metric("cold_ms", "cold and first-use charges", "ms", "lower", true, false, true, "what the work clock charged the variant's code for the frame's cold and first-use touches: first in frame less hot in a loop"),
     metric("rehashes", "table rehashes", "count", "lower", true, true, true, "tables that rehashed to grow"),
     metric("rehash_keys", "keys rehashed", "count", "lower", true, true, true, "keys those rehashes moved"),
     metric("hw_instructions", "CPU instructions", "count", "lower", false, true, true, "instructions the CPU retired (hardware counter)"),
     metric("hw_cycles", "CPU cycles", "count", "lower", false, true, true, "core cycles (hardware counter)"),
     metric("hw_ipc", "CPU IPC", "ratio", "higher", false, false, false, "instructions a cycle"),
-    metric("hw_l1d_misses", "L1D misses", "count", "lower", false, true, true, "L1 data cache misses (hardware counter)"),
-    metric("hw_l2_misses", "L2 misses", "count", "lower", false, true, true, "L2 misses (hardware counter)"),
-    metric("hw_llc_misses", "LLC misses", "count", "lower", false, true, true, "last-level cache misses (hardware counter)"),
+    metric("hw_load_stall_cycles", "cycles stalled on loads", "count", "lower", false, true, true, "cycles nothing retired because the oldest op waited for load data (hardware counter): what memory cost"),
+    metric("hw_load_stall_share", "load stall share", "ratio", "lower", false, false, false, "the share of cycles stalled on loads"),
+    metric("hw_miss_latency", "L1D miss latency", "count", "lower", false, false, false, "cycles an L1 data cache miss stayed outstanding on average (misses outstanding a cycle, summed, over misses allocated): where misses were served from, not what they cost"),
+    metric("hw_miss_buffers", "L1D miss buffers", "count", "lower", false, true, true, "lines the L1 data cache fetched (hardware counter: one a line, however many loads missed it)"),
+    metric("hw_demand_fills", "demand fills", "count", "lower", false, true, true, "lines filled for demand loads and stores (hardware counter: one a line; prefetched lines not at all)"),
+    metric("hw_demand_fills_beyond_l2", "demand fills beyond L2", "count", "lower", false, true, true, "demand fills from beyond the core's L2 (hardware counter)"),
+    metric("hw_demand_fills_beyond_l3", "demand fills beyond L3", "count", "lower", false, true, true, "demand fills from beyond the core complex's L3 (hardware counter)"),
     metric("hw_branch_misses", "branch misses", "count", "lower", false, true, true, "mispredicted branches (hardware counter)"),
 ];
 
@@ -131,6 +198,8 @@ pub struct Options {
     pub variants: Option<Vec<String>>,
     pub frames: Option<u32>,
     pub rounds: u32,
+    /// The most rounds host time may take with the rounds added for undecided pairs (`rounds` adds none)
+    pub max_rounds: u32,
     pub time_ms: f64,
     pub jobs: usize,
     pub time: bool,
@@ -151,6 +220,8 @@ fn numbers(key: &str, text: &str) -> Result<Vec<f64>, String> {
 /// `ree profile try`'s command line
 pub fn parse(args: &[String]) -> Result<Options, String> {
     let args = crate::launch::split_equals(args);
+    // A comparison writes its harness and contexts before starting an engine, even with an explicit --out.
+    crate::require_standalone_state(&crate::default_repo())?;
     let mut engine = crate::launch::Args::default();
     let mut file: Option<String> = None;
     let mut out: Option<String> = None;
@@ -161,6 +232,7 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         variants: None,
         frames: None,
         rounds: 9,
+        max_rounds: 0,
         time_ms: 10.0,
         jobs: 4,
         time: true,
@@ -184,6 +256,7 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
             "--variants" => options.variants = Some(need()?.split(',').map(|name| name.trim().to_string()).filter(|name| !name.is_empty()).collect()),
             "--frames" => options.frames = Some(count(need()?)?),
             "--rounds" => options.rounds = count(need()?)?,
+            "--max-rounds" => options.max_rounds = count(need()?)?,
             "--jobs" => options.jobs = count(need()?)? as usize,
             "--time-ms" => options.time_ms = need()?.parse::<f64>().ok().filter(|ms| *ms > 0.0).ok_or("--time-ms: milliseconds above 0")?,
             "--script-timeout" | "--max-script-timeouts" | "--max-wall-seconds" => options.passed.extend([key.clone(), need()?]),
@@ -214,12 +287,14 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         index += used;
     }
     let file = file.ok_or("a variant file")?;
+    // (by default host time may take three times its rounds, as rounds are added for pairs still undecided)
+    options.max_rounds = if options.max_rounds == 0 { options.rounds * 3 } else { options.max_rounds.max(options.rounds) };
     options.file = std::path::absolute(&file).map_err(|error| format!("{file}: {error}"))?;
     if !options.file.is_file() {
         return Err(format!("{file}: no such file"));
     }
     let stem = options.file.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_else(|| "variants".into());
-    let out = out.map(PathBuf::from).unwrap_or_else(|| Path::new("what-if").join(&stem));
+    let out = out.map(PathBuf::from).unwrap_or_else(|| crate::default_output_path(Path::new("what-if").join(&stem)));
     options.out = std::path::absolute(&out).map_err(|error| format!("{}: {error}", out.display()))?;
     // without a project (no roots, project, place or mount), the runs have none: a folder of the harness's own stops the
     // implicit project a checkout may have
@@ -282,6 +357,10 @@ pub struct Spec {
     pub sizes: Vec<f64>,
     pub frames: u32,
     pub check: bool,
+    /// How the results are checked: `function` (the file's check), `equality` (check = true), None (no check: by digest)
+    pub check_kind: Option<String>,
+    /// How many times a frame the game runs the code (`per_frame`, default 1): what makes a gap in a ms figure material
+    pub per_frame: f64,
     pub module: Option<String>,
     pub variants: Vec<Variant>,
 }
@@ -320,6 +399,8 @@ fn ree_run(options: &Options, args: &[String], timed: bool) -> Ran {
     for variable in UNSET {
         command.env_remove(variable);
     }
+    // (the harness is ree's own: its code is never the game's, nor a user's harness: report.rs tool_module)
+    command.env(crate::profiler::report::TOOL_HARNESS_ENV, "1");
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
@@ -442,7 +523,10 @@ fn list(options: &Options) -> Result<Spec, String> {
         about: listed["about"].as_str().map(str::to_string),
         sizes,
         frames: options.frames.unwrap_or_else(|| listed["frames"].as_u64().unwrap_or(1).max(1) as u32),
-        check: listed["check"].as_bool().unwrap_or(false),
+        // (a string names the kind; a harness from before said only whether the file had a check)
+        check: listed["check"].as_bool().unwrap_or(false) || listed["check"].is_string(),
+        check_kind: listed["check"].as_str().map(str::to_string).or_else(|| listed["check"].as_bool().filter(|check| *check).map(|_| "function".to_string())),
+        per_frame: listed["per_frame"].as_f64().filter(|rate| rate.is_finite() && *rate > 0.0).unwrap_or(1.0),
         module: listed["module"].as_str().map(str::to_string),
         variants,
     })
@@ -474,6 +558,8 @@ pub struct Run {
     pub hw_profile: bool,
     /// The hardware counters' figures a call, by metric key, one per round (None: that round's run failed)
     pub hw_rounds: BTreeMap<&'static str, Vec<Option<f64>>>,
+    /// The core clock the counters' runs ran at: core cycles a ms, the median of its rounds
+    pub hw_cycles_per_ms: Option<f64>,
 }
 
 /// A function's part of the run phase
@@ -527,26 +613,38 @@ pub fn phase_figures(profile: &Json, from: &str, to: &str, calls: f64) -> Figure
     }
     if let (Some(cold_tables), Some(cold_closures), Some(cold_protos), Some(cold_code)) = (delta(&["vm", "cold_tables"]), delta(&["vm", "cold_closures"]), delta(&["vm", "cold_protos"]), delta(&["vm", "cold_code"])) {
         put("cold_tables", Some(cold_tables));
-        use crate::cost::{LUAU_COLD_CLOSURE, LUAU_COLD_CODE, LUAU_COLD_PROTO, LUAU_COLD_TABLE};
-        let cold_ms = (cold_tables * LUAU_COLD_TABLE + cold_closures * LUAU_COLD_CLOSURE + cold_protos * LUAU_COLD_PROTO + cold_code * LUAU_COLD_CODE) * 1e-6;
+        // (every cold and first-use charge the marks carry, the engine's too; an older profile's VM counts at their prices)
+        let cold_ms = delta(&["cold_ms"]).unwrap_or_else(|| {
+            use crate::cost::{LUAU_COLD_CLOSURE, LUAU_COLD_CODE, LUAU_COLD_PROTO, LUAU_COLD_TABLE};
+            (cold_tables * LUAU_COLD_TABLE + cold_closures * LUAU_COLD_CLOSURE + cold_protos * LUAU_COLD_PROTO + cold_code * LUAU_COLD_CODE) * 1e-6
+        });
         put("cold_ms", Some(cold_ms));
         if let Some(work) = delta(&["work_ms"]) {
             put("warm_ms", Some((work - cold_ms).max(0.0)));
         }
     }
     if let (Some(before), Some(after)) = (a["caches"].as_object(), b["caches"].as_object()) {
-        let (mut hits, mut misses) = (0.0, 0.0);
+        use crate::profiler::vm;
+        let (mut hits, mut lookups, mut uncharged_us) = (0.0, 0.0, 0.0);
+        let counts = |row: Option<&Json>| -> Vec<u64> { row.and_then(Json::as_array).map(|o| o.iter().filter_map(Json::as_u64).collect()).unwrap_or_default() };
         for (kind, outcomes) in after {
-            let now: Vec<f64> = outcomes.as_array().map(|o| o.iter().filter_map(Json::as_f64).collect()).unwrap_or_default();
-            let then: Vec<f64> = before.get(kind).and_then(Json::as_array).map(|o| o.iter().filter_map(Json::as_f64).collect()).unwrap_or_default();
-            let at = |values: &Vec<f64>, slot: usize| values.get(slot).copied().unwrap_or(0.0);
-            hits += at(&now, 0) - at(&then, 0);
-            misses += at(&now, 1) - at(&then, 1) + at(&now, 2) - at(&then, 2);
+            let (now, then) = (counts(Some(outcomes)), counts(before.get(kind)));
+            let (depths_now, depths_then) = (counts(b["cache_depths"].get(kind)), counts(a["cache_depths"].get(kind)));
+            let at = |values: &Vec<u64>, slot: usize| values.get(slot).copied().unwrap_or(0);
+            // (luau_caches.outcomes' order; a value another type serves is no cache's lookup)
+            let phase: [u64; vm::CACHE_OUTCOMES] = std::array::from_fn(|slot| at(&now, slot).saturating_sub(at(&then, slot)));
+            let walks: [u64; vm::CACHE_DEPTHS] = std::array::from_fn(|depth| at(&depths_now, depth).saturating_sub(at(&depths_then, depth)));
+            hits += phase[vm::HIT] as f64;
+            lookups += (phase.iter().sum::<u64>() - phase[vm::NOT_TABLE]) as f64;
+            if let Some(index) = vm::CACHE_KINDS.iter().position(|name| name == kind) {
+                uncharged_us += crate::profiler::prices::site_extra(index, &phase, &walks, 1.0).uncharged_us;
+            }
         }
         put("cache_hits", Some(hits));
-        put("cache_misses", Some(misses));
-        if hits + misses > 0.0 {
-            put("cache_hit_rate", Some(hits / (hits + misses)));
+        put("cache_lookups", Some(lookups));
+        put("cache_uncharged_ms", Some(uncharged_us / 1e3));
+        if lookups > 0.0 {
+            put("cache_hit_rate", Some(hits / lookups));
         }
     }
     figures
@@ -658,12 +756,39 @@ fn hot_functions(profile: &Json, functions: &BTreeMap<i64, &Json>, top: usize) -
     hot
 }
 
+/// The work of the variant's own code in `phase` and its cold and first-use charges (ms, the run's total): each function's self work
+/// there less what it did for the harness, with cold charges split by the same caller side. None for a profile
+/// without the per-function split (before the work clock's rework).
+fn own_work(profile: &Json, phase: &str) -> Option<(f64, f64)> {
+    let functions = profile["functions"].as_array()?;
+    let (mut work, mut cold, mut split) = (0.0, 0.0, false);
+    for function in functions {
+        let Some(figures) = function["phases"].get(phase) else { continue };
+        let own = figures["self_work_ms"].as_f64().unwrap_or(0.0) - figures["harness_self_work_ms"].as_f64().unwrap_or(0.0);
+        work += own.max(0.0);
+        if let Some(function_cold) = figures["cold_work_ms"].as_f64() {
+            split = true;
+            let harness_cold = figures["harness_cold_work_ms"].as_f64().unwrap_or(if function["harness"] == true { function_cold } else { 0.0 });
+            cold += (function_cold - harness_cold).max(0.0);
+        }
+    }
+    split.then_some((work, cold.min(work)))
+}
+
 /// A profiled run's figures, read from its profile folder
 fn read_profile(dir: &Path, frames: f64, paths: &ModulePaths) -> Result<(Figures, Figures, Option<(f64, f64, f64)>, Json, Vec<Hot>), String> {
     let profile = super::diff::load_profile(dir)?;
     let functions: BTreeMap<i64, &Json> = profile["functions"].as_array().into_iter().flatten().filter_map(|function| Some((function["id"].as_i64()?, function))).collect();
     let setup = phase_figures(&profile, "setup", "run", 1.0);
     let mut run = phase_figures(&profile, "run", "after", frames);
+    // (the variant's own subtree: the generated harness's wrapper and its check are not the variant's work; first in frame with every
+    // cold and first-use charge, hot in a loop without any)
+    if let Some((work, cold)) = own_work(&profile, "run") {
+        let calls = frames.max(1.0);
+        run.insert("work_ms", work / calls);
+        run.insert("warm_ms", (work - cold).max(0.0) / calls);
+        run.insert("cold_ms", cold / calls);
+    }
     let heap = match (reachable(&profile, "setup"), reachable(&profile, "run"), reachable(&profile, "after")) {
         (Some(before), Some(set), Some(after)) => Some((before, set, after)),
         _ => None,
@@ -678,25 +803,47 @@ fn read_profile(dir: &Path, frames: f64, paths: &ModulePaths) -> Result<(Figures
     Ok((setup, run, heap, tables, hot))
 }
 
-/// The hardware counters of a run's hw profile, the run phase per call
-fn read_hw(dir: &Path, frames: f64) -> Option<Figures> {
+/// The hardware counters of a run's hw profile, the run phase per call, and the core clock they ran at: the core cycles
+/// a ms of the run's own stretches (its marks' host time)
+fn read_hw(dir: &Path, frames: f64) -> Option<(Figures, Option<f64>)> {
     let profile = super::diff::load_profile(dir).ok()?;
     let phases = profile["counters"]["phases"].as_array()?;
     let run = phases.iter().find(|phase| phase["phase"] == "run")?;
-    let counts = &run["counts"];
+    // (by the counters' names now: a profile from before the fills were renamed reads the same)
+    let counts: std::collections::BTreeMap<String, f64> = run["counts"].as_object()?.iter().filter_map(|(name, value)| Some((super::hw::counters::canonical(name).to_string(), value.as_f64()?))).collect();
     let mut figures = Figures::new();
     let calls = frames.max(1.0);
-    for (counter, key) in [("instructions", "hw_instructions"), ("cycles", "hw_cycles"), ("l1d-misses", "hw_l1d_misses"), ("l2-misses", "hw_l2_misses"), ("llc-misses", "hw_llc_misses"), ("branch-misses", "hw_branch_misses")] {
-        if let Some(value) = counts[counter].as_f64() {
+    for (counter, key) in [
+        ("instructions", "hw_instructions"),
+        ("cycles", "hw_cycles"),
+        ("load-stall-cycles", "hw_load_stall_cycles"),
+        ("miss-buffer-allocs", "hw_miss_buffers"),
+        ("demand-fills", "hw_demand_fills"),
+        ("demand-fills-beyond-l2", "hw_demand_fills_beyond_l2"),
+        ("demand-fills-beyond-l3", "hw_demand_fills_beyond_l3"),
+        ("branch-misses", "hw_branch_misses"),
+    ] {
+        if let Some(value) = counts.get(counter) {
             figures.insert(key, value / calls);
         }
     }
-    if let (Some(instructions), Some(cycles)) = (counts["instructions"].as_f64(), counts["cycles"].as_f64()) {
-        if cycles > 0.0 {
-            figures.insert("hw_ipc", instructions / cycles);
-        }
+    let names: Vec<String> = counts.keys().cloned().collect();
+    let values: Vec<f64> = counts.values().copied().collect();
+    for figure in super::hw::counters::figures(&names, &values) {
+        let key = match figure.key {
+            "IPC" => "hw_ipc",
+            super::hw::counters::LOAD_STALL_SHARE => "hw_load_stall_share",
+            super::hw::counters::MISS_LATENCY => "hw_miss_latency",
+            _ => continue,
+        };
+        figures.insert(key, figure.value);
     }
-    (!figures.is_empty()).then_some(figures)
+    // (the core cycles a millisecond of the run thread's time: what turns a cycle gap into the time it costs)
+    let rate = match (counts.get("cycles").copied(), run_stretches(&profile)) {
+        (Some(cycles), Some((run_ms, _))) if run_ms > 0.0 => Some(cycles / run_ms),
+        _ => None,
+    };
+    (!figures.is_empty()).then_some((figures, rate))
 }
 
 /// Whether the hardware counters are read here, and why not: from a probe's hw profile
@@ -714,24 +861,18 @@ fn hw_available(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Least squares of ln(value) against ln(n) over the positive points: (exponent, r², the exponent between the last two)
-pub fn fit(points: &[(f64, f64)]) -> Option<(f64, f64, Option<f64>)> {
-    let points: Vec<(f64, f64)> = points.iter().filter(|(n, value)| *n > 0.0 && *value > 0.0).map(|(n, value)| (n.ln(), value.ln())).collect();
-    if points.len() < 2 {
-        return None;
-    }
-    let count = points.len() as f64;
-    let (mx, my) = (points.iter().map(|p| p.0).sum::<f64>() / count, points.iter().map(|p| p.1).sum::<f64>() / count);
-    let sxx: f64 = points.iter().map(|p| (p.0 - mx).powi(2)).sum();
-    if sxx <= 0.0 {
-        return None;
-    }
-    let sxy: f64 = points.iter().map(|p| (p.0 - mx) * (p.1 - my)).sum();
-    let slope = sxy / sxx;
-    let syy: f64 = points.iter().map(|p| (p.1 - my).powi(2)).sum();
-    let r2 = if syy <= 0.0 { 1.0 } else { (sxy * sxy) / (sxx * syy) };
-    let last = points.windows(2).last().map(|pair| (pair[1].1 - pair[0].1) / (pair[1].0 - pair[0].0));
-    Some((slope, r2, last))
+/// How a figure grows with n, as compare.json's `scaling` and `functions` give it: the exponent at large n (the growing
+/// part's slope between the two largest sizes once a fixed cost a call is fitted apart), the fit, each segment's slope, the
+/// last segment's raw slope, and the points
+fn growth_json(points: &[(f64, f64)]) -> Option<Json> {
+    let found = stats::growth(points)?;
+    Some(json!({
+        "exponent": found.large_n,
+        "fit": {"k": found.k, "fixed": found.fixed, "coefficient": found.coefficient, "error": found.error, "fitted": found.fitted},
+        "segments": found.segments.iter().map(|(from, to, slope)| json!([from, to, slope])).collect::<Vec<_>>(),
+        "last": found.segments.last().map(|segment| segment.2),
+        "points": points.iter().map(|(n, value)| json!([n, value])).collect::<Vec<_>>(),
+    }))
 }
 
 /// Round by round, b's figure over a's (the rounds both have)
@@ -739,15 +880,151 @@ pub fn paired(a: &[Option<f64>], b: &[Option<f64>]) -> Vec<f64> {
     a.iter().zip(b.iter()).filter_map(|(a, b)| Some((a.filter(|a| *a > 0.0)?, (*b)?))).map(|(a, b)| b / a).collect()
 }
 
-/// Whether a host-time winner is clear of another variant: its fastest round is faster by more than the A/A pair's fastest
-/// rounds differ (two runs of the same code: `aa`, their ratio), and by 3 % at least, and its median round is faster too.
-/// The fastest round is the figure because whatever else runs on the machine only ever slows a round: on a shared machine
-/// a scheduler can slow whole stretches of rounds several times over, so that the rounds' medians, and the rounds won pair
-/// by pair, can follow the stretches instead of the code. `min_ratio` and `median_ratio` are the other's figure over the
-/// winner's.
-pub fn host_clear(min_ratio: f64, median_ratio: f64, aa: Option<f64>) -> bool {
-    let noise = aa.map_or(0.0, |aa| (aa - 1.0).abs()).max(0.03);
-    min_ratio >= 1.0 + noise && median_ratio > 1.0
+/// The timed rounds beyond each run's own: each size's A/A twin (the baseline run a second time in each round it ran), the
+/// rounds run, the sizes rounds were added for and what was added
+#[derive(Default)]
+pub struct Timing {
+    pub twin_ms: BTreeMap<usize, Vec<Option<f64>>>,
+    pub twin_cycles: BTreeMap<usize, Vec<Option<f64>>>,
+    pub rounds: usize,
+    /// The sizes rounds were added at, and the variants (by size) that ran in them: a pair both of whose variants ran in
+    /// added rounds was looked at again, and its verdict clears the later level
+    pub extended: BTreeSet<usize>,
+    pub added_arms: BTreeSet<(usize, usize)>,
+    pub added: Vec<Json>,
+    pub note: Json,
+}
+
+impl Timing {
+    /// Whether the pair a, b at a size was looked at again (both ran in added rounds)
+    pub fn looked_again(&self, size: usize, a: usize, b: usize) -> bool {
+        self.added_arms.contains(&(a, size)) && self.added_arms.contains(&(b, size))
+    }
+}
+
+/// Every arm's timed rounds with the slowed runs taken out (stats::unslowed, each run against its round's level and its
+/// arm's): the runs' by (variant, size), each size's A/A twin's, and how many runs were left out of how many
+pub struct Clean {
+    pub runs: BTreeMap<(usize, usize), Vec<Option<f64>>>,
+    pub twins: BTreeMap<usize, Vec<Option<f64>>>,
+    pub slowed: usize,
+    pub timed: usize,
+}
+
+impl Timing {
+    pub fn clean(&self, runs: &[Run], cycles: bool) -> Clean {
+        let (mut keys, mut arms) = (Vec::new(), Vec::new());
+        for run in runs.iter().filter(|run| run.status == "ok") {
+            let samples = if cycles { &run.host_cycles } else { &run.host_ms };
+            if samples.iter().any(Option::is_some) {
+                keys.push((false, run.variant, run.size));
+                arms.push(samples.clone());
+            }
+        }
+        for (size, twin) in if cycles { &self.twin_cycles } else { &self.twin_ms } {
+            if twin.iter().any(Option::is_some) {
+                keys.push((true, 0, *size));
+                arms.push(twin.clone());
+            }
+        }
+        let cleaned = stats::unslowed(&arms);
+        let timed: usize = arms.iter().map(|arm| arm.iter().flatten().count()).sum();
+        let kept: usize = cleaned.iter().map(|arm| arm.iter().flatten().count()).sum();
+        let mut clean = Clean { runs: BTreeMap::new(), twins: BTreeMap::new(), slowed: timed - kept, timed };
+        for ((twin, variant, size), arm) in keys.into_iter().zip(cleaned) {
+            if twin {
+                clean.twins.insert(size, arm);
+            } else {
+                clean.runs.insert((variant, size), arm);
+            }
+        }
+        clean
+    }
+}
+
+impl Clean {
+    /// The A/A pairs' round-by-round log ratios at every size: the noise two runs of the same code show
+    pub fn pool(&self) -> Vec<f64> {
+        self.twins.iter().filter_map(|(size, twin)| Some(stats::log_ratios(self.runs.get(&(0, *size))?, twin))).flatten().collect()
+    }
+
+    /// ln(b / a) round by round at a size
+    pub fn ratios(&self, size: usize, a: usize, b: usize) -> Option<Vec<f64>> {
+        Some(stats::log_ratios(self.runs.get(&(a, size))?, self.runs.get(&(b, size))?))
+    }
+
+    /// b's fastest run over a's at a size (slowed runs never are a fastest one)
+    pub fn fastest_ratio(&self, size: usize, a: usize, b: usize) -> Option<f64> {
+        let fastest = |variant: usize| self.runs.get(&(variant, size)).map(|runs| runs.iter().flatten().copied().fold(f64::INFINITY, f64::min)).filter(|ms| ms.is_finite() && *ms > 0.0);
+        Some(fastest(b)? / fastest(a)?)
+    }
+
+    /// Whether the fastest runs agree with a shift of b over a (`estimate`, ln): b's fastest run is slower than a's by a
+    /// third of the shift at least, and by [`HOST_FLOOR`]. Whatever else runs on the machine only slows a run, so a gap in
+    /// the code moves both arms' fastest runs as it moves their typical ones, while runs of one arm the machine happened
+    /// to slow more move only the typical. Measured (identical variants and planted gaps, 30 comparisons on a loaded
+    /// desktop): the fastest runs' ratio read 1.09-1.14 for a 10 % gap and 1.29-1.35 for 30 %; an identical pair the
+    /// paired rounds put 10 % apart (8 of 9 rounds) read 1.02 by its fastest runs
+    pub fn fastest_agrees(&self, size: usize, a: usize, b: usize, estimate: f64) -> bool {
+        self.fastest_ratio(size, a, b).is_some_and(|ratio| ratio - 1.0 >= HOST_FLOOR.max(estimate.exp_m1() / 3.0))
+    }
+
+    /// How far the size's A/A pair parted, when it parted beyond the noise (stats::separated): the far end of its shift's
+    /// interval (ln), which a verdict at that size must then pass; 0 when it did not part
+    pub fn aa_bar(&self, size: usize) -> f64 {
+        let Some(d) = self.twins.get(&size).and_then(|twin| Some(stats::log_ratios(self.runs.get(&(0, size))?, twin))) else { return 0.0 };
+        if !stats::separated(&d, HOST_FLOOR.ln_1p()) {
+            return 0.0;
+        }
+        stats::shift(&d, 0.95).and_then(|found| found.interval).map_or(0.0, |(low, high)| low.abs().max(high.abs()))
+    }
+}
+
+/// The paired host-time verdict on b against a at a size: whether b is clearly slower (stats::paired: the sign test, the
+/// shift's interval, the A/A noise at that many rounds and [`HOST_FLOOR`], and how far the size's own A/A pair parted when
+/// it did; a pair looked at again, both having run in added rounds, clears the later, stricter level), and its fastest
+/// round slower too (Clean::fastest_agrees)
+fn host_verdict(clean: &Clean, pool: &[f64], timing: &Timing, size: usize, a: usize, b: usize) -> Option<stats::Paired> {
+    let d = clean.ratios(size, a, b)?;
+    let mut verdict = stats::paired(&d, pool, HOST_FLOOR.ln_1p().max(clean.aa_bar(size)), timing.looked_again(size, a, b));
+    verdict.clear &= clean.fastest_agrees(size, a, b, verdict.estimate);
+    Some(verdict)
+}
+
+/// Whether a run's result holds against the baseline's (its check, or its digest when the file has no check)
+fn result_differs(run: &Run) -> bool {
+    run.check.as_ref().is_some_and(|(ok, _)| !ok)
+}
+
+/// The host-time pairs worth more rounds: at each size, the fastest variant (by its fastest round) against each other one
+/// whose verdict is not clear yet but whose gap could matter (over the material floor) and looks real: its shift is over
+/// half the A/A noise, or it is a round or two short of the sign test. (size, faster, slower)
+fn undecided_pairs(runs: &[Run], timing: &Timing, spec: &Spec) -> Vec<(usize, usize, usize)> {
+    let clean = timing.clean(runs, false);
+    let pool = clean.pool();
+    let floor = ms_floor(spec.per_frame);
+    let mut out = Vec::new();
+    for size in 0..spec.sizes.len() {
+        let fastest = |run: &Run| run.host_ms.iter().flatten().copied().fold(f64::INFINITY, f64::min);
+        let candidates: Vec<&Run> = runs.iter().filter(|run| run.size == size && run.status == "ok" && !result_differs(run) && fastest(run).is_finite()).collect();
+        let Some(best) = candidates.iter().copied().min_by(|a, b| fastest(a).total_cmp(&fastest(b)).then(a.variant.cmp(&b.variant))) else { continue };
+        for other in candidates.iter().filter(|run| run.variant != best.variant) {
+            let Some(verdict) = host_verdict(&clean, &pool, timing, size, best.variant, other.variant) else { continue };
+            if verdict.clear {
+                continue;
+            }
+            // (the gap either estimate gives: the paired shift, or the fastest rounds' ratio, which disturbed rounds leave
+            // standing while they scatter the pairs)
+            let fastest_ratio = fastest(other) / fastest(best);
+            let gap = fastest(best) * verdict.estimate.exp_m1().max(fastest_ratio - 1.0);
+            let needed = stats::wins_needed(verdict.n.max(1), verdict.alpha).unwrap_or(usize::MAX);
+            let looks_real = (verdict.estimate > 0.0 && (verdict.noise.is_some_and(|noise| verdict.estimate >= noise * 0.5) || verdict.wins + 2 >= needed)) || fastest_ratio >= 1.0 + HOST_FLOOR;
+            if gap >= floor && looks_real {
+                out.push((size, best.variant, other.variant));
+            }
+        }
+    }
+    out
 }
 
 /// The median and the relative interquartile range of some samples
@@ -767,8 +1044,10 @@ pub fn median_spread(samples: &[f64]) -> Option<(f64, f64)> {
     Some((median, spread))
 }
 
-/// Which variant wins a metric at one size: (winner, value, runner-up, ratio, vs the baseline) or None for a tie or fewer
-/// than two figures. `ratio` is None when the winner's figure is 0 and the runner-up's is not.
+/// Which variant leads a metric at one size: (leader, value, runner-up, ratio, vs the baseline), or None for fewer than two
+/// figures. Tied leaders lead in the variants' order (the first), the runner-up at ratio 1: a tie names no winner, and
+/// every other variant still gets its verdict against the leader. `ratio` is None when the leader's figure is 0 and the
+/// runner-up's is not.
 pub fn winner(values: &[(usize, f64)], better_higher: bool, baseline: usize) -> Option<(usize, f64, usize, Option<f64>, Option<f64>)> {
     let mut sorted: Vec<(usize, f64)> = values.iter().copied().filter(|(_, value)| value.is_finite()).collect();
     if sorted.len() < 2 {
@@ -776,9 +1055,6 @@ pub fn winner(values: &[(usize, f64)], better_higher: bool, baseline: usize) -> 
     }
     sorted.sort_by(|a, b| if better_higher { b.1.total_cmp(&a.1) } else { a.1.total_cmp(&b.1) }.then(a.0.cmp(&b.0)));
     let (best, runner) = (sorted[0], sorted[1]);
-    if best.1 == runner.1 {
-        return None;
-    }
     let ratio = |good: f64, other: f64| -> Option<f64> {
         if better_higher {
             (other > 0.0).then(|| good / other)
@@ -789,6 +1065,19 @@ pub fn winner(values: &[(usize, f64)], better_higher: bool, baseline: usize) -> 
     let base = values.iter().find(|(variant, _)| *variant == baseline).map(|(_, value)| *value);
     let vs_baseline = base.and_then(|base| ratio(best.1, base));
     Some((best.0, best.1, runner.0, ratio(best.1, runner.1), vs_baseline))
+}
+
+/// The leader of host time's ranking: from the fastest round's leader, the variant the paired rounds put furthest ahead
+/// of it (`shift(a, b)`: b's paired log ratio over a, below 0 when b is faster), as long as one is ahead (three steps at
+/// most: paired shifts need not be transitive). The order the ranking prints then agrees with the ratios it prints
+fn paired_leader(values: &[(usize, f64)], start: (usize, f64), shift: impl Fn(usize, usize) -> Option<f64>) -> (usize, f64) {
+    let mut leader = start;
+    for _ in 0..3 {
+        let ahead = values.iter().filter(|(variant, _)| *variant != leader.0).filter_map(|&(variant, figure)| Some((variant, figure, shift(leader.0, variant)?))).filter(|(_, _, estimate)| *estimate < 0.0).min_by(|x, y| x.2.total_cmp(&y.2));
+        let Some((variant, figure, _)) = ahead else { break };
+        leader = (variant, figure);
+    }
+    leader
 }
 
 /// A number in a few significant digits, with its unit
@@ -852,6 +1141,11 @@ fn ratio_text(ratio: Option<f64>) -> String {
 /// `ree profile try ...`: the exit code (0: every run finished and every check held; 1: a run failed or a check did not
 /// hold, compare.json still written; 2: the command line)
 pub fn cli(args: &[String]) -> i32 {
+    // checked here as well as in `parse`: a missing cache is an exit 1 without the usage text, as for a run
+    if let Err(error) = crate::require_standalone_state(&crate::default_repo()) {
+        eprintln!("ree profile try: {error}");
+        return 1;
+    }
     let options = match parse(args) {
         Ok(options) => options,
         Err(error) => {
@@ -950,7 +1244,9 @@ pub fn compare(options: &Options) -> Result<(String, bool), String> {
         let name = format!("profile-{}-{}", variants[variant].slug, size_label(sizes[size]));
         let args = match run_args(&options.out, &name, &context, frames + 4.0) {
             Ok(mut args) => {
-                args.extend(["--profile".into(), "all".into(), "--profile-out".into(), profile_dir.to_string_lossy().into_owned()]);
+                // (the kinds a comparison reads, named: `all` may take in more, such as boundary, that it does not read and
+                // that slow every run)
+                args.extend(["--profile".into(), PROFILE_KINDS.into(), "--profile-out".into(), profile_dir.to_string_lossy().into_owned()]);
                 args
             }
             Err(error) => {
@@ -1019,7 +1315,25 @@ pub fn compare(options: &Options) -> Result<(String, bool), String> {
             }
             Err(error) => failures.push(json!({"variant": Json::Null, "size": Json::Null, "message": error})),
         }
-        check = json!({"ran": true, "ok": failures.is_empty(), "failures": failures});
+        check = json!({"ran": true, "by": spec.check_kind.clone().unwrap_or_else(|| "function".into()), "ok": failures.is_empty(), "failures": failures});
+    } else if options.check {
+        // no check function: the results' digests (the result's contents, keys sorted). A variant whose digest differs from
+        // the baseline's at a size computes something else there, so it is no other way of writing the same thing
+        let mut failures = Vec::new();
+        for (size, n) in sizes.iter().enumerate() {
+            let Some(base) = runs.iter().find(|run| run.variant == 0 && run.size == size).and_then(|run| run.digest.clone()) else { continue };
+            for run in runs.iter_mut().filter(|run| run.size == size && run.variant > 0) {
+                let Some(digest) = run.digest.clone() else { continue };
+                if digest == base {
+                    run.check = Some((true, None));
+                } else {
+                    let message = format!("its result's digest is {digest}, the baseline's {base}: the results differ (without a check function the results are compared by digest; add check = function(a, b, n) to compare them your way)");
+                    failures.push(json!({"variant": variants[run.variant].name, "size": n, "message": message}));
+                    run.check = Some((false, Some(message)));
+                }
+            }
+        }
+        check = json!({"ran": true, "by": "digest", "ok": failures.is_empty(), "failures": failures});
     }
 
     // the calls a timed (or counted) run makes at each size: about --time-ms of the slowest variant's warm work clock (nearer
@@ -1074,6 +1388,7 @@ pub fn compare(options: &Options) -> Result<(String, bool), String> {
                 }
                 Ok(()) => {
                     eprintln!("ree profile try: reading the hardware counters, {HW_ROUNDS} rounds of {} runs", arms.len());
+                    let mut rates: BTreeMap<(usize, usize), Vec<f64>> = BTreeMap::new();
                     for run in runs.iter_mut() {
                         run.hw_rounds = BTreeMap::new();
                     }
@@ -1085,8 +1400,9 @@ pub fn compare(options: &Options) -> Result<(String, bool), String> {
                             if !probed && timed_run(variant, size, "hw", &dir).is_err() {
                                 continue;
                             }
-                            let Some(figures) = read_hw(&dir, reps[size] as f64 * frames) else { continue };
+                            let Some((figures, rate)) = read_hw(&dir, reps[size] as f64 * frames) else { continue };
                             let Some(run) = runs.iter_mut().find(|run| run.variant == variant && run.size == size) else { continue };
+                            rates.entry((variant, size)).or_default().extend(rate);
                             for (key, value) in figures {
                                 run.hw_rounds.entry(key).or_insert_with(|| vec![None; HW_ROUNDS])[round] = Some(value);
                             }
@@ -1094,6 +1410,7 @@ pub fn compare(options: &Options) -> Result<(String, bool), String> {
                         }
                     }
                     for run in runs.iter_mut() {
+                        run.hw_cycles_per_ms = rates.get(&(run.variant, run.size)).and_then(|rates| median_spread(rates)).map(|(median, _)| median);
                         for (key, values) in &run.hw_rounds {
                             let values: Vec<f64> = values.iter().flatten().copied().collect();
                             if let Some((median, _)) = median_spread(&values) {
@@ -1107,9 +1424,9 @@ pub fn compare(options: &Options) -> Result<(String, bool), String> {
         };
     }
 
-    // host time: rounds of every variant at every size in turn, in a fresh process each, the baseline twice (an A/A pair)
-    let mut aa: Vec<Json> = Vec::new();
-    let mut host_note = Json::Null;
+    // host time: rounds of every variant at every size, in a fresh process each, in a new order each round, the baseline
+    // twice (an A/A pair: how far two runs of the same code part); then rounds added for the pairs still undecided
+    let mut timing = Timing::default();
     if options.time {
         let mut arms: Vec<(usize, usize, bool)> = Vec::new();
         for size in 0..sizes.len() {
@@ -1122,18 +1439,25 @@ pub fn compare(options: &Options) -> Result<(String, bool), String> {
                 }
             }
         }
-        eprintln!("ree profile try: timing {} rounds of {} runs, one at a time", options.rounds, arms.len());
-        let rounds = options.rounds as usize;
-        // (each round's figure per run, None where the round's run failed, so that rounds pair up)
+        eprintln!("ree profile try: timing {} rounds of {} runs, one at a time (up to {} rounds for pairs still undecided)", options.rounds, arms.len(), options.max_rounds);
         for run in runs.iter_mut() {
-            run.host_ms = vec![None; rounds];
-            run.host_cycles = vec![None; rounds];
+            run.host_ms.clear();
+            run.host_cycles.clear();
         }
-        let mut twin: BTreeMap<usize, Vec<Option<f64>>> = BTreeMap::new();
-        for round in 0..rounds {
+        // one round of some arms: each round's figure per run, None where the arm did not run or its run failed, so rounds pair up
+        let time_round = |runs: &mut Vec<Run>, timing: &mut Timing, which: &[(usize, usize, bool)]| {
+            let round = timing.rounds;
+            for run in runs.iter_mut() {
+                run.host_ms.push(None);
+                run.host_cycles.push(None);
+            }
+            for size in 0..sizes.len() {
+                timing.twin_ms.entry(size).or_default().push(None);
+                timing.twin_cycles.entry(size).or_default().push(None);
+            }
             // (a new order each round, the same every comparison: what ran just before an arm, a run that freed a lot of
             // memory say, moves its time, so no arm keeps one neighbour)
-            for (variant, size, second) in shuffled(&arms, round as u64) {
+            for (variant, size, second) in shuffled(which, round as u64) {
                 let dir = timed_dir.join(format!("{round}")).join(format!("{}-{}{}", variants[variant].slug, size_label(sizes[size]), if second { "-aa" } else { "" }));
                 if timed_run(variant, size, "cpu", &dir).is_err() {
                     continue;
@@ -1143,13 +1467,50 @@ pub fn compare(options: &Options) -> Result<(String, bool), String> {
                 let calls = reps[size] as f64 * frames;
                 let (ms, cycles) = (ms / calls, cycles / calls);
                 if second {
-                    twin.entry(size).or_insert_with(|| vec![None; rounds])[round] = Some(ms);
+                    timing.twin_ms.get_mut(&size).unwrap()[round] = Some(ms);
+                    timing.twin_cycles.get_mut(&size).unwrap()[round] = Some(cycles);
                 } else if let Some(run) = runs.iter_mut().find(|run| run.variant == variant && run.size == size) {
                     run.host_ms[round] = Some(ms);
                     run.host_cycles[round] = Some(cycles);
                     run.reps = reps[size];
                     run.group = groups[size];
                 }
+            }
+            timing.rounds += 1;
+        };
+        for _ in 0..options.rounds {
+            time_round(&mut runs, &mut timing, &arms);
+        }
+        // rounds added for the pairs not yet decided: a pair whose gap looks larger than the noise, or that is a round or
+        // two short of the sign test, gets more rounds, with its size's A/A pair, until it is decided or the rounds run out.
+        // Its verdict then clears a stricter level (stats::LATER_ALPHA): a pair looked at again had more chances to cross.
+        while timing.rounds < options.max_rounds as usize {
+            let undecided = undecided_pairs(&runs, &timing, &spec);
+            if undecided.is_empty() {
+                break;
+            }
+            let mut which: Vec<(usize, usize, bool)> = Vec::new();
+            for &(size, a, b) in &undecided {
+                for arm in [(a, size, false), (b, size, false), (0, size, false), (0, size, true)] {
+                    if arms.contains(&arm) && !which.contains(&arm) {
+                        which.push(arm);
+                    }
+                }
+                timing.extended.insert(size);
+                timing.added_arms.extend([(a, size), (b, size), (0, size)]);
+            }
+            let adding = ADDED_ROUNDS.min(options.max_rounds as usize - timing.rounds);
+            eprintln!(
+                "ree profile try: {adding} more rounds of {} runs for {}",
+                which.len(),
+                undecided.iter().map(|(size, a, b)| format!("{} and {} at n = {}", variants[*a].name, variants[*b].name, size_label(sizes[*size]))).collect::<Vec<_>>().join(", ")
+            );
+            timing.added.push(json!({
+                "after": timing.rounds, "rounds": adding,
+                "pairs": undecided.iter().map(|(size, a, b)| json!({"size": sizes[*size], "a": variants[*a].name, "b": variants[*b].name})).collect::<Vec<_>>(),
+            }));
+            for _ in 0..adding {
+                time_round(&mut runs, &mut timing, &which);
             }
         }
         for run in runs.iter_mut() {
@@ -1163,32 +1524,26 @@ pub fn compare(options: &Options) -> Result<(String, bool), String> {
                 run.run.insert("host_cycles", cycles.iter().copied().fold(f64::INFINITY, f64::min));
             }
         }
-        for size in 0..sizes.len() {
-            let Some(base) = runs.iter().find(|run| run.variant == 0 && run.size == size) else { continue };
-            let Some(second) = twin.get(&size) else { continue };
-            // (round by round: the second run of the baseline over the first)
-            let ratios = paired(&base.host_ms, second);
-            if let Some((ratio, spread)) = median_spread(&ratios) {
-                // (the rounds where both runs of the pair finished)
-                let (first, twin): (Vec<f64>, Vec<f64>) = base.host_ms.iter().zip(second.iter()).filter_map(|(a, b)| Some(((*a)?, (*b)?))).unzip();
-                // (the pair's fastest rounds, as host time is read)
-                let fastest = |values: &[f64]| values.iter().copied().fold(f64::INFINITY, f64::min);
-                let min_ratio = fastest(&twin) / fastest(&first);
-                aa.push(json!({"size": sizes[size], "ratio": ratio, "min_ratio": min_ratio, "spread": spread, "first_ms": first, "second_ms": twin}));
-            }
-        }
-        host_note = json!({"rounds": options.rounds, "time_ms": options.time_ms, "reps": sizes.iter().zip(reps.iter()).map(|(size, reps)| json!([size, reps])).collect::<Vec<_>>(), "groups": sizes.iter().zip(groups.iter()).map(|(size, group)| json!([size, group])).collect::<Vec<_>>()});
+        timing.note = json!({
+            "rounds": options.rounds, "max_rounds": options.max_rounds, "ran": timing.rounds, "time_ms": options.time_ms,
+            "reps": sizes.iter().zip(reps.iter()).map(|(size, reps)| json!([size, reps])).collect::<Vec<_>>(),
+            "groups": sizes.iter().zip(groups.iter()).map(|(size, group)| json!([size, group])).collect::<Vec<_>>(),
+            "added": timing.added,
+        });
     }
 
     if !options.keep_timed {
         let _ = std::fs::remove_dir_all(&timed_dir);
     }
 
-    // the diffs: the baseline's profile and each variant's at the largest size
+    // the diffs: the baseline's profile and each variant's at the largest size (and that profile's fidelity, which
+    // compare.json carries: how far the work clock's figures may lie from a client's)
     let mut diffs = Vec::new();
+    let mut fidelity = Json::Null;
     if let Some(largest) = sizes.len().checked_sub(1) {
         let base_dir = options.out.join("runs").join(&variants[0].slug).join(size_label(sizes[largest]));
         if let Ok(base) = super::diff::load_profile(&base_dir) {
+            fidelity = base.get("fidelity").filter(|value| value.is_object()).cloned().unwrap_or(Json::Null);
             for (variant, entry) in variants.iter().enumerate().skip(1) {
                 if !runs.iter().any(|run| run.variant == variant && run.size == largest && run.status == "ok") {
                     continue;
@@ -1203,7 +1558,7 @@ pub fn compare(options: &Options) -> Result<(String, bool), String> {
         }
     }
 
-    let (json, text, ok) = index(options, &spec, &runs, check, hw, aa, host_note, diffs, started.elapsed().as_secs_f64());
+    let (json, text, ok) = index(options, &spec, &runs, check, hw, &timing, diffs, fidelity, started.elapsed().as_secs_f64());
     let written = serde_json::to_string_pretty(&json).map_err(|error| error.to_string())?;
     std::fs::write(options.out.join("compare.json"), written).map_err(|error| format!("{}: {error}", options.out.display()))?;
     std::fs::write(options.out.join("compare.txt"), &text).map_err(|error| format!("{}: {error}", options.out.display()))?;
@@ -1220,19 +1575,21 @@ fn figures_json(figures: &Figures) -> Json {
 
 /// compare.json and compare.txt from the runs
 #[allow(clippy::too_many_arguments)]
-fn index(options: &Options, spec: &Spec, runs: &[Run], check: Json, hw: Json, aa: Vec<Json>, host: Json, diffs: Vec<Json>, seconds: f64) -> (Json, String, bool) {
+fn index(options: &Options, spec: &Spec, runs: &[Run], check: Json, hw: Json, timing: &Timing, diffs: Vec<Json>, fidelity: Json, seconds: f64) -> (Json, String, bool) {
     let (variants, sizes) = (&spec.variants, &spec.sizes);
     let run_of = |variant: usize, size: usize| runs.iter().find(|run| run.variant == variant && run.size == size);
     let ok_runs = runs.iter().all(|run| run.status == "ok");
     let check_ok = check["ok"].as_bool() != Some(false);
 
-    // how each figure grows with n
+    // how each figure grows with n: a fixed cost a call fitted apart, the exponent read at large n
     let mut scaling = Vec::new();
     for (variant, entry) in variants.iter().enumerate() {
         for metric in METRICS.iter().filter(|metric| metric.scales) {
             let points: Vec<(f64, f64)> = (0..sizes.len()).filter_map(|size| Some((sizes[size], *run_of(variant, size)?.run.get(metric.key)?))).collect();
-            if let Some((exponent, r2, last)) = fit(&points) {
-                scaling.push(json!({"variant": entry.name, "metric": metric.key, "exponent": exponent, "r2": r2, "last": last, "points": points.iter().map(|(n, value)| json!([n, value])).collect::<Vec<_>>()}));
+            if let Some(mut found) = growth_json(&points) {
+                found["variant"] = json!(entry.name);
+                found["metric"] = json!(metric.key);
+                scaling.push(found);
             }
         }
     }
@@ -1243,75 +1600,213 @@ fn index(options: &Options, spec: &Spec, runs: &[Run], check: Json, hw: Json, aa
             let Some(top) = run_of(variant, largest) else { continue };
             for hot in top.hot.iter().take(5).filter(|hot| !hot.key.is_empty()) {
                 let points: Vec<(f64, f64)> = (0..sizes.len()).filter_map(|size| Some((sizes[size], run_of(variant, size)?.hot.iter().find(|other| other.key == hot.key)?.work_ms))).collect();
-                let fitted = fit(&points);
-                functions.push(json!({"variant": entry.name, "key": hot.key, "name": hot.name, "module": hot.module, "line": hot.line, "exponent": fitted.map(|f| f.0), "r2": fitted.map(|f| f.1), "points": points.iter().map(|(n, value)| json!([n, value])).collect::<Vec<_>>()}));
+                let mut found = growth_json(&points).unwrap_or_else(|| json!({"exponent": null, "points": points.iter().map(|(n, value)| json!([n, value])).collect::<Vec<_>>()}));
+                for (key, value) in [("variant", json!(entry.name)), ("key", json!(hot.key)), ("name", json!(hot.name)), ("module", json!(hot.module)), ("line", json!(hot.line))] {
+                    found[key] = value;
+                }
+                functions.push(found);
             }
         }
     }
-    // the winners: an exact figure by 1 % or more; host time when it won the rounds (clear_of_noise); a figure of one run
-    // each (the hardware counters) by 10 % or more
-    let aa_at = |size: usize| aa.iter().find(|entry| entry["size"].as_f64() == Some(sizes[size])).and_then(|entry| entry["min_ratio"].as_f64());
+    // the A/A pairs: how far two runs of the same code part at each size, and whether they parted beyond the noise (a size
+    // where they did needs a gap beyond theirs: Clean::aa_bar)
+    let cleans = (timing.clean(runs, false), timing.clean(runs, true));
+    let pools = (cleans.0.pool(), cleans.1.pool());
+    let mut aa = Vec::new();
+    let mut parted: BTreeSet<usize> = BTreeSet::new();
+    for (size, n) in sizes.iter().enumerate() {
+        let (Some(base), Some(twin)) = (runs.iter().find(|run| run.variant == 0 && run.size == size && run.status == "ok"), timing.twin_ms.get(&size)) else { continue };
+        let (Some(clean_base), Some(clean_twin)) = (cleans.0.runs.get(&(0, size)), cleans.0.twins.get(&size)) else { continue };
+        let d = stats::log_ratios(clean_base, clean_twin);
+        let Some(found) = stats::shift(&d, 0.95) else { continue };
+        let separated = stats::separated(&d, HOST_FLOOR.ln_1p());
+        if separated {
+            parted.insert(size);
+        }
+        // (the rounds both finished, and the pair's fastest rounds and median ratio as before)
+        let (first, second): (Vec<f64>, Vec<f64>) = base.host_ms.iter().zip(twin.iter()).filter_map(|(a, b)| Some(((*a)?, (*b)?))).unzip();
+        let fastest = |values: &[f64]| values.iter().copied().fold(f64::INFINITY, f64::min);
+        let (ratio, spread) = median_spread(&paired(&base.host_ms, twin)).unwrap_or((1.0, 0.0));
+        aa.push(json!({
+            "size": n, "n": d.len(), "wins": d.iter().filter(|value| **value > 0.0).count(),
+            "shift": found.estimate.exp(), "interval": found.interval.map(|(low, high)| json!([low.exp(), high.exp()])),
+            "separated": separated, "noise": stats::noise_level(&pools.0, d.len().max(1), stats::NOISE_QUANTILE, stats::NOISE_DRAWS, 0x5eed).map(f64::exp_m1),
+            "ratio": ratio, "min_ratio": fastest(&second) / fastest(&first), "spread": spread, "first_ms": first, "second_ms": second,
+        }));
+    }
+    // the noise level two runs of the same code reach at the comparison's rounds, as the verdicts read it
+    let noise = json!({
+        "pool": pools.0.len(), "quantile": stats::NOISE_QUANTILE, "slowed": stats::SLOWED, "floor": HOST_FLOOR,
+        "at_rounds": options.rounds, "level": stats::noise_level(&pools.0, options.rounds as usize, stats::NOISE_QUANTILE, stats::NOISE_DRAWS, 0x5eed).map(f64::exp_m1),
+        "alpha": stats::ALPHA, "later_alpha": stats::LATER_ALPHA,
+    });
+    // the winners. A variant whose result differs from the baseline's (its check, or its digest without one) computes
+    // something else, so it is no candidate. Then each other variant against the best: an exact figure clear by 1 % or
+    // more; host time by its paired rounds (stats::paired); a hardware counter when it won every round by 5 % or more; any
+    // other measured figure by 10 %. A gap that is not material (below the floor: a ms figure's 0.1 % of a frame at the
+    // file's per_frame, a count's 0.1 % of the run's instructions, 1 KB) is never clear.
+    let floor_ms = ms_floor(spec.per_frame);
+    // the reference clock the timed rounds' cycles ran at, from those rounds (cycles over host time, round by round)
+    let cycles_per_ms = median_spread(&runs.iter().flat_map(|run| run.host_ms.iter().zip(&run.host_cycles).filter_map(|(ms, cycles)| Some((*cycles)? / (*ms).filter(|ms| *ms > 0.0)?))).collect::<Vec<f64>>()).map(|(median, _)| median);
     let mut winners = Vec::new();
     for size in 0..sizes.len() {
         // (what makes a count or a size material: against the work the run did)
         let insns = (0..variants.len()).filter_map(|variant| run_of(variant, size)?.run.get("insns").copied()).fold(0.0f64, f64::max);
         for metric in METRICS.iter().filter(|metric| metric.better != "none") {
-            let values: Vec<(usize, f64)> = (0..variants.len()).filter_map(|variant| Some((variant, *run_of(variant, size).filter(|run| run.status == "ok")?.run.get(metric.key)?))).collect();
-            let Some((best, value, runner, ratio, vs_baseline)) = winner(&values, metric.better == "higher", 0) else { continue };
-            // whether a variant's figure is clear of the best's: (clear, the rounds it lost of those paired)
-            let samples = |variant: usize| run_of(variant, size).map(|run| if metric.key == "host_ms" { run.host_ms.clone() } else { run.host_cycles.clone() }).unwrap_or_default();
-            let largest = values.iter().map(|(_, value)| value.abs()).fold(0.0f64, f64::max);
-            let lookups = (0..variants.len()).filter_map(|variant| { let run = run_of(variant, size)?; Some(run.run.get("cache_hits")? + run.run.get("cache_misses")?) }).fold(0.0f64, f64::max);
-            let material = match metric.unit {
-                "count" if metric.key != "insns" => largest >= (insns * 0.001).max(10.0),
-                "bytes" => largest >= 1024.0,
-                _ if metric.key == "cache_hit_rate" => lookups >= (insns * 0.001).max(10.0),
-                _ => true,
-            };
-            let gap = |other: usize, against: f64| -> (bool, Json) {
-                let ratio = if metric.better == "higher" { (against > 0.0).then(|| value / against) } else { (value > 0.0).then(|| against / value) };
-                match ratio {
-                    _ if !material => (false, Json::Null),
-                    None => (true, Json::Null),
-                    Some(ratio) if metric.exact => (ratio >= 1.01, Json::Null),
-                    Some(ratio) if matches!(metric.key, "host_ms" | "host_cycles") => {
-                        let ratios = paired(&samples(best), &samples(other));
-                        let won = ratios.iter().filter(|ratio| **ratio > 1.0).count();
-                        let median = |variant: usize| median_spread(&samples(variant).into_iter().flatten().collect::<Vec<_>>()).map(|(median, _)| median);
-                        let median_ratio = match (median(best), median(other)) {
-                            (Some(best), Some(other)) if best > 0.0 => other / best,
-                            _ => 0.0,
-                        };
-                        (host_clear(ratio, median_ratio, aa_at(size)), json!({"won": won, "of": ratios.len()}))
-                    }
-                    // (the counters' rounds: every round won, by 5 % or more)
-                    Some(ratio) if metric.key.starts_with("hw_") => {
-                        let rounds = |variant: usize| run_of(variant, size).and_then(|run| run.hw_rounds.get(metric.key).cloned()).unwrap_or_default();
-                        let ratios: Vec<f64> = if metric.better == "higher" { paired(&rounds(other), &rounds(best)) } else { paired(&rounds(best), &rounds(other)) };
-                        let won = ratios.iter().filter(|ratio| **ratio > 1.0).count();
-                        (won == ratios.len() && won >= 2 && ratio >= 1.05, json!({"won": won, "of": ratios.len()}))
-                    }
-                    Some(ratio) => (ratio >= 1.1, Json::Null),
+            let all: Vec<(usize, f64)> = (0..variants.len()).filter_map(|variant| Some((variant, *run_of(variant, size).filter(|run| run.status == "ok")?.run.get(metric.key)?))).collect();
+            let values: Vec<(usize, f64)> = all.iter().copied().filter(|(variant, _)| run_of(*variant, size).is_some_and(|run| !result_differs(run))).collect();
+            let Some((mut best, mut value, _, _, _)) = winner(&values, metric.better == "higher", 0) else { continue };
+            let host = matches!(metric.key, "host_ms" | "host_cycles");
+            // (the most inline cache lookups any variant made at this size: a hit rate's floor is a share of them)
+            let mut lookups = 0.0f64;
+            for variant in 0..variants.len() {
+                let Some(run) = run_of(variant, size) else { continue };
+                if let Some(&variant_lookups) = run.run.get("cache_lookups") {
+                    lookups = lookups.max(variant_lookups);
                 }
+            }
+            // (host time is ordered by the paired rounds its verdicts rest on, not by the fastest round alone: a variant whose
+            // rounds put it ahead of the fastest round's leader leads, so the order and the ratios printed agree)
+            if host {
+                let (clean, pool) = if metric.key == "host_cycles" { (&cleans.1, &pools.1) } else { (&cleans.0, &pools.0) };
+                (best, value) = paired_leader(&values, (best, value), |a, b| host_verdict(clean, pool, timing, size, a, b).map(|found| found.estimate));
+            }
+            // (cycles are judged as time at the clock they ran at: host cycles at the timed rounds', the counters' core
+            // cycles at the leader's counter runs')
+            let floor = Floor { ms: floor_ms, per_frame: spec.per_frame, insns, lookups, cycles_per_ms: if metric.key == "hw_cycles" { run_of(best, size).and_then(|run| run.hw_cycles_per_ms) } else { cycles_per_ms } };
+            // b against a (a the best, or the baseline): (b's figure over a's, oriented so above 1 is worse; its interval;
+            // clear; material; the rounds) for b worse than a. `both` asks either way (against the baseline)
+            let verdict = |a: usize, a_value: f64, b: usize, b_value: f64, both: bool| -> Json {
+                let plain = if metric.better == "higher" { (b_value > 0.0).then(|| a_value / b_value) } else { (a_value > 0.0).then(|| b_value / a_value) };
+                let (mut ratio, mut interval, mut rounds, mut clear) = (plain, Json::Null, Json::Null, false);
+                if host {
+                    let (clean, pool) = if metric.key == "host_cycles" { (&cleans.1, &pools.1) } else { (&cleans.0, &pools.0) };
+                    let worse = host_verdict(clean, pool, timing, size, a, b);
+                    let better = if both { host_verdict(clean, pool, timing, size, b, a) } else { None };
+                    if let Some(found) = &worse {
+                        ratio = Some(found.estimate.exp());
+                        interval = found.interval.map_or(Json::Null, |(low, high)| json!([low.exp(), high.exp()]));
+                        let reported = better.as_ref().filter(|better| better.clear).unwrap_or(found);
+                        rounds = json!({
+                            "won": found.wins, "of": found.n, "p": found.p, "alpha": found.alpha, "noise": found.noise.map(f64::exp_m1),
+                            "added": timing.looked_again(size, a, b), "aa_bar": parted.contains(&size).then(|| clean.aa_bar(size).exp_m1()), "faster": better.as_ref().is_some_and(|better| better.clear),
+                            "lost": reported.n - reported.wins,
+                            // (b's fastest run over a's: a clear verdict needs it to agree with the shift)
+                            "fastest": clean.fastest_ratio(size, a, b),
+                        });
+                        clear = found.clear || better.as_ref().is_some_and(|better| better.clear);
+                    }
+                }
+                // (the gap a call: a host figure's from the paired shift on a's fastest round)
+                let gap = match (host, ratio) {
+                    (true, Some(ratio)) => (a_value * (ratio - 1.0)).abs(),
+                    _ => (b_value - a_value).abs(),
+                };
+                let material = material(metric, gap, floor);
+                if !host {
+                    clear = match plain {
+                        None => b_value != a_value,
+                        Some(ratio) if metric.exact => ratio >= 1.01 || (both && ratio <= 1.0 / 1.01),
+                        // (the counters' rounds: every round won, by 5 % or more)
+                        Some(ratio) if metric.key.starts_with("hw_") => {
+                            let samples = |variant: usize| run_of(variant, size).and_then(|run| run.hw_rounds.get(metric.key).cloned()).unwrap_or_default();
+                            let (low, high) = if (metric.better == "higher") == (ratio >= 1.0) { (b, a) } else { (a, b) };
+                            let ratios = paired(&samples(low), &samples(high));
+                            let won = ratios.iter().filter(|ratio| **ratio > 1.0).count();
+                            rounds = json!({"won": won, "of": ratios.len()});
+                            won == ratios.len() && won >= 2 && (ratio >= 1.05 || (both && ratio <= 1.0 / 1.05))
+                        }
+                        Some(ratio) => ratio >= 1.1 || (both && ratio <= 1.0 / 1.1),
+                    };
+                }
+                json!({"ratio": ratio, "interval": interval, "clear": clear && material, "material": material, "gap": gap, "rounds": rounds})
             };
-            let (clear, rounds) = gap(runner, values.iter().find(|(variant, _)| *variant == runner).map_or(value, |(_, v)| *v));
-            let mut ranking: Vec<(usize, f64)> = values.clone();
-            ranking.sort_by(|a, b| if metric.better == "higher" { b.1.total_cmp(&a.1) } else { a.1.total_cmp(&b.1) }.then(a.0.cmp(&b.0)));
+            let value_of = |variant: usize| all.iter().find(|(v, _)| *v == variant).map(|(_, value)| *value);
+            let mut ranking: Vec<(usize, f64)> = all.clone();
+            ranking.sort_by(|a, b| {
+                let differs = |variant: usize| run_of(variant, size).is_some_and(result_differs);
+                differs(a.0).cmp(&differs(b.0)).then((a.0 != best).cmp(&(b.0 != best))).then(if metric.better == "higher" { b.1.total_cmp(&a.1) } else { a.1.total_cmp(&b.1) }).then(a.0.cmp(&b.0))
+            });
             let ranking: Vec<Json> = ranking
                 .iter()
                 .map(|&(variant, figure)| {
-                    let (clear, rounds) = if variant == best { (false, Json::Null) } else { gap(variant, figure) };
-                    let ratio = if metric.better == "higher" { (figure > 0.0).then(|| value / figure) } else { (value > 0.0).then(|| figure / value) };
-                    json!({"variant": variants[variant].name, "value": figure, "ratio": ratio, "clear": clear, "rounds": rounds})
+                    let differs = run_of(variant, size).is_some_and(result_differs);
+                    let mut entry = if variant == best || differs { json!({"ratio": null, "interval": null, "clear": false, "material": null, "gap": null, "rounds": null}) } else { verdict(best, value, variant, figure, false) };
+                    // (the ratio of the figures themselves, for a host figure beside its paired shift)
+                    let plain = if metric.better == "higher" { (figure > 0.0).then(|| value / figure) } else { (value > 0.0).then(|| figure / value) };
+                    if variant == best {
+                        entry["ratio"] = json!(1.0);
+                    } else if differs || !host {
+                        entry["ratio"] = json!(plain);
+                    }
+                    entry["value_ratio"] = json!(plain);
+                    entry["variant"] = json!(variants[variant].name);
+                    entry["value"] = json!(figure);
+                    entry["differs"] = json!(differs);
+                    entry
                 })
                 .collect();
+            // (host time: the rest by their paired ratio against the leader, the leader first, differing results last)
+            let mut ranking = ranking;
+            if host {
+                let key = |entry: &Json| (entry["differs"] == true, entry["variant"] != variants[best].name.as_str());
+                ranking.sort_by(|x, y| key(x).cmp(&key(y)).then(x["ratio"].as_f64().unwrap_or(f64::INFINITY).total_cmp(&y["ratio"].as_f64().unwrap_or(f64::INFINITY))));
+            }
+            let runner = ranking.iter().skip(1).find(|entry| entry["differs"] != true).and_then(|entry| variants.iter().position(|v| entry["variant"] == v.name.as_str())).unwrap_or(best);
+            let vs_baseline = value_of(0).filter(|_| run_of(0, size).is_some_and(|run| !result_differs(run))).and_then(|base| if metric.better == "higher" { (base > 0.0).then(|| value / base) } else { (value > 0.0).then(|| base / value) });
+            // each variant against the baseline (the Compare view's column), either way
+            let base = value_of(0).filter(|_| run_of(0, size).is_some_and(|run| run.status == "ok"));
+            let baseline: Vec<Json> = (1..variants.len())
+                .filter_map(|variant| {
+                    let (base, figure) = (base?, value_of(variant)?);
+                    let mut entry = if run_of(variant, size).is_some_and(result_differs) { json!({"ratio": null, "clear": false, "material": null}) } else { verdict(0, base, variant, figure, true) };
+                    entry["variant"] = json!(variants[variant].name);
+                    entry["differs"] = json!(run_of(variant, size).is_some_and(result_differs));
+                    Some(entry)
+                })
+                .collect();
+            let runner_entry = ranking.iter().find(|entry| entry["variant"] == variants[runner].name.as_str()).cloned().unwrap_or(Json::Null);
+            // (a winner is clear of every other variant whose result holds, not of the runner-up alone: host time's paired
+            // rounds can leave a third variant within noise of the best where the runner-up's do not)
+            let clear_of_all = ranking.iter().filter(|entry| entry["variant"] != variants[best].name.as_str() && entry["differs"] != true).all(|entry| entry["clear"] == true);
             winners.push(json!({
                 "metric": metric.key, "size": sizes[size], "winner": variants[best].name, "value": value, "runner_up": variants[runner].name,
-                "ratio": ratio, "vs_baseline": vs_baseline, "clear": clear, "material": material, "rounds": rounds, "ranking": ranking,
+                "ratio": runner_entry["ratio"], "interval": runner_entry["interval"], "vs_baseline": vs_baseline,
+                "clear": clear_of_all, "material": runner_entry["material"] != false, "rounds": runner_entry["rounds"],
+                "ranking": ranking, "baseline": baseline,
             }));
         }
     }
     let mut notes = notes(spec, runs, &hw);
+    // how host time was read: runs left out as slowed, A/A pairs that parted, rounds added
+    if options.time {
+        let (slowed, timed) = (cleans.0.slowed, cleans.0.timed);
+        if slowed > 0 {
+            notes.push(format!("{slowed} of {timed} timed runs took over {}x what their round and their arm lead one to expect and were left out of the paired rounds the host-time verdicts rest on: the machine slowed them alone, not the code (rounds it slowed as a whole stay: a pair's ratio cancels them)", stats::SLOWED));
+        }
+        for size in &parted {
+            let entry = aa.iter().find(|entry| entry["size"].as_f64() == Some(sizes[*size]));
+            notes.push(format!(
+                "the A/A pair (the baseline run twice) parted at n = {}: its second run read {} the first's over {} rounds, beyond the noise, so a host-time verdict there needs a gap past {:.1} % (the far end of the pair's own interval); a quieter machine reads smaller gaps",
+                size_label(sizes[*size]),
+                entry.and_then(|entry| entry["shift"].as_f64()).map_or("?".into(), |shift| ratio_text(Some(shift))),
+                entry.and_then(|entry| entry["n"].as_u64()).unwrap_or(0),
+                cleans.0.aa_bar(*size).exp_m1() * 100.0
+            ));
+        }
+        if !timing.added.is_empty() {
+            let pairs: BTreeSet<String> = timing.added.iter().flat_map(|added| added["pairs"].as_array().cloned().unwrap_or_default()).map(|pair| format!("{} and {} at n = {}", pair["a"].as_str().unwrap_or("?"), pair["b"].as_str().unwrap_or("?"), pair["size"].as_f64().map(size_label).unwrap_or_default())).collect();
+            notes.push(format!(
+                "host time ran {} rounds, {} more than the first {} for the pairs still undecided ({}); a pair that got more rounds clears its sign test at {} instead of {}, since a pair looked at again had more chances to cross by luck",
+                timing.rounds,
+                timing.rounds.saturating_sub(options.rounds as usize),
+                options.rounds,
+                pairs.into_iter().collect::<Vec<_>>().join("; "),
+                stats::LATER_ALPHA,
+                stats::ALPHA
+            ));
+        }
+    }
     // where host time and the work clock disagree: a clear host-time gap the work clock calls about equal or reverses
     if let Some(largest) = sizes.len().checked_sub(1) {
         let host = winners.iter().find(|winner| winner["metric"] == "host_ms" && winner["size"].as_f64() == Some(sizes[largest]));
@@ -1364,15 +1859,19 @@ fn index(options: &Options, spec: &Spec, runs: &[Run], check: Json, hw: Json, aa
         .collect();
     let title = spec.title.clone().unwrap_or_else(|| options.file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default());
     let json = json!({
-        "format": "ree-what-if", "version": 1,
+        "format": "ree-what-if", "version": 2,
         "title": title, "about": spec.about.clone().unwrap_or_default(), "file": options.file.to_string_lossy(), "out": options.out.to_string_lossy(), "command": options.command,
         "baseline": variants[0].name,
         "variants": variants.iter().map(|variant| json!({"name": variant.name, "slug": variant.slug, "kind": variant.kind, "source": variant.source, "file": variant.path.as_ref().map(|path| path.to_string_lossy().into_owned())})).collect::<Vec<_>>(),
-        "sizes": sizes, "frames": spec.frames, "module": spec.module,
+        "sizes": sizes, "frames": spec.frames, "per_frame": spec.per_frame, "module": spec.module,
         "fidelity": crate::cost::FIDELITY,
+        // (the baseline's profile's own fidelity at the largest size: the band its figures may lie in against a client's)
+        "fidelity_profile": fidelity,
+        "floor": {"ms": floor_ms, "per_frame": spec.per_frame, "frame_ms": FRAME_MS, "frame_share": MATERIAL_SHARE, "ns": MATERIAL_NS, "host": HOST_FLOOR,
+            "count_share": MATERIAL_COUNT_SHARE, "count": MATERIAL_COUNT, "bytes": MATERIAL_BYTES, "cycles_per_ms": cycles_per_ms},
         "metrics": METRICS.iter().map(|metric| json!({"key": metric.key, "label": metric.label, "unit": metric.unit, "better": metric.better, "exact": metric.exact, "per_call": metric.per_call, "about": metric.about})).collect::<Vec<_>>(),
         "runs": runs_json,
-        "scaling": scaling, "functions": functions, "winners": winners, "aa": aa, "host": host, "hw": hw, "check": check, "diffs": diffs, "notes": notes,
+        "scaling": scaling, "functions": functions, "winners": winners, "aa": aa, "noise": noise, "host": timing.note, "hw": hw, "check": check, "diffs": diffs, "notes": notes,
         "seconds": seconds,
     });
     let text = text(options, spec, runs, &json);
@@ -1388,30 +1887,33 @@ fn notes(spec: &Spec, runs: &[Run], hw: &Json) -> Vec<String> {
     }
     let Some(largest) = sizes.len().checked_sub(1) else { return notes };
     let at: Vec<&Run> = runs.iter().filter(|run| run.size == largest && run.status == "ok").collect();
-    // cold first touches: priced as data made over many frames, spread among other allocations; data made together in one
-    // loop (a setup's) costs a client far less, so the work clock's figure is the dear end and the warm figure the cheap one
-    let cold: Vec<(&Run, f64, f64, f64)> = at.iter().filter_map(|run| Some((*run, *run.run.get("cold_ms")?, *run.run.get("work_ms")?, *run.run.get("cold_tables")?))).collect();
-    if cold.iter().any(|(_, cold_ms, work_ms, _)| *work_ms > 0.0 && cold_ms / work_ms >= 0.15) {
+    // cold and first-use charges: code run for the first time in a frame and first touches of tables, functions and engine
+    // objects; a client that reaches them again soon after a loop pays less, so the work clock's figure is the dear end and
+    // the warm figure the cheap one. (The run's cold_tables is the whole phase's, the harness's included, so it is not set
+    // beside one variant's charges.)
+    let cold: Vec<(&Run, f64, f64)> = at.iter().filter_map(|run| Some((*run, *run.run.get("cold_ms")?, *run.run.get("work_ms")?))).collect();
+    if cold.iter().any(|(_, cold_ms, work_ms)| *work_ms > 0.0 && cold_ms / work_ms >= 0.15) {
         let shares: Vec<String> = cold
             .iter()
-            .map(|(run, cold_ms, work_ms, tables)| format!("{} {} of {} ({} tables, {:.0} %)", variants[run.variant].name, show(*cold_ms, "ms"), show(*work_ms, "ms"), grouped(*tables), 100.0 * cold_ms / work_ms.max(1e-12)))
+            .map(|(run, cold_ms, work_ms)| format!("{} {} of {} ({:.0} %)", variants[run.variant].name, show(*cold_ms, "ms"), show(*work_ms, "ms"), 100.0 * cold_ms / work_ms.max(1e-12)))
             .collect();
         let warm: Vec<(usize, f64)> = at.iter().filter_map(|run| Some((run.variant, *run.run.get("warm_ms")?))).collect();
         let full: Vec<(usize, f64)> = at.iter().filter_map(|run| Some((run.variant, *run.run.get("work_ms")?))).collect();
-        let ranking = |values: &[(usize, f64)]| winner(values, false, 0).map(|(best, _, runner, ratio, _)| format!("{} {} over {}", variants[best].name, ratio_text(ratio), variants[runner].name));
+        let ranking = |values: &[(usize, f64)]| {
+            winner(values, false, 0).map(|(best, _, runner, ratio, _)| if ratio == Some(1.0) { format!("{} and {} level", variants[best].name, variants[runner].name) } else { format!("{} {} over {}", variants[best].name, ratio_text(ratio), variants[runner].name) })
+        };
         let verdict = match (ranking(&full), ranking(&warm)) {
             (Some(full), Some(warm)) if full == warm => format!("the ranking is the same either way ({full})"),
             (Some(full), Some(warm)) => format!("with them {full}; warm {warm}"),
             _ => String::new(),
         };
         notes.push(format!(
-            "at n = {} the frame's cold first touches of data made before it are a large share of the work clock: {}. The clock prices a cold table at {} ns, as data made over many frames among other allocations; a client pays about 14 ns for tables made together in one loop (as a setup makes them), so a client's figure lies between \"work clock, warm\" and the work clock; {verdict} (docs/engine.md \"Work clock\")",
+            "at n = {} the frame's cold and first-use charges (code run for the first time in the frame, and first touches of tables, functions and engine objects) are a large share of the work clock: {}. A client pays less for code and data a loop reaches again soon after, so a client's figure lies between \"work clock, warm\" and the work clock; {verdict} (docs/engine.md \"Work clock\")",
             size_label(sizes[largest]),
-            shares.join("; "),
-            crate::cost::LUAU_COLD_TABLE
+            shares.join("; ")
         ));
     }
-    // the collector: the work clock does not charge it
+    // the collector: its charged work is in the work clock's figure; host time measures it apart
     let steps: Vec<(&Run, f64, f64)> = at.iter().filter_map(|run| Some((*run, *run.run.get("gc_steps")?, run.run.get("gc_ms").copied().unwrap_or(0.0)))).collect();
     let (most_steps, least_steps) = (steps.iter().map(|s| s.1).fold(0.0f64, f64::max), steps.iter().map(|s| s.1).fold(f64::INFINITY, f64::min));
     // rounds that ran several times slower than their fastest: the machine slowed them, not the code
@@ -1431,7 +1933,7 @@ fn notes(spec: &Spec, runs: &[Run], hw: &Json) -> Vec<String> {
     if most_steps >= 10.0 && most_steps >= least_steps * 2.0 {
         if let Some((run, count, ms)) = steps.iter().find(|s| s.1 == most_steps) {
             notes.push(format!(
-                "{} makes the collector work most ({} steps a call at n = {}, {} of host time in the profiled run): the work clock does not charge the collector, host time does",
+                "{} makes the collector work most ({} steps a call at n = {}, {} of host time in the profiled run): the work clock's figure already holds the collector's charged work, and host time measures the collector apart",
                 variants[run.variant].name,
                 grouped(*count),
                 size_label(sizes[largest]),
@@ -1465,30 +1967,22 @@ fn text(options: &Options, spec: &Spec, runs: &[Run], json: &Json) -> String {
         let _ = writeln!(out, "{about}");
     }
     let check = &json["check"];
+    let by = match check["by"].as_str() {
+        Some("digest") => "by digest: no check function in the file",
+        Some("equality") => "by deep equality: check = true",
+        _ => "by the file's check function",
+    };
     if check["ran"] == true {
         if check["ok"] == true {
-            let _ = writeln!(out, "check: every variant's result holds against {}'s at every size", variants[0].name);
+            let _ = writeln!(out, "check: every variant's result holds against {}'s at every size ({by})", variants[0].name);
         } else {
             for failure in check["failures"].as_array().into_iter().flatten() {
-                let _ = writeln!(out, "check FAILED: {} at n = {}: {}", failure["variant"].as_str().unwrap_or("?"), failure["size"].as_f64().map(grouped).unwrap_or_else(|| "?".into()), failure["message"].as_str().unwrap_or("?"));
+                let _ = writeln!(out, "check FAILED ({by}): {} at n = {}: {}", failure["variant"].as_str().unwrap_or("?"), failure["size"].as_f64().map(grouped).unwrap_or_else(|| "?".into()), failure["message"].as_str().unwrap_or("?"));
             }
+            let _ = writeln!(out, "  a variant whose result differs computes something else: it wins nothing, and its figures are no other way of writing the same work");
         }
     } else {
-        // the results' digests at least
-        let mut differ = Vec::new();
-        for size in 0..sizes.len() {
-            let base = runs.iter().find(|run| run.variant == 0 && run.size == size).and_then(|run| run.digest.clone());
-            for run in runs.iter().filter(|run| run.size == size && run.variant > 0) {
-                if run.digest.is_some() && base.is_some() && run.digest != base {
-                    differ.push(format!("{} at n = {}", variants[run.variant].name, grouped(sizes[size])));
-                }
-            }
-        }
-        if differ.is_empty() {
-            let _ = writeln!(out, "results: every variant's result has the baseline's digest (no check function in the file)");
-        } else {
-            let _ = writeln!(out, "results: these differ from {}'s (by digest; no check function in the file): {}", variants[0].name, differ.join(", "));
-        }
+        let _ = writeln!(out, "results: not checked (--no-check)");
     }
     // the table of figures
     let columns: [(&str, &str); 10] = [("work_ms", "work"), ("warm_ms", "warm work"), ("host_ms", "host"), ("insns", "insns"), ("alloc_bytes", "alloc"), ("allocs", "allocs"), ("heap_bytes", "heap held"), ("gc_steps", "gc steps"), ("rehash_keys", "rehash keys"), ("cache_hit_rate", "cache hit")];
@@ -1536,13 +2030,20 @@ fn text(options: &Options, spec: &Spec, runs: &[Run], json: &Json) -> String {
     // scaling
     let scaling = json["scaling"].as_array().cloned().unwrap_or_default();
     if sizes.len() >= 2 && !scaling.is_empty() {
-        let _ = writeln!(out, "\nscaling: the exponent k of a fit of the figure to c * n^k (between the two largest sizes)");
+        let fitted = scaling.iter().any(|entry| entry["fit"]["fitted"] == true);
+        let _ = writeln!(
+            out,
+            "\nscaling: the exponent k at large n{} [each segment's slope, n to n]",
+            if fitted { ", of a fit to a + b * n^k with a fixed cost a call (a) apart: the growing part's slope between the two largest sizes" } else { ": the slope between the two sizes" }
+        );
         for key in ["work_ms", "warm_ms", "host_ms", "allocs", "alloc_bytes", "heap_bytes", "rehash_keys"] {
             let rows: Vec<String> = variants
                 .iter()
                 .filter_map(|variant| {
                     let entry = scaling.iter().find(|entry| entry["variant"] == variant.name.as_str() && entry["metric"] == key)?;
-                    Some(format!("{} {:.2} ({})", variant.name, entry["exponent"].as_f64()?, entry["last"].as_f64().map_or("-".into(), |last| format!("{last:.2}"))))
+                    let segments: Vec<String> = entry["segments"].as_array().into_iter().flatten().filter_map(|segment| segment[2].as_f64()).map(|slope| format!("{slope:.2}")).collect();
+                    let segments = if segments.len() > 1 { format!(" [{}]", segments.join(" ")) } else { String::new() };
+                    Some(format!("{} {:.2}{segments}", variant.name, entry["exponent"].as_f64()?))
                 })
                 .collect();
             if !rows.is_empty() {
@@ -1553,8 +2054,12 @@ fn text(options: &Options, spec: &Spec, runs: &[Run], json: &Json) -> String {
     // winners at the largest size
     if let Some(largest) = sizes.len().checked_sub(1) {
         let winners: Vec<&Json> = json["winners"].as_array().into_iter().flatten().filter(|winner| winner["size"].as_f64() == Some(sizes[largest])).collect();
+        let differing: Vec<&str> = runs.iter().filter(|run| run.size == largest && result_differs(run)).map(|run| variants[run.variant].name.as_str()).collect();
+        if winners.is_empty() && !differing.is_empty() {
+            let _ = writeln!(out, "\nwinners at n = {}: none, as only one variant's result holds ({} computes something else)", grouped(sizes[largest]), differing.join(", "));
+        }
         if !winners.is_empty() {
-            let _ = writeln!(out, "\nwinners at n = {} (the best, then each other variant's figure over it)", grouped(sizes[largest]));
+            let _ = writeln!(out, "\nwinners at n = {} (the best where it is clear of every other variant, else no clear winner among those within reach of the best figure; then each other variant's figure over the first)", grouped(sizes[largest]));
             let (mut equal, mut noise, mut negligible) = (Vec::new(), Vec::new(), Vec::new());
             for winner in winners {
                 let metric = metric_of(winner["metric"].as_str().unwrap_or_default()).unwrap();
@@ -1562,32 +2067,57 @@ fn text(options: &Options, spec: &Spec, runs: &[Run], json: &Json) -> String {
                     continue;
                 }
                 let ranking = winner["ranking"].as_array().cloned().unwrap_or_default();
-                if winner["material"] == false {
-                    negligible.push(metric.label);
-                    continue;
-                }
+                let others = || ranking.iter().skip(1).filter(|entry| entry["differs"] != true);
                 if !ranking.iter().any(|entry| entry["clear"] == true) {
-                    if metric.exact { equal.push(metric.label) } else { noise.push(metric.label) }
+                    // (exact figures within 1 % are about equal, however small; a gap past that under the floor is too small)
+                    let level = metric.exact && others().all(|entry| entry["value_ratio"].as_f64().is_some_and(|ratio| ratio < 1.01));
+                    if level {
+                        equal.push(metric.label);
+                    } else if others().all(|entry| entry["material"] == false) && others().next().is_some() {
+                        negligible.push(metric.label);
+                    } else if metric.exact {
+                        equal.push(metric.label);
+                    } else {
+                        noise.push(metric.label);
+                    }
                     continue;
                 }
                 let best = &ranking[0];
-                let best_text = if best["value"].as_f64() == Some(0.0) { format!("{} (none)", best["variant"].as_str().unwrap_or_default()) } else { best["variant"].as_str().unwrap_or_default().to_string() };
+                let best_name = best["variant"].as_str().unwrap_or_default();
+                // (a winner only where every other gap is clear; else the variants no clear gap parts from the best figure)
+                let leaders: Vec<&str> = std::iter::once(best_name).chain(others().filter(|entry| entry["clear"] != true).filter_map(|entry| entry["variant"].as_str())).collect();
+                let best_text = if leaders.len() > 1 {
+                    format!("no clear winner among {}", leaders.join(", "))
+                } else if best["value"].as_f64() == Some(0.0) {
+                    format!("{best_name} (none)")
+                } else {
+                    best_name.to_string()
+                };
                 let others: Vec<String> = ranking[1..]
                     .iter()
                     .map(|entry| {
                         let name = entry["variant"].as_str().unwrap_or_default();
+                        if entry["differs"] == true {
+                            return format!("{name} (its result differs)");
+                        }
                         let figure = match entry["ratio"].as_f64() {
                             Some(ratio) => ratio_text(Some(ratio)),
                             None => show(entry["value"].as_f64().unwrap_or(0.0), metric.unit),
                         };
                         let rounds = &entry["rounds"];
+                        let interval = entry["interval"].as_array().filter(|_| entry["clear"] == true).map_or(String::new(), |pair| format!(" [{:.2}-{:.2}]", pair[0].as_f64().unwrap_or(0.0), pair[1].as_f64().unwrap_or(0.0)));
                         let flag = match (entry["clear"].as_bool(), rounds["won"].as_u64()) {
                             (Some(true), Some(won)) => format!(" ({won} of {} rounds)", rounds["of"]),
+                            _ if entry["material"] == false => " (too small to matter)".into(),
                             (Some(false), _) if metric.exact => " (about equal)".into(),
-                            (Some(false), _) => " (noise)".into(),
+                            (Some(false), _) if rounds["aa_bar"].is_number() => format!(" (within the A/A pair's own gap here, {:.1} %)", rounds["aa_bar"].as_f64().unwrap_or(0.0) * 100.0),
+                            (Some(false), _) => match rounds["noise"].as_f64() {
+                                Some(noise) => format!(" (within noise: +-{:.1} % at {} rounds)", noise * 100.0, rounds["of"]),
+                                None => " (noise)".into(),
+                            },
                             _ => String::new(),
                         };
-                        format!("{name} {figure}{flag}")
+                        format!("{name} {figure}{interval}{flag}")
                     })
                     .collect();
                 let _ = writeln!(out, "  {:<22} {}; {}", metric.label, best_text, others.join(", "));
@@ -1596,11 +2126,19 @@ fn text(options: &Options, spec: &Spec, runs: &[Run], json: &Json) -> String {
                 let _ = writeln!(out, "  about equal (within 1 %): {}", equal.join(", "));
             }
             if !noise.is_empty() {
-                let _ = writeln!(out, "  within the noise of the A/A pair: {}", noise.join(", "));
+                let _ = writeln!(out, "  within the noise two runs of the same code show (the A/A pair's, at these rounds): {}", noise.join(", "));
             }
             if !negligible.is_empty() {
-                let _ = writeln!(out, "  too few to matter beside the run's work: {}", negligible.join(", "));
+                let _ = writeln!(out, "  too small to matter: {}", negligible.join(", "));
             }
+            let floor = &json["floor"];
+            let _ = writeln!(
+                out,
+                "  (material from: a ms figure's gap of {} a call, 0.1 % of a 60 fps frame at {} a frame (the file's per_frame says how often the game runs the code), {} at least; cycles as the time they take at the clock they ran at, the same; a count's gap a frame of 0.1 % of a call's instructions, 10 at least; a gap of 1 KB a frame; a hit rate's gap over as many lookups)",
+                show(floor["ms"].as_f64().unwrap_or(0.0), "ms"),
+                if spec.per_frame == 1.0 { "one call".to_string() } else { format!("{} calls", grouped(spec.per_frame)) },
+                show(MATERIAL_NS * 1e-6, "ms")
+            );
         }
         // the tables after the run, by site: run's (the layout each variant makes), then setup's (its input)
         let largest_runs: Vec<(&Variant, &Run)> = variants.iter().enumerate().filter_map(|(variant, entry)| Some((entry, runs.iter().find(|run| run.variant == variant && run.size == largest && run.status == "ok")?))).collect();
@@ -1637,8 +2175,15 @@ fn text(options: &Options, spec: &Spec, runs: &[Run], json: &Json) -> String {
     }
     let _ = writeln!(out, "\nexact (the same every run): work clock, instructions, allocations, heap, collector steps, tables, rehashes, cold touches, cache counts.");
     let host = if options.time {
-        let aa = json["aa"].as_array().and_then(|aa| aa.last()).map_or(String::new(), |entry| format!(", A/A {:.3} at n = {}", entry["min_ratio"].as_f64().unwrap_or(1.0), grouped(entry["size"].as_f64().unwrap_or(0.0))));
-        format!("host time: the fastest of {} interleaved rounds (the median beside it in compare.json){aa}", options.rounds)
+        let noise = json["noise"]["level"].as_f64().map_or(String::new(), |level| format!(" (two runs of the same code part by up to {:.1} % at {} rounds here)", level * 100.0, options.rounds));
+        format!(
+            "host time: each variant's fastest of {} interleaved rounds (up to {} for undecided pairs; the median beside it in compare.json); a gap is clear when paired round by round it wins the sign test at {} (8 of 9), the 95 % interval of its shift leaves out none, the shift is past the A/A noise{noise} and {:.0} %, and the fastest runs agree (slower by a third of the shift at least); a run over {}x what its round and its arm lead one to expect is left out",
+            options.rounds,
+            options.max_rounds,
+            stats::ALPHA,
+            HOST_FLOOR * 100.0,
+            stats::SLOWED
+        )
     } else {
         "host time: not timed (--no-time)".to_string()
     };
@@ -1712,20 +2257,96 @@ mod tests {
         assert_eq!(size_label(0.5), "0.5");
     }
 
+    /// compare.json's scaling: a constant overhead a call no longer bends the exponent (a log-log fit without it read a
+    /// linear walk as n^0.68); the segments keep the raw slopes
     #[test]
-    fn a_fit_finds_the_exponent_of_n() {
-        let linear: Vec<(f64, f64)> = [10.0, 100.0, 1000.0, 10000.0].iter().map(|&n| (n, 3.0 * n)).collect();
-        let (k, r2, last) = fit(&linear).unwrap();
-        assert!((k - 1.0).abs() < 1e-9 && (r2 - 1.0).abs() < 1e-9 && (last.unwrap() - 1.0).abs() < 1e-9);
-        let squares: Vec<(f64, f64)> = [10.0, 100.0, 1000.0].iter().map(|&n| (n, n * n + 5.0)).collect();
-        let (k, _, last) = fit(&squares).unwrap();
-        assert!(k > 1.9 && k < 2.0 && last.unwrap() > 1.99, "{k} {last:?}");
-        // (a constant overhead at small n bends the fit; the last pair shows the trend)
+    fn scaling_reads_the_exponent_at_large_n() {
         let overhead: Vec<(f64, f64)> = [10.0, 100.0, 1000.0, 10000.0].iter().map(|&n| (n, 1000.0 + n)).collect();
-        let (k, _, last) = fit(&overhead).unwrap();
-        assert!(k < 0.5 && last.unwrap() > 0.7 && last.unwrap() > k, "{k} {last:?}");
-        assert!(fit(&[(10.0, 1.0)]).is_none());
-        assert!(fit(&[(10.0, 0.0), (100.0, 0.0)]).is_none());
+        let found = growth_json(&overhead).unwrap();
+        assert!((found["exponent"].as_f64().unwrap() - 1.0).abs() < 0.02, "{found}");
+        assert!((found["fit"]["fixed"].as_f64().unwrap() - 1000.0).abs() < 30.0, "{found}");
+        let segments = found["segments"].as_array().unwrap();
+        assert_eq!(segments.len(), 3);
+        assert!(segments[0][2].as_f64().unwrap() < 0.1 && found["last"].as_f64().unwrap() < 0.97, "{found}");
+        let squares: Vec<(f64, f64)> = [10.0, 100.0, 1000.0].iter().map(|&n| (n, n * n + 5.0)).collect();
+        assert!((growth_json(&squares).unwrap()["exponent"].as_f64().unwrap() - 2.0).abs() < 0.01);
+        assert!(growth_json(&[(10.0, 1.0)]).is_none());
+        assert!(growth_json(&[(10.0, 0.0), (100.0, 0.0)]).is_none());
+    }
+
+    /// A gap in a ms figure matters from 0.1 % of a 60 fps frame at the file's calls a frame, and 1 ns at least
+    #[test]
+    fn the_material_floor_follows_the_calls_a_frame() {
+        assert!((ms_floor(1.0) - 1000.0 / 60.0 * 0.001).abs() < 1e-12);
+        assert!((ms_floor(100.0) - 1000.0 / 60.0 * 0.001 / 100.0).abs() < 1e-12);
+        assert_eq!(ms_floor(1e12), 1e-6, "1 ns at least");
+    }
+
+    /// A floor at `per_frame` calls a frame, for a call of `insns` instructions and `lookups` inline cache lookups
+    fn floor_at(per_frame: f64, insns: f64, lookups: f64, cycles_per_ms: Option<f64>) -> Floor {
+        Floor { ms: ms_floor(per_frame), per_frame, insns, lookups, cycles_per_ms }
+    }
+
+    /// A gap matters by its own size, never by how large the figures are: heap held 16,048 and 16,432 B (384 B apart) is
+    /// too small to matter, where the figures themselves are well past 1 KB; a count likewise, against the run's
+    /// instructions; a hit rate by the lookups its gap moves
+    #[test]
+    fn a_gap_is_material_by_its_own_size() {
+        let floor = floor_at(1.0, 1e6, 0.0, None);
+        let heap = metric_of("heap_bytes").unwrap();
+        assert!(!material(heap, 16_432.0 - 16_048.0, floor), "a 384 B gap");
+        assert!(material(heap, 17_500.0 - 16_048.0, floor));
+        // (a call of 100,000 instructions: 100 allocations apart matter, 99 do not, however many each made)
+        let allocs = metric_of("allocs").unwrap();
+        let floor = floor_at(1.0, 1e5, 0.0, None);
+        assert!(!material(allocs, 99.0, floor) && material(allocs, 100.0, floor));
+        let floor = floor_at(1.0, 1e3, 5_000.0, None);
+        assert!(!material(allocs, 9.0, floor) && material(allocs, 10.0, floor), "10 at least");
+        // (0.1 % of 5,000 lookups moves 5 of them, under 10; 1 % moves 50)
+        let rate = metric_of("cache_hit_rate").unwrap();
+        assert!(!material(rate, 0.001, floor) && material(rate, 0.01, floor));
+        assert!(material(metric_of("insns").unwrap(), 1.0, floor_at(1.0, 1e9, 0.0, None)), "instructions are the work itself");
+        let work = metric_of("work_ms").unwrap();
+        let ms = ms_floor(1.0);
+        assert!(!material(work, ms * 0.99, floor) && material(work, ms, floor));
+    }
+
+    /// One measurement, one verdict: a count or bytes a call matter by what a frame pays, as a ms figure does. At 1,000
+    /// calls a frame, a variant allocating 848 B and one collector step more a call (848 KB and 1,000 steps a frame) is
+    /// material on every figure, where at one call a frame it is not; and cycles are judged as the time they take at the
+    /// clock they ran at, against host time's floor: 41,896 cycles at 4.07 GHz are 10.3 us, under 16.67 us at one call a
+    /// frame, as host time's 10.3 us gap is
+    #[test]
+    fn counts_bytes_and_cycles_are_judged_by_what_a_frame_pays() {
+        let (alloc, allocs, steps) = (metric_of("alloc_bytes").unwrap(), metric_of("allocs").unwrap(), metric_of("gc_steps").unwrap());
+        let one = floor_at(1.0, 2_400.0, 0.0, None);
+        let thousand = floor_at(1000.0, 2_400.0, 0.0, None);
+        assert!(!material(alloc, 848.0, one) && !material(allocs, 2.0, one) && !material(steps, 1.0, one));
+        assert!(material(alloc, 848.0, thousand) && material(allocs, 2.0, thousand) && material(steps, 1.0, thousand));
+        // (the heap a phase holds is no figure a call: per_frame leaves it as it is)
+        assert!(!material(metric_of("heap_bytes").unwrap(), 848.0, thousand));
+        let (host, cycles) = (metric_of("host_ms").unwrap(), metric_of("host_cycles").unwrap());
+        let clock = floor_at(1.0, 2_400.0, 0.0, Some(4_070_000.0));
+        assert!(!material(host, 0.0103, clock) && !material(cycles, 41_896.0, clock), "10.3 us under 16.67 us, as time and as cycles");
+        let busy = floor_at(1000.0, 2_400.0, 0.0, Some(4_070_000.0));
+        assert!(material(host, 0.0103, busy) && material(cycles, 41_896.0, busy), "at 1,000 calls a frame both matter");
+        // (the counters' core cycles at their own clock)
+        assert!(!material(metric_of("hw_cycles").unwrap(), 41_896.0, clock));
+    }
+
+    /// Host time leads with the variant its paired rounds put ahead, not the one with the fastest single round: c's
+    /// fastest round is 2 % under a's but a was 6 % faster round by round, so a leads and c reads 1.06x, never "c, a;
+    /// a 0.94x"; with no variant ahead the fastest round's leader stays
+    #[test]
+    fn host_time_leads_with_the_paired_rounds_leader() {
+        let values = [(0, 0.102), (1, 0.104), (2, 0.100)];
+        let shifts = |a: usize, b: usize| -> Option<f64> {
+            let position = |variant: usize| [0.0, 0.03, 0.94f64.ln().abs()][variant];
+            Some(position(b) - position(a))
+        };
+        assert_eq!(paired_leader(&values, (2, 0.100), shifts), (0, 0.102));
+        assert!((shifts(0, 2).unwrap().exp() - 1.0 / 0.94).abs() < 1e-12, "c over a, the ratio printed");
+        assert_eq!(paired_leader(&values, (0, 0.102), shifts), (0, 0.102));
     }
 
     #[test]
@@ -1739,29 +2360,44 @@ mod tests {
         let (best, _, _, ratio, _) = winner(&[(0, 0.5), (1, 0.9)], true, 0).unwrap();
         assert_eq!(best, 1);
         assert!((ratio.unwrap() - 1.8).abs() < 1e-12);
-        // a tie has no winner; nothing above 0 against something is "only one above 0"
-        assert!(winner(&[(0, 4.0), (1, 4.0)], false, 0).is_none());
+        // tied leaders lead in the variants' order, the runner-up at ratio 1 (a tie names no winner, and the rest still
+        // get their verdicts); nothing above 0 against something is "only one above 0"
+        let (best, value, runner, ratio, _) = winner(&[(1, 4.0), (0, 4.0), (2, 6.64)], false, 0).unwrap();
+        assert_eq!((best, value, runner, ratio), (0, 4.0, 1, Some(1.0)));
         let (best, _, _, ratio, _) = winner(&[(0, 5.0), (1, 0.0)], false, 0).unwrap();
         assert_eq!((best, ratio), (1, None));
         assert!(winner(&[(0, 1.0)], false, 0).is_none());
     }
 
-    /// Host time ranks by the fastest round: clear only beyond the A/A pair's own gap (3 % at least) and with the median
-    /// agreeing, so rounds a busy machine slowed in a stretch decide nothing
+    fn run(variant: usize, size: usize, ms: &[f64]) -> Run {
+        Run { variant, size, status: "ok".into(), host_ms: ms.iter().map(|value| Some(*value)).collect(), ..Run::default() }
+    }
+
+    /// Host time's verdicts pair two variants round by round: slowed runs are left out, identical variants are never
+    /// called apart (the audit's case: one called faster at 4-5 % after losing 6 of 9 rounds), and a gap past the A/A
+    /// pair's noise in 8 of 9 rounds or more is
     #[test]
-    fn a_host_time_winner_is_clear_by_its_fastest_round() {
-        assert!(host_clear(1.40, 1.30, Some(1.01)));
-        assert!(!host_clear(1.02, 1.30, Some(1.00)), "within 3 %");
-        assert!(!host_clear(1.06, 1.30, Some(1.08)), "within the A/A pair's own gap");
-        assert!(!host_clear(1.06, 1.30, Some(0.92)), "the gap counts either way");
-        assert!(!host_clear(1.40, 0.90, None), "a median that disagrees");
-        assert!(host_clear(1.05, 1.10, None));
-        // (slowed stretches: the fastest rounds of two equal variants agree, their medians need not)
-        let a = [0.112, 0.113, 0.403, 0.114, 0.568, 0.116, 0.113, 0.116, 0.720];
-        let b = [0.447, 0.113, 0.579, 0.730, 0.825, 0.223, 0.965, 1.289, 1.521];
-        let fastest = |values: &[f64]| values.iter().copied().fold(f64::INFINITY, f64::min);
-        let (median_a, median_b) = (median_spread(&a).unwrap().0, median_spread(&b).unwrap().0);
-        assert!(!host_clear(fastest(&b) / fastest(&a), median_b / median_a, None), "equal by their fastest rounds");
+    fn host_time_verdicts_pair_rounds_against_the_aa_noise() {
+        let noise = [1.00, 1.02, 0.99, 1.03, 0.98, 1.01, 1.00, 0.97, 1.02];
+        let base: Vec<f64> = noise.iter().map(|value| value * 0.150).collect();
+        let twin: Vec<f64> = noise.iter().rev().map(|value| value * 0.150).collect();
+        let mut timing = Timing { rounds: 9, ..Timing::default() };
+        timing.twin_ms.insert(0, twin.iter().map(|value| Some(*value)).collect());
+        // the same code: losing 6 of 9 rounds, faster by its fastest round
+        let same: Vec<f64> = [0.99, 1.03, 1.01, 0.97, 1.02, 1.04, 0.96, 1.01, 1.03].iter().map(|value| value * 0.150).collect();
+        // 10 % slower in every round, one round slowed 4x by the machine
+        let mut slower: Vec<f64> = noise.iter().map(|value| value * 0.165).collect();
+        slower[4] *= 4.0;
+        let runs = vec![run(0, 0, &base), run(1, 0, &same), run(2, 0, &slower)];
+        let clean = timing.clean(&runs, false);
+        let pool = clean.pool();
+        assert_eq!(pool.len(), 9);
+        assert_eq!((clean.slowed, clean.timed), (1, 36));
+        let verdict = host_verdict(&clean, &pool, &timing, 0, 0, 1).unwrap();
+        assert!(!verdict.clear, "{verdict:?}");
+        let verdict = host_verdict(&clean, &pool, &timing, 0, 0, 2).unwrap();
+        assert!(verdict.clear && verdict.n == 8, "the slowed round left out: {verdict:?}");
+        assert!((verdict.estimate.exp() - 1.10).abs() < 0.02, "{verdict:?}");
     }
 
     #[test]
@@ -1776,6 +2412,77 @@ mod tests {
         assert_eq!(show(2048.0, "bytes"), "2.0 KB");
     }
 
+    #[test]
+    fn the_variants_own_work_leaves_the_harness_out() {
+        // the generated harness's wrapper (its own function), the variant, and a C function both called
+        let profile = json!({"functions": [
+            {"id": 0, "harness": true, "phases": {"run": {"self_work_ms": 3.0, "harness_self_work_ms": 3.0, "cold_work_ms": 0.5}}},
+            {"id": 1, "harness": false, "phases": {"run": {"self_work_ms": 1.0, "harness_self_work_ms": 0.0, "cold_work_ms": 0.2}}},
+            {"id": 2, "harness": false, "phases": {"run": {"self_work_ms": 0.5, "harness_self_work_ms": 0.3, "cold_work_ms": 0.15, "harness_cold_work_ms": 0.1}}},
+            {"id": 3, "harness": false, "phases": {"setup": {"self_work_ms": 9.0, "harness_self_work_ms": 0.0, "cold_work_ms": 1.0}}},
+        ]});
+        let (work, cold) = own_work(&profile, "run").expect("the split is there");
+        assert!((work - 1.2).abs() < 1e-12, "{work}");
+        assert!((cold - 0.25).abs() < 1e-12, "{cold}");
+        // (a profile from before the split has no cold per function: the marks' figures stand)
+        assert!(own_work(&json!({"functions": [{"id": 0, "phases": {"run": {"self_work_ms": 1.0}}}]}), "run").is_none());
+    }
+
+    /// A version 2 profile's marks carry the exact cold charges (`cold_ms`). They decide the cold part of a phase even
+    /// where the older VM counts beside them (`cold_tables` and the rest) would have given another figure.
+    #[test]
+    fn exact_cold_marks_take_precedence_over_legacy_vm_counts() {
+        let calls = 2.0;
+        let run_work_ms = 1.0;
+        let run_cold_ms = 0.25;
+        let after_work_ms = 5.0;
+        let after_cold_ms = 1.25;
+        let profile = json!({"version": 2, "marks": [
+            {
+                "phase": "run", "work_ms": run_work_ms, "cold_ms": run_cold_ms,
+                "vm": {"cold_tables": 0, "cold_closures": 0, "cold_protos": 0, "cold_code": 0}
+            },
+            {
+                "phase": "after", "work_ms": after_work_ms, "cold_ms": after_cold_ms,
+                "vm": {"cold_tables": 10, "cold_closures": 2, "cold_protos": 1, "cold_code": 50}
+            }
+        ]});
+
+        let figures = phase_figures(&profile, "run", "after", calls);
+
+        let cold_ms_a_call = (after_cold_ms - run_cold_ms) / calls;
+        let warm_ms_a_call = (after_work_ms - run_work_ms) / calls - cold_ms_a_call;
+        assert_eq!(figures["cold_ms"], cold_ms_a_call);
+        assert_eq!(figures["warm_ms"], warm_ms_a_call);
+    }
+
+    /// A version 2 call tree has one node for each context a function ran in. The hot functions add a function's nodes
+    /// together (here 1000 + 2000 us, 100 + 200 instructions, 2 + 3 calls), in the same six-column rows as before, and take
+    /// the function's own line, not the calling lines `tree_lines` holds.
+    #[test]
+    fn hot_functions_sum_context_nodes_without_changing_the_six_column_rows() {
+        let profile = json!({
+            "version": 2,
+            "tree": [
+                [-1, -1, 0, 0.0, 0, "startup"],
+                [0, -1, 0, 0.0, 0, "run"],
+                [1, 7, 2, 1000.0, 100, null],
+                [1, 7, 3, 2000.0, 200, null]
+            ],
+            "tree_lines": [-1, -1, 12, 18],
+            "functions": [{"id": 7, "key": "Walker:walk", "name": "walk", "module": "Walker", "line": 4, "kind": "Luau"}]
+        });
+        let functions = BTreeMap::from([(7, &profile["functions"][0])]);
+
+        let hot = hot_functions(&profile, &functions, 8);
+
+        assert_eq!(hot.len(), 1);
+        assert_eq!(hot[0].work_ms, 3.0);
+        assert_eq!(hot[0].insns, 300.0);
+        assert_eq!(hot[0].calls, 5.0);
+        assert_eq!(hot[0].line, 4);
+    }
+
     /// A phase's figures are the differences of its marks' counts, flows per call
     #[test]
     fn phase_figures_are_differences_between_marks() {
@@ -1784,10 +2491,10 @@ mod tests {
             "marks": [
                 {"phase": "run", "work_ms": 1.0, "insns": 100, "alloc_bytes": 1000, "allocs": 10, "script_rehashes": 1, "script_rehash_keys": 4,
                  "gc": {"steps": 2, "freed": 64, "ms": 0.5}, "vm": {"cold_tables": 0, "cold_closures": 0, "cold_protos": 0, "cold_code": 0},
-                 "caches": {"table key slot": [10, 1, 0, 0], "import": [5, 0, 0, 0]}},
+                 "caches": {"table key slot": [10, 1, 0, 0, 0, 0], "import": [5, 0, 0, 0]}, "cache_depths": {"table key slot": [0, 0, 0, 0]}},
                 {"phase": "after", "work_ms": 5.0, "insns": 500, "alloc_bytes": 3000, "allocs": 30, "script_rehashes": 5, "script_rehash_keys": 24,
                  "gc": {"steps": 6, "freed": 128, "ms": 0.9}, "vm": {"cold_tables": 10, "cold_closures": 2, "cold_protos": 0, "cold_code": 0},
-                 "caches": {"table key slot": [40, 3, 2, 0], "import": [9, 0, 0, 0]}}
+                 "caches": {"table key slot": [40, 3, 2, 0, 1, 2], "import": [9, 0, 0, 0]}, "cache_depths": {"table key slot": [1, 1, 0, 0]}}
             ]
         });
         let figures = phase_figures(&profile, "run", "after", 2.0);
@@ -1800,9 +2507,63 @@ mod tests {
         assert_eq!(figures["gc_steps"], 2.0);
         assert_eq!(figures["cold_tables"], 5.0);
         assert!((figures["cold_ms"] - (10.0 * crate::cost::LUAU_COLD_TABLE + 2.0 * crate::cost::LUAU_COLD_CLOSURE) * 1e-6 / 2.0).abs() < 1e-12);
-        // caches: 34 hits, 4 misses and slow paths in the phase; the rate is not per call
+        // caches: 34 hits of 41 lookups in the phase (2 repredictions, 2 absent reads, a rehash, a walk of one __index table and one
+        // of two); the rate is not per call, the uncharged work is: each uncharged outcome by its price (a price within the noise left
+        // out), the rehash none (the work clock charges it, in work_ms)
         assert_eq!(figures["cache_hits"], 17.0);
-        assert_eq!(figures["cache_misses"], 2.0);
-        assert!((figures["cache_hit_rate"] - 34.0 / 38.0).abs() < 1e-12);
+        assert_eq!(figures["cache_lookups"], 20.5);
+        assert!((figures["cache_hit_rate"] - 34.0 / 41.0).abs() < 1e-12);
+        let clear = |price: Option<crate::profiler::prices::Price>| price.filter(|price| !price.within_noise).map_or(0.0, |price| price.ns);
+        let price = |outcome: usize| clear(crate::profiler::prices::outcome(3, outcome, 1.0));
+        let walk = |depth: usize| clear(crate::profiler::prices::metatable(3, depth, 1.0));
+        assert!(crate::profiler::prices::outcome(3, crate::profiler::vm::REHASHED, 1.0).is_none(), "a rehash is charged, not priced");
+        let expected = (2.0 * price(crate::profiler::vm::REPREDICTED) + 2.0 * price(crate::profiler::vm::ABSENT) + walk(1) + walk(2)) / 1e3 / 1e3 / 2.0;
+        assert!((figures["cache_uncharged_ms"] - expected).abs() < 1e-12, "{} against {expected}", figures["cache_uncharged_ms"]);
+    }
+
+    fn variant(name: &str) -> Variant {
+        Variant { name: name.into(), slug: name.into(), kind: "function".into(), source: None, file: None, path: None }
+    }
+
+    fn profiled_run(variant: usize, figures: &[(&'static str, f64)]) -> Run {
+        Run { variant, size: 0, status: "ok".into(), run: figures.iter().copied().collect(), ..Run::default() }
+    }
+
+    /// The review's two probes. A numeric sum reads no table, yet 742 of its 845 ns are cold and first-use charges (its code
+    /// run for the first time in the frame); the phase's one cold table is the harness's. The note gives the share and
+    /// makes no claim about tables. An allocating variant makes the collector take 137 steps a call, whose charged work is
+    /// already in its work figure, and the note says so.
+    #[test]
+    fn notes_say_what_the_cold_and_collector_figures_hold() {
+        let spec = Spec {
+            title: None,
+            about: None,
+            sizes: vec![100.0],
+            frames: 60,
+            check: false,
+            check_kind: None,
+            per_frame: 1.0,
+            module: None,
+            variants: vec![variant("sum"), variant("allocate"), variant("noallocate")],
+        };
+        let numeric_work_ms = 0.00084509;
+        let numeric_cold_ms = 0.0007418;
+        let harness_cold_tables = 1.0;
+        let collector_steps = 137.0;
+        let runs = vec![
+            profiled_run(0, &[("work_ms", numeric_work_ms), ("cold_ms", numeric_cold_ms), ("warm_ms", numeric_work_ms - numeric_cold_ms), ("cold_tables", harness_cold_tables)]),
+            profiled_run(1, &[("work_ms", 0.328), ("gc_steps", collector_steps), ("gc_ms", 0.12)]),
+            profiled_run(2, &[("work_ms", 0.2), ("gc_steps", 0.0), ("gc_ms", 0.0)]),
+        ];
+
+        let notes = notes(&spec, &runs, &json!({"read": true}));
+
+        let cold_note = notes.iter().find(|note| note.contains("cold and first-use charges")).expect("a cold share note");
+        assert!(cold_note.contains("88 %"), "{cold_note}");
+        assert!(!cold_note.contains("1 tables"), "the phase's cold tables are not the variant's: {cold_note}");
+        assert!(!cold_note.contains("14 ns") && !cold_note.contains(&format!("{} ns", crate::cost::LUAU_COLD_TABLE)), "no table-layout claim: {cold_note}");
+        let collector_note = notes.iter().find(|note| note.contains("makes the collector work most")).expect("a collector note");
+        assert!(collector_note.contains("already holds the collector's charged work"), "{collector_note}");
+        assert!(!collector_note.contains("does not charge"), "{collector_note}");
     }
 }

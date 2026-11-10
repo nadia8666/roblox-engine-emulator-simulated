@@ -136,6 +136,21 @@ fn instances_properties_and_errors() {
 }
 
 #[test]
+fn datamodel_services_are_available_by_class_name() {
+    assert_script(
+        r#"
+        local runService = game.RunService
+        assert(runService == game:GetService("RunService"))
+        assert(runService.Name == "Run Service")
+        assert(runService:IsA("RunService"))
+        assert(runService.RenderStepped == game:GetService("RunService").RenderStepped)
+        local lighting = game.Lighting
+        assert(lighting == game:GetService("Lighting"))
+        "#,
+    );
+}
+
+#[test]
 fn not_scriptable_properties_are_no_members() {
     // Studio's dump permits no Read on PVInstance.Origin, PVInstance."Pivot Offset" or
     // Model.WorldPivotData: a script indexing them finds a child of that name, else no member
@@ -4225,8 +4240,124 @@ fn the_work_clock_charges_a_scripts_luau() {
     // (the cframes loop was 58.5 with every datatype operation a flat 15 ns; CFrame.new, `*` and Vector3.new were priced from the
     // lobby client's op_cost loop (101.5: `*` 60 ns), and `*` from a rig frame since (21 ns, 39 us less over the 1,000 products):
     // lune-roblox cframe.rs `price`. The instructions are priced by kind since (cost.rs INTERPRETED_OPS: an ADD or FORNLOOP 0.48 ns,
-    // where every instruction cost 1.6: the loop 32.0 then))
-    assert!(output.contains(&"print: loop 9.6 tables 65.5 cframes 47.9".to_string()), "{output:?}");
+    // where every instruction cost 1.6: the loop 32.0 then). The tables loop read 65.5 until the allocation prices were fitted on the
+    // parity bench's allocation, churn and growth rows at several sizes (an object 14.6 ns in all where it was 22, 8.6 of it the
+    // collector's; an allocated byte 0.061 and a byte of table storage 0.079 more, where storage was 0.4; an array slot growth moves
+    // nothing, where it was 12))
+    assert!(output.contains(&"print: loop 9.6 tables 32.1 cframes 47.9".to_string()), "{output:?}");
+}
+
+/// What a library or engine call does by the size of its input is work the clock charges (patches/luau/15-input-size-work.patch,
+/// cost.rs SCANNED_SLOT and below), so each of the audit's workloads grows on the clock as a client's time grows with it (the parity
+/// bench's `libsize` and `json` rows, a client's fastest session): table.find of a missing value 14 ns at 10 elements and 41 us at
+/// 100,000; `s ..= piece` growing with the square of its pieces where table.concat grows with them; a list drained from its front or
+/// filled at it, each call moving what is left; string.upper / gsub / rep on 1 MB 570-850 times their 1 KB figure; JSONEncode and
+/// JSONDecode of 1,000 records 83 and 91 times 10's. A flat price a call read each pair alike (table.find 6.19 us at every size).
+#[test]
+fn library_work_grows_with_its_input() {
+    let (lua, engine) = start();
+    engine_lua::modules::interpret_all(&lua, &engine);
+    crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local HttpService = game:GetService("HttpService")
+        -- (each workload once before it is timed: a frame's first call of a C function costs its cold code, LUAU_COLD_CFUNC)
+        local function us(f, ...)
+            f(...)
+            local t0 = os.clock()
+            f(...)
+            return (os.clock() - t0) * 1e6
+        end
+        local function list(n)
+            local t = table.create(n)
+            for i = 1, n do
+                t[i] = i
+            end
+            return t
+        end
+        local results = {}
+        for _, n in { 10, 1000, 100000 } do
+            local t = list(n)
+            results["find" .. n] = us(function()
+                for _ = 1, 10 do
+                    table.find(t, -1)
+                end
+            end) / 10
+        end
+        for _, n in { 1000, 4000 } do
+            results["concat" .. n] = us(function()
+                local s = ""
+                for _ = 1, n do
+                    s ..= "abcdefgh"
+                end
+            end)
+            results["tconcat" .. n] = us(function()
+                local parts = table.create(n)
+                for i = 1, n do
+                    parts[i] = "abcdefgh"
+                end
+                local _ = table.concat(parts)
+            end)
+        end
+        for _, n in { 100, 1000 } do
+            results["remove" .. n] = us(function()
+                local t = list(n)
+                for _ = 1, n do
+                    table.remove(t, 1)
+                end
+            end) / n
+            results["insert" .. n] = us(function()
+                local t = {}
+                for i = 1, n do
+                    table.insert(t, 1, i)
+                end
+            end) / n
+        end
+        for _, size in { 1024, 1048576 } do
+            local s = string.rep("a", size)
+            results["upper" .. size] = us(string.upper, s)
+            results["gsub" .. size] = us(string.gsub, s, "a", "b")
+            results["rep" .. size] = us(string.rep, "b", size)
+        end
+        for _, n in { 10, 1000 } do
+            local records = {}
+            for i = 1, n do
+                records[i] = { id = i, name = "item" .. i, value = i * 0.5, tags = { "a", "b" } }
+            end
+            local text = HttpService:JSONEncode(records)
+            results["encode" .. n] = us(function()
+                HttpService:JSONEncode(records)
+            end)
+            results["decode" .. n] = us(function()
+                HttpService:JSONDecode(text)
+            end)
+        end
+        for name, value in results do
+            print(string.format("%s %.4f", name, value))
+        end
+        "#,
+    );
+    let figure = |name: &str| -> f64 {
+        let prefix = format!("print: {name} ");
+        output.iter().find_map(|line| line.strip_prefix(&prefix)).unwrap_or_else(|| panic!("no {name} in {output:?}")).parse().unwrap()
+    };
+    let ratio = |big: &str, small: &str| figure(big) / figure(small);
+    // table.find compares every element: a client 14.3 ns at 10, 41.4 us at 100,000
+    assert!(ratio("find100000", "find10") > 1000.0, "{output:?}");
+    assert!((0.5..2.0).contains(&(figure("find100000") / 41.41)), "table.find of 100,000 elements {} us against a client's 41.41", figure("find100000"));
+    // building a string piece by piece copies what it has built each time; table.concat copies each piece once
+    assert!(ratio("concat4000", "concat1000") > 8.0, "{output:?}");
+    assert!(ratio("tconcat4000", "tconcat1000") < 6.0, "{output:?}");
+    // each table.remove(t, 1) and table.insert(t, 1, v) moves the rest of the list
+    assert!(ratio("remove1000", "remove100") > 2.5 && ratio("insert1000", "insert100") > 2.5, "{output:?}");
+    // string work on 1 MB against 1 KB (a client: upper 1.48 ms and 1.74 us, gsub 1.54 ms and 2.44 us, rep 234 us and 0.41 us)
+    for name in ["upper", "gsub", "rep"] {
+        assert!(ratio(&format!("{name}1048576"), &format!("{name}1024")) > 300.0, "{name}: {output:?}");
+    }
+    // JSON by its text and values (a client: 10 records' encode 5.6 us, 1,000's 463 us)
+    assert!(ratio("encode1000", "encode10") > 40.0 && ratio("decode1000", "decode10") > 40.0, "{output:?}");
 }
 
 /// The collector steps at the same points however fast the host runs. Luau paces it by how long a cycle took (lgc.cpp: the allocation
@@ -6383,6 +6514,60 @@ fn a_playing_clients_message_out_arrives_after_the_frames_heartbeat() {
     assert!(output.contains(&want.to_string()), "{output:?}");
 }
 
+#[test]
+fn log_history_is_ordered_bounded_and_returns_independent_tables() {
+    for server in [false, true] {
+        let (lua, engine) = start_with(Options { mode: "play".into(), run_context: if server { super::RunContext::Server } else { super::RunContext::Client }, ..Options::default() });
+        let before = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+        run(&lua, &engine, r#"
+            local Log = game:GetService("LogService")
+            assert(#Log:GetLogHistory() == 0)
+            print("first", 2)
+            warn("second")
+            Log:Info("third")
+            pcall(Log.Error, Log, "fourth")
+            task.spawn(error, "fifth")
+            local History = Log:GetLogHistory()
+            assert(#History == 5)
+            local Kinds = { "MessageOutput", "MessageWarning", "MessageInfo", "MessageError", "MessageError" }
+            for Index, Entry in History do
+                assert(Entry.messageType == Enum.MessageType[Kinds[Index]])
+                assert(type(Entry.timestamp) == "number" and Entry.timestamp > 1700000000)
+            end
+            assert(History[1].message == "first 2" and History[2].message == "second")
+            assert(History[3].message == "third" and History[4].message == "fourth")
+            assert(string.find(History[5].message, "fifth", 1, true))
+            History[1].message = "changed"
+            History[2] = nil
+            local Again = Log:GetLogHistory()
+            assert(Again ~= History and Again[1] ~= History[1])
+            assert(#Again == 5 and Again[1].message == "first 2")
+            _G.LogListener = Log.MessageOut:Connect(function(Message)
+                if Message == "outer" then warn("inner") end
+            end)
+            print("outer")
+        "#);
+        for _ in 0..2 {
+            scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+        }
+        run(&lua, &engine, r#"
+            _G.LogListener:Disconnect()
+            local Last = game:GetService("LogService"):GetLogHistory()
+            assert(Last[#Last].message == "inner")
+        "#);
+        let after = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+        assert!(engine.state.borrow().log_history.iter().all(|entry| entry.timestamp >= before && entry.timestamp <= after));
+        for index in 0..super::LOG_HISTORY_CAP + 3 {
+            engine.output("info", index.to_string(), None);
+        }
+        run(&lua, &engine, r#"
+            local History = game:GetService("LogService"):GetLogHistory()
+            assert(#History == 10000)
+            assert(History[1].message == "3" and History[10000].message == "10002")
+        "#);
+    }
+}
+
 /// LogService's logging methods in a playing client (measured, Studio 0.744: tools/parity/probes/logservice_methods.luau): a
 /// line of the method's MessageType with its {key} placeholders filled ({{ and }} escapes, a missing key kept), which
 /// MessageOut gets after the frame's Heartbeat with a converted copy of the context as its third argument (every line gets
@@ -6762,6 +6947,7 @@ fn an_executable_belongs_to_the_nearest_checkout_above_it_wherever_it_runs() {
     let repo = root.join("ree");
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::write(repo.join("Cargo.lock"), "").unwrap();
+    std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"roblox-engine-emulator\"\n").unwrap();
     for exe in ["target/release/ree.exe", "target/release/deps/ree-0a1b.exe", ".cache/bin/ree-0.1.0-1-2.exe"] {
         assert_eq!(super::checkout_of(&repo.join(exe)), Some(repo.clone()), "{exe}");
     }
@@ -6772,6 +6958,112 @@ fn an_executable_belongs_to_the_nearest_checkout_above_it_wherever_it_runs() {
     // a service copy in a state dir outside any checkout has none: serve takes its starter's (--source)
     assert_eq!(super::checkout_of(&root.join("state/bin/ree-0.1.0-1-2.exe")), None);
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn checkout_of_still_finds_a_hosts_nearest_lockfile() {
+    let root = std::env::temp_dir().join(format!("ree-host-lockfile-test-{}", std::process::id()));
+    let host = root.join("host");
+    std::fs::create_dir_all(&host).unwrap();
+    std::fs::write(root.join("Cargo.lock"), "").unwrap();
+    std::fs::write(host.join("Cargo.lock"), "").unwrap();
+    let exe = host.join("target/release/host.exe");
+    assert_eq!(super::checkout_of(&exe), Some(host.clone()), "a host needs only its lockfile");
+    std::fs::write(host.join("Cargo.toml"), "[package]\nname = \"another-tool\"\n").unwrap();
+    assert_eq!(super::checkout_of(&exe), Some(host));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn an_unrelated_cargo_project_is_not_the_executables_checkout() {
+    let root = std::env::temp_dir().join(format!("ree-foreign-checkout-test-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let exe = root.join("bin/ree.exe");
+    let manifest = root.join("Cargo.toml");
+    std::fs::write(root.join("Cargo.lock"), "").unwrap();
+    assert_eq!(super::ree_checkout_of(&exe), None, "a lockfile without a manifest");
+    // a host that depends on ree names it under [dependencies], outside [package]
+    std::fs::write(&manifest, "[package]\nname = \"another-tool\"\n[dependencies]\nroblox-engine-emulator = \"0.1.0\"\n").unwrap();
+    assert_eq!(super::ree_checkout_of(&exe), None, "a host's manifest does not name this package");
+    // a literal string and a trailing comment still name the package
+    std::fs::write(&manifest, "[package]\nname = 'roblox-engine-emulator' # this package\n").unwrap();
+    assert_eq!(super::ree_checkout_of(&exe), Some(root.clone()));
+    // the search goes on past a lockfile that has no ree manifest beside it
+    let nested = root.join("target/nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("Cargo.lock"), "").unwrap();
+    assert_eq!(super::ree_checkout_of(&nested.join("bin/ree.exe")), Some(root.clone()));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Standalone state uses the platform's per-user cache, unless the environment names one.
+#[test]
+fn standalone_caches_are_per_user() {
+    let root = std::env::temp_dir().join("ree-cache-defaults");
+    let path = |name: &str| root.join(name);
+    // a made-up environment: nothing here reads or creates the real per-user folders
+    let environment = [("LOCALAPPDATA", path("local")), ("HOME", path("home")), ("XDG_CACHE_HOME", path("xdg"))];
+    let var = |name: &str| environment.iter().find(|(key, _)| *key == name).map(|(_, value)| value.as_os_str().to_owned());
+    let with = |set: &'static str, value: &'static str| move |name: &str| if name == set { Some(path(value).into_os_string()) } else { var(name) };
+
+    // a standalone run: each platform's own cache folder
+    assert_eq!(super::standalone_state_dir("windows", var).unwrap(), path("local/ree"));
+    assert_eq!(super::standalone_state_dir("linux", var).unwrap(), path("xdg/ree"));
+    assert_eq!(super::standalone_state_dir("macos", var).unwrap(), path("home/Library/Caches/ree"));
+    // Linux falls back to ~/.cache when XDG_CACHE_HOME is unset or relative
+    let no_xdg = |name: &str| if name == "XDG_CACHE_HOME" { None } else { var(name) };
+    assert_eq!(super::standalone_state_dir("linux", no_xdg).unwrap(), path("home/.cache/ree"));
+    let relative_xdg = |name: &str| if name == "XDG_CACHE_HOME" { Some("relative".into()) } else { var(name) };
+    assert_eq!(super::standalone_state_dir("linux", relative_xdg).unwrap(), path("home/.cache/ree"));
+
+    // explicit overrides take priority over the per-user cache
+    for key in ["RUR_STATE_DIR", "RUR_CACHE_DIR"] {
+        assert_eq!(super::standalone_state_dir("linux", with(key, "override")).unwrap(), path("override"));
+    }
+    // RUR_STATE_DIR comes before RUR_CACHE_DIR
+    let both = |name: &str| match name {
+        "RUR_STATE_DIR" => Some(path("first").into_os_string()),
+        "RUR_CACHE_DIR" => Some(path("second").into_os_string()),
+        _ => var(name),
+    };
+    assert_eq!(super::standalone_state_dir("linux", both).unwrap(), path("first"));
+}
+
+#[test]
+fn standalone_state_stays_selected_after_environment_normalization() {
+    use crate::launch::resolve_path_variable;
+    use std::ffi::OsString;
+    use std::sync::OnceLock;
+    let root = std::path::absolute("cache-test").unwrap();
+    for os in ["windows", "linux", "macos"] {
+        // absolute HOME and LOCALAPPDATA, plus a relative XDG_CACHE_HOME that the cache lookup ignores
+        let client_environment = |name: &str| match name {
+            "LOCALAPPDATA" => Some(root.join("local").into_os_string()),
+            "HOME" => Some(root.join("home").into_os_string()),
+            "XDG_CACHE_HOME" => Some(OsString::from("relative")),
+            _ => None,
+        };
+        let expected = super::standalone_state_dir(os, client_environment).unwrap();
+
+        // the client's first lookup pins the state dir, before a service resolves its paths or changes folder
+        let state = OnceLock::new();
+        assert_eq!(super::resolve_standalone_state(&state, os, client_environment).unwrap(), expected);
+
+        // what a service or worker gets: the ignored relative folder is absolute now, so a fresh Linux lookup would pick it as the cache
+        let forwarded_environment = |name: &str| client_environment(name).and_then(resolve_path_variable);
+        assert_eq!(forwarded_environment("XDG_CACHE_HOME"), Some(std::path::absolute("relative").unwrap().into_os_string()));
+        assert_eq!(super::resolve_standalone_state(&state, os, forwarded_environment).unwrap(), expected, "{os}: forwarding paths must not change the pinned cache");
+
+        // a later job does not consult even a completely different environment
+        let changed_environment = |_: &str| Some(root.join("changed").into_os_string());
+        assert_eq!(super::resolve_standalone_state(&state, os, changed_environment).unwrap(), expected);
+
+        // with only relative folders there is no cache, so the lookup fails and pins nothing
+        let relative_environment = |name: &str| if matches!(name, "HOME" | "LOCALAPPDATA") { Some(OsString::from("relative")) } else { None };
+        let unpinned = OnceLock::new();
+        assert!(super::resolve_standalone_state(&unpinned, os, relative_environment).is_err(), "{os}: relative per-user folders stay unset");
+        assert!(unpinned.get().is_none());
+    }
 }
 
 /// The VM's work counts so far (a copy: the counters are plain numbers)

@@ -189,4 +189,43 @@ local Library = {
 -- Lune libraries whose functions take or return Vector3 values (the Vector3 library is native)
 local VectorLibraries = { Ray = true, Region3 = true }
 
-return ToLune, ToNative, In, Out, VectorLibraries, Library
+-- Ray as a plain frozen table of native vectors: Origin and Direction are raw fields (a read is a table slot, not
+-- a userdata member with a Lune Vector3 each way), typeof says "Ray" through __type. Members and the closest
+-- point follow Lune's (a point clamped to the ray's length).
+local RayMeta
+local function NewRay(Origin, Direction)
+	if type(Origin) ~= "vector" then
+		error(`invalid argument #1 to 'new' (Vector3 expected, got {typeof(Origin)})`, 2)
+	end
+	if type(Direction) ~= "vector" then
+		error(`invalid argument #2 to 'new' (Vector3 expected, got {typeof(Direction)})`, 2)
+	end
+	return setmetatable({ Origin = Origin, Direction = Direction }, RayMeta)
+end
+local function RayClosestPoint(Self, Point)
+	local Unit = Self.Direction.Unit
+	return Self.Origin + Unit * math.clamp(Dot(Point - Self.Origin, Unit), 0, Magnitude(Self.Direction))
+end
+local function RayDistance(Self, Point)
+	return Magnitude(RayClosestPoint(Self, Point) - Point)
+end
+RayMeta = {
+	__type = "Ray",
+	__metatable = "The metatable is locked",
+	__index = function(Self, Key)
+		if Key == "Unit" then
+			return NewRay(Self.Origin, Self.Direction.Unit)
+		elseif Key == "ClosestPoint" then
+			return RayClosestPoint
+		elseif Key == "Distance" then
+			return RayDistance
+		end
+		error(`{Key} is not a valid member of Ray`, 0)
+	end,
+	__tostring = function(Self)
+		return "{" .. tostring(Self.Origin) .. "}, {" .. tostring(Self.Direction) .. "}"
+	end,
+}
+local RayLibrary = { new = NewRay }
+
+return ToLune, ToNative, In, Out, VectorLibraries, Library, RayLibrary

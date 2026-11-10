@@ -380,17 +380,19 @@ pub fn write_profile(dir: &Path, shape: Shape) -> PathBuf {
     let (bytes, counts) = if shape.harness { (format!("{bytes}steady;{watch} @7 2873600\n"), format!("{counts}steady;{watch} @7 800\n")) } else { (bytes, counts) };
     std::fs::write(dir.join("alloc.folded"), bytes).unwrap();
     std::fs::write(dir.join("alloc.counts.folded"), counts).unwrap();
-    // the boundary profile: Part.Size read again 200 times a frame at Main:31, Position written unchanged at Main:33
+    // the boundary profile: Part.Size read again 200 times a frame at Main:31 (a repeat 29 ns at the boundary, a first read
+    // 542 ns with the frame's cold charge), Position written unchanged at Main:33 (167 ns a write), each with its script
+    // side. (A function's crossings are its work: layout's 2.3 ms in the steady phase hold them.)
     let mut boundary = json!({
         "version": 1, "phase": "steady", "emulated_seconds": 1.6667, "frames": 100, "crossings": 33000, "crossings_per_s": 19800.0, "cost_ms_per_s": 4.0,
-        "by_site_count": [{"script": MODULE, "function": "layout", "line": 33, "kind": "write", "member": "Part.Position", "count": 3000, "per_s": 1800.0, "cost_ms_per_s": 1.0, "unchanged_writes": 3000, "repeat_reads": 0, "repeat_reads_per_s": 0.0}],
+        "by_site_count": [{"script": MODULE, "function": "layout", "line": 33, "kind": "write", "member": "Part.Position", "count": 3000, "per_s": 1800.0, "cost_ms_per_s": 0.3, "unchanged_writes": 3000, "repeat_reads": 0, "repeat_reads_per_s": 0.0, "repeat_cost_ms": 0.0, "unchanged_cost_ms": 0.5}],
         "by_site_cost": [],
         "by_member": [{"member": "Part.Size", "kind": "read", "count": 30000, "per_s": 18000.0, "cost_ms_per_s": 3.0, "call_sites": 1, "reads_per_frame": 300.0, "distinct_per_frame": 100.0, "same_function_repeats_per_frame": 200.0, "cross_function_repeats_per_frame": 0.0}],
-        "repeat_reads": [{"script": MODULE, "function": "layout", "line": 31, "kind": "read", "member": "Part.Size", "count": 30000, "per_s": 15000.0, "cost_ms_per_s": 3.0, "unchanged_writes": 0, "repeat_reads": 20000, "repeat_reads_per_s": 12000.0}],
+        "repeat_reads": [{"script": MODULE, "function": "layout", "line": 31, "kind": "read", "member": "Part.Size", "count": 30000, "per_s": 15000.0, "cost_ms_per_s": 3.0, "unchanged_writes": 0, "repeat_reads": 20000, "repeat_reads_per_s": 12000.0, "repeat_cost_ms": 0.58, "unchanged_cost_ms": 0.0}],
     });
     if shape.harness {
         // (the watcher reads each part's Name again: the harness's)
-        boundary["repeat_reads"].as_array_mut().unwrap().push(json!({"script": HARNESS_MODULE, "function": "watch", "line": 6, "kind": "read", "member": "Instance.Name", "count": 60000, "per_s": 36000.0, "cost_ms_per_s": 6.0, "unchanged_writes": 0, "repeat_reads": 50000, "repeat_reads_per_s": 30000.0}));
+        boundary["repeat_reads"].as_array_mut().unwrap().push(json!({"script": HARNESS_MODULE, "function": "watch", "line": 6, "kind": "read", "member": "Instance.Name", "count": 60000, "per_s": 36000.0, "cost_ms_per_s": 6.0, "unchanged_writes": 0, "repeat_reads": 50000, "repeat_reads_per_s": 30000.0, "repeat_cost_ms": 1.45, "unchanged_cost_ms": 0.0}));
     }
     std::fs::write(dir.join("boundary.json"), serde_json::to_string(&boundary).unwrap()).unwrap();
     dir.to_path_buf()

@@ -254,7 +254,7 @@ fn load(lua: &Lua, engine: &Rc<Engine>, shared: &Shared, names: &Names, owner: I
     let clip = match source::resolve(engine, &uri) {
         Ok(clip) => clip,
         Err(error) => {
-            if source::first_failure(engine, &uri) {
+            if !error.contains("manifest bundles need an asset worker") && source::first_failure(engine, &uri) {
                 engine.warn(format!("Failed to load animation {uri}: {error} (its tracks play without keyframes)"));
             }
             None
@@ -853,7 +853,7 @@ type PosingTrack = (Arc<Clip>, f32, f32, u32);
 /// A rig's joints by the names an animation's Poses give them.
 struct Rig {
     motors: FxHashMap<(Str, Str), InstanceId>,
-    bones: FxHashMap<Str, InstanceId>,
+    bones: FxHashMap<(Str, Str), InstanceId>,
     scale: f32,
 }
 
@@ -928,7 +928,9 @@ fn rig_of(state: &State, reflection: &Reflection, names: &Names, animator: Insta
                 rig.motors.entry((part0, part1)).or_insert(id);
             }
         } else if class.is_a(names.bone) {
-            rig.bones.entry(state.dom.at(id).name.clone()).or_insert(id);
+            if let Some(parent) = state.dom.parent_of(id).and_then(|parent| state.dom.get(parent)) {
+                rig.bones.entry((parent.name.clone(), state.dom.at(id).name.clone())).or_insert(id);
+            }
         }
     }
     Some(rig)
@@ -987,11 +989,8 @@ fn pose(engine: &Rc<Engine>, shared: &Shared, names: &Names, animator: InstanceI
         scale = rig.scale;
         for &(ref clip, time, weight, rank) in &tracks {
             for joint in &clip.joints {
-                let target = rig
-                    .motors
-                    .get(&(Str::from(joint.parent.as_str()), Str::from(joint.name.as_str())))
-                    .or_else(|| rig.bones.get(&Str::from(joint.name.as_str())))
-                    .copied();
+                let key = (Str::from(joint.parent.as_str()), Str::from(joint.name.as_str()));
+                let target = rig.motors.get(&key).or_else(|| rig.bones.get(&key)).copied();
                 if let Some(target) = target {
                     let (q, t) = clip::sample(&joint.keys, time);
                     let at = *joint_at.entry(target).or_insert_with(|| {

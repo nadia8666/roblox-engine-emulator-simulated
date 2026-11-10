@@ -6,7 +6,7 @@
 │   variant                            n=10        n=100         n=1K  scaling   n=1K vs baseline                      │
 │ ▌ ■ t[k][v]  baseline            1.2 KB      11.7 KB     117.2 KB                                                    │
 │   ■ t[v][k]                       400 B       3.9 KB      39.1 KB ◆          3.00x ▼ better                          │
-╰ ◆ best · ≈ best within noise, or too small to matter · underlined: the run below ────────────────────────────────────╯
+╰ ◆ best, clear of noise · ≈ best within noise, or too small to matter · ✗ a different result · ▲▼ only where the gap i╯
 ╭ allocated by n  log-log · a line a variant ────────────────────╮ ╭ allocated at n = 1,000  ←→ size ──────────────────╮
 │ 1 MB  │┌─────────┐                                           ⢸ │ │ t[k][v]  117.2 KB ███████████████████████████████ │
 │       ││■ t[k][v]│                                           ⢸ │ │                                                   │
@@ -15,25 +15,25 @@
 │ 100 kB│                                         ⢀⣀⡠⠤⠔⠒⠊⠉⠁    ⣀ │ ╰───────────────────────────────────────────────────╯
 │       │                                 ⣀⣀⠤⠤⠒⠒⠉⠉⠁    ⣀⣀⠤⠤⠒⠒⠉⠉• │ ╭ t[v][k] vs t[k][v]  each figure at n = 1,000 ─────╮
 │       │                         ⣀⣀•⠤⠒⠒⠉⠉     ⢀⣀⡠⠤⠒⠒⠉⠉        ⢸ │ │   figure                                          │
-│ 10 kB │                 ⣀⣀⠤⠤⠒⠒⠉⠉     ⢀⣀⡠⠤⠔⠒⠊⠉⠁               ⢸ │ │   allocated      3.00x ▼ better ████████│         │
-│       │         ⣀⣀⠤⠤⠒⠒⠉⠉      ⣀⣀⠤⠤•⠊⠉⠁                       ⢸ │ │   heap kept      3.00x ▼ better ████████│         │
-│       │•⣀⣀⠤⠤⠒⠒⠉⠉      ⣀⣀⠤⠤⠒⠒⠉⠉                               ⢸ │ │   host time      1.22x ▼ better        █│         │
-│ 1 kB  │⠉      ⣀⣀⠤⠤⠒⠒⠉⠉                                       ⢸ │ │   cache hit r…   1.04x ▼ better        █│         │
-│       │•⠤⠤⠒⠒⠉⠉                                               ⢸ │ │   instructions     1.00x = same         │         │
-│       │                                                      ⢸ │ │   rehashes         1.00x = same         │         │
-│ 100 B │                                                      n │ │   work clock       1.00x = same         │         │
-│       └─────────────────────────────────────────────────────── │ │   collector h…       1.22x less                   │
+│ 10 kB │                 ⣀⣀⠤⠤⠒⠒⠉⠉     ⢀⣀⡠⠤⠔⠒⠊⠉⠁               ⢸ │ │   allocated        3.00x ▼ better ███████│        │
+│       │         ⣀⣀⠤⠤⠒⠒⠉⠉      ⣀⣀⠤⠤•⠊⠉⠁                       ⢸ │ │   heap kept        3.00x ▼ better ███████│        │
+│       │•⣀⣀⠤⠤⠒⠒⠉⠉      ⣀⣀⠤⠤⠒⠒⠉⠉                               ⢸ │ │   cache hit…       1.04x ▼ better       █│        │
+│ 1 kB  │⠉      ⣀⣀⠤⠤⠒⠒⠉⠉                                       ⢸ │ │   host time         1.22x ≈ noise       █│        │
+│       │•⠤⠤⠒⠒⠉⠉                                               ⢸ │ │   instructi…         1.00x = same        │        │
+│       │                                                      ⢸ │ │   rehashes           1.00x = same        │        │
+│ 100 B │                                                      n │ │   work clock         1.00x = same        │        │
+│       └─────────────────────────────────────────────────────── │ │   collector…          ~1.22x less                 │
 │      10                          100                        1K │ ╰───────────────────────────────────────────────────╯
 ╰────────────────────────────────────────────────────────────────╯ ╭ Tables kept · t[k][v]  its own: 1,001 · 117.2 KB ─╮
-╭ over t[k][v]  by n · above 1 is worse ─────────────────────────╮ │   1,000 × {hash 2} slots  112 B each  tkv:14 < tk │
-│ 1.10x│┌─────────────┐                                        ⢸ │ │           the setup's input (all variants'): 1 ta │
+╭ over t[k][v]  by n · log scale · above 1 is worse ─────────────╮ │   1,000 × {hash 2} slots  112 B each  tkv:14 < tk │
+│ 1.18x│┌─────────────┐                                        ⢸ │ │           the setup's input (all variants'): 1 ta │
 │      ││■ t[k][v] = 1│⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉ │ │                                                   │
 │      ││■ t[v][k]    │                                        ⢸ │ │                                                   │
 │      │└─────────────┘                                        ⢸ │ │                                                   │
-│ 0.67x│                                                       ⢸ │ ╰───────────────────────────────────────────────────╯
+│ 0.58x│                                                       ⢸ │ ╰───────────────────────────────────────────────────╯
 │      │                                                       ⢸ │ ╭ Notes ────────────────────────────────────────────╮
 │      │•⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀•⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀• │ │ ◇ a fixture: the numbers are made up              │
-│ 0.23x│                                                       n │ │                                                   │
+│ 0.28x│                                                       n │ │                                                   │
 │      └──────────────────────────────────────────────────────── │ │                                                   │
 │     10                          100                         1K │ │                                                   │
 ╰────────────────────────────────────────────────────────────────╯ ╰───────────────────────────────────────────────────╯

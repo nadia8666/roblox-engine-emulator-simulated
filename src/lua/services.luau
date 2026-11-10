@@ -1018,6 +1018,11 @@ end)
 
 -- (CollectionService:GetAllTags is Rust: services/mod.rs)
 
+-- PlayerGui:GetGuiObjectsAtPosition has no rendered UI in an offline run.
+Method("PlayerGui", "GetGuiObjectsAtPosition", function()
+	return {}
+end)
+
 -- GuiService.TopbarInset
 Getter("GuiService", "TopbarInset", function()
 	if Options.TopbarInset > 0 then
@@ -1146,6 +1151,9 @@ for _, Name in { "GetCameraYInvert", "GetOnboardingCompleted", "InFullScreen", "
 		return false
 	end)
 end
+Method("UserGameSettings", "GetCameraYInvertValue", function()
+	return 1
+end)
 for _, Name in { "SetCameraYInvertVisible", "SetGamepadCameraSensitivityVisible", "SetOnboardingCompleted" } do
 	Method("UserGameSettings", Name, function() end)
 end
@@ -1154,8 +1162,21 @@ for _, Name in { "LogCustomEvent", "LogEconomyEvent", "LogProgressionEvent", "Lo
 end
 -- (SoundService:PlayLocalSound is Rust: engine::world reports the play)
 
--- Remotes never reach a server offline; invocations yield forever like a dropped connection.
-Method("RemoteFunction", "InvokeServer", function(Self)
+-- RemoteFunction invocations reach the local server only in loopback mode.
+Method("RemoteFunction", "InvokeServer", function(Self, ...)
+	if R.Loopback then
+		local Callback
+		repeat
+			Callback = R.GetCallback(Self, "OnServerInvoke")
+			if not Callback then
+				task.wait()
+			end
+		until Callback
+		local Player = LocalPlayer()
+		if Player then
+			return R.Copied(Callback(Player, R.Copied(...)))
+		end
+	end
 	Missing("RemoteFunction", `InvokeServer ({Self:GetFullName()}) never returns offline`)
 	return coroutine.yield()
 end)
@@ -1316,6 +1337,11 @@ local function LogSelf(Self, Member)
 		error(`Expected ':' not '.' calling member function {Member}`, 0)
 	end
 end
+
+Method("LogService", "GetLogHistory", function(Self)
+	LogSelf(Self, "GetLogHistory")
+	return R.LogHistory()
+end)
 
 -- The thrown error's tostring (measured): its message when that is a string or a number, else "Error occurred"
 local function LogErrorText(Self)

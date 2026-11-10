@@ -692,6 +692,37 @@ method("workspace.Raycast.include_miss", 4000, function(N, S)
 		local _ = workspace:Raycast(From, Direction, Params)
 	end
 end)
+-- the shape casts, which the clock priced as a ray until they were measured
+method("workspace.Spherecast.miss", 4000, function(N)
+	local Params = RaycastParams.new()
+	local From, Direction = Vector3.new(5000, 5000, 5000), Vector3.new(0, -20, 0)
+	for _ = 1, N do
+		local _ = workspace:Spherecast(From, 1, Direction, Params)
+	end
+end)
+method("workspace.Spherecast.hit_stack", 4000, function(N, S)
+	spatial(S)
+	local Params = RaycastParams.new()
+	local From, Direction = SpatialAt + Vector3.new(0, 10, 0), Vector3.new(0, -20, 0)
+	for _ = 1, N do
+		local _ = workspace:Spherecast(From, 1, Direction, Params)
+	end
+end)
+method("workspace.Blockcast.miss", 4000, function(N)
+	local Params = RaycastParams.new()
+	local From, Size, Direction = CFrame.new(5000, 5000, 5000), Vector3.new(2, 2, 2), Vector3.new(0, -20, 0)
+	for _ = 1, N do
+		local _ = workspace:Blockcast(From, Size, Direction, Params)
+	end
+end)
+method("workspace.Blockcast.hit_stack", 4000, function(N, S)
+	spatial(S)
+	local Params = RaycastParams.new()
+	local From, Size, Direction = CFrame.new(SpatialAt + Vector3.new(0, 10, 0)), Vector3.new(2, 2, 2), Vector3.new(0, -20, 0)
+	for _ = 1, N do
+		local _ = workspace:Blockcast(From, Size, Direction, Params)
+	end
+end)
 method("workspace.GetPartBoundsInBox.model10", 2000, function(N, S)
 	spatial(S)
 	local Params = OverlapParams.new()
@@ -1401,6 +1432,90 @@ W("task", "coroutine.create_resume", 4000, function(N)
 		coroutine.resume(coroutine.create(noop))
 	end
 end)
+-- resumptions: 100 threads the engine resumes in one frame, the span from the first one's stamp to the last's over 99 (what each
+-- resumption costs, with the few instructions each thread runs): parked in task.wait, delayed by task.delay(0), and waiting in a
+-- signal's :Wait() for one Fire (src/cost.rs RESUMED)
+local function spacing()
+	local State = { Stamps = {}, Count = 0, Done = 0, Span = 0, Running = true }
+	function State.stamp()
+		State.Count += 1
+		State.Stamps[State.Count] = os.clock()
+		if State.Count == 100 then
+			State.Span = State.Stamps[100] - State.Stamps[1]
+			State.Done += 1
+			State.Count = 0
+		end
+	end
+	return State
+end
+local function awaitDone(State, Before)
+	repeat
+		task.wait()
+	until State.Done > Before
+	return State.Span
+end
+W("task", "wait.resume_spacing", 99, function(_, _, State)
+	return awaitDone(State, State.Done)
+end, {
+	Measured = true,
+	Prepare = function()
+		local State = spacing()
+		for _ = 1, 100 do
+			task.spawn(function()
+				while State.Running do
+					task.wait()
+					if State.Running then
+						State.stamp()
+					end
+				end
+			end)
+		end
+		task.wait()
+		return State
+	end,
+	Cleanup = function(State)
+		State.Running = false
+		task.wait()
+	end,
+})
+W("task", "delay.resume_spacing", 99, function(_, _, State)
+	return awaitDone(State, 0)
+end, {
+	Measured = true,
+	Prepare = function()
+		local State = spacing()
+		for _ = 1, 100 do
+			task.delay(0, State.stamp)
+		end
+		return State
+	end,
+})
+W("task", "signal_wait.resume_spacing", 99, function(_, S, State)
+	S.Event:Fire()
+	return awaitDone(State, State.Done)
+end, {
+	Measured = true,
+	Prepare = function(_, S)
+		local State = spacing()
+		local Event = S.Event.Event
+		for _ = 1, 100 do
+			task.spawn(function()
+				while State.Running do
+					Event:Wait()
+					if State.Running then
+						State.stamp()
+					end
+				end
+			end)
+		end
+		return State
+	end,
+	Cleanup = function(State, S)
+		State.Running = false
+		S.Event:Fire()
+		task.wait()
+	end,
+})
 
 -- tween: TweenService
 local Info = TweenInfo.new(1)
@@ -2201,6 +2316,399 @@ lib("JSONDecode.small", 2000, function(N)
 	end
 end)
 
+-- libsize: library calls whose work grows with their input, each at several sizes (an operation is one call, or one piece of a
+-- string built up): the work clock prices the elements they scan or move and the bytes they make (src/cost.rs LUAU_SCANNED and
+-- below), where a flat price per call read a 100,000-element table.find as a 10-element one.
+local KB, MB = 1024, 1024 * 1024
+local function sizeLabel(Size)
+	return if Size >= MB and Size % MB == 0 then `{Size // MB}m` elseif Size >= KB and Size % KB == 0 then `{Size // KB}k` else tostring(Size)
+end
+-- Rows `libsize.<Name>.<size>` for each size: `Ops(Size)` operations a round, `Fn(N, Size, State)`, `Prepare(N, Size)` -> State
+local function sized(Name, Sizes, Ops, Fn, Prepare)
+	for _, Size in Sizes do
+		W("libsize", Name .. "." .. sizeLabel(Size), Ops(Size), function(N, _, State)
+			return Fn(N, Size, State)
+		end, if Prepare
+			then {
+				Prepare = function(N)
+					return Prepare(N, Size)
+				end,
+			}
+			else nil)
+	end
+end
+-- An 8-character token no earlier call gave (hex digits of a counter): what a row makes from it is a new string, never one an earlier
+-- round left alive, which Luau's interning would hand back without making it (and a client's collector may have swept already)
+local Serial = 0
+local function token()
+	Serial += 1
+	return string.format("%08x", Serial)
+end
+-- `Count` distinct strings of `Bytes` bytes: a token, then "abcdefgh" repeated (or `Body`)
+local function subjects(Count, Bytes, _, Body)
+	local Rest = string.rep(Body or "abcdefgh", (Bytes - 8) // 8)
+	local Out = table.create(Count)
+	for I = 1, Count do
+		Out[I] = token() .. Rest
+	end
+	return Out
+end
+-- A string of `Bytes` bytes made of tokens only: every slice of it is a string no earlier round made
+local function tokens(Bytes)
+	local Parts = table.create(Bytes // 8)
+	for I = 1, Bytes // 8 do
+		Parts[I] = token()
+	end
+	return table.concat(Parts)
+end
+local function byBytes(Small, Medium, Large)
+	return function(Size)
+		return if Size <= KB then Small elseif Size <= 64 * KB then Medium else Large
+	end
+end
+local Piece = "abcdefgh"
+-- a string built from n pieces: `..` makes a new string of the whole each time (quadratic in n), table.concat joins once
+sized("concat.build", { 250, 1000, 4000, 16000 }, function(Size)
+	return Size
+end, function(N)
+	local S = token()
+	for _ = 1, N do
+		S ..= Piece
+	end
+	return nil
+end)
+sized("table.concat.build", { 250, 1000, 4000, 16000 }, function(Size)
+	return Size
+end, function(N)
+	local T = table.create(N)
+	T[1] = token()
+	for I = 2, N do
+		T[I] = Piece
+	end
+	local _ = table.concat(T)
+end)
+-- a list's last element: table.find compares every element before it
+sized("table.find", { 10, 100, 1000, 10000, 100000 }, function(Size)
+	return math.max(10, 200000 // Size)
+end, function(N, Size, T)
+	for _ = 1, N do
+		local _ = table.find(T, Size)
+	end
+end, function(_, Size)
+	local T = table.create(Size)
+	for I = 1, Size do
+		T[I] = I
+	end
+	return T
+end)
+-- draining a list from its front (each removal moves the rest down) and building one at its front
+sized("table.remove.first", { 100, 1000, 10000 }, function(Size)
+	return Size
+end, function(N, _, T)
+	for _ = 1, N do
+		table.remove(T, 1)
+	end
+end, function(_, Size)
+	return table.create(Size, 1)
+end)
+sized("table.insert.first", { 100, 1000, 10000 }, function(Size)
+	return Size
+end, function(N)
+	local T = {}
+	for I = 1, N do
+		table.insert(T, 1, I)
+	end
+end)
+sized("table.move", { 16, 1000, 100000 }, function(Size)
+	return math.max(10, 200000 // Size)
+end, function(N, Size, State)
+	for _ = 1, N do
+		table.move(State.A, 1, Size, 1, State.B)
+	end
+end, function(_, Size)
+	return { A = table.create(Size, 7), B = table.create(Size, 0) }
+end)
+sized("table.unpack", { 3, 30, 300 }, function(Size)
+	return math.max(1000, 60000 // Size)
+end, function(N, _, T)
+	for _ = 1, N do
+		local _ = select("#", table.unpack(T))
+	end
+end, function(_, Size)
+	return table.create(Size, 1)
+end)
+local Bytes = { KB, 64 * KB, MB }
+sized("string.rep", Bytes, byBytes(5000, 200, 12), function(N, Size, Pieces)
+	for I = 1, N do
+		local _ = string.rep(Pieces[I], Size // 8)
+	end
+end, function(N)
+	local Pieces = table.create(N)
+	for I = 1, N do
+		Pieces[I] = token()
+	end
+	return Pieces
+end)
+sized("string.sub", Bytes, byBytes(5000, 200, 12), function(N, Size, Subject)
+	for I = 1, N do
+		local At = (I + Fresh) % 8192 + 1
+		local _ = string.sub(Subject, At, At + Size - 1)
+	end
+end, function(_, Size)
+	return tokens(Size + 8192)
+end)
+sized("string.upper", Bytes, byBytes(5000, 200, 12), function(N, _, List)
+	for I = 1, N do
+		local _ = string.upper(List[I])
+	end
+end, function(N, Size)
+	return subjects(N, Size, Fresh)
+end)
+sized("string.lower", Bytes, byBytes(5000, 200, 12), function(N, _, List)
+	for I = 1, N do
+		local _ = string.lower(List[I])
+	end
+end, function(N, Size)
+	return subjects(N, Size, Fresh, "ABCDEFGH")
+end)
+-- every 8th byte replaced
+sized("string.gsub", Bytes, byBytes(2000, 40, 3), function(N, _, List)
+	for I = 1, N do
+		local _ = string.gsub(List[I], "a", "z")
+	end
+end, function(N, Size)
+	return subjects(N, Size, Fresh)
+end)
+-- searches that find nothing scan the whole subject
+sized("string.find.plain", Bytes, byBytes(20000, 500, 30), function(N, _, Subject)
+	for _ = 1, N do
+		local _ = string.find(Subject, "zz", 1, true)
+	end
+end, function(_, Size)
+	return subjects(1, Size, 0)[1]
+end)
+sized("string.find.pattern", Bytes, byBytes(5000, 100, 6), function(N, _, Subject)
+	for _ = 1, N do
+		local _ = string.find(Subject, "%d%d%d%d%d%d%d%d%d")
+	end
+end, function(_, Size)
+	return subjects(1, Size, 0)[1]
+end)
+sized("string.match", Bytes, byBytes(5000, 100, 6), function(N, _, Subject)
+	for _ = 1, N do
+		local _ = string.match(Subject, "(%d+)$")
+	end
+end, function(_, Size)
+	return subjects(1, Size, 0)[1]
+end)
+-- words of 7 digits and a space, all different: each match makes a new string
+sized("string.gmatch", Bytes, byBytes(200, 4, 1), function(N, _, List)
+	for I = 1, N do
+		local Count = 0
+		for _ in string.gmatch(List[I], "%S+") do
+			Count += 1
+		end
+	end
+end, function(N, Size)
+	local Words = Size // 8
+	local List = table.create(N)
+	for I = 1, N do
+		local Parts = table.create(Words)
+		for J = 1, Words do
+			Serial += 1
+			Parts[J] = string.format("%07x ", Serial % 0x10000000)
+		end
+		List[I] = table.concat(Parts)
+	end
+	return List
+end)
+sized("string.byte", { 16, 256, 4096 }, function(Size)
+	return math.max(200, 400000 // Size)
+end, function(N, Size, Subject)
+	for _ = 1, N do
+		local _ = select("#", string.byte(Subject, 1, Size))
+	end
+end, function(_, Size)
+	return subjects(1, math.max(Size, 16), 0)[1]
+end)
+sized("string.char", { 16, 256, 4096 }, function(Size)
+	return math.max(200, 400000 // Size)
+end, function(N, Size, Codes)
+	for I = 1, N do
+		Codes[1] = 48 + (I + Fresh) % 10
+		local _ = string.char(table.unpack(Codes, 1, Size))
+	end
+end, function(_, Size)
+	local Codes = table.create(Size)
+	for I = 1, Size do
+		Codes[I] = 97 + I % 26
+	end
+	return Codes
+end)
+sized("string.format.long", Bytes, byBytes(5000, 200, 12), function(N, _, Subject)
+	for I = 1, N do
+		local _ = string.format("%s|%d", Subject, I + Fresh)
+	end
+end, function(_, Size)
+	return subjects(1, Size, 0)[1]
+end)
+-- (buffers at 256 KB and 4 MB too: a large one's memory is fresh, and a large copy streams past a core's nearest caches)
+local BufferBytes = { KB, 64 * KB, 256 * KB, MB, 4 * MB }
+local function byBuffer(Small, Medium, Large)
+	return function(Size)
+		return if Size <= KB then Small elseif Size <= 64 * KB then Medium elseif Size <= MB then Large else math.max(2, Large // 4)
+	end
+end
+sized("buffer.create", BufferBytes, byBuffer(5000, 200, 12), function(N, Size)
+	for _ = 1, N do
+		local _ = buffer.create(Size)
+	end
+end)
+sized("buffer.fill", BufferBytes, byBuffer(20000, 500, 30), function(N, _, B)
+	for I = 1, N do
+		buffer.fill(B, 0, I % 256)
+	end
+end, function(_, Size)
+	return buffer.create(Size)
+end)
+sized("buffer.copy", BufferBytes, byBuffer(20000, 500, 30), function(N, _, State)
+	for _ = 1, N do
+		buffer.copy(State.To, 0, State.From)
+	end
+end, function(_, Size)
+	return { To = buffer.create(Size), From = buffer.create(Size) }
+end)
+sized("buffer.tostring", Bytes, byBytes(5000, 200, 12), function(N, _, B)
+	for I = 1, N do
+		buffer.writeu32(B, 0, I + Fresh)
+		local _ = buffer.tostring(B)
+	end
+end, function(_, Size)
+	return buffer.create(Size)
+end)
+sized("buffer.writestring", BufferBytes, byBuffer(20000, 500, 30), function(N, _, State)
+	for _ = 1, N do
+		buffer.writestring(State.B, 0, State.S)
+	end
+end, function(_, Size)
+	return { B = buffer.create(Size), S = subjects(1, Size, 0)[1] }
+end)
+sized("utf8.len", Bytes, byBytes(20000, 500, 30), function(N, _, Subject)
+	for _ = 1, N do
+		local _ = utf8.len(Subject)
+	end
+end, function(_, Size)
+	return subjects(1, Size, 0)[1]
+end)
+sized("utf8.codes", Bytes, byBytes(500, 10, 1), function(N, _, Subject)
+	for _ = 1, N do
+		for _, _ in utf8.codes(Subject) do
+		end
+	end
+end, function(_, Size)
+	return subjects(1, Size, 0)[1]
+end)
+sized("utf8.char", { 16, 256, 4096 }, function(Size)
+	return math.max(200, 400000 // Size)
+end, function(N, Size, Codes)
+	for I = 1, N do
+		Codes[1] = 0x4E00 + (I + Fresh) % 4096
+		local _ = utf8.char(table.unpack(Codes, 1, Size))
+	end
+end, function(_, Size)
+	local Codes = table.create(Size)
+	for I = 1, Size do
+		Codes[I] = 0x4E00 + I % 512
+	end
+	return Codes
+end)
+
+-- tables grown one key at a time from empty, as a list and as string keys, at several final sizes (an operation is a key: the
+-- growth's rehashes and the storage it allocates, src/cost.rs LUAU_REHASHED and LUAU_STORED), and tables made at their size
+local function builds(Size)
+	return math.max(1, 20000 // Size)
+end
+sized("grow.list", { 16, 1000, 100000 }, function(Size)
+	return builds(Size) * Size
+end, function(_, Size)
+	for _ = 1, builds(Size) do
+		local T = {}
+		for I = 1, Size do
+			T[I] = I
+		end
+	end
+end)
+sized("grow.keys", { 16, 1000, 100000 }, function(Size)
+	return builds(Size) * Size
+end, function(_, Size, Keys)
+	for _ = 1, builds(Size) do
+		local T = {}
+		for I = 1, Size do
+			T[Keys[I]] = I
+		end
+	end
+end, function(_, Size)
+	local Keys = table.create(Size)
+	for I = 1, Size do
+		Keys[I] = "k" .. I
+	end
+	return Keys
+end)
+-- a dictionary grown one string key at a time, as records and lookup tables grow (keys reinserted into the hash part as it grows)
+sized("grow.dict", { 32, 256, 4096 }, function(Size)
+	return builds(Size) * Size
+end, function(_, Size, Keys)
+	for _ = 1, builds(Size) do
+		local T = {}
+		for I = 1, Size do
+			T[Keys[I]] = true
+		end
+	end
+end, function(_, Size)
+	local Keys = table.create(Size)
+	for I = 1, Size do
+		Keys[I] = "d" .. I
+	end
+	return Keys
+end)
+sized("table.create", { 4, 64, 1024, 16384 }, function(Size)
+	return math.max(20, 400000 // Size)
+end, function(N, Size)
+	for _ = 1, N do
+		local _ = table.create(Size)
+	end
+end)
+
+-- json: HttpService's JSON at several sizes, a list of records (about 105 bytes and 9 values a record)
+local function records(Count)
+	local List = table.create(Count)
+	for I = 1, Count do
+		List[I] = { id = 100000 + I, name = "unit" .. I, level = I % 60, tags = { "fire", "aoe" }, stats = { damage = I * 1.5, range = 20 } }
+	end
+	return List
+end
+for _, Count in { 10, 100, 1000, 10000 } do
+	local Ops = math.max(1, 5000 // Count)
+	W("json", "JSONEncode.records" .. Count, Ops, function(N, _, List)
+		for _ = 1, N do
+			local _ = HttpService:JSONEncode(List)
+		end
+	end, {
+		Prepare = function()
+			return records(Count)
+		end,
+	})
+	W("json", "JSONDecode.records" .. Count, Ops, function(N, _, Text)
+		for _ = 1, N do
+			local _ = HttpService:JSONDecode(Text)
+		end
+	end, {
+		Prepare = function()
+			return HttpService:JSONEncode(records(Count))
+		end,
+	})
+end
+
 -- gc: allocation with the collector running: short-lived objects on a small heap, then on a heap of about 50 MB
 local function churn(N)
 	local Keep
@@ -2244,6 +2752,56 @@ end, {
 		BigHeap = nil
 	end,
 })
+-- the collector's share of an allocated byte: 1 KB objects made and dropped on a small heap and on the heap of about 50 MB above
+-- (the difference is what marking a game-sized heap adds: little, src/cost.rs LUAU_COLLECTOR_OBJECT)
+local function bigHeap()
+	if not BigHeap then
+		BigHeap = table.create(400000)
+		for I = 1, 400000 do
+			BigHeap[I] = { I, I + 1, I + 2, I + 3 }
+		end
+	end
+end
+local function dropHeap()
+	BigHeap = nil
+end
+local KiloBody = string.rep("abcdefgh", 127)
+for _, Heap in { "small_heap", "big_heap" } do
+	local Options = if Heap == "big_heap" then { Prepare = bigHeap, Finish = dropHeap } else nil
+	W("gc", "churn.buffers1k." .. Heap, 50000, function(N)
+		local Keep
+		for _ = 1, N do
+			Keep = buffer.create(1024)
+		end
+		return Keep
+	end, Options)
+	W("gc", "churn.tables128." .. Heap, 50000, function(N)
+		local Keep
+		for _ = 1, N do
+			Keep = table.create(128)
+		end
+		return Keep
+	end, Options)
+	W("gc", "churn.strings1k." .. Heap, 50000, function(N, _, Heads)
+		local Keep
+		for I = 1, N do
+			Keep = Heads[I] .. KiloBody
+		end
+		return Keep
+	end, {
+		Prepare = function(N)
+			if Options then
+				bigHeap()
+			end
+			local Heads = table.create(N)
+			for I = 1, N do
+				Heads[I] = token()
+			end
+			return Heads
+		end,
+		Finish = Options and dropHeap,
+	})
+end
 
 -- mem: bytes an item kept (collectgarbage("count") before and after building them). Every round's items stay alive until the row
 -- ends, so no round's garbage is there for the collector to free while a later round builds; the row reads its median round, which a
@@ -2430,7 +2988,9 @@ end
 local Counters = (os :: any).workcounters
 local CounterKeys = { "allocated", "ccalls", "tmcalls", "hostcalls", "objects", "stored", "rehashed", "hostnanos", "vectormagnitudes", "vectorunits", "vectormethods",
 	"numtostr", "sortcompares", "sortcalls", "createitems", "cloneitems", "concatitems", "splitparts", "formats", "formatspecs", "newstrings",
-	"slowimports" }
+	"slowimports", "coldtables", "coldclosures", "coldprotos", "coldcode", "scanned", "moved", "strbytes", "strscanned", "matchsteps",
+	"bufbytes", "allocbytes", "libobjects", "casebytes", "utf8bytes", "utf8chars", "strchars", "bytevalues", "buffers", "matchclasses",
+	"hashrehashed", "largeblocks", "buffreshbytes", "bufbigcopybytes", "coldcfuncs", "coldhostfuncs", "rareprotos", "jsonbytes", "jsonvalues" }
 local function counted(Fn, ...)
 	local A = Counters()
 	Fn(...)
@@ -2603,6 +3163,14 @@ function Corpus.Run(Options)
 		end),
 		rayExclude = found(function()
 			return ray(SpatialAt + Vector3.new(30, 10, 20), Exclude)
+		end),
+		sphereStack = found(function()
+			local Hit = workspace:Spherecast(SpatialAt + Vector3.new(0, 10, 0), 1, Vector3.new(0, -20, 0))
+			return if Hit then Hit.Instance.Name else "miss"
+		end),
+		blockStack = found(function()
+			local Hit = workspace:Blockcast(CFrame.new(SpatialAt + Vector3.new(0, 10, 0)), Vector3.new(2, 2, 2), Vector3.new(0, -20, 0))
+			return if Hit then Hit.Instance.Name else "miss"
 		end),
 	}
 	for _, Key in { "Alone", "Big", "Ball", "Beside", "Six", "Twelve", "Forty", "Rod", "Slab" } do

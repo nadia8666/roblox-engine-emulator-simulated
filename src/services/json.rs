@@ -32,6 +32,39 @@ use rustc_hash::FxHashMap;
 
 use crate::Engine;
 
+/// What JSONEncode and JSONDecode handled on this thread (os.workcounters' `jsonbytes` and `jsonvalues`; the work clock prices each
+/// call by its own: cost.rs `json`)
+#[derive(Clone, Copy, Default)]
+pub struct JsonWork {
+    /// Bytes of JSON text
+    pub bytes: u64,
+    /// Values of the documents: each table, string, number and boolean
+    pub values: u64,
+}
+
+thread_local! {
+    static HANDLED: std::cell::Cell<JsonWork> = const { std::cell::Cell::new(JsonWork { bytes: 0, values: 0 }) };
+}
+
+/// What JSONEncode and JSONDecode handled on this thread so far
+pub fn counts() -> JsonWork {
+    HANDLED.with(std::cell::Cell::get)
+}
+
+fn count(bytes: usize, values: u64) {
+    HANDLED.with(|handled| {
+        let before = handled.get();
+        handled.set(JsonWork { bytes: before.bytes + bytes as u64, values: before.values + values });
+    });
+}
+
+/// What a JSONEncode or JSONDecode of `bytes` of text holding `values` values costs the work clock (cost.rs [`crate::cost::json`]),
+/// and counts them
+pub(crate) fn priced(bytes: usize, values: u64, decode: bool) -> f64 {
+    count(bytes, values);
+    crate::cost::json(bytes, values, decode)
+}
+
 /// Tables JSONEncode nests: 300 encode and 301 raise, arrays and dictionaries alike, however deep the caller's own
 /// stack is (json_limits.luau).
 pub(crate) const ENCODE_DEPTH: usize = 300;
@@ -45,14 +78,23 @@ const NAN: &str = r#"{"m":null,"t":"numeric","v":"nan"}"#;
 const INF: &str = r#"{"m":null,"t":"numeric","v":"inf"}"#;
 const NEG_INF: &str = r#"{"m":null,"t":"numeric","v":"-inf"}"#;
 
-/// HttpService:JSONEncode of `value`, or the message it raises.
-pub(crate) fn encode(lua: &Lua, engine: &Engine, value: &LuaValue) -> Result<String, String> {
-    let mut out = String::new();
-    write_value(lua, engine, value, &mut out, &mut Vec::new())?;
-    Ok(out)
+/// A result and the number of JSON values that were written or made for it, which price the call ([`priced`])
+pub(crate) struct Counted<T> {
+    pub result: T,
+    pub values: u64,
 }
 
-fn write_value(lua: &Lua, engine: &Engine, value: &LuaValue, out: &mut String, path: &mut Vec<*const c_void>) -> Result<(), String> {
+/// HttpService:JSONEncode of `value`, or the message it raises. The writers add each value they write to `values`, one count for the
+/// whole call.
+pub(crate) fn encode_counted(lua: &Lua, engine: &Engine, value: &LuaValue) -> Result<Counted<String>, String> {
+    let mut text = String::new();
+    let mut values = 0;
+    write_value(lua, engine, value, &mut text, &mut Vec::new(), &mut values)?;
+    Ok(Counted { result: text, values })
+}
+
+fn write_value(lua: &Lua, engine: &Engine, value: &LuaValue, out: &mut String, path: &mut Vec<*const c_void>, values: &mut u64) -> Result<(), String> {
+    *values += 1;
     match value {
         LuaValue::Nil => out.push_str("null"),
         LuaValue::Boolean(flag) => out.push_str(if *flag { "true" } else { "false" }),
@@ -73,7 +115,7 @@ fn write_value(lua: &Lua, engine: &Engine, value: &LuaValue, out: &mut String, p
                 return Err("Max lua stack size reached".into());
             }
             path.push(pointer);
-            let written = write_table(lua, engine, table, out, path);
+            let written = write_table(lua, engine, table, out, path, values);
             path.pop();
             written?;
         }
@@ -82,7 +124,7 @@ fn write_value(lua: &Lua, engine: &Engine, value: &LuaValue, out: &mut String, p
     Ok(())
 }
 
-fn write_table(lua: &Lua, engine: &Engine, table: &LuaTable, out: &mut String, path: &mut Vec<*const c_void>) -> Result<(), String> {
+fn write_table(lua: &Lua, engine: &Engine, table: &LuaTable, out: &mut String, path: &mut Vec<*const c_void>, values: &mut u64) -> Result<(), String> {
     let length = table.raw_len();
     if length > 0 {
         out.push('[');
@@ -91,7 +133,7 @@ fn write_table(lua: &Lua, engine: &Engine, table: &LuaTable, out: &mut String, p
                 out.push(',');
             }
             let item: LuaValue = table.raw_get(index).map_err(|error| error.to_string())?;
-            write_value(lua, engine, &item, out, path)?;
+            write_value(lua, engine, &item, out, path, values)?;
         }
         out.push(']');
         return Ok(());
@@ -104,7 +146,7 @@ fn write_table(lua: &Lua, engine: &Engine, table: &LuaTable, out: &mut String, p
         let (key, item) = pair.map_err(|error| error.to_string())?;
         let key = crate::lua::bindable::key_name(lua, engine, &key)?;
         let mut text = String::new();
-        write_value(lua, engine, &item, &mut text, path)?;
+        write_value(lua, engine, &item, &mut text, path, values)?;
         match places.get(&key) {
             Some(&place) => entries[place].1 = text,
             None => {
@@ -343,7 +385,13 @@ enum Json {
 }
 
 /// HttpService:JSONDecode of `text`, or the message it raises.
-pub(crate) fn decode(lua: &Lua, text: &[u8]) -> Result<LuaValue, String> {
+pub(crate) fn decode_counted(lua: &Lua, text: &[u8]) -> Result<Counted<LuaValue>, String> {
+    let mut values = 0;
+    let value = decode_inner(lua, text, &mut values)?;
+    Ok(Counted { result: value, values })
+}
+
+fn decode_inner(lua: &Lua, text: &[u8], values: &mut u64) -> Result<LuaValue, String> {
     const SYNTAX: &str = "Can't parse JSON";
     let mut parser = Parser { bytes: text, index: 0, deepest: 0 };
     parser.skip_whitespace();
@@ -355,10 +403,11 @@ pub(crate) fn decode(lua: &Lua, text: &[u8]) -> Result<LuaValue, String> {
     if parser.deepest > DECODE_CONVERT_DEPTH {
         return Err("WebParser conversion stack overflow".into());
     }
-    to_lua(lua, value).map_err(|error| error.to_string())
+    to_lua(lua, value, values).map_err(|error| error.to_string())
 }
 
-fn to_lua(lua: &Lua, value: Json) -> LuaResult<LuaValue> {
+fn to_lua(lua: &Lua, value: Json, values: &mut u64) -> LuaResult<LuaValue> {
+    *values += 1;
     Ok(match value {
         Json::Null => LuaValue::Nil,
         Json::Bool(flag) => LuaValue::Boolean(flag),
@@ -368,7 +417,7 @@ fn to_lua(lua: &Lua, value: Json) -> LuaResult<LuaValue> {
             let table = lua.create_table_with_capacity(items.len(), 0)?;
             for (index, item) in items.into_iter().enumerate() {
                 if !matches!(item, Json::Null) {
-                    table.raw_set(index + 1, to_lua(lua, item)?)?;
+                    table.raw_set(index + 1, to_lua(lua, item, values)?)?;
                 }
             }
             LuaValue::Table(table)
@@ -376,7 +425,7 @@ fn to_lua(lua: &Lua, value: Json) -> LuaResult<LuaValue> {
         Json::Object(entries) => {
             let table = lua.create_table_with_capacity(0, entries.len())?;
             for (key, item) in entries {
-                table.raw_set(lua.create_string(&key)?, to_lua(lua, item)?)?;
+                table.raw_set(lua.create_string(&key)?, to_lua(lua, item, values)?)?;
             }
             LuaValue::Table(table)
         }
@@ -617,6 +666,36 @@ impl Parser<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each call counts its own document's values and leaves the thread's running totals (`counts`) to `priced`
+    #[test]
+    fn value_counts_are_local_to_a_document() {
+        let lua = Lua::new();
+        let engine = Engine::new(crate::Options::default()).unwrap();
+        let totals_before = counts();
+
+        // Six values: the outer array, 1, the object, the object's array b, true and false. The nulls are never made into Luau values.
+        let decoded_text = br#"[1,null,{"a":null,"b":[true,false]}]"#;
+        let decoded = decode_counted(&lua, decoded_text).unwrap();
+        assert_eq!(decoded.values, 6);
+
+        // The same six on the way out: the outer table, 1, the table holding b, b's array, true and false.
+        let encoded_source = "return {1, {b = {true, false}}}";
+        let encoded_value = lua.load(encoded_source).eval().unwrap();
+        let encoded = encode_counted(&lua, &engine, &encoded_value).unwrap();
+        assert_eq!(encoded.values, 6);
+
+        // A scalar is one value, and a call that fails returns no count.
+        assert_eq!(decode_counted(&lua, b"true").unwrap().values, 1);
+        let cyclic = lua.create_table().unwrap();
+        cyclic.raw_set(1, cyclic.clone()).unwrap();
+        assert!(encode_counted(&lua, &engine, &LuaValue::Table(cyclic)).is_err());
+        assert!(decode_counted(&lua, b"[1,").is_err());
+
+        let totals_after = counts();
+        assert_eq!(totals_after.bytes, totals_before.bytes);
+        assert_eq!(totals_after.values, totals_before.values);
+    }
 
     fn text(value: f64) -> String {
         let mut out = String::new();

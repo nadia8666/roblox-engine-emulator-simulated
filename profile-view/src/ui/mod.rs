@@ -84,11 +84,25 @@ fn header(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     if app.has_profile() {
         let p = &app.profiles[app.shown];
         let run = &p.raw.run;
+        let cut_short_at = p.raw.counters.as_ref().and_then(|counters| counters.cut_short);
+        if let Some(seconds) = cut_short_at {
+            let warning_style = Style::new().fg(theme.critical).bg(theme.raised).add_modifier(Modifier::BOLD);
+            spans.push(Span::styled(format!(" HW CUT SHORT at {seconds:.3} s  "), warning_style));
+        }
         if app.profiles.len() == 2 {
             spans.push(Span::styled(format!("{}  ", app.side_name(app.shown)), bar.add_modifier(Modifier::BOLD)));
         }
-        let ok = run.status == "ok";
-        spans.push(Span::styled(if ok { "✓ " } else { "✗ " }, Style::new().fg(if ok { theme.good } else { theme.critical }).bg(theme.raised)));
+        // (✗ only for a run that failed or timed out: a harness still waiting when the run ends, `yielded`, is a run's
+        // usual end)
+        let failed = matches!(run.status.as_str(), "error" | "failed") || run.status.contains("timeout") || run.status.contains("timed out");
+        let (icon, color) = if run.status == "ok" {
+            ("✓ ", theme.good)
+        } else if failed {
+            ("✗ ", theme.critical)
+        } else {
+            ("○ ", theme.muted)
+        };
+        spans.push(Span::styled(icon, Style::new().fg(color).bg(theme.raised)));
         let mut what = vec![format!("{} {}", run.command, run.status)];
         if let Some(harness) = p.harness() {
             what.push(harness);
@@ -98,7 +112,17 @@ fn header(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         spans.push(Span::styled(what.join(" · "), Style::new().fg(theme.ink2).bg(theme.raised)));
         let metric = app.metric;
         right.push(Span::styled(format!("{} ", metric.label(p)), Style::new().fg(theme.muted).bg(theme.raised)));
-        right.push(Span::styled(format!("{} ", fmt::value(metric.unit(), metric.total(p))), bar.add_modifier(Modifier::BOLD)));
+        // (a metric the profile's kinds did not measure is said so, never shown as 0; the timeline's frames still carry
+        // the work clock without the work kind)
+        let frames_work = p.raw.timeline.as_ref().and_then(|t| t.values("work_ms")).map(|values| values.iter().sum::<f64>());
+        let total = if crate::metric::Metric::available(p).contains(&metric) {
+            fmt::value(metric.unit(), metric.total(p))
+        } else if let Some(work) = frames_work.filter(|_| metric == crate::metric::Metric::Work) {
+            format!("{} in frames", fmt::ms(work))
+        } else {
+            "not measured".into()
+        };
+        right.push(Span::styled(format!("{total} "), bar.add_modifier(Modifier::BOLD)));
     } else if let Some(compare) = &app.compare {
         spans.push(Span::styled(compare.title.clone(), Style::new().fg(theme.ink2).bg(theme.raised)));
     }
@@ -240,7 +264,7 @@ fn help(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
         lines.push(Line::from(Span::styled("Metrics", heading)));
         for metric in app.metrics() {
             let current = metric == app.metric;
-            for (index, chunk) in wrap(&format!("{}{}: {}", if current { "▸ " } else { "  " }, metric.label(p), metric.about()), inner.width as usize - 4).into_iter().enumerate() {
+            for (index, chunk) in wrap(&format!("{}{}: {}", if current { "▸ " } else { "  " }, metric.label(p), metric.describe(p)), inner.width as usize - 4).into_iter().enumerate() {
                 lines.push(Line::from(Span::styled(if index == 0 { chunk } else { format!("    {chunk}") }, if current { text.add_modifier(Modifier::BOLD) } else { dim })));
             }
         }

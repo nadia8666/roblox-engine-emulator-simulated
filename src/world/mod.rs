@@ -458,7 +458,9 @@ pub fn install(engine: &Rc<Engine>) {
                 let state = engine.state.borrow();
                 let mut touched = state.sched.touched.borrow_mut();
                 touched.count(|ops| ops.emits += 1);
-                let cold = touched.first_path(crate::cost::Path::Emit) + if touched.take_last_cold() { crate::cost::EMIT_COLD } else { 0.0 };
+                let class = state.dom.at(id).class;
+                let cold = touched.first_path(crate::cost::Path::Emit)
+                    + if touched.take_last_cold() { touched.cold(crate::cost::EMIT_COLD, crate::cost::ColdKey::Instance(id.index, class)) } else { 0.0 };
                 drop(touched);
                 state.sched.charge(cold);
                 crate::boundary::add_cost(cold);
@@ -529,12 +531,13 @@ pub fn install(engine: &Rc<Engine>) {
                     let mut touched = state.sched.touched.borrow_mut();
                     touched.count(|ops| ops.bulk_moved += 1);
                     if touched.mark_moved(id.index) {
-                        cold += crate::cost::BULK_COLD_PART;
+                        let mut extra = crate::cost::BULK_COLD_PART;
                         for node in state.dom.descendants(id) {
                             if touched.is_emitter(state.dom.at(node).class) {
-                                cold += crate::cost::BULK_COLD_EMITTER;
+                                extra += crate::cost::BULK_COLD_EMITTER;
                             }
                         }
+                        cold += touched.cold(extra, crate::cost::ColdKey::Instance(id.index, state.dom.at(id).class));
                     }
                 }
                 // (a part stores the rotation as a client does: frame::stored_rotation, measured through BulkMoveTo too)

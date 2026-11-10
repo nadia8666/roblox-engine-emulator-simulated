@@ -83,6 +83,8 @@ pub fn value(unit: Unit, value: f64) -> String {
         Unit::Ms => ms(value),
         Unit::Bytes => bytes(value),
         Unit::Count => grouped(value),
+        Unit::Share => percent(value),
+        Unit::Decimal => decimal(value),
     }
 }
 
@@ -92,6 +94,27 @@ pub fn short(unit: Unit, value: f64) -> String {
         Unit::Ms => ms(value),
         Unit::Bytes => bytes(value),
         Unit::Count => compact(value),
+        Unit::Share => percent(value),
+        Unit::Decimal => decimal(value),
+    }
+}
+
+/// A part of a whole (0 to 1) as a percentage: `42.0%`
+pub fn percent(value: f64) -> String {
+    format!("{:.1}%", value * 100.0)
+}
+
+/// A ratio with the decimals its size needs: `0.35`, `12.3`, `1,234`
+pub fn decimal(value: f64) -> String {
+    let abs = value.abs();
+    if abs >= 1000.0 {
+        grouped(value)
+    } else if abs >= 100.0 {
+        format!("{value:.0}")
+    } else if abs >= 10.0 {
+        format!("{value:.1}")
+    } else {
+        format!("{value:.2}")
     }
 }
 

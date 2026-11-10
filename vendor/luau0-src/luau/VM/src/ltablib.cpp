@@ -235,7 +235,10 @@ static int tinsert(lua_State* L)
 
         // move up elements if necessary
         if (1 <= pos && pos <= n)
+        {
+            luaE_worklib(L, LUA_WORK_MOVED, n - pos + 1);
             moveelements(L, 1, 1, pos, n, pos + 1, /* sparsemove */ false);
+        }
         break;
     }
     default:
@@ -257,6 +260,7 @@ static int tremove(lua_State* L)
         return 0;                // nothing to remove
     lua_rawgeti(L, 1, pos);      // result = t[pos]
 
+    luaE_worklib(L, LUA_WORK_MOVED, n - pos);
     moveelements(L, 1, 1, pos + 1, n, pos, /* sparsemove */ false);
 
     lua_pushnil(L);
@@ -291,6 +295,7 @@ static int tmove(lua_State* L)
             luaG_readonlyerror(L);
 
         bool sparsemove = shouldsparsemove(hvalue(L->base), dst, n);
+        luaE_worklib(L, LUA_WORK_MOVED, n);
 
         if (t > 0 && (t - 1) <= dst->sizearray && (t - 1 + n) > dst->sizearray)
         { // grow the destination table array
@@ -348,6 +353,7 @@ static int tconcat(lua_State* L)
 static int tpack(lua_State* L)
 {
     int n = lua_gettop(L);    // number of elements to pack
+    luaE_worklib(L, LUA_WORK_MOVED, n);
     lua_createtable(L, n, 1); // create result table
 
     LuaTable* t = hvalue(L->top - 1);
@@ -377,6 +383,7 @@ static int tunpack(lua_State* L)
     unsigned n = (unsigned)e - i; // number of elements minus 1 (avoid overflows)
     if (n >= (unsigned int)INT_MAX || !lua_checkstack(L, (int)(++n)))
         luaL_error(L, "too many results to unpack");
+    luaE_worklib(L, LUA_WORK_MOVED, n);
 
     // fast-path: direct array-to-stack copy
     if (i == 1 && int(n) <= t->sizearray)
@@ -651,9 +658,17 @@ static int tfind(lua_State* L)
         if (!iscollectable(L->base + 1) || ttisnil(luaT_gettmbyobj(L, L->base + 1, TM_EQ)))
         {
             if (int index = luaH_rawfind(t, init, L->base + 1))
+            {
+                luaE_worklib(L, LUA_WORK_SCANNED, index - init + 1);
                 lua_pushinteger(L, index);
+            }
             else
+            {
+                // (a miss read the array part from init on, and the integer keys of the hash part after it)
+                int scanned = t->sizearray >= init ? t->sizearray - init + 1 : 0;
+                luaE_worklib(L, LUA_WORK_SCANNED, scanned + (t->node == &luaH_dummynode ? 0 : sizenode(t)));
                 lua_pushnil(L);
+            }
 
             return 1;
         }
@@ -663,12 +678,16 @@ static int tfind(lua_State* L)
     {
         const TValue* e = luaH_getnum(t, i);
         if (ttisnil(e))
+        {
+            luaE_worklib(L, LUA_WORK_SCANNED, i - init);
             break;
+        }
 
         StkId v = L->base + 1;
 
         if (equalobj(L, v, e))
         {
+            luaE_worklib(L, LUA_WORK_SCANNED, i - init + 1);
             lua_pushinteger(L, i);
             return 1;
         }
@@ -686,6 +705,7 @@ static int tclear(lua_State* L)
     if (tt->readonly)
         luaG_readonlyerror(L);
 
+    luaE_worklib(L, LUA_WORK_MOVED, tt->sizearray + (tt->node == &luaH_dummynode ? 0 : sizenode(tt)));
     luaH_clear(tt);
     return 0;
 }

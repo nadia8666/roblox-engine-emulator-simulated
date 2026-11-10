@@ -1,0 +1,881 @@
+# Topic: work that grows with a library call's input
+#
+# What it does: counts, for a script's work, what the library and engine calls it makes do by size, in slots of the work counters'
+# hostops that no opcode reaches (lua.h LUA_WORK_SCANNED and below): table elements table.find compared; elements table.insert and
+# table.remove at a position moved, table.move copied, table.unpack / table.pack pushed and table.clear cleared; bytes of every string
+# the script's work made or looked up (luaS_newlstr, luaS_buffinish); bytes a plain search read; the pattern matcher's steps, a
+# character class's test apart; bytes string.upper / lower converted, a utf8 function decoded, characters string.char and codepoints
+# utf8.char made, values string.byte pushed; buffers made and the bytes a buffer function zeroed, filled, copied or wrote (a large
+# new buffer's, and a copy's, fill's or string write's over 64 KB, again); the bytes of every object and table part the script's
+# work allocated, its instructions' and its library and engine calls' alike, the objects
+# those calls made, every object again for the collector, which sweeps each, the allocations too large for the VM's own pages, and the
+# keys a table's growth put in a hash part. A host marks its own C functions (lua_sethostcfunction): what they allocate is part of
+# the operation the host prices, so these counts leave it out. A profile books these slots at every step, with the cold-call slots
+# it missed before.
+#
+# Why upstream lacks it: an emulator's work clock charges a script's work as a Roblox client spends it (src/cost.rs); a flat price per
+# call reads a 100,000-element table.find or a 1 MB gsub as a short one. Roblox's VM runs on the real clock and needs no counts.
+
+diff --git a/luau/VM/include/lua.h b/luau/VM/include/lua.h
+index 17e14e8..a4a77f9 100644
+--- a/luau/VM/include/lua.h
++++ b/luau/VM/include/lua.h
+@@ -409,6 +409,34 @@ LUA_API void lua_coldframe(lua_State* L);
+ #define LUA_WORK_COLDHOSTFUNCS 254
+ // and of those functions a script's work ran first in a frame (coldprotos), the ones whose code did not run in the frame before
+ #define LUA_WORK_RAREPROTOS 253
++// work that grows with a library or engine function's input, counted for a script in more slots of hostops no opcode reaches:
++#define LUA_WORK_SCANNED 252 // table elements a library function compared (table.find)
++#define LUA_WORK_MOVED 251 // table elements or values a library function moved, copied, cleared or pushed (table.insert and table.remove at a position, table.move, table.unpack, table.pack, table.clear)
++#define LUA_WORK_STRBYTES 250 // bytes of the strings a script's work made or looked up: built, hashed and compared (concatenation, the string library, the engine's strings)
++#define LUA_WORK_STRSCANNED 249 // bytes a library function read from a string without making one (a plain string.find or gsub)
++#define LUA_WORK_MATCHSTEPS 248 // steps of the pattern matcher: each pattern item tried at a position (string.find / match / gmatch / gsub with a pattern)
++#define LUA_WORK_BUFBYTES 247 // bytes a buffer function zeroed, filled, copied or wrote
++#define LUA_WORK_ALLOCBYTES 246 // bytes of every object and table part a script's work allocated: its instructions' and those of the library and engine calls it made
++#define LUA_WORK_GCOBJECTS 245 // objects a script's work allocated, its instructions' and its calls' alike: what the collector sweeps (a host prices it apart)
++#define LUA_WORK_LIBOBJECTS 244 // objects library and engine calls allocated for a script (its own instructions' are `objects`)
++#define LUA_WORK_CASEBYTES 243 // bytes string.upper and string.lower converted
++#define LUA_WORK_UTF8BYTES 242 // bytes a utf8 function decoded or stepped over (utf8.len, codepoint, offset, codes)
++#define LUA_WORK_UTF8CHARS 241 // codepoints utf8.char encoded
++#define LUA_WORK_STRCHARS 240 // characters string.char made from its arguments
++#define LUA_WORK_BYTEVALUES 239 // values string.byte pushed
++#define LUA_WORK_BUFFERS 238 // buffers made (buffer.create, buffer.fromstring)
++#define LUA_WORK_MATCHCLASSES 237 // steps of the pattern matcher that tested a character class (%d, %a, [...]); the others are LUA_WORK_MATCHSTEPS
++#define LUA_WORK_HASHREHASHED 236 // of the keys a script's table growth rehashed (the counters' `rehashed`), those it put in a hash part
++#define LUA_WORK_LARGEBLOCKS 235 // allocations of a script's work too large for Luau's own pages (over 1,024 bytes: lmem.cpp kMaxSmallSizeUsed), each one the host's allocator makes
++#define LUA_WORK_BUFFRESH 234 // bytes of a new buffer too large for Luau's own pages (over 1,024 bytes): fresh memory its zeroing touches first
++#define LUA_WORK_BUFBIGCOPY 233 // bytes one buffer.copy, buffer.fill or buffer.writestring moved, of a call that moved over 64 KB (past a core's nearest caches)
++// the first of these slots: a profile books each slot from here up at every step, as it books the scalar counters
++#define LUA_WORK_FIRSTSLOT 233
++// marks `f` as one of the host's own C functions (process-wide): an object a host function makes for a script is part of the
++// operation the host prices itself, so the library counts above (LUA_WORK_LIBOBJECTS, ALLOCBYTES, GCOBJECTS) leave it out
++LUA_API void lua_sethostcfunction(lua_CFunction f);
++// marks `count` functions at once, and `trampoline` (the one C function a host's closures made from Rust share), taking the lock once
++LUA_API void lua_sethostcfunctions(const lua_CFunction* functions, int count, lua_CFunction trampoline);
+ 
+ // the names a host's typeof gives its own values, for the builtin typeof (a script's fast call) to give them too: the table at
+ // `idx` maps a table or a userdata to its name, looked up before the value's own type name, and `vectorname` (NULL: none) names
+diff --git a/luau/VM/src/lapi.cpp b/luau/VM/src/lapi.cpp
+index a99f723..14ba4d1 100644
+--- a/luau/VM/src/lapi.cpp
++++ b/luau/VM/src/lapi.cpp
+@@ -2,6 +2,10 @@
+ // This code is based on Lua 5.x implementation licensed under MIT License; see lua_LICENSE.txt for details
+ #include "lapi.h"
+ 
++#include <atomic>
++#include <mutex>
++#include <type_traits>
++
+ #include "lbytecode.h"
+ #include "lobject.h"
+ #include "lstate.h"
+@@ -1425,6 +1429,106 @@ void lua_setthreaddata(lua_State* L, void* data)
+ ** Garbage-collection function
+ */
+ 
++// The host's own C functions (lua_sethostcfunction) are kept in a chain of fixed-size blocks.
++// Layout: entry i is slot i % kHostFunctionsPerBlock of block i / kHostFunctionsPerBlock. The first block is static; each
++// later block is allocated when the one before it is full, and linked behind it.
++// Lifetime: a block never moves and is never freed, so a reader can scan while a writer appends. That includes exit: an embedder
++// may still run Lua from its own static destructors, so the list has no destructor and the operating system reclaims the blocks.
++// Publishing: a writer holds hostcfunctionlock, fills slots and links, then stores the new count with release. A reader loads the
++// count with acquire and scans only that many entries, so it never reads a slot or a link the writer has not finished.
++static const size_t kHostFunctionsPerBlock = 256;
++
++struct HostFunctionBlock
++{
++    lua_CFunction functions[kHostFunctionsPerBlock] = {};
++    HostFunctionBlock* next = nullptr;
++};
++
++struct HostFunctionList
++{
++    HostFunctionBlock first;
++    HostFunctionBlock* last = &first;
++};
++
++// (a destructor here would free blocks that a host call during another object's static destructor still reads)
++static_assert(std::is_trivially_destructible<HostFunctionList>::value, "the host function list must outlive every static destructor");
++
++static HostFunctionList hostcfunctions;
++static std::atomic<size_t> hostcfunctioncount{0};
++static std::mutex hostcfunctionlock;
++
++// whether `function` is among the first `registered` entries
++static bool hostfunctionregistered(lua_CFunction function, size_t registered)
++{
++    const HostFunctionBlock* block = &hostcfunctions.first;
++    while (registered > 0)
++    {
++        size_t inblock = registered < kHostFunctionsPerBlock ? registered : kHostFunctionsPerBlock;
++        for (size_t i = 0; i < inblock; ++i)
++            if (block->functions[i] == function)
++                return true;
++        registered -= inblock;
++        // (the link is followed only when entries remain beyond this block, so it has been published)
++        if (registered > 0)
++            block = block->next;
++    }
++    return false;
++}
++
++// adds `function` after the `registered` entries unless it is there; returns the new number of entries. Holds the writer lock; the
++// caller publishes the count once its whole batch is in.
++static size_t appendhostfunction(lua_CFunction function, size_t registered)
++{
++    if (hostfunctionregistered(function, registered))
++        return registered;
++    size_t slot = registered % kHostFunctionsPerBlock;
++    // the last block is full: start the next one
++    if (slot == 0 && registered > 0)
++    {
++        HostFunctionBlock* block = new HostFunctionBlock;
++        hostcfunctions.last->next = block;
++        hostcfunctions.last = block;
++    }
++    hostcfunctions.last->functions[slot] = function;
++    return registered + 1;
++}
++
++void lua_sethostcfunction(lua_CFunction f)
++{
++    std::lock_guard<std::mutex> guard(hostcfunctionlock);
++    size_t registered = hostcfunctioncount.load(std::memory_order_relaxed);
++    registered = appendhostfunction(f, registered);
++    hostcfunctioncount.store(registered, std::memory_order_release);
++}
++
++void lua_sethostcfunctions(const lua_CFunction* functions, int count, lua_CFunction trampoline)
++{
++    // a host registers its bindings together at startup, before a script can have a closure classified
++    std::lock_guard<std::mutex> guard(hostcfunctionlock);
++    size_t registered = hostcfunctioncount.load(std::memory_order_relaxed);
++    for (int i = 0; i < count; ++i)
++        registered = appendhostfunction(functions[i], registered);
++    registered = appendhostfunction(trampoline, registered);
++    hostcfunctioncount.store(registered, std::memory_order_release);
++}
++
++bool luaE_hostcall(lua_State* L)
++{
++    if (!L->stack || L->ci <= L->base_ci || !ttisfunction(L->ci->func))
++        return false;
++    Closure* cl = clvalue(L->ci->func);
++    if (!cl->isC)
++        return false;
++    // (the answer is kept in the C closure's preload byte, which only Luau closures use and luaF_newCclosure zeroes: 1 a library
++    // function, 2 a host's; a host marks its functions before its scripts run, as the closures it checks are its scripts')
++    if (cl->preload)
++        return cl->preload == 2;
++    size_t count = hostcfunctioncount.load(std::memory_order_acquire);
++    bool host = hostfunctionregistered(cl->c.f, count);
++    cl->preload = host ? 2 : 1;
++    return host;
++}
++
+ const lua_WorkCounters* lua_workcounters(lua_State* L)
+ {
+     return &L->global->work;
+diff --git a/luau/VM/src/lbuffer.cpp b/luau/VM/src/lbuffer.cpp
+index adeb47b..3d6691a 100644
+--- a/luau/VM/src/lbuffer.cpp
++++ b/luau/VM/src/lbuffer.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "lgc.h"
+ #include "lmem.h"
++#include "lstate.h"
+ 
+ #include <string.h>
+ 
+@@ -24,6 +25,8 @@ Buffer* luaB_newbuffer(lua_State* L, size_t s)
+ 
+         luaC_init(L, b, LUA_TBUFFER);
+         b->len = unsigned(s);
++        luaE_worklib(L, LUA_WORK_BUFFERS, 1);
++        luaE_workbufnew(L, s);
+         memset(b->data, 0, b->len);
+         return b;
+     }
+@@ -34,6 +37,8 @@ Buffer* luaB_newbuffer(lua_State* L, size_t s)
+ 
+         luaC_init(L, b, LUA_TBUFFER);
+         b->len = unsigned(s);
++        luaE_worklib(L, LUA_WORK_BUFFERS, 1);
++        luaE_workbufnew(L, s);
+         memset(b->data, 0, b->len);
+         return b;
+     }
+diff --git a/luau/VM/src/lbuflib.cpp b/luau/VM/src/lbuflib.cpp
+index ee67cb9..f13915a 100644
+--- a/luau/VM/src/lbuflib.cpp
++++ b/luau/VM/src/lbuflib.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "lcommon.h"
+ #include "lbuffer.h"
++#include "lstate.h"
+ 
+ #if defined(LUAU_BIG_ENDIAN)
+ #include <endian.h>
+@@ -50,6 +51,7 @@ static int buffer_fromstring(lua_State* L)
+     const char* val = luaL_checklstring(L, 1, &len);
+ 
+     void* data = lua_newbuffer(L, len);
++    luaE_worklib(L, LUA_WORK_BUFBYTES, len);
+     memcpy(data, val, len);
+     return 1;
+ }
+@@ -231,6 +233,7 @@ static int buffer_writestring(lua_State* L)
+     if (isoutofbounds(offset, len, unsigned(count)))
+         luaL_error(L, "buffer access out of bounds");
+ 
++    luaE_workbufmove(L, count);
+     memcpy((char*)buf + offset, val, count);
+     return 0;
+ }
+@@ -265,6 +268,7 @@ static int buffer_copy(lua_State* L)
+     if (isoutofbounds(toffset, tlen, unsigned(size)))
+         luaL_error(L, "buffer access out of bounds");
+ 
++    luaE_workbufmove(L, size);
+     memmove((char*)tbuf + toffset, (char*)sbuf + soffset, size);
+     return 0;
+ }
+@@ -283,6 +287,7 @@ static int buffer_fill(lua_State* L)
+     if (isoutofbounds(offset, len, unsigned(size)))
+         luaL_error(L, "buffer access out of bounds");
+ 
++    luaE_workbufmove(L, size);
+     memset((char*)buf + offset, value & 0xff, size);
+     return 0;
+ }
+diff --git a/luau/VM/src/lbuiltins.cpp b/luau/VM/src/lbuiltins.cpp
+index d64b3c5..f3edc89 100644
+--- a/luau/VM/src/lbuiltins.cpp
++++ b/luau/VM/src/lbuiltins.cpp
+@@ -864,6 +864,8 @@ static int luauF_char(lua_State* L, StkId res, TValue* arg0, int nresults, StkId
+ 
+         buffer[nparams] = 0;
+ 
++        // (the characters it made of its arguments, as string.char's C function counts them: lua.h LUA_WORK_STRCHARS)
++        luaE_worklib(L, LUA_WORK_STRCHARS, nparams);
+         setsvalue(L, res, luaS_newlstr(L, buffer, nparams));
+         return 1;
+     }
+@@ -1060,6 +1062,7 @@ static int luauF_tunpack(lua_State* L, StkId res, TValue* arg0, int nresults, St
+ 
+         if (n >= 0 && n <= t->sizearray && cast_int(L->stack_last - res) >= n && n + nparams <= LUAI_MAXCSTACK)
+         {
++            luaE_worklib(L, LUA_WORK_MOVED, n);
+             TValue* array = t->array;
+             for (int i = 0; i < n; ++i)
+                 setobj2s(L, res + i, array + i);
+diff --git a/luau/VM/src/lmem.cpp b/luau/VM/src/lmem.cpp
+index a3bff68..f3d93c0 100644
+--- a/luau/VM/src/lmem.cpp
++++ b/luau/VM/src/lmem.cpp
+@@ -657,17 +657,24 @@ static LUAU_FORCEINLINE void freegcoblock(lua_State* L, int sizeClass, void* blo
+ 
+ // counts a collectable object a script's own instruction allocates (lua_WorkCounters); a C function's allocations
+ // count with its call
+-static void countallocated(lua_State* L, size_t nsize)
++static void countallocated(lua_State* L, size_t nsize, int tt)
+ {
+-    if (!luaE_scriptinsn(L))
++    if (luaE_scriptinsn(L))
+     {
+-        // (a profile prices it as a builtin's fast path, which counts its allocations, would)
+-        if (luaP_state)
+-            luaP_uncounted(L, 1, 0, 0);
+-        return;
++        L->global->work.allocated += nsize;
++        L->global->work.objects++;
+     }
+-    L->global->work.allocated += nsize;
+-    L->global->work.objects++;
++    // (a library or engine call made it for a script; a userdata is a host's datatype value, which the host prices with its operation)
++    else if (tt != LUA_TUSERDATA && luaE_scriptwork(L) && !luaE_hostcall(L))
++        L->global->work.hostops[LUA_WORK_LIBOBJECTS]++;
++    else
++        return;
++    // (every object's bytes, whoever of the script's work made it, and the object again for the collector, which sweeps each)
++    L->global->work.hostops[LUA_WORK_ALLOCBYTES] += nsize;
++    L->global->work.hostops[LUA_WORK_GCOBJECTS]++;
++    // (and an object no size class holds: a page of its own from the host's allocator)
++    if (nsize > kMaxSmallSizeUsed)
++        L->global->work.hostops[LUA_WORK_LARGEBLOCKS]++;
+ }
+ 
+ void* luaM_new_(lua_State* L, size_t nsize, uint8_t memcat)
+@@ -746,7 +753,7 @@ GCObject* luaM_newgco_(lua_State* L, size_t nsize, uint8_t memcat, int tt, int t
+ 
+     g->totalbytes += nsize;
+     g->memcatbytes[memcat] += nsize;
+-    countallocated(L, nsize);
++    countallocated(L, nsize, tt);
+ 
+     if (LUAU_UNLIKELY(!!g->cb.onallocate))
+     {
+@@ -798,7 +805,7 @@ GCObject* luaM_newgcocaged_(lua_State* L, size_t nsize, uint8_t memcat, int tt,
+ 
+     g->totalbytes += nsize;
+     g->memcatbytes[memcat] += nsize;
+-    countallocated(L, nsize);
++    countallocated(L, nsize, tt);
+ 
+     if (LUAU_UNLIKELY(!!g->cb.onallocate))
+     {
+@@ -847,7 +854,7 @@ GCObject* luaM_newgcotagged_(lua_State* L, size_t nsize, uint8_t memcat)
+ 
+     g->totalbytes += nsize;
+     g->memcatbytes[memcat] += nsize;
+-    countallocated(L, nsize);
++    countallocated(L, nsize, LUA_TBUFFER);
+ 
+     if (LUAU_UNLIKELY(!!g->cb.onallocate))
+     {
+diff --git a/luau/VM/src/lprofile.cpp b/luau/VM/src/lprofile.cpp
+index a88b50a..2e26928 100644
+--- a/luau/VM/src/lprofile.cpp
++++ b/luau/VM/src/lprofile.cpp
+@@ -446,6 +446,8 @@ struct lua_ProfileState
+     const double* hostwork = NULL;
+     const double* hostdrained = NULL;
+     double lasthost = 0;
++    // Library table storage the fast path would also charge as instruction storage.
++    uint64_t callstored = 0;
+     lua_WorkCounters last;
+     // the instruction dispatched last, and the counts its dispatch is in: ops for a script's function, nativeops for one a code
+     // generator would compile (LUAU_PROTO_WORK_NATIVE), hostops for a host's own
+@@ -463,10 +465,6 @@ struct lua_ProfileState
+     // none), and what its first touch in the frame was charged since the last booking (luaP_coldtouch): its site's firsttouch
+     LuaTable* owntable = NULL;
+     double owntouch = 0;
+-    // work the counters left to a call since the last booking (luaP_uncounted): what a builtin's fast path would count
+-    uint64_t callobjects = 0;
+-    uint64_t callstored = 0;
+-    uint64_t callrehashed = 0;
+     double enginework = 0;
+     // the frame the last step ran in
+     lua_State* lastL = NULL;
+@@ -1010,6 +1008,18 @@ static lua_ProfileBuiltinSite* fallbacksite(ProfFunction& f, int at, int node, i
+ // books what the work counters and the host's charges moved since the last booking: the instruction dispatched since
+ // (one count in its function's instruction array) and what it did (allocations, calls, the host's charges); while a C
+ // function's node is the target, what it did past the instruction's own dispatch is that function's
++// whether a builtin's fast path would count the work of `slot` too: the strings it makes, and the objects, bytes and rehashed keys of
++// what it allocates, which the library counts hold for a call that was declined
++static bool isFastPathCounter(int slot)
++{
++    if (slot == kNewStringsSlot || slot == kNumToStrSlot || slot == kObjectsSlot || slot == kStoredSlot || slot == kRehashedSlot)
++        return true;
++
++    int hostop = slot - kHostOpsSlot;
++    return hostop == LUA_WORK_LIBOBJECTS || hostop == LUA_WORK_GCOBJECTS || hostop == LUA_WORK_ALLOCBYTES || hostop == LUA_WORK_LARGEBLOCKS ||
++           hostop == LUA_WORK_HASHREHASHED || hostop == LUA_WORK_STRBYTES;
++}
++
+ static void book(lua_ProfileState* s, lua_State* L)
+ {
+     if (!s->pricing)
+@@ -1049,20 +1059,17 @@ static void book(lua_ProfileState* s, lua_State* L)
+             last[slot] = now[slot];
+         }
+     }
+-    // (of it, what a builtin's fast path would count too: a new string, a number made a string; and the allocations the counters
+-    // left to a call, which the fast path counts as its own)
+-    double fastwork = double(s->callobjects) * s->prices[kObjectsSlot] + double(s->callstored) * s->prices[kStoredSlot] +
+-                      double(s->callrehashed) * s->prices[kRehashedSlot];
+-    s->callobjects = 0;
++    // Both paths pay for the same results. Use the charged counters so allocations
++    // inside the library include the fast path's object and byte prices too.
++    double fastwork = double(s->callstored) * s->prices[kStoredSlot];
+     s->callstored = 0;
+-    s->callrehashed = 0;
+     for (int slot : s->scalars)
+     {
+         if (now[slot] != last[slot])
+         {
+             double charge = s->prices[slot] * double(int64_t(now[slot] - last[slot]));
+             rest += charge;
+-            if (slot == kNewStringsSlot || slot == kNumToStrSlot)
++            if (isFastPathCounter(slot))
+                 fastwork += charge;
+             last[slot] = now[slot];
+         }
+@@ -2369,7 +2376,12 @@ void luaP_rehash(lua_State* L, LuaTable* t, int oldarray, int oldnodes, int keys
+         {
+             int nodes = t->node == &luaH_dummynode ? 0 : sizenode(t);
+             double bytes = double(std::max(0, t->sizearray - oldarray)) * sizeof(TValue) + double(std::max(0, nodes - oldnodes)) * sizeof(LuaNode);
+-            f.cachesites[slot - 1].presized += bytes * s->prices[kStoredSlot];
++            // Presizing pays for the final storage once, including allocations outside
++            // the VM's pages. Repeated growth pays for each intermediate allocation.
++            int blocks = (t->sizearray * sizeof(TValue) > 1024) - (oldarray * sizeof(TValue) > 1024) +
++                         (nodes * sizeof(LuaNode) > 1024) - (oldnodes * sizeof(LuaNode) > 1024);
++            f.cachesites[slot - 1].presized += bytes * (s->prices[kStoredSlot] + s->prices[kHostOpsSlot + LUA_WORK_ALLOCBYTES]) +
++                                                   blocks * s->prices[kHostOpsSlot + LUA_WORK_LARGEBLOCKS];
+         }
+     }
+     if (!s->rehash)
+@@ -2378,14 +2390,11 @@ void luaP_rehash(lua_State* L, LuaTable* t, int oldarray, int oldnodes, int keys
+     s->rehash(s->rehashud, L, t, oldarray, oldnodes, t->sizearray, nodes, keys, luaE_scriptinsn(L) ? 1 : 0);
+ }
+ 
+-void luaP_uncounted(lua_State* L, int objects, size_t bytes, int keys)
++void luaP_callstorage(lua_State* L, size_t bytes)
+ {
+-    lua_ProfileState* s = luaP_state;
+-    if (!s || !s->stepping || !s->pricing || s->g != L->global || !luaE_scriptwork(L))
+-        return;
+-    s->callobjects += uint64_t(objects);
+-    s->callstored += uint64_t(bytes);
+-    s->callrehashed += uint64_t(keys);
++    lua_ProfileState* s = stateof(L);
++    if (s && s->stepping && s->pricing && luaE_scriptwork(L) && !luaE_hostcall(L))
++        s->callstored += bytes;
+ }
+ 
+ void luaP_coldtouch(lua_State* L, GCObject* o)
+diff --git a/luau/VM/src/lprofile.h b/luau/VM/src/lprofile.h
+index 49f8f6b..98086ee 100644
+--- a/luau/VM/src/lprofile.h
++++ b/luau/VM/src/lprofile.h
+@@ -3,9 +3,6 @@
+ 
+ #include "lobject.h"
+ 
+-// A host's profile of this thread's VM (lprofile.cpp, lua.h "profiling"). Off, the interpreter pays one thread-local load
+-// per luau_execute entry, and the VM one test of luaP_state where a C function or the host (no script instruction) allocates
+-// an object or table storage or rehashes a table (luaP_uncounted's sites in lmem.cpp and ltable.cpp), at a table's first
+ // touch in a frame while cold touches are tracked (13-cold-touches), at a chunk's load, at an error a protected call catches
+ // and where a thread is freed or reset; a storage allocation also stores what it is for (luaP_allockind).
+ struct lua_ProfileState;
+@@ -37,10 +34,9 @@ LUAI_FUNC void luaP_leave(lua_State* L, const void* frame);
+ LUAI_FUNC void luaP_unwound(lua_State* L, const void* frame);
+ // a chunk was loaded (lvmload.cpp): its functions are registered, and the copies its compiler inlined found
+ LUAI_FUNC void luaP_loaded(lua_State* L, Proto* main);
+-// work the counters leave to a call (a C function's or the host's Luau's, running for a script): the objects it allocates, its
+-// table storage bytes and the keys its tables' rehashes move, which a builtin's fast path counts as its own; a profile counts it
+-// toward what a declined builtin call would charge on the fast path
+-LUAI_FUNC void luaP_uncounted(lua_State* L, int objects, size_t bytes, int keys);
++// A library call allocated table storage. The fast equivalent pays the instruction
++// storage price too, even though the fallback counts these bytes only as allocations.
++LUAI_FUNC void luaP_callstorage(lua_State* L, size_t bytes);
+ // a script's work touched the table `o` first in the frame (lgc.cpp's cold touches, counted in lua_WorkCounters' coldtables): the
+ // table an instruction with an inline cache reaches first has the charge told apart (lua_ProfileCacheSite.firsttouch)
+ LUAI_FUNC void luaP_coldtouch(lua_State* L, GCObject* o);
+diff --git a/luau/VM/src/lstate.h b/luau/VM/src/lstate.h
+index cbaaf5e..041f2bb 100644
+--- a/luau/VM/src/lstate.h
++++ b/luau/VM/src/lstate.h
+@@ -420,5 +420,35 @@ inline int luaE_workframe(lua_State* L, CallInfo* ci)
+ #define luaE_scriptframe(L, ci) (luaE_workframe(L, ci) == 1)
+ #define luaE_scriptwork(L) luaE_scriptframe(L, (L)->ci)
+ 
++// whether the innermost frame of L is one of the host's own C functions (lua_sethostcfunction)
++LUAI_FUNC bool luaE_hostcall(lua_State* L);
++
++// counts `n` units of a library or engine function's work in the work counters' hostops slot `slot` (lua.h LUA_WORK_SCANNED and the
++// rest) when a script's work asked for it
++#define luaE_worklib(L, slot, n) \
++    do \
++    { \
++        if (luaE_scriptwork(L) && !luaE_hostcall(L)) \
++            (L)->global->work.hostops[(slot)] += uint64_t(n); \
++    } while (0)
++// a new buffer's bytes (lua.h LUA_WORK_BUFBYTES), and those past Luau's own pages again (LUA_WORK_BUFFRESH)
++#define luaE_workbufnew(L, n) \
++    do \
++    { \
++        size_t workbytes = size_t(n); \
++        luaE_worklib(L, LUA_WORK_BUFBYTES, workbytes); \
++        if (workbytes > 1024) \
++            luaE_worklib(L, LUA_WORK_BUFFRESH, workbytes); \
++    } while (0)
++// bytes a buffer copy, fill or string write moved (lua.h LUA_WORK_BUFBYTES), and those of a call over 64 KB again (LUA_WORK_BUFBIGCOPY)
++#define luaE_workbufmove(L, n) \
++    do \
++    { \
++        size_t workbytes = size_t(n); \
++        luaE_worklib(L, LUA_WORK_BUFBYTES, workbytes); \
++        if (workbytes > 65536) \
++            luaE_worklib(L, LUA_WORK_BUFBIGCOPY, workbytes); \
++    } while (0)
++
+ LUAI_FUNC lua_State* luaE_newthread(lua_State* L);
+ LUAI_FUNC void luaE_freethread(lua_State* L, lua_State* L1, struct lua_Page* page);
+diff --git a/luau/VM/src/lstring.cpp b/luau/VM/src/lstring.cpp
+index 43731ec..31bc484 100644
+--- a/luau/VM/src/lstring.cpp
++++ b/luau/VM/src/lstring.cpp
+@@ -183,6 +183,8 @@ TString* luaS_bufstart(lua_State* L, size_t size)
+ 
+ TString* luaS_buffinish(lua_State* L, TString* ts)
+ {
++    // (the bytes a buffer built, hashed here and compared with an equal string's: lua.h LUA_WORK_STRBYTES)
++    luaE_worklib(L, LUA_WORK_STRBYTES, ts->len);
+     unsigned int h = luaS_hash(ts->data, ts->len);
+     stringtable* tb = &L->global->strt;
+     unsigned int saltedh = FFlag::LuauSaltedInterningTable ? salthash(h, tb->saltmult, tb->saltadd) : 0;
+@@ -221,6 +223,8 @@ TString* luaS_buffinish(lua_State* L, TString* ts)
+ 
+ TString* luaS_newlstr(lua_State* L, const char* str, size_t l)
+ {
++    // (hashed, compared with an equal string's, and copied when no live string equals it: lua.h LUA_WORK_STRBYTES)
++    luaE_worklib(L, LUA_WORK_STRBYTES, l);
+     if (FFlag::LuauSaltedInterningTable)
+     {
+         global_State* g = L->global;
+diff --git a/luau/VM/src/lstrlib.cpp b/luau/VM/src/lstrlib.cpp
+index e618e4a..4169e44 100644
+--- a/luau/VM/src/lstrlib.cpp
++++ b/luau/VM/src/lstrlib.cpp
+@@ -67,6 +67,7 @@ static int str_lower(lua_State* L)
+     const char* s = luaL_checklstring(L, 1, &l);
+     luaL_Strbuf b;
+     char* ptr = luaL_buffinitsize(L, &b, l);
++    luaE_worklib(L, LUA_WORK_CASEBYTES, l);
+     for (size_t i = 0; i < l; i++)
+         *ptr++ = tolower(uchar(s[i]));
+     luaL_pushresultsize(&b, l);
+@@ -79,6 +80,7 @@ static int str_upper(lua_State* L)
+     const char* s = luaL_checklstring(L, 1, &l);
+     luaL_Strbuf b;
+     char* ptr = luaL_buffinitsize(L, &b, l);
++    luaE_worklib(L, LUA_WORK_CASEBYTES, l);
+     for (size_t i = 0; i < l; i++)
+         *ptr++ = toupper(uchar(s[i]));
+     luaL_pushresultsize(&b, l);
+@@ -147,6 +149,7 @@ static int str_byte(lua_State* L)
+     if (posi + n <= pose) // overflow?
+         luaL_error(L, "string slice too long");
+     luaL_checkstack(L, n, "string slice too long");
++    luaE_worklib(L, LUA_WORK_BYTEVALUES, n);
+     for (i = 0; i < n; i++)
+         lua_pushinteger(L, uchar(s[posi + i - 1]));
+     return n;
+@@ -158,6 +161,7 @@ static int str_char(lua_State* L)
+ 
+     luaL_Strbuf b;
+     char* ptr = luaL_buffinitsize(L, &b, n);
++    luaE_worklib(L, LUA_WORK_STRCHARS, n);
+ 
+     for (int i = 1; i <= n; i++)
+     {
+@@ -192,6 +196,8 @@ typedef struct MatchState
+         const char* init;
+         ptrdiff_t len;
+     } capture[LUA_MAXCAPTURES];
++    uint64_t steps;   // pattern items tried at a position (the work counters' LUA_WORK_MATCHSTEPS)
++    uint64_t classes; // the character class tests among them (LUA_WORK_MATCHCLASSES)
+ } MatchState;
+ 
+ // recursive function
+@@ -321,22 +327,22 @@ static int matchbracketclass(int c, const char* p, const char* ec)
+ 
+ static int singlematch(MatchState* ms, const char* s, const char* p, const char* ep)
+ {
+-    if (s >= ms->src_end)
+-        return 0;
+-    else
++    // The count is made in the switch that tells the kind of pattern item, so a test at the end of the input is counted too.
++    // (a class's test is dearer than a character's: steps count the cheap ones, classes the others)
++    switch (*p)
+     {
+-        int c = uchar(*s);
+-        switch (*p)
+-        {
+-        case '.':
+-            return 1; // matches any char
+-        case L_ESC:
+-            return match_class(c, uchar(*(p + 1)));
+-        case '[':
+-            return matchbracketclass(c, p, ep - 1);
+-        default:
+-            return (uchar(*p) == c);
+-        }
++    case '.':
++        ms->steps++;
++        return s < ms->src_end;
++    case L_ESC:
++        ms->classes++;
++        return s < ms->src_end && match_class(uchar(*s), uchar(*(p + 1)));
++    case '[':
++        ms->classes++;
++        return s < ms->src_end && matchbracketclass(uchar(*s), p, ep - 1);
++    default:
++        ms->steps++;
++        return s < ms->src_end && uchar(*p) == uchar(*s);
+     }
+ }
+ 
+@@ -434,6 +440,7 @@ static const char* match(MatchState* ms, const char* s, const char* p)
+ {
+     if (ms->matchdepth-- == 0)
+         luaL_error(ms->L, "pattern too complex");
++    ms->steps++;
+ 
+     lua_State* L = ms->L;
+     void (*interrupt)(lua_State*, int) = L->global->cb.interrupt;
+@@ -652,6 +659,8 @@ static int nospecials(const char* p, size_t l)
+ 
+ static void prepstate(MatchState* ms, lua_State* L, const char* s, size_t ls, const char* p, size_t lp)
+ {
++    ms->steps = 0;
++    ms->classes = 0;
+     ms->L = L;
+     ms->matchdepth = LUAI_MAXCCALLS;
+     ms->src_init = s;
+@@ -683,6 +692,8 @@ static int str_find_aux(lua_State* L, int find)
+     {
+         // do a plain search
+         const char* s2 = lmemfind(s + init - 1, ls - init + 1, p, lp);
++        // (the bytes it read: up to the match's end, or the rest of the string)
++        luaE_worklib(L, LUA_WORK_STRSCANNED, s2 ? size_t(s2 - s) + lp - size_t(init - 1) : ls - size_t(init - 1));
+         if (s2)
+         {
+             lua_pushinteger(L, (int)(s2 - s + 1));
+@@ -707,6 +718,8 @@ static int str_find_aux(lua_State* L, int find)
+             reprepstate(&ms);
+             if ((res = match(&ms, s1, p)) != NULL)
+             {
++                luaE_worklib(L, LUA_WORK_MATCHSTEPS, ms.steps);
++                luaE_worklib(L, LUA_WORK_MATCHCLASSES, ms.classes);
+                 if (find)
+                 {
+                     lua_pushinteger(L, (int)(s1 - s + 1)); // start
+@@ -717,6 +730,8 @@ static int str_find_aux(lua_State* L, int find)
+                     return push_captures(&ms, s1, res);
+             }
+         } while (s1++ < ms.src_end && !anchor);
++        luaE_worklib(L, LUA_WORK_MATCHSTEPS, ms.steps);
++        luaE_worklib(L, LUA_WORK_MATCHCLASSES, ms.classes);
+     }
+     lua_pushnil(L); // not found
+     return 1;
+@@ -751,9 +766,13 @@ static int gmatch_aux(lua_State* L)
+                 newstart++; // empty match? go at least one position
+             lua_pushinteger(L, newstart);
+             lua_replace(L, lua_upvalueindex(3));
++            luaE_worklib(L, LUA_WORK_MATCHSTEPS, ms.steps);
++            luaE_worklib(L, LUA_WORK_MATCHCLASSES, ms.classes);
+             return push_captures(&ms, src, e);
+         }
+     }
++    luaE_worklib(L, LUA_WORK_MATCHSTEPS, ms.steps);
++    luaE_worklib(L, LUA_WORK_MATCHCLASSES, ms.classes);
+     return 0; // not found
+ }
+ 
+@@ -970,6 +989,10 @@ static int str_gsub(lua_State* L)
+         }
+     }
+     luaL_addlstring(&b, src, ms.src_end - src);
++    // (a literal pattern's search read the string's bytes; a pattern counted its steps)
++    luaE_worklib(L, LUA_WORK_STRSCANNED, ms.steps + ms.classes == 0 ? size_t(src - ms.src_init) : 0);
++    luaE_worklib(L, LUA_WORK_MATCHSTEPS, ms.steps);
++    luaE_worklib(L, LUA_WORK_MATCHCLASSES, ms.classes);
+     luaL_pushresult(&b);
+     lua_pushinteger(L, n); // number of substitutions
+     return 2;
+diff --git a/luau/VM/src/ltable.cpp b/luau/VM/src/ltable.cpp
+index 535e37e..4f641a1 100644
+--- a/luau/VM/src/ltable.cpp
++++ b/luau/VM/src/ltable.cpp
+@@ -729,7 +729,15 @@ static void countstored(lua_State* L, size_t bytes)
+     if (luaE_scriptinsn(L))
+         L->global->work.stored += bytes;
+     else if (luaP_state)
+-        luaP_uncounted(L, 0, bytes, 0); // (a profile prices it as a builtin's fast path would)
++        luaP_callstorage(L, bytes);
++    // (a table part a library or engine call allocated for a script counts as its allocation too: table.create, a decoded table)
++    if (luaE_scriptwork(L) && !luaE_hostcall(L))
++    {
++        L->global->work.hostops[LUA_WORK_ALLOCBYTES] += bytes;
++        // (a part too large for Luau's own pages is a block of the host's allocator: lmem.cpp kMaxSmallSizeUsed)
++        if (bytes > 1024)
++            L->global->work.hostops[LUA_WORK_LARGEBLOCKS]++;
++    }
+ }
+ 
+ static void setarrayvector(lua_State* L, LuaTable* t, int size)
+@@ -1009,9 +1017,10 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
+         int nh = hashslotsused(t) + 1;
+         // (the keys this rehash moves: the hash part's and the new one; the array part stays)
+         if (luaE_scriptinsn(L))
++        {
+             L->global->work.rehashed += nh;
+-        else if (luaP_state)
+-            luaP_uncounted(L, 0, 0, nh); // (a profile prices it as a builtin's fast path would)
++            L->global->work.hostops[LUA_WORK_HASHREHASHED] += nh;
++        }
+         // (the hash part's size before, for a profile's rehash hook)
+         int oldnodes = t->node == dummynode ? 0 : sizenode(t);
+         resize(L, t, t->sizearray, nh);
+@@ -1070,9 +1079,11 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
+     }
+ 
+     if (luaE_scriptinsn(L))
++    {
+         L->global->work.rehashed += totaluse;
+-    else if (luaP_state)
+-        luaP_uncounted(L, 0, 0, totaluse); // (a profile prices it as a builtin's fast path would)
++        // (the keys that do not go to the array part are reinserted into the hash part)
++        L->global->work.hostops[LUA_WORK_HASHREHASHED] += unsigned(nh);
++    }
+ 
+     // (the sizes before, for a profile's rehash hook)
+     int oldasize = t->sizearray;
+diff --git a/luau/VM/src/ltablib.cpp b/luau/VM/src/ltablib.cpp
+index f303e8f..afc6a6d 100644
+--- a/luau/VM/src/ltablib.cpp
++++ b/luau/VM/src/ltablib.cpp
+@@ -235,7 +235,10 @@ static int tinsert(lua_State* L)
+ 
+         // move up elements if necessary
+         if (1 <= pos && pos <= n)
++        {
++            luaE_worklib(L, LUA_WORK_MOVED, n - pos + 1);
+             moveelements(L, 1, 1, pos, n, pos + 1, /* sparsemove */ false);
++        }
+         break;
+     }
+     default:
+@@ -257,6 +260,7 @@ static int tremove(lua_State* L)
+         return 0;                // nothing to remove
+     lua_rawgeti(L, 1, pos);      // result = t[pos]
+ 
++    luaE_worklib(L, LUA_WORK_MOVED, n - pos);
+     moveelements(L, 1, 1, pos + 1, n, pos, /* sparsemove */ false);
+ 
+     lua_pushnil(L);
+@@ -291,6 +295,7 @@ static int tmove(lua_State* L)
+             luaG_readonlyerror(L);
+ 
+         bool sparsemove = shouldsparsemove(hvalue(L->base), dst, n);
++        luaE_worklib(L, LUA_WORK_MOVED, n);
+ 
+         if (t > 0 && (t - 1) <= dst->sizearray && (t - 1 + n) > dst->sizearray)
+         { // grow the destination table array
+@@ -348,6 +353,7 @@ static int tconcat(lua_State* L)
+ static int tpack(lua_State* L)
+ {
+     int n = lua_gettop(L);    // number of elements to pack
++    luaE_worklib(L, LUA_WORK_MOVED, n);
+     lua_createtable(L, n, 1); // create result table
+ 
+     LuaTable* t = hvalue(L->top - 1);
+@@ -377,6 +383,7 @@ static int tunpack(lua_State* L)
+     unsigned n = (unsigned)e - i; // number of elements minus 1 (avoid overflows)
+     if (n >= (unsigned int)INT_MAX || !lua_checkstack(L, (int)(++n)))
+         luaL_error(L, "too many results to unpack");
++    luaE_worklib(L, LUA_WORK_MOVED, n);
+ 
+     // fast-path: direct array-to-stack copy
+     if (i == 1 && int(n) <= t->sizearray)
+@@ -651,9 +658,17 @@ static int tfind(lua_State* L)
+         if (!iscollectable(L->base + 1) || ttisnil(luaT_gettmbyobj(L, L->base + 1, TM_EQ)))
+         {
+             if (int index = luaH_rawfind(t, init, L->base + 1))
++            {
++                luaE_worklib(L, LUA_WORK_SCANNED, index - init + 1);
+                 lua_pushinteger(L, index);
++            }
+             else
++            {
++                // (a miss read the array part from init on, and the integer keys of the hash part after it)
++                int scanned = t->sizearray >= init ? t->sizearray - init + 1 : 0;
++                luaE_worklib(L, LUA_WORK_SCANNED, scanned + (t->node == &luaH_dummynode ? 0 : sizenode(t)));
+                 lua_pushnil(L);
++            }
+ 
+             return 1;
+         }
+@@ -663,12 +678,16 @@ static int tfind(lua_State* L)
+     {
+         const TValue* e = luaH_getnum(t, i);
+         if (ttisnil(e))
++        {
++            luaE_worklib(L, LUA_WORK_SCANNED, i - init);
+             break;
++        }
+ 
+         StkId v = L->base + 1;
+ 
+         if (equalobj(L, v, e))
+         {
++            luaE_worklib(L, LUA_WORK_SCANNED, i - init + 1);
+             lua_pushinteger(L, i);
+             return 1;
+         }
+@@ -686,6 +705,7 @@ static int tclear(lua_State* L)
+     if (tt->readonly)
+         luaG_readonlyerror(L);
+ 
++    luaE_worklib(L, LUA_WORK_MOVED, tt->sizearray + (tt->node == &luaH_dummynode ? 0 : sizenode(tt)));
+     luaH_clear(tt);
+     return 0;
+ }
+diff --git a/luau/VM/src/lutf8lib.cpp b/luau/VM/src/lutf8lib.cpp
+index a45db25..7ce3cf7 100644
+--- a/luau/VM/src/lutf8lib.cpp
++++ b/luau/VM/src/lutf8lib.cpp
+@@ -3,6 +3,7 @@
+ #include "lualib.h"
+ 
+ #include "lcommon.h"
++#include "lstate.h"
+ 
+ #define MAXUNICODE 0x10FFFF
+ 
+@@ -68,6 +69,8 @@ static int utflen(lua_State* L)
+     int posj = u_posrelat(luaL_optinteger(L, 3, -1), len);
+     luaL_argcheck(L, 1 <= posi && --posi <= (int)len, 2, "initial position out of string");
+     luaL_argcheck(L, --posj < (int)len, 3, "final position out of string");
++    if (posi <= posj)
++        luaE_worklib(L, LUA_WORK_UTF8BYTES, posj - posi + 1);
+     while (posi <= posj)
+     {
+         const char* s1 = utf8_decode(s + posi, NULL);
+@@ -104,6 +107,7 @@ static int codepoint(lua_State* L)
+         luaL_error(L, "string slice too long");
+     n = (int)(pose - posi) + 1;
+     luaL_checkstack(L, n, "string slice too long");
++    luaE_worklib(L, LUA_WORK_UTF8BYTES, n);
+     n = 0;
+     se = s + pose;
+     for (s += posi - 1; s < se;)
+@@ -165,6 +169,7 @@ static int utfchar(lua_State* L)
+     const char* charstr;
+ 
+     int n = lua_gettop(L); // number of arguments
++    luaE_worklib(L, LUA_WORK_UTF8CHARS, n);
+     if (n == 1)
+     { // optimize common case of single char
+         int l = buffutfchar(L, 1, buff, &charstr);
+@@ -196,6 +201,7 @@ static int byteoffset(lua_State* L)
+     int posi = (n >= 0) ? 1 : (int)len + 1;
+     posi = u_posrelat(luaL_optinteger(L, 3, posi), len);
+     luaL_argcheck(L, 1 <= posi && --posi <= (int)len, 3, "position out of range");
++    int start = posi;
+     if (n == 0)
+     {
+         // find beginning of current byte sequence
+@@ -230,6 +236,8 @@ static int byteoffset(lua_State* L)
+             }
+         }
+     }
++    // (the bytes it stepped over from where it began)
++    luaE_worklib(L, LUA_WORK_UTF8BYTES, posi > start ? posi - start : start - posi);
+     if (n == 0) // did it find given character?
+         lua_pushinteger(L, posi + 1);
+     else // no such character
+@@ -258,6 +266,7 @@ static int iter_aux(lua_State* L)
+         const char* next = utf8_decode(s + n, &code);
+         if (next == NULL || iscont(next))
+             luaL_error(L, "invalid UTF-8 code");
++        luaE_worklib(L, LUA_WORK_UTF8BYTES, next - (s + n));
+         lua_pushinteger(L, n + 1);
+         lua_pushinteger(L, code);
+         return 2;

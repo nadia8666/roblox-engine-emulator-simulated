@@ -100,7 +100,7 @@ fn a_comparison_writes_profiles_and_an_index_of_what_they_show() {
     let (done, compare) = try_file(&root, "nested.luau", NESTED, "out", &["--rounds", "2", "--time-ms", "1", "--no-hw"], false);
     let output = text(&done);
     assert_eq!(done.status.code(), Some(0), "{output}");
-    assert_eq!((compare["format"].as_str(), compare["version"].as_u64(), compare["baseline"].as_str()), (Some("ree-what-if"), Some(1), Some("by kind")));
+    assert_eq!((compare["format"].as_str(), compare["version"].as_u64(), compare["baseline"].as_str()), (Some("ree-what-if"), Some(2), Some("by kind")));
     let variants: Vec<(&str, &str, &str)> = compare["variants"].as_array().unwrap().iter().map(|v| (v["name"].as_str().unwrap(), v["slug"].as_str().unwrap(), v["kind"].as_str().unwrap())).collect();
     assert_eq!(variants, [("by kind", "by-kind", "function"), ("by item", "by-item", "function")]);
     assert_eq!(compare["sizes"], serde_json::json!([8.0, 64.0]));
@@ -172,6 +172,51 @@ fn a_comparison_writes_profiles_and_an_index_of_what_they_show() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A comparison of two ways to sum 1 to n, for the harness-figures test below
+const TINY: &str = r#"return {
+	title = "a tiny loop",
+	sizes = { 10 },
+	variants = {
+		{
+			name = "sum",
+			run = function(n)
+				local x = 0
+				for i = 1, n do
+					x += i
+				end
+				return x
+			end,
+		},
+		{
+			name = "sum down",
+			run = function(n)
+				local x = 0
+				for i = n, 1, -1 do
+					x += i
+				end
+				return x
+			end,
+		},
+	},
+}
+"#;
+
+/// A variant's figures are its own code's: the generated harness's frames are left out (the audit: a 0.24 us variant read 3.72 us,
+/// 2.73 of them the harness's `profile` function), "hot in a loop" has every cold and first-use charge taken out, and "first in frame"
+/// is that and the cold charges
+#[test]
+fn a_variants_figures_leave_the_harness_out() {
+    let root = scratch("tiny");
+    let (done, compare) = try_file(&root, "tiny.luau", TINY, "out", &["--rounds", "2", "--no-time", "--no-hw"], false);
+    assert_eq!(done.status.code(), Some(0), "{}", text(&done));
+    let run = &run_of(&compare, "sum", 10.0)["run"];
+    let (first, hot, cold) = (run["work_ms"].as_f64().unwrap(), run["warm_ms"].as_f64().unwrap(), run["cold_ms"].as_f64().unwrap());
+    // ten ADDs and FORNLOOPs and a call: well under a tenth of a microsecond hot; its cold charges on top, first in a frame
+    assert!(hot > 0.0 && hot < 0.1e-3, "hot in a loop {hot} ms");
+    assert!((first - hot - cold).abs() < 1e-12 && first < 2.0e-3, "first in frame {first} ms, cold {cold} ms");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn a_failed_check_and_a_variant_that_raises_are_reported() {
     let root = scratch("failures");
@@ -197,7 +242,8 @@ fn a_failed_check_and_a_variant_that_raises_are_reported() {
     assert_eq!(compare["check"]["ok"], false);
     assert!(failures.iter().any(|failure| failure["variant"] == "off by one" && failure["size"] == 4.0), "{failures:?}");
     assert!(failures.iter().any(|failure| failure["variant"] == "raises" && failure["message"].as_str().unwrap().contains("raised")), "{failures:?}");
-    assert!(output.contains("check FAILED: off by one at n = 4"), "{output}");
+    assert!(output.contains("check FAILED (by deep equality: check = true): off by one at n = 4"), "{output}");
+    assert_eq!(compare["check"]["by"], "equality");
     assert!(compare["notes"].as_array().unwrap().iter().any(|note| note.as_str().unwrap().starts_with("raises at n = 4: error")), "{}", compare["notes"]);
     // a variant file that is not one says so
     let (bad, _) = try_file(&root, "bad.luau", "return 5\n", "bad", &["--no-time"], false);
@@ -208,6 +254,124 @@ fn a_failed_check_and_a_variant_that_raises_are_reported() {
     assert!(text(&unknown).contains("no variant \"nope\""), "{}", text(&unknown));
     let (option, _) = try_file(&root, "failures.luau", source, "out3", &["--sizez", "4"], false);
     assert_eq!(option.status.code(), Some(2), "{}", text(&option));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Without a check function the results are compared by digest: a variant whose digest differs computes something else,
+/// so it fails the comparison (exit 1), wins nothing, and says how its result was compared; a gap in a ms figure under the
+/// file's floor (0.1 % of a frame at `per_frame` calls) is not material, and the floor is stated
+#[test]
+fn results_compared_by_digest_block_a_winner_and_small_gaps_are_not_material() {
+    let root = scratch("digest");
+    let source = "return {
+	sizes = { 100, 1000 },
+	setup = function(n) local t = table.create(n) for i = 1, n do t[i] = i end return t end,
+	variants = {
+		{ name = \"sum\", run = function(t) local s = 0 for i = 1, #t do s += t[i] end return s end },
+		{ name = \"sum but one\", run = function(t) local s = 0 for i = 2, #t do s += t[i] end return s end },
+		{ name = \"sum twice\", run = function(t) local s = 0 for i = 1, #t do s += t[i] end local u = 0 for i = 1, #t do u += t[i] end return s end },
+	},
+}
+";
+    let (done, compare) = try_file(&root, "digest.luau", source, "out", &["--no-time", "--no-hw"], false);
+    let output = text(&done);
+    assert_eq!(done.status.code(), Some(1), "a differing result fails the comparison: {output}");
+    assert_eq!((compare["check"]["ran"].as_bool(), compare["check"]["by"].as_str(), compare["check"]["ok"].as_bool()), (Some(true), Some("digest"), Some(false)));
+    let failures = compare["check"]["failures"].as_array().unwrap();
+    assert!(failures.iter().all(|failure| failure["variant"] == "sum but one") && failures.len() == 2, "{failures:?}");
+    assert!(output.contains("check FAILED (by digest: no check function in the file): sum but one at n = 100"), "{output}");
+    assert_eq!(run_of(&compare, "sum but one", 1000.0)["check"]["ok"], false);
+    assert_eq!(run_of(&compare, "sum twice", 1000.0)["check"]["ok"], true, "the same result, by digest");
+    // (it does less work than either other variant, and still wins nothing)
+    for winner in compare["winners"].as_array().unwrap() {
+        assert_ne!(winner["winner"], "sum but one", "{winner}");
+        let entry = winner["ranking"].as_array().unwrap().iter().find(|entry| entry["variant"] == "sum but one").unwrap();
+        assert!(entry["differs"] == true && entry["clear"] == false, "{entry}");
+    }
+    // sum twice does twice the work: clear and material at both sizes by the default floor? n = 100 is a few us a call,
+    // under 16.7 us (0.1 % of a 60 fps frame at one call a frame): not material, however clear
+    let work = compare["winners"].as_array().unwrap().iter().find(|winner| winner["metric"] == "work_ms" && winner["size"] == 100.0).unwrap();
+    let twice = work["ranking"].as_array().unwrap().iter().find(|entry| entry["variant"] == "sum twice").unwrap();
+    assert!(twice["material"] == false && twice["clear"] == false, "{twice}");
+    assert!((compare["floor"]["ms"].as_f64().unwrap() - 1000.0 / 60.0 * 0.001).abs() < 1e-12, "{}", compare["floor"]);
+    assert!(output.contains("material from: a ms figure's gap of 16.67 us a call"), "{output}");
+    // per_frame raises the rate the game runs it at, and the gap becomes material
+    let busy = source.replace("sizes = { 100, 1000 },", "sizes = { 100, 1000 },\n\tper_frame = 1000,");
+    let (_, compare) = try_file(&root, "digest.luau", &busy, "busy", &["--no-time", "--no-hw"], false);
+    let work = compare["winners"].as_array().unwrap().iter().find(|winner| winner["metric"] == "work_ms" && winner["size"] == 100.0).unwrap();
+    let twice = work["ranking"].as_array().unwrap().iter().find(|entry| entry["variant"] == "sum twice").unwrap();
+    assert!(twice["material"] == true && twice["clear"] == true, "{twice}");
+    assert_eq!(compare["per_frame"], 1000.0);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A winner is named only where it is clear of every other variant: a variant 0.5 % above the best (about equal) with a
+/// third clearly above both leaves no clear winner, and the summary says so instead of naming the best
+#[test]
+fn no_clear_winner_is_named_where_a_gap_is_not_clear() {
+    let root = scratch("unclear");
+    let source = "return {
+	sizes = { 100, 1000 },
+	setup = function(n) return n end,
+	variants = {
+		{ name = \"made\", run = function(n) local list = table.create(n) for i = 1, n do list[i] = {} end return #list end },
+		{ name = \"made and five\", run = function(n) local list = table.create(n + 5) for i = 1, n + 5 do list[i] = {} end return #list - 5 end },
+		{ name = \"made twice\", run = function(n) local list = table.create(n) for i = 1, n do list[i] = {} end for i = 1, n do list[i] = {} end return #list end },
+	},
+}
+";
+    let (done, compare) = try_file(&root, "unclear.luau", source, "out", &["--no-time", "--no-hw"], false);
+    let output = text(&done);
+    assert_eq!(done.status.code(), Some(0), "{output}");
+    let allocs = compare["winners"].as_array().unwrap().iter().find(|winner| winner["metric"] == "allocs" && winner["size"] == 1000.0).unwrap();
+    assert_eq!((allocs["winner"].as_str(), allocs["clear"].as_bool()), (Some("made"), Some(false)), "{allocs}");
+    let ranking = allocs["ranking"].as_array().unwrap();
+    let entry = |name: &str| ranking.iter().find(|entry| entry["variant"] == name).unwrap();
+    assert!(entry("made and five")["clear"] == false && entry("made twice")["clear"] == true, "{allocs}");
+    let winners = output.split("winners at n = 1,000").nth(1).unwrap_or_else(|| panic!("{output}"));
+    let line = winners.lines().find(|line| line.trim_start().starts_with("allocations ")).unwrap_or_else(|| panic!("{output}"));
+    assert!(line.contains("no clear winner among made, made and five;") && line.contains("made twice"), "{line}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A tie at the top silences no other verdict: a and b run the same code and c 1.66 times its instructions, and c still
+/// reads clearly worse while a and b share "no clear winner"; one more instruction in b changes nothing in that line
+#[test]
+fn a_tie_at_the_top_leaves_the_other_verdicts() {
+    let root = scratch("tie");
+    let source = |b_extra: &str| {
+        format!(
+            "return {{
+	sizes = {{ 100, 1000 }},
+	setup = function(n) return n end,
+	variants = {{
+		{{ name = \"a\", run = function(n) local s = 0 for i = 1, n do s += i end return s end }},
+		{{ name = \"b\", run = function(n) local s = 0 for i = 1, n do s += i end {b_extra}return s end }},
+		{{ name = \"c\", run = function(n) local s = 0 for i = 1, n do s += i end for i = 1, n * 2 // 3 do s += 0 end return s end }},
+	}},
+}}
+"
+        )
+    };
+    let line_of = |output: &str| -> String {
+        let winners = output.split("winners at n = 1,000").nth(1).unwrap_or_else(|| panic!("no winners section: {output}"));
+        winners.lines().find(|line| line.trim_start().starts_with("instructions ")).unwrap_or_else(|| panic!("{output}")).to_string()
+    };
+    let (tied, compare) = try_file(&root, "tie.luau", &source(""), "tied", &["--no-time", "--no-hw"], false);
+    let output = text(&tied);
+    assert_eq!(tied.status.code(), Some(0), "{output}");
+    let insns = compare["winners"].as_array().unwrap().iter().find(|winner| winner["metric"] == "insns" && winner["size"] == 1000.0).unwrap_or_else(|| panic!("a tie leaves the figure's verdicts: {}", compare["winners"]));
+    assert_eq!((insns["winner"].as_str(), insns["clear"].as_bool()), (Some("a"), Some(false)), "{insns}");
+    let entry = |name: &str| insns["ranking"].as_array().unwrap().iter().find(|entry| entry["variant"] == name).unwrap().clone();
+    assert!(entry("b")["clear"] == false && entry("b")["value_ratio"] == 1.0, "{insns}");
+    assert!(entry("c")["clear"] == true && entry("c")["value_ratio"].as_f64().unwrap() > 1.5, "{insns}");
+    let base = |name: &str| insns["baseline"].as_array().unwrap().iter().find(|entry| entry["variant"] == name).unwrap().clone();
+    assert!(base("c")["clear"] == true && base("b")["clear"] == false, "the Compare view's column: {insns}");
+    let tied_line = line_of(&output);
+    assert!(tied_line.contains("no clear winner among a, b; b 1.00x (about equal), c 1.6"), "{tied_line}");
+    // (one more instruction a call in b: the same line)
+    let (near, _) = try_file(&root, "tie.luau", &source("s += 0 "), "near", &["--no-time", "--no-hw"], false);
+    assert_eq!(line_of(&text(&near)), tied_line);
     let _ = std::fs::remove_dir_all(&root);
 }
 

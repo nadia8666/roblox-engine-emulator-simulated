@@ -225,11 +225,19 @@ pub(crate) fn fetch(engine: &Engine, uri: &str, cache: &Path, cached: &Path) -> 
 
 #[cfg(feature = "bundles")]
 fn download(engine: &Engine, slot: &RefCell<Loader>, uri: &str, cache: &Path, cached: &Path) -> Result<(), String> {
+    // Standalone only: the worker runs in the state dir and is sent an absolute path, so compare with its reply and copy
+    // to that same path. A host's `cached` stays as it passed it, as before standalone binaries.
+    let absolute_cached = if crate::is_standalone(&engine.options.repo) { Some(crate::project::model_assets::absolute_path(cached)?) } else { None };
+    let cached = absolute_cached.as_deref().unwrap_or(cached);
     std::fs::create_dir_all(cache).map_err(|error| format!("{}: {error}", cache.display()))?;
     let mut loader = slot.borrow_mut();
     let worker = loader.worker.get_or_insert_with(|| crate::project::model_assets::AssetWorker::new(&engine.options.repo, engine.options.offline));
     let file = crate::timing::time("animations: download", || worker.fetch_asset(uri, cached))?;
-    if file != cached {
+    // A standalone worker can name the file it wrote by a link or another spelling of the same path (a state dir behind a
+    // link, say). Copying a file onto itself would truncate it, so compare identity, not only the path text.
+    let is_standalone = absolute_cached.is_some();
+    let worker_wrote_it_there = file == cached || (is_standalone && crate::files::same_file(&file, cached));
+    if !worker_wrote_it_there {
         std::fs::copy(&file, cached).map_err(|error| format!("{}: {error}", cached.display()))?;
     }
     Ok(())

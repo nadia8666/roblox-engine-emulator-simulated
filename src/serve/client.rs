@@ -32,7 +32,7 @@ pub fn cli(argv: &[String], record: bool) -> i32 {
     if ["RUR_LUAU_PROFILE", "RUR_LUAU_ALLOC_PROFILE"].iter().any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty())) || crate::profiler::requested(&args) {
         return command::cli(&args, &host, record);
     }
-    let state_dir = crate::state_dir(&crate::default_repo());
+    let Some(state_dir) = super::default_state_dir("ree") else { return 2 };
     let name = if record { "record" } else { "run" };
     let body = json!({ "command": name, "args": absolute_paths(&named_project(args.clone())) }).to_string();
     let (build, env) = (build_id(), env_digest());
@@ -87,8 +87,10 @@ fn burst(state_dir: &Path, build: &str, env: &str) -> bool {
 /// missing) reads in what a first recording of the project reads (record::run::warm); prints its
 /// JSON summary. The exit code: 0 when warm, 1 when there is no service or the warm-up failed.
 pub fn warm(args: &[String]) -> i32 {
-    let state_dir = crate::state_dir(&crate::default_repo());
-    let body = json!({ "command": "warm", "args": absolute_paths(args) }).to_string();
+    let Some(state_dir) = super::default_state_dir("ree serve --warm") else { return 2 };
+    // the service runs in its state dir, so a standalone warm-up carries the current folder as its project
+    let args = if crate::is_standalone_binary() { named_project(args.to_vec()) } else { args.to_vec() };
+    let body = json!({ "command": "warm", "args": absolute_paths(&args) }).to_string();
     match ensure(&state_dir).and_then(|port| post(port, body.as_bytes())) {
         Ok(reply) => {
             eprint!("{}", reply["stderr"].as_str().unwrap_or_default());
@@ -102,12 +104,22 @@ pub fn warm(args: &[String]) -> i32 {
     }
 }
 
-/// The arguments of a run naming mounts alone, with this directory as its `--project`: the folder its
-/// content's relative local paths are read from (launch::prepare), which the service, running in its
-/// state dir, cannot tell.
+/// The arguments with the client's current folder added as `--project`, because the service runs in its state dir and
+/// cannot tell which folder the run's relative local paths belong to. A standalone run with no project and no roots
+/// gets it, whatever `--repo` names. A host, or a binary in a checkout, only gets it for a run of mounts alone.
 pub fn named_project(mut args: Vec<String>) -> Vec<String> {
+    let mut standalone_without_project = false;
+    if crate::is_standalone_binary() {
+        // Decide from the parsed arguments, as a direct run does: `--roots ""` and `--roots ";;"` parse as no roots, and a
+        // repeated `--roots` keeps its last value. Arguments that do not parse go to the service as they are, which
+        // reports the error.
+        let Ok(parsed) = launch::parse(&args) else { return args };
+        standalone_without_project = parsed.project.is_none() && parsed.roots.is_empty();
+    }
+    // The mounts-only check looks at the argument words only, so an empty `--roots` value counts as a project
     let has = |key: &str| args.iter().any(|arg| arg == key);
-    if !has("--project") && !has("--roots") && (has("--mount") || has("--instance")) {
+    let host_mounts_without_project = !has("--project") && !has("--roots") && (has("--mount") || has("--instance"));
+    if standalone_without_project || host_mounts_without_project {
         if let Ok(dir) = std::env::current_dir() {
             args.push("--project".into());
             args.push(dir.to_string_lossy().into_owned());
@@ -127,6 +139,9 @@ pub fn absolute_paths(args: &[String]) -> Vec<String> {
         let Some(value) = args.get(index + 1) else { break };
         let converted = match key {
             "--harness" | "--out" | "--dir" | "--dump-scene" | "--project" | "--snapshot" | "--snapshot-dir" | "--repo" => Some(absolute(value)),
+            // the service runs in another folder, so a standalone client's relative file name must name the client's file;
+            // a host keeps forwarding it unchanged
+            "--frame-times" if crate::is_standalone_binary() => Some(absolute(value)),
             "--context" if !value.trim_start().starts_with('{') => Some(absolute(value)),
             "--roots" | "--animations" => Some(value.split(';').filter(|dir| !dir.is_empty()).map(absolute).collect::<Vec<_>>().join(";")),
             "--mount" => Some(match value.split_once('=') {
@@ -291,8 +306,11 @@ fn start(state_dir: &Path, build: &str, env: &str) -> Result<u16, String> {
     }
     // started in its state dir: a process holds the folder it runs in, and the caller's may be a worktree about to be removed
     command.current_dir(state_dir);
-    for (name, value) in super::relative_state_variables() {
-        command.env(name, value);
+    if crate::is_standalone_binary() {
+        // exactly the environment the service key was hashed from
+        command.env_clear().envs(launch::worker_environment());
+    } else {
+        command.envs(launch::path_variables());
     }
     command.stdin(std::process::Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
     let child = spawn_detached(&mut command).map_err(|e| format!("starting the service: {e}"))?;
@@ -421,6 +439,17 @@ mod tests {
         assert_eq!(mounted[mounted.len() - 2..], [String::from("--project"), here]);
         for kept in [&["--harness", "h.luau"][..], &["--mount", "A/B=b", "--project", "p"], &["--instance", "A=A", "--roots", "r"]] {
             assert_eq!(named_project(words(kept)), words(kept), "{kept:?}");
+        }
+    }
+
+    /// Hosts keep the original presence checks, including an empty roots value.
+    #[test]
+    fn a_host_keeps_empty_roots_as_named() {
+        let words = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for roots in [&["--roots", ""][..], &["--roots", ";;"], &["--roots", "r", "--roots", ""]] {
+            let args = words(&[&["--mount", "A/B=b"][..], roots].concat());
+            let named = named_project(args.clone());
+            assert_eq!(named, args, "{roots:?}");
         }
     }
 }

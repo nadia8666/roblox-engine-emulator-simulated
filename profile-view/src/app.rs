@@ -410,7 +410,8 @@ impl App {
     /// The shown profile's issues, and what its kinds could not check
     pub fn issues(&self) -> Rc<(Vec<Issue>, Vec<String>)> {
         if !self.has_profile() {
-            let found = self.compare.as_ref().map(|c| c.issues()).unwrap_or_default();
+            let mut found = self.compare.as_ref().map(|c| c.issues()).unwrap_or_default();
+            issues::finish(&mut found);
             return Rc::new((found, Vec::new()));
         }
         let shown = self.shown;
@@ -423,7 +424,7 @@ impl App {
         let (mut found, unchecked) = issues::detect(p, work.as_deref(), &sites);
         if let Some(compare) = &self.compare {
             found.extend(compare.issues());
-            found.sort_by(|a, b| a.severity.cmp(&b.severity).then(b.weight.total_cmp(&a.weight)).then(a.title.cmp(&b.title)));
+            issues::finish(&mut found);
         }
         let value = Rc::new((found, unchecked));
         self.issues.borrow_mut().insert(shown, value.clone());

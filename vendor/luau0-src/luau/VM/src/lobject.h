@@ -409,6 +409,7 @@ typedef struct Proto
 
     uint32_t execcount;
     uint8_t execflags;
+    uint16_t coldslot; // whether cold tracking has armed its code; in padding so the VM's heap size stays the same
 
     uint8_t* lineinfo;      // for each instruction, line number as a delta from baseline
     int* abslineinfo;       // baseline line info, one entry for each 1<<linegaplog2 instructions; allocated after lineinfo

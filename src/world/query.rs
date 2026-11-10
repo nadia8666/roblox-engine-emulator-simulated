@@ -18,7 +18,7 @@
 //! announcement and reference); a part is seen when both admit it. Shapecast takes its documented
 //! cframeOverride and sizeOverride.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, collections::HashMap};
 use std::rc::Rc;
 
 use glam::{Affine3A, Mat3, Vec3};
@@ -247,18 +247,197 @@ pub fn solids(engine: &Engine, filter: &Filter) -> Vec<Solid> {
 /// a mounted map of 28k instances.
 #[derive(Default)]
 struct QueryCache {
-    entries: RefCell<Vec<CachedSolids>>,
+    entries: RefCell<Vec<Rc<CachedSolids>>>,
+    trace_calls: RefCell<QueryTraceCalls>,
     /// The last query's filter, whose lists the next query reads its params into ([`take_filter`])
     spare: RefCell<Filter>,
+    /// The last params read (their stored fields' identities) and the filter they gave
+    params_seen: RefCell<Option<(Vec<LuaValue>, Filter)>>,
 }
 
 struct CachedSolids {
     filter: Filter,
     stamp: (u64, u64),
-    solids: Rc<[Solid]>,
+    solids: Rc<Vec<Solid>>,
+    members: HashMap<InstanceId, usize>,
+    index: SpatialIndex,
+}
+#[derive(Clone, Copy)]
+struct Aabb { min: Vec3, max: Vec3 }
+impl Aabb {
+    fn solid(s:&Solid)->Self {
+        let h=s.half_extents(); let m=s.frame.matrix3;
+        let e=Vec3::from(m.x_axis).abs()*h.x+Vec3::from(m.y_axis).abs()*h.y+Vec3::from(m.z_axis).abs()*h.z;
+        let c=frame::translation(&s.frame); Self { min:c-e,max:c+e }
+    }
+    fn oriented(o:&Oriented)->Self {
+        let e=o.axes[0].abs()*o.half.x+o.axes[1].abs()*o.half.y+o.axes[2].abs()*o.half.z;
+        Self { min:o.center-e,max:o.center+e }
+    }
+    fn union(self,b:Self)->Self { Self { min:self.min.min(b.min),max:self.max.max(b.max) } }
+    fn intersects(self,b:Self)->bool { self.min.cmple(b.max).all() && self.max.cmpge(b.min).all() }
+    fn valid(self)->bool { self.min.is_finite() && self.max.is_finite() && self.min.cmple(self.max).all() }
+}
+struct BvhNode { bounds:Aabb,parent:usize,children:Option<(usize,usize)>,range:std::ops::Range<usize> }
+struct SpatialIndex { nodes:Vec<BvhNode>,order:Vec<usize>,boxes:Vec<Aabb>,leaf_of:Vec<usize>,alive:Vec<bool>,extras:Vec<usize>,fallback:bool }
+impl SpatialIndex {
+    fn new(solids:&[Solid])->Self {
+        let boxes:Vec<Aabb>=solids.iter().map(Aabb::solid).collect();
+        let fallback=boxes.iter().any(|b| !b.valid());
+        let mut index=Self { nodes:Vec::new(),order:(0..solids.len()).collect(),leaf_of:vec![0;solids.len()],alive:vec![true;solids.len()],extras:Vec::new(),boxes,fallback };
+        if !solids.is_empty() && !fallback {
+            Self::build(&mut index.nodes,&mut index.order,&index.boxes,0,usize::MAX);
+            for (n,node) in index.nodes.iter().enumerate() { if node.children.is_none() { for p in node.range.clone() { index.leaf_of[index.order[p]]=n; } } }
+        }
+        index
+    }
+    fn build(nodes:&mut Vec<BvhNode>,order:&mut [usize],boxes:&[Aabb],offset:usize,parent:usize)->usize {
+        let bounds=order.iter().map(|i|boxes[*i]).reduce(Aabb::union).unwrap();
+        let node=nodes.len(); nodes.push(BvhNode { bounds,parent,children:None,range:offset..offset+order.len() });
+        if order.len()<=8 { return node; }
+        let e=bounds.max-bounds.min; let axis=if e.x>=e.y && e.x>=e.z {0} else if e.y>=e.z {1} else {2};
+        let middle=order.len()/2;
+        order.select_nth_unstable_by(middle,|a,b| {
+            let aa=boxes[*a]; let bb=boxes[*b];
+            ((aa.min+aa.max)*0.5)[axis].total_cmp(&((bb.min+bb.max)*0.5)[axis])
+        });
+        let (left,right)=order.split_at_mut(middle);
+        let l=Self::build(nodes,left,boxes,offset,node);
+        let r=Self::build(nodes,right,boxes,offset+middle,node);
+        nodes[node].children=Some((l,r)); nodes[node].range=0..0; node
+    }
+    fn refit(&mut self,solid:usize,bounds:Aabb) {
+        self.boxes[solid]=bounds;
+        if self.fallback || self.leaf_of[solid]==usize::MAX { return; }
+        let mut n=self.leaf_of[solid];
+        loop {
+            let b=match self.nodes[n].children {
+                None=>self.order[self.nodes[n].range.clone()].iter().map(|i|self.boxes[*i]).reduce(Aabb::union).unwrap(),
+                Some((l,r))=>self.nodes[l].bounds.union(self.nodes[r].bounds),
+            };
+            self.nodes[n].bounds=b;
+            let p=self.nodes[n].parent; if p==usize::MAX { break; } n=p;
+        }
+    }
+    fn append(&mut self,bounds:Aabb)->usize {
+        let i=self.boxes.len(); self.boxes.push(bounds); self.leaf_of.push(usize::MAX); self.alive.push(true); self.extras.push(i); i
+    }
+    fn kill(&mut self,i:usize) {
+        self.alive[i]=false; self.refit(i,Aabb { min:Vec3::splat(f32::INFINITY),max:Vec3::splat(f32::NEG_INFINITY) });
+    }
+    fn candidates(&self,b:Aabb)->Vec<usize> {
+        if self.fallback || !b.valid() { return self.all(); }
+        let mut found=Vec::new(); let mut stack=Vec::with_capacity(32);
+        if !self.nodes.is_empty() { stack.push(0); }
+        while let Some(i)=stack.pop() {
+            let n=&self.nodes[i]; if !n.bounds.intersects(b) { continue; }
+            if let Some((l,r))=n.children { stack.push(r); stack.push(l); }
+            else { found.extend(self.order[n.range.clone()].iter().copied().filter(|i| self.alive[*i])); }
+        }
+        for &i in &self.extras { if self.boxes[i].intersects(b) { found.push(i); } }
+        found.sort_unstable(); found
+    }
+    fn walk_ray(&self,o:Vec3,d:Vec3,g:f32,mut visit:impl FnMut(usize)->Option<f32>) {
+        if self.fallback { for i in 0..self.boxes.len() { visit(i); } return; }
+        if self.nodes.is_empty() && self.extras.is_empty() { return; }
+        let inv=Vec3::new(1.0/d.x,1.0/d.y,1.0/d.z); let grow=Vec3::splat(g+1e-4);
+        let (mo,po)=(o+grow,o-grow);
+        let mut limit=1.0f32; let mut stack=[0usize;64]; let mut top=if self.nodes.is_empty() {0} else {1};
+        for &i in &self.extras {
+            let b=&self.boxes[i]; if b.min.x>b.max.x || !slab(b.min,b.max,mo,po,inv,limit) { continue; }
+            if let Some(t)=visit(i) { limit=limit.min(t); }
+        }
+        while top>0 {
+            top-=1; let n=&self.nodes[stack[top]];
+            if n.bounds.min.x>n.bounds.max.x || !slab(n.bounds.min,n.bounds.max,mo,po,inv,limit) { continue; }
+            match n.children {
+                Some((l,r))=>{ stack[top]=r; stack[top+1]=l; top+=2; }
+                None=>for &i in &self.order[n.range.clone()] {
+                    let b=&self.boxes[i]; if b.min.x>b.max.x || !slab(b.min,b.max,mo,po,inv,limit) { continue; }
+                    if let Some(t)=visit(i) { limit=limit.min(t); }
+                }
+            }
+        }
+    }
+    fn all(&self)->Vec<usize> { (0..self.boxes.len()).filter(|i| self.alive[*i]).collect() }
 }
 
+/// Whether the ray from `o` (with `inv` its direction's reciprocal; `mo` and `po` the origin moved by the grow each way)
+/// meets the box within `limit` of its length.
+#[inline(always)]
+fn slab(min:Vec3,max:Vec3,mo:Vec3,po:Vec3,inv:Vec3,limit:f32)->bool {
+    let (ax,bx)=((min.x-mo.x)*inv.x,(max.x-po.x)*inv.x);
+    let (ay,by)=((min.y-mo.y)*inv.y,(max.y-po.y)*inv.y);
+    let (az,bz)=((min.z-mo.z)*inv.z,(max.z-po.z)*inv.z);
+    let near=ax.min(bx).max(ay.min(by)).max(az.min(bz)).max(0.0);
+    let far=ax.max(bx).min(ay.max(by)).min(az.max(bz)).min(limit);
+    near<=far
+}
+
+
 impl crate::Extension for QueryCache {}
+
+#[derive(Default)]
+struct QueryTraceCalls {
+    frame: u64,
+    counts: HashMap<&'static str, u64>,
+}
+
+fn query_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("REE_TRACE_QUERIES").as_deref() == Ok("1"))
+}
+
+fn query_trace(engine: &Engine, label: &str) {
+    if !query_trace_enabled() {
+        return;
+    }
+    let (frame, now) = {
+        let state = engine.state.borrow();
+        (state.sched.frame, state.sched.now)
+    };
+    crate::output::diagnostic(&format!("ree query frame={frame} time={now:.6} {label}"));
+}
+
+fn query_trace_format(engine: &Engine, label: impl FnOnce() -> String) {
+    if query_trace_enabled() {
+        query_trace(engine, &label());
+    }
+}
+
+fn query_trace_call(lua: &Lua, engine: &Engine, method: &'static str) {
+    static STACKS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*STACKS.get_or_init(|| std::env::var("REE_TRACE_QUERY_STACKS").as_deref() == Ok("1")) {
+        return;
+    }
+    let (frame, now) = {
+        let state = engine.state.borrow();
+        (state.sched.frame, state.sched.now)
+    };
+    let count = {
+        let mut trace = query_cache(engine).trace_calls.borrow_mut();
+        if trace.frame != frame {
+            trace.frame = frame;
+            trace.counts.clear();
+        }
+        let count = trace.counts.entry(method).or_default();
+        *count += 1;
+        *count
+    };
+    if count != 1 && count % 1000 != 0 {
+        return;
+    }
+    let traceback = lua
+        .globals()
+        .get::<LuaTable>("debug")
+        .ok()
+        .and_then(|debug| debug.get::<LuaFunction>("traceback").ok())
+        .and_then(|traceback| traceback.call::<String>(()).ok())
+        .unwrap_or_else(|| "traceback unavailable".to_owned());
+    crate::output::diagnostic(&format!(
+        "ree query caller frame={frame} time={now:.6} method={method} count={count}\\n{traceback}"
+    ));
+}
 
 fn query_cache(engine: &Engine) -> &QueryCache {
     engine.extension_or_insert_with(QueryCache::default)
@@ -266,8 +445,38 @@ fn query_cache(engine: &Engine) -> &QueryCache {
 
 /// A query's filter, read from its params into the spare filter's storage; [`keep_filter`] hands it
 /// back for the next query.
+fn same_value(a: &LuaValue, b: &LuaValue) -> bool {
+    match (a, b) {
+        (LuaValue::Nil, LuaValue::Nil) => true,
+        (LuaValue::Boolean(x), LuaValue::Boolean(y)) => x == y,
+        (LuaValue::Integer(x), LuaValue::Integer(y)) => x == y,
+        (LuaValue::Number(x), LuaValue::Number(y)) => x == y,
+        _ => {
+            let p = a.to_pointer();
+            !p.is_null() && p == b.to_pointer()
+        }
+    }
+}
+
 fn take_filter(engine: &Engine, params: &LuaValue) -> Filter {
-    let mut filter = query_cache(engine).spare.take();
+    let cache = query_cache(engine);
+    let mut filter = cache.spare.take();
+    if let Some((data, true)) = params_data(engine, params) {
+        let mut now: Vec<LuaValue> = Vec::with_capacity(7);
+        now.push(LuaValue::Table(data.clone()));
+        for key in ["FilterType", "MaxParts", "FilterDescendantsInstances", "ExcludeInstances", "IncludeInstances", "RespectCanCollide"] {
+            now.push(data.raw_get::<LuaValue>(key).unwrap_or(LuaValue::Nil));
+        }
+        if let Some((seen, cached)) = &*cache.params_seen.borrow() {
+            if seen.iter().zip(&now).all(|(a, b)| same_value(a, b)) {
+                filter.clone_from(cached);
+                return filter;
+            }
+        }
+        filter.read(engine, params);
+        *cache.params_seen.borrow_mut() = Some((now, filter.clone()));
+        return filter;
+    }
     filter.read(engine, params);
     filter
 }
@@ -279,28 +488,151 @@ fn keep_filter(engine: &Engine, filter: Filter) {
 /// How many filters' solids the cache keeps at once (the most recent)
 const CACHED_FILTERS: usize = 8;
 
+fn part_admitted(state: &State, engine: &Engine, filter: &Filter, id: InstanceId) -> bool {
+    let reflection = &engine.reflection;
+    let (Some(base_part), Some(terrain)) = (reflection.class_id("BasePart"), reflection.class_id("Terrain")) else { return false };
+    let info = reflection.class(state.dom.at(id).class);
+    if !info.is_a(base_part) || info.is_a(terrain) {
+        return false;
+    }
+    if reflection.name_id("CanQuery").and_then(|n| state.dom.boolean(id, n)) == Some(false) {
+        return false;
+    }
+    if filter.respect_can_collide && reflection.name_id("CanCollide").and_then(|n| state.dom.boolean(id, n)) == Some(false) {
+        return false;
+    }
+    filter.admits(state, id)
+}
+
+fn refresh(engine: &Engine, cached: &mut CachedSolids, stamp: (u64, u64)) -> bool {
+    // parts appended beside the tree before a rebuild; a moved subtree's parts re-checked before a rebuild
+    const EXTRAS: usize = 512;
+    const SUBTREE: usize = 4096;
+    if cached.index.fallback {
+        return false;
+    }
+    let state = engine.state.borrow();
+    let Some(written) = state.dom.dirty_since(cached.stamp.1) else { return false };
+    let Some(moved) = state.dom.structure_since(cached.stamp.0) else { return false };
+    let Some(list) = Rc::get_mut(&mut cached.solids) else { return false };
+    let reflection = &engine.reflection;
+    let Some(base_part) = reflection.class_id("BasePart") else { return false };
+    let workspace = engine.world().workspace;
+    let mut todo: Vec<InstanceId> = Vec::with_capacity(written.len() + moved.len());
+    let mut seen = std::collections::HashSet::new();
+    for &root in moved {
+        if !seen.insert(root) {
+            continue;
+        }
+        if state.dom.get(root).is_none() {
+            return false;
+        }
+        todo.push(root);
+        let below = state.dom.descendants(root);
+        if below.len() > SUBTREE {
+            return false;
+        }
+        todo.extend(below.into_iter().filter(|d| reflection.class(state.dom.at(*d).class).is_a(base_part)));
+    }
+    todo.extend_from_slice(written);
+    seen.clear();
+    for id in todo {
+        if !seen.insert(id) {
+            continue;
+        }
+        let known = cached.members.get(&id).copied();
+        if state.dom.get(id).is_none() {
+            if let Some(i) = known {
+                if cached.index.alive[i] {
+                    cached.index.kill(i);
+                }
+            }
+            continue;
+        }
+        let now = part_admitted(&state, engine, &cached.filter, id) && state.dom.is_descendant_of(id, workspace);
+        match (known, now) {
+            (Some(i), true) => {
+                let fresh = solid(&state, engine, id);
+                let bounds = Aabb::solid(&fresh);
+                if !bounds.valid() {
+                    return false;
+                }
+                list[i] = fresh;
+                cached.index.alive[i] = true;
+                cached.index.refit(i, bounds);
+            }
+            (Some(i), false) => {
+                if cached.index.alive[i] {
+                    cached.index.kill(i);
+                }
+            }
+            (None, true) => {
+                let fresh = solid(&state, engine, id);
+                let bounds = Aabb::solid(&fresh);
+                if !bounds.valid() {
+                    return false;
+                }
+                let i = list.len();
+                list.push(fresh);
+                cached.index.append(bounds);
+                cached.members.insert(id, i);
+                if cached.index.extras.len() > EXTRAS {
+                    return false;
+                }
+            }
+            (None, false) => {}
+        }
+    }
+    cached.stamp = stamp;
+    true
+}
+
 /// [`solids`] through the engine's [`QueryCache`].
-fn cached_solids(engine: &Engine, filter: &Filter) -> Rc<[Solid]> {
+fn cached_solids(engine: &Engine, filter: &Filter) -> Rc<CachedSolids> {
     let stamp = {
         let state = engine.state.borrow();
         (state.dom.structure_version, state.dom.write_version)
     };
     let cache = query_cache(engine);
-    if let Some(found) = cache.entries.borrow().iter().find(|entry| entry.stamp == stamp && entry.filter.sees_as(filter)) {
-        crate::profiler::caches::hit(crate::profiler::caches::Cache::Queries);
-        return found.solids.clone();
+    {
+        let mut entries = cache.entries.borrow_mut();
+        let mut stale = None;
+        for (n, entry) in entries.iter_mut().enumerate() {
+            if !entry.filter.sees_as(filter) {
+                continue;
+            }
+            if entry.stamp == stamp {
+                crate::profiler::caches::hit(crate::profiler::caches::Cache::Queries);
+                return entry.clone();
+            }
+            if let Some(inner) = Rc::get_mut(entry) {
+                if refresh(engine, inner, stamp) {
+                    crate::profiler::caches::hit(crate::profiler::caches::Cache::Queries);
+                    return entry.clone();
+                }
+            }
+            stale = Some(n);
+            break;
+        }
+        if let Some(n) = stale {
+            entries.remove(n);
+        }
     }
     crate::profiler::caches::miss(crate::profiler::caches::Cache::Queries);
-    let made: Rc<[Solid]> = solids(engine, filter).into();
+    query_trace(engine, "solids build begin");
+    let made: Rc<Vec<Solid>> = Rc::new(solids(engine, filter));
+    let members = made.iter().enumerate().map(|(i, s)| (s.part, i)).collect();
+    let index = SpatialIndex::new(&made);
+    query_trace_format(engine, || format!("solids build end count={}", made.len()));
     let mut entries = cache.entries.borrow_mut();
     let before = entries.len();
-    entries.retain(|entry| entry.stamp == stamp);
     if entries.len() >= CACHED_FILTERS {
         entries.remove(0);
     }
     crate::profiler::caches::evicted(crate::profiler::caches::Cache::Queries, (before - entries.len()) as u64);
-    entries.push(CachedSolids { filter: filter.clone(), stamp, solids: made.clone() });
-    made
+    let cached = Rc::new(CachedSolids { filter: filter.clone(), stamp, solids: made, members, index });
+    entries.push(cached.clone());
+    cached
 }
 
 /// Where a ray from `origin` along `direction` (its length the reach) first enters `solid`:
@@ -314,9 +646,9 @@ fn ray_solid(solid: &Solid, origin: Vec3, direction: Vec3, grow: f32) -> Option<
     if (origin + direction * along - center).length_squared() > reach * reach {
         return None;
     }
-    let inverse = solid.frame.inverse();
-    let o = inverse.transform_point3(origin);
-    let d = inverse.transform_vector3(direction);
+    let rotation = solid.frame.matrix3.transpose();
+    let o = rotation.mul_vec3(origin - center);
+    let d = rotation.mul_vec3(direction);
     match solid.shape {
         Shape::Box(half) => ray_box(o, d, half + Vec3::splat(grow)),
         Shape::Ball(radius) => ray_sphere(o, d, radius + grow),
@@ -509,12 +841,23 @@ fn sweep_boxes(a: &Oriented, direction: Vec3, b: &Oriented) -> Option<(f32, Vec3
 /// The closest part a box (`frame`, `size`) swept along `direction` touches, `except` aside.
 pub fn cast_box(solids: &[Solid], frame: &Affine3A, size: Vec3, direction: Vec3, except: Option<InstanceId>) -> Option<Hit> {
     let moving = Oriented::of(&unit_frame(frame), size * 0.5);
+    let moving_radius = moving.half.length();
+    let direction_length_squared = direction.length_squared();
     let mut best: Option<Hit> = None;
     for solid in solids {
         if except == Some(solid.part) {
             continue;
         }
         let other = Oriented::of(&solid.frame, solid.half_extents());
+        let combined_radius = moving_radius + other.half.length();
+        let along = if direction_length_squared > 0.0 {
+            ((other.center - moving.center).dot(direction) / direction_length_squared).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if (moving.center + direction * along - other.center).length_squared() > combined_radius * combined_radius {
+            continue;
+        }
         let Some((t, normal)) = sweep_boxes(&moving, direction, &other) else { continue };
         let distance = direction.length() * t;
         if best.is_some_and(|hit| hit.distance <= distance) {
@@ -530,6 +873,30 @@ pub fn cast_box(solids: &[Solid], frame: &Affine3A, size: Vec3, direction: Vec3,
 fn unit_frame(frame: &Affine3A) -> Affine3A {
     let m: Mat3 = frame.matrix3.into();
     Affine3A::from_mat3_translation(Mat3::from_cols(m.x_axis.normalize_or(Vec3::X), m.y_axis.normalize_or(Vec3::Y), m.z_axis.normalize_or(Vec3::Z)), frame::translation(frame))
+}
+
+
+fn ray_bounds(o:Vec3,d:Vec3,g:f32)->Aabb { let end=o+d; let e=Vec3::splat(g); Aabb { min:o.min(end)-e,max:o.max(end)+e } }
+fn swept_box_bounds(f:&Affine3A,size:Vec3,d:Vec3)->Aabb {
+    let moving=Oriented::of(&unit_frame(f),size*0.5); let start=Aabb::oriented(&moving);
+    start.union(Aabb { min:start.min+d,max:start.max+d })
+}
+fn indexed_solids(c:&CachedSolids,b:Aabb)->Vec<Solid> { c.index.candidates(b).into_iter().map(|i|c.solids[i]).collect() }
+fn cast_ray_indexed(c:&CachedSolids,o:Vec3,d:Vec3,g:f32,x:Option<InstanceId>)->Option<Hit> {
+    let len=d.length(); let mut best:Option<(usize,f32,Vec3)>=None;
+    c.index.walk_ray(o,d,g,|i| {
+        let solid=&c.solids[i]; if x==Some(solid.part) { return None; }
+        let (t,n)=ray_solid(solid,o,d,g)?;
+        if let Some((bi,bt,_))=best { if bt<t || (bt==t && bi<i) { return None; } }
+        best=Some((i,t,n)); Some(t)
+    });
+    best.map(|(i,t,local)| {
+        let s=&c.solids[i]; let normal=s.frame.transform_vector3(local).normalize_or(Vec3::Y);
+        Hit { part:s.part,position:o+d*t-normal*g,normal,distance:len*t }
+    })
+}
+fn cast_box_indexed(c:&CachedSolids,f:&Affine3A,size:Vec3,d:Vec3,x:Option<InstanceId>)->Option<Hit> {
+    let candidates=indexed_solids(c,swept_box_bounds(f,size,d)); cast_box(&candidates,f,size,d,x)
 }
 
 /// Whether `solid` overlaps the box (`frame`, `size`).
@@ -600,21 +967,46 @@ fn vector_lua(v: Vec3) -> LuaValue {
 
 /// A RaycastResult (a read-only prelude proxy, typeof "RaycastResult").
 fn result_value(lua: &Lua, engine: &Rc<Engine>, hit: &Hit) -> LuaResult<LuaValue> {
+    const META: &str = "rur.world.RaycastResult.Meta";
+    let meta: LuaTable = match lua.named_registry_value::<LuaValue>(META)? {
+        LuaValue::Table(t) => t,
+        _ => {
+            let t = lua.create_table()?;
+            t.set("__type", "RaycastResult")?;
+            t.set("__metatable", "The metatable is locked")?;
+            lua.set_named_registry_value(META, t.clone())?;
+            t
+        }
+    };
+    let data = lua.create_table_with_capacity(0, 5)?;
+    data.set("Instance", instance_value(lua, engine, hit.part)?)?;
+    data.set("Position", vector_lua(hit.position))?;
+    data.set("Normal", vector_lua(hit.normal))?;
+    data.set("Distance", hit.distance as f64)?;
+    if let Some(material) = material_of(engine, hit.part) {
+        data.set("Material", enum_item_value(lua, engine, material)?)?;
+    }
+    let _ = data.set_metatable(Some(meta));
+    let _ = data.set_readonly(true);
+    Ok(LuaValue::Table(data))
+}
+
+#[allow(dead_code)]
+fn result_value_proxy(lua: &Lua, engine: &Rc<Engine>, hit: &Hit) -> LuaResult<LuaValue> {
     const KEY: &str = "rur.world.RaycastResult";
     let make: LuaFunction = match lua.named_registry_value::<LuaValue>(KEY)? {
         LuaValue::Function(f) => f,
         _ => {
-            let proxy: LuaFunction = engine.prelude().exports.get("Proxy")?;
             let chunk = lua
-                .load("local Proxy = ... return function(Data) return Proxy('RaycastResult', function(_, Key) return Data[Key] end) end")
+                .load("local function ReadOnly(_, Key) error(`{Key} cannot be assigned to`, 0) end return function(Data) local Object = newproxy(true) local Meta = getmetatable(Object) Meta.__metatable = 'The metatable is locked' Meta.__index = Data Meta.__newindex = ReadOnly Meta.__type = 'RaycastResult' return Object end")
                 .set_name("=rur.world")
                 .into_function()?;
-            let builder: LuaFunction = crate::cost::engine_luau(lua, chunk)?.call(proxy)?;
+            let builder: LuaFunction = crate::cost::engine_luau(lua, chunk)?.call(())?;
             lua.set_named_registry_value(KEY, builder.clone())?;
             builder
         }
     };
-    let data = lua.create_table()?;
+    let data = lua.create_table_with_capacity(0, 5)?;
     data.set("Instance", instance_value(lua, engine, hit.part)?)?;
     data.set("Position", vector_lua(hit.position))?;
     data.set("Normal", vector_lua(hit.normal))?;
@@ -643,16 +1035,23 @@ fn parts_table(lua: &Lua, engine: &Rc<Engine>, parts: impl IntoIterator<Item = I
 /// The legacy FindPartOnRay family: (part, position, normal, material); the ray's end, a zero
 /// normal and Air when nothing is hit.
 fn find_part_on_ray(lua: &Lua, engine: &Rc<Engine>, ray: &LuaValue, list: &LuaValue, include: bool) -> Result<LuaMultiValue, Flow> {
-    let ray = match ray {
-        LuaValue::UserData(ud) => ud.borrow::<lune::Ray>().ok().map(|ray| dom::Ray::from(*ray)),
+    let parts = match ray {
+        LuaValue::UserData(ud) => ud.borrow::<lune::Ray>().ok().map(|ray| {
+            let ray = dom::Ray::from(*ray);
+            (Vec3::new(ray.origin.x, ray.origin.y, ray.origin.z), Vec3::new(ray.direction.x, ray.direction.y, ray.direction.z))
+        }),
+        LuaValue::Table(table) => {
+            let origin = table.raw_get::<LuaValue>("Origin").unwrap_or(LuaValue::Nil);
+            let direction = table.raw_get::<LuaValue>("Direction").unwrap_or(LuaValue::Nil);
+            vector_arg(&origin).zip(vector_arg(&direction))
+        }
         _ => None,
     };
-    let Some(ray) = ray else { return raise("Unable to cast value to Ray") };
-    let origin = Vec3::new(ray.origin.x, ray.origin.y, ray.origin.z);
-    let direction = Vec3::new(ray.direction.x, ray.direction.y, ray.direction.z);
+    let Some((origin, direction)) = parts else { return raise("Unable to cast value to Ray") };
     let mut filter = query_cache(engine).spare.take();
     filter.read_list(list, include);
-    let hit = cast_ray(&cached_solids(engine, &filter), origin, direction, 0.0, None);
+    let cached = cached_solids(engine, &filter);
+    let hit = cast_ray_indexed(&cached, origin, direction, 0.0, None);
     keep_filter(engine, filter);
     let air = engine.reflection.enum_item("Material", "Air");
     Ok(match hit {
@@ -680,13 +1079,108 @@ fn limited(max_parts: usize, parts: Vec<InstanceId>) -> Vec<InstanceId> {
     if max_parts > 0 { parts.into_iter().take(max_parts).collect() } else { parts }
 }
 
+static RAYCAST_NS: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+static RAYCAST_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static RAYCAST_CROSSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn timing_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("REE_TIME_QUERIES").as_deref() == Ok("1"))
+}
+
+fn lap(last: &mut Option<std::time::Instant>, stage: usize) {
+    if let Some(previous) = *last {
+        let now = std::time::Instant::now();
+        RAYCAST_NS[stage].fetch_add((now - previous).as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        *last = Some(now);
+    }
+}
+
+fn report_raycast_timing() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let calls = RAYCAST_CALLS.fetch_add(1, Relaxed) + 1;
+    if calls % 500_000 == 0 {
+        let per = |n: usize| RAYCAST_NS[n].load(Relaxed) / calls;
+        eprintln!(
+            "ree raycast host ns/call over {calls}: filter+cache {} cast {} charge {} result {} | crossed/call {:.1}",
+            per(0), per(1), per(2), per(3), RAYCAST_CROSSED.load(Relaxed) as f64 / calls as f64
+        );
+    }
+}
+
+/// A Raycast the raw namecall runs (lua/raw.rs Base::Raycast): the hit's part, position, normal, distance and material.
+pub(crate) fn raw_cast(engine: &Engine, origin: Vec3, direction: Vec3, params: Option<&LuaValue>) -> Option<(InstanceId, Vec3, Vec3, f32, Option<u32>)> {
+    let mut clock = timing_on().then(std::time::Instant::now);
+    let nil = LuaValue::Nil;
+    let filter = take_filter(engine, params.unwrap_or(&nil));
+    let all = cached_solids(engine, &Filter::default());
+    lap(&mut clock, 0);
+    // one walk of the whole ray serves both the hit (the nearest crossed solid the filter admits) and the charge (every solid crossed)
+    let (best, crossed) = {
+        let state = engine.state.borrow();
+        let collide = if filter.respect_can_collide { engine.reflection.name_id("CanCollide") } else { None };
+        let mut crossed = 0usize;
+        let mut best: Option<(usize, f32, Vec3)> = None;
+        all.index.walk_ray(origin, direction, 0.0, |i| {
+            let solid = &all.solids[i];
+            let (t, local) = ray_solid(solid, origin, direction, 0.0)?;
+            crossed += 1;
+            if let Some((best_index, best_t, _)) = best {
+                if best_t < t || (best_t == t && best_index < i) {
+                    return None;
+                }
+            }
+            if let Some(name) = collide {
+                if state.dom.boolean(solid.part, name) == Some(false) {
+                    return None;
+                }
+            }
+            if filter.admits(&state, solid.part) {
+                best = Some((i, t, local));
+            }
+            None
+        });
+        (best, crossed)
+    };
+    lap(&mut clock, 1);
+    keep_filter(engine, filter);
+    if crossed > 0 {
+        RAYCAST_CROSSED.fetch_add(crossed as u64, std::sync::atomic::Ordering::Relaxed);
+        let seconds = crate::cost::RAY_MET + (crossed - 1) as f64 * crate::cost::RAY_CROSSED;
+        charge_query(engine, seconds);
+        engine.state.borrow().sched.touched.borrow().book_kinds(0, seconds);
+    }
+    lap(&mut clock, 2);
+    if clock.is_some() {
+        report_raycast_timing();
+    }
+    let length = direction.length();
+    best.map(|(i, t, local)| {
+        let solid = &all.solids[i];
+        let normal = solid.frame.transform_vector3(local).normalize_or(Vec3::Y);
+        (solid.part, origin + direction * t, normal, length * t, material_of(engine, solid.part).map(|m| m as u32))
+    })
+}
+
 /// What a cast pays for the parts its path crosses, whatever its filter admits (cost.rs RAY_MET, RAY_CROSSED): the engine's
 /// broadphase meets them all before the filter is asked
-fn charge_cast(engine: &Engine, origin: Vec3, direction: Vec3, grow: f32) {
-    let crossed = cached_solids(engine, &Filter::default()).iter().filter(|solid| ray_solid(solid, origin, direction, grow).is_some()).count();
+fn charge_cast(engine: &Engine, origin: Vec3, direction: Vec3, grow: f32, each: f64, kinds: u8) {
+    query_trace(engine, "cast cost begin");
+    let solids = cached_solids(engine, &Filter::default());
+    let mut crossed = 0usize;
+    solids.index.walk_ray(origin, direction, grow, |i| {
+        if ray_solid(&solids.solids[i], origin, direction, grow).is_some() {
+            crossed += 1;
+        }
+        None
+    });
     if crossed > 0 {
-        charge_query(engine, crate::cost::RAY_MET + (crossed - 1) as f64 * crate::cost::RAY_CROSSED);
+        RAYCAST_CROSSED.fetch_add(crossed as u64, std::sync::atomic::Ordering::Relaxed);
+        let seconds = crate::cost::RAY_MET + (crossed - 1) as f64 * each;
+        charge_query(engine, seconds);
+        engine.state.borrow().sched.touched.borrow().book_kinds(kinds, seconds);
     }
+    query_trace_format(engine, || format!("cast cost end solids={} crossed={crossed}", solids.solids.len()));
 }
 
 /// A spatial query's charge beyond its call's price (cost.rs QUERY_BOX_PART, RAY_CROSSED)
@@ -698,8 +1192,9 @@ fn charge_query(engine: &Engine, seconds: f64) {
 }
 
 /// The parts of `filter`'s solids `keep` holds for, at most MaxParts of them.
-fn overlapping(engine: &Engine, filter: Filter, keep: impl Fn(&Solid) -> bool) -> Vec<InstanceId> {
-    let parts = cached_solids(engine, &filter).iter().filter(|s| keep(s)).map(|s| s.part).collect();
+fn overlapping(engine: &Engine, filter: Filter, bounds: Aabb, keep: impl Fn(&Solid) -> bool) -> Vec<InstanceId> {
+    let cached = cached_solids(engine, &filter);
+    let parts = indexed_solids(&cached, bounds).iter().filter(|s| keep(s)).map(|s| s.part).collect();
     let max_parts = filter.max_parts;
     keep_filter(engine, filter);
     limited(max_parts, parts)
@@ -709,37 +1204,56 @@ pub fn install(engine: &Rc<Engine>) {
     let Some(world_root) = engine.reflection.class_id("WorldRoot") else { return };
     let mut members: Vec<(&str, MethodFn)> = Vec::new();
     members.push(("Raycast", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "Raycast");
+        let mut clock = timing_on().then(std::time::Instant::now);
         let (Some(origin), Some(direction)) = (vector_arg(args.get(1)), vector_arg(args.get(2))) else {
             return raise("Raycast: origin and direction must be Vector3s");
         };
         let filter = take_filter(engine, args.get(3));
-        let hit = cast_ray(&cached_solids(engine, &filter), origin, direction, 0.0, None);
+        let cached = cached_solids(engine, &filter);
+        lap(&mut clock, 0);
+        let hit = cast_ray_indexed(&cached, origin, direction, 0.0, None);
+        lap(&mut clock, 1);
         keep_filter(engine, filter);
-        charge_cast(engine, origin, direction, 0.0);
-        hit_values(lua, engine, hit)
+        charge_cast(engine, origin, direction, 0.0, crate::cost::RAY_CROSSED, 0);
+        lap(&mut clock, 2);
+        let result = hit_values(lua, engine, hit);
+        if clock.is_some() {
+            lap(&mut clock, 3);
+            report_raycast_timing();
+        }
+        result
     })));
     members.push(("Spherecast", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "Spherecast");
         let (Some(center), Some(radius), Some(direction)) = (vector_arg(args.get(1)), args.number(2), vector_arg(args.get(3))) else {
             return raise("Spherecast: position, radius and direction expected");
         };
         let filter = take_filter(engine, args.get(4));
-        let hit = cast_ray(&cached_solids(engine, &filter), center, direction, radius.max(0.0) as f32, None);
+        let cached = cached_solids(engine, &filter);
+        let hit = cast_ray_indexed(&cached, center, direction, radius.max(0.0) as f32, None);
         keep_filter(engine, filter);
-        charge_cast(engine, center, direction, radius.max(0.0) as f32);
+        charge_cast(engine, center, direction, radius.max(0.0) as f32, crate::cost::SPHERE_CROSSED, 0);
         hit_values(lua, engine, hit)
     })));
     members.push(("Blockcast", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "Blockcast");
         let (Some(frame), Some(size), Some(direction)) = (cframe_arg(args.get(1)), vector_arg(args.get(2)), vector_arg(args.get(3))) else {
             return raise("Blockcast: cframe, size and direction expected");
         };
         let filter = take_filter(engine, args.get(4));
-        let hit = cast_box(&cached_solids(engine, &filter), &frame, size, direction, None);
+        query_trace(engine, "Blockcast begin");
+        let solids = cached_solids(engine, &filter);
+        query_trace_format(engine, || format!("Blockcast cast begin solids={}", solids.solids.len()));
+        let hit = cast_box_indexed(&solids, &frame, size, direction, None);
+        query_trace(engine, "Blockcast cast end");
         keep_filter(engine, filter);
-        // (a box's path counted as its centre's, grown by its half diagonal)
-        charge_cast(engine, frame::translation(&frame), direction, size.length() * 0.5);
+        charge_cast(engine, frame::translation(&frame), direction, size.length() * 0.5, crate::cost::BLOCK_CROSSED, 0);
+        query_trace(engine, "Blockcast end");
         hit_values(lua, engine, hit)
     })));
     members.push(("Shapecast", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "Shapecast");
         let (Some(part), Some(direction)) = (args.instance(1), vector_arg(args.get(2))) else {
             return raise("Shapecast: part and direction expected");
         };
@@ -761,34 +1275,44 @@ pub fn install(engine: &Rc<Engine>) {
         keep_filter(engine, filter);
         // the part being cast is never hit (documented); what it holds can be
         let hit = match cast.shape {
-            Shape::Ball(radius) => cast_ray(&solids, frame::translation(&cast.frame), direction, radius, Some(part)),
-            _ => cast_box(&solids, &cast.frame, cast.half_extents() * 2.0, direction, Some(part)),
+            Shape::Ball(radius) => cast_ray_indexed(&solids, frame::translation(&cast.frame), direction, radius, Some(part)),
+            _ => cast_box_indexed(&solids, &cast.frame, cast.half_extents() * 2.0, direction, Some(part)),
         };
         hit_values(lua, engine, hit)
     })));
     members.push(("GetPartBoundsInBox", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "GetPartBoundsInBox");
         let (Some(frame), Some(size)) = (cframe_arg(args.get(1)), vector_arg(args.get(2))) else {
             return raise("GetPartBoundsInBox: cframe and size expected");
         };
         let filter = take_filter(engine, args.get(3));
-        let parts = overlapping(engine, filter, |s| overlaps_box(s, &frame, size));
+        let bounds = Aabb::oriented(&Oriented::of(&unit_frame(&frame), size * 0.5));
+        let parts = overlapping(engine, filter, bounds, |s| overlaps_box(s, &frame, size));
         charge_query(engine, parts.len() as f64 * crate::cost::QUERY_BOX_PART);
         parts_table(lua, engine, parts)
     })));
     members.push(("GetPartBoundsInRadius", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "GetPartBoundsInRadius");
         let (Some(center), Some(radius)) = (vector_arg(args.get(1)), args.number(2)) else {
             return raise("GetPartBoundsInRadius: position and radius expected");
         };
         let filter = take_filter(engine, args.get(3));
-        let parts = overlapping(engine, filter, |s| overlaps_sphere(s, center, radius as f32));
+        let radius = radius as f32;
+        let bounds = Aabb { min:center-Vec3::splat(radius), max:center+Vec3::splat(radius) };
+        let parts = overlapping(engine, filter, bounds, |s| overlaps_sphere(s, center, radius));
         charge_query(engine, parts.len() as f64 * crate::cost::QUERY_RADIUS_PART);
         parts_table(lua, engine, parts)
     })));
     members.push(("GetPartsInPart", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "GetPartsInPart");
         let Some(part) = args.instance(1) else { return raise("GetPartsInPart: part expected") };
         let filter = take_filter(engine, args.get(2));
         let query = solid(&engine.state.borrow(), engine, part);
-        let parts = overlapping(engine, filter, |s| {
+        let bounds = match query.shape {
+            Shape::Ball(radius) => { let center=frame::translation(&query.frame); Aabb { min:center-Vec3::splat(radius), max:center+Vec3::splat(radius) } }
+            _ => Aabb::oriented(&Oriented::of(&unit_frame(&query.frame), query.half_extents())),
+        };
+        let parts = overlapping(engine, filter, bounds, |s| {
             s.part != part
                 && match query.shape {
                     Shape::Ball(radius) => overlaps_sphere(s, frame::translation(&query.frame), radius),
@@ -801,9 +1325,18 @@ pub fn install(engine: &Rc<Engine>) {
         charge_query(engine, parts.len() as f64 * crate::cost::QUERY_PART_EXACT + f64::from(area.max(0.0)).sqrt() * crate::cost::QUERY_PART_SIZE);
         parts_table(lua, engine, parts)
     })));
-    members.push(("FindPartOnRay", method(|lua, engine, _, args| find_part_on_ray(lua, engine, args.get(1), args.get(2), false))));
-    members.push(("FindPartOnRayWithIgnoreList", method(|lua, engine, _, args| find_part_on_ray(lua, engine, args.get(1), args.get(2), false))));
-    members.push(("FindPartOnRayWithWhitelist", method(|lua, engine, _, args| find_part_on_ray(lua, engine, args.get(1), args.get(2), true))));
+    members.push(("FindPartOnRay", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "FindPartOnRay");
+        find_part_on_ray(lua, engine, args.get(1), args.get(2), false)
+    })));
+    members.push(("FindPartOnRayWithIgnoreList", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "FindPartOnRayWithIgnoreList");
+        find_part_on_ray(lua, engine, args.get(1), args.get(2), false)
+    })));
+    members.push(("FindPartOnRayWithWhitelist", method(|lua, engine, _, args| {
+        query_trace_call(lua, engine, "FindPartOnRayWithWhitelist");
+        find_part_on_ray(lua, engine, args.get(1), args.get(2), true)
+    })));
     let mut behaviors = engine.behaviors.borrow_mut();
     for (member, function) in members {
         if let Some(name) = engine.reflection.name_id(member) {

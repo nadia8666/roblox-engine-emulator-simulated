@@ -3,6 +3,7 @@
 #include "lualib.h"
 
 #include "lcommon.h"
+#include "lstate.h"
 
 #define MAXUNICODE 0x10FFFF
 
@@ -68,6 +69,8 @@ static int utflen(lua_State* L)
     int posj = u_posrelat(luaL_optinteger(L, 3, -1), len);
     luaL_argcheck(L, 1 <= posi && --posi <= (int)len, 2, "initial position out of string");
     luaL_argcheck(L, --posj < (int)len, 3, "final position out of string");
+    if (posi <= posj)
+        luaE_worklib(L, LUA_WORK_UTF8BYTES, posj - posi + 1);
     while (posi <= posj)
     {
         const char* s1 = utf8_decode(s + posi, NULL);
@@ -104,6 +107,7 @@ static int codepoint(lua_State* L)
         luaL_error(L, "string slice too long");
     n = (int)(pose - posi) + 1;
     luaL_checkstack(L, n, "string slice too long");
+    luaE_worklib(L, LUA_WORK_UTF8BYTES, n);
     n = 0;
     se = s + pose;
     for (s += posi - 1; s < se;)
@@ -165,6 +169,7 @@ static int utfchar(lua_State* L)
     const char* charstr;
 
     int n = lua_gettop(L); // number of arguments
+    luaE_worklib(L, LUA_WORK_UTF8CHARS, n);
     if (n == 1)
     { // optimize common case of single char
         int l = buffutfchar(L, 1, buff, &charstr);
@@ -196,6 +201,7 @@ static int byteoffset(lua_State* L)
     int posi = (n >= 0) ? 1 : (int)len + 1;
     posi = u_posrelat(luaL_optinteger(L, 3, posi), len);
     luaL_argcheck(L, 1 <= posi && --posi <= (int)len, 3, "position out of range");
+    int start = posi;
     if (n == 0)
     {
         // find beginning of current byte sequence
@@ -230,6 +236,8 @@ static int byteoffset(lua_State* L)
             }
         }
     }
+    // (the bytes it stepped over from where it began)
+    luaE_worklib(L, LUA_WORK_UTF8BYTES, posi > start ? posi - start : start - posi);
     if (n == 0) // did it find given character?
         lua_pushinteger(L, posi + 1);
     else // no such character
@@ -258,6 +266,7 @@ static int iter_aux(lua_State* L)
         const char* next = utf8_decode(s + n, &code);
         if (next == NULL || iscont(next))
             luaL_error(L, "invalid UTF-8 code");
+        luaE_worklib(L, LUA_WORK_UTF8BYTES, next - (s + n));
         lua_pushinteger(L, n + 1);
         lua_pushinteger(L, code);
         return 2;

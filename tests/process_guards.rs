@@ -222,7 +222,7 @@ fn hardware_counters_leave_a_recording_as_it_was() {
     let counters = &json["counters"];
     assert_eq!(counters["source"], "mock", "{counters}");
     assert!(counters["run"]["counts"]["cycles"].as_u64().unwrap() > 0, "{counters}");
-    assert!(counters["readings"]["samples"].as_u64().unwrap() > 0, "{}", counters["readings"]);
+    assert!(counters["readings"]["calls"].as_u64().unwrap() > 0, "the VM's hook read around calls: {}", counters["readings"]);
     assert_eq!(counters["readings"]["matched"], counters["readings"]["count"], "{}", counters["readings"]);
     // (a row a frame: as many as the timeline's, which the same frame hook takes)
     let frames = counters["frames"]["rows"].as_array().unwrap().len();

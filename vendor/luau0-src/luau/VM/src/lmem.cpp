@@ -657,12 +657,24 @@ static LUAU_FORCEINLINE void freegcoblock(lua_State* L, int sizeClass, void* blo
 
 // counts a collectable object a script's own instruction allocates (lua_WorkCounters); a C function's allocations
 // count with its call
-static void countallocated(lua_State* L, size_t nsize)
+static void countallocated(lua_State* L, size_t nsize, int tt)
 {
-    if (!luaE_scriptinsn(L))
+    if (luaE_scriptinsn(L))
+    {
+        L->global->work.allocated += nsize;
+        L->global->work.objects++;
+    }
+    // (a library or engine call made it for a script; a userdata is a host's datatype value, which the host prices with its operation)
+    else if (tt != LUA_TUSERDATA && luaE_scriptwork(L) && !luaE_hostcall(L))
+        L->global->work.hostops[LUA_WORK_LIBOBJECTS]++;
+    else
         return;
-    L->global->work.allocated += nsize;
-    L->global->work.objects++;
+    // (every object's bytes, whoever of the script's work made it, and the object again for the collector, which sweeps each)
+    L->global->work.hostops[LUA_WORK_ALLOCBYTES] += nsize;
+    L->global->work.hostops[LUA_WORK_GCOBJECTS]++;
+    // (and an object no size class holds: a page of its own from the host's allocator)
+    if (nsize > kMaxSmallSizeUsed)
+        L->global->work.hostops[LUA_WORK_LARGEBLOCKS]++;
 }
 
 void* luaM_new_(lua_State* L, size_t nsize, uint8_t memcat)
@@ -741,7 +753,7 @@ GCObject* luaM_newgco_(lua_State* L, size_t nsize, uint8_t memcat, int tt, int t
 
     g->totalbytes += nsize;
     g->memcatbytes[memcat] += nsize;
-    countallocated(L, nsize);
+    countallocated(L, nsize, tt);
 
     if (LUAU_UNLIKELY(!!g->cb.onallocate))
     {
@@ -793,7 +805,7 @@ GCObject* luaM_newgcocaged_(lua_State* L, size_t nsize, uint8_t memcat, int tt, 
 
     g->totalbytes += nsize;
     g->memcatbytes[memcat] += nsize;
-    countallocated(L, nsize);
+    countallocated(L, nsize, tt);
 
     if (LUAU_UNLIKELY(!!g->cb.onallocate))
     {
@@ -842,7 +854,7 @@ GCObject* luaM_newgcotagged_(lua_State* L, size_t nsize, uint8_t memcat)
 
     g->totalbytes += nsize;
     g->memcatbytes[memcat] += nsize;
-    countallocated(L, nsize);
+    countallocated(L, nsize, LUA_TBUFFER);
 
     if (LUAU_UNLIKELY(!!g->cb.onallocate))
     {

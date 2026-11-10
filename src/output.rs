@@ -1,7 +1,7 @@
 //! Captured script output (print / warn / error / engine diagnostics), mirrored to stderr when
 //! verbose. Port of `runtime/engine/output.luau`.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, io::Write, path::Path};
 
 use rustc_hash::FxHashMap;
 
@@ -71,6 +71,8 @@ pub struct Output {
     missing_index: FxHashMap<String, usize>,
     /// Where lines go instead of `entries` while one is set ([`Output::spool`])
     spool: Option<Box<Spool>>,
+    log: Option<OutputLog>,
+    log_error: Option<String>,
     /// A script printed a line that is exactly [`DONE`]: `ree run` / `ree record` stop at the end of the frame
     pub done: bool,
 }
@@ -91,10 +93,35 @@ impl Output {
             }
         }
         let entry = Entry { kind, message, time, trace };
+        let log_error = self.log.as_mut().and_then(|log| log.write(&entry).err());
+        if let Some(error) = log_error {
+            self.log_error = Some(error.to_string());
+            self.log = None;
+        }
         match &mut self.spool {
             Some(spool) => spool.write(&entry),
             None => self.entries.push(entry),
         }
+    }
+
+    pub fn set_log(&mut self, path: &Path) -> Result<(), String> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path)
+            .map_err(|error| format!("--output-log {}: {error}", path.display()))?;
+        let mut log = OutputLog { file };
+        for entry in &self.entries {
+            log.write(entry).map_err(|error| format!("--output-log {}: {error}", path.display()))?;
+        }
+        self.log = Some(log);
+        self.log_error = None;
+        Ok(())
+    }
+
+    pub fn log_error(&self) -> Option<&str> {
+        self.log_error.as_deref()
     }
 
     /// From now on, lines (and those kept so far) are written to a temporary file as `ree run` prints
@@ -135,6 +162,20 @@ impl Output {
         }
         self.missing_index.insert(key.clone(), self.missing.len());
         self.missing.push((key, 1));
+    }
+}
+
+#[derive(Debug)]
+struct OutputLog {
+    file: std::fs::File,
+}
+
+impl OutputLog {
+    fn write(&mut self, entry: &Entry) -> std::io::Result<()> {
+        let line = serde_json::to_vec(&entry.json()).map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+        self.file.write_all(&line)?;
+        self.file.write_all(b"\n")?;
+        self.file.flush()
     }
 }
 
@@ -217,10 +258,22 @@ impl Spool {
     }
 }
 
-/// A new file in the temporary directory, read and written, that is gone once closed.
+/// The folder the spool's files go in: `output` in state for a standalone run, which writes only where state is, else the
+/// temporary directory.
+fn spool_directory() -> std::io::Result<std::path::PathBuf> {
+    if !crate::is_standalone_binary() {
+        return Ok(std::env::temp_dir());
+    }
+    let state = crate::try_state_dir(&crate::default_repo()).map_err(std::io::Error::other)?;
+    let directory = state.join("output");
+    std::fs::create_dir_all(&directory)?;
+    Ok(directory)
+}
+
+/// A new file in the spool's folder, read and written, that is gone once closed.
 fn temporary_file() -> std::io::Result<std::fs::File> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let directory = std::env::temp_dir();
+    let directory = spool_directory()?;
     loop {
         let count = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = directory.join(format!("ree-output-{}-{count}.json", std::process::id()));
@@ -241,5 +294,27 @@ fn temporary_file() -> std::io::Result<std::fs::File> {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && count < 1 << 20 => continue,
             Err(error) => return Err(error),
         }
+    }
+}
+
+#[cfg(test)]
+mod output_log_tests {
+    use super::{Entry, Output};
+
+    #[test]
+    fn output_log_writes_entries_as_they_arrive() {
+        let path = std::env::temp_dir().join(format!("ree-output-log-{}.jsonl", std::process::id()));
+        let mut output = Output::default();
+        output.set_log(&path).unwrap();
+        output.add("print", "first".into(), None, 1.0);
+        output.add("warn", "second".into(), Some("trace".into()), 2.0);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<serde_json::Value> = text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(lines, vec![
+            Entry { kind: "print", message: "first".into(), time: 1.0, trace: None }.json(),
+            Entry { kind: "warn", message: "second".into(), time: 2.0, trace: Some("trace".into()) }.json(),
+        ]);
+        drop(output);
+        let _ = std::fs::remove_file(path);
     }
 }

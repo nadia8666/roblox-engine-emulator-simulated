@@ -270,6 +270,7 @@ pub fn interpret_all(lua: &Lua, engine: &Engine) {
         modules.interpreted = true;
         modules.interpret_all = true;
     }
+    crate::scheduler::start_cold_tracking(lua, engine);
     #[cfg(feature = "jit")]
     lua.enable_jit(false);
     #[cfg(not(feature = "jit"))]

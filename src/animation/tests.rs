@@ -274,6 +274,70 @@ fn a_rigs_joint_maps_are_built_once_and_follow_changes_inside_it() {
     assert!((3..=5).contains(&builds), "{builds} rig builds over 50 posed frames and two renames (about 50 without the cache)");
 }
 
+/// A Pose moves a Bone only when the bone's parent has the parent Pose's name, as a Motor6D needs both names. Measured in the
+/// real engine (docs/engine.md, Log 2026-11-09): a clip's root bone keyed under its part's Pose stayed at rest once the part
+/// was renamed, while the bones under it, whose parent Pose is that root bone, still played.
+#[test]
+fn a_bone_is_posed_only_under_its_parent_poses_name() {
+    check(
+        r#"
+        local function BoneRig(PartName)
+            local Model = Instance.new("Model")
+            local Body = Instance.new("Part")
+            Body.Name = PartName
+            Body.Anchored = true
+            Body.Parent = Model
+            local Root = Instance.new("Bone")
+            Root.Name = "Root"
+            Root.Parent = Body
+            local Tip = Instance.new("Bone")
+            Tip.Name = "Tip"
+            Tip.Position = Vector3.new(0, 1, 0)
+            Tip.Parent = Root
+            local Controller = Instance.new("AnimationController")
+            Controller.Parent = Model
+            local Animator = Instance.new("Animator")
+            Animator.Parent = Controller
+            Model.Parent = workspace
+            return Animator, Body, Root, Tip
+        end
+        local Sequence = Instance.new("KeyframeSequence")
+        Sequence.Loop = true
+        for _, Time in { 0, 1 } do
+            local Keyframe = Instance.new("Keyframe")
+            Keyframe.Time = Time
+            local Part = Instance.new("Pose")
+            Part.Name = "Body"
+            Part.Weight = 0
+            Part.Parent = Keyframe
+            local Root = Instance.new("Pose")
+            Root.Name = "Root"
+            Root.CFrame = CFrame.Angles(0.6, 0, 0)
+            Root.Parent = Part
+            local Tip = Instance.new("Pose")
+            Tip.Name = "Tip"
+            Tip.CFrame = CFrame.Angles(0.3, 0, 0)
+            Tip.Parent = Root
+            Keyframe.Parent = Sequence
+        end
+        local Animation = Instance.new("Animation")
+        Animation.AnimationId = Provider:RegisterKeyframeSequence(Sequence)
+        local Named, _, NamedRoot, NamedTip = BoneRig("Body")
+        local Renamed, RenamedBody, RenamedRoot, RenamedTip = BoneRig("Mesh")
+        Named:LoadAnimation(Animation):Play(0)
+        Renamed:LoadAnimation(Animation):Play(0)
+        task.wait(0.2)
+        assert(near(angle(NamedRoot.Transform), 0.6) and near(angle(NamedTip.Transform), 0.3), "under the Pose's part both bones play")
+        assert(near(angle(RenamedRoot.Transform), 0), "a bone under a part the Pose does not name stays at rest: " .. angle(RenamedRoot.Transform))
+        assert(near(angle(RenamedTip.Transform), 0.3), "its child bone, under the named root bone, still plays: " .. angle(RenamedTip.Transform))
+        RenamedBody.Name = "Body"
+        task.wait(0.2)
+        assert(near(angle(RenamedRoot.Transform), 0.6), "named back, the root bone plays again: " .. angle(RenamedRoot.Transform))
+        "#,
+        1.0,
+    );
+}
+
 /// Two Animators on one model pose its joints, and the one stepped later leaves its pose (a character's cape bones had
 /// two). The order is the Animators' creation, not their slots: a slot is reused when the collector frees an instance, which differs
 /// between two runs of one scene, and the map of posed Animators visited them by slot hash. Both engines make 300 instances before the

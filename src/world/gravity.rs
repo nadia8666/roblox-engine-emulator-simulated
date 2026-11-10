@@ -71,6 +71,10 @@ struct Setup {
     gravity: NameId,
     streaming: Option<NameId>,
     radius: Option<NameId>,
+    streaming_min_radius: Option<NameId>,
+    stream_out_behavior: Option<NameId>,
+    model_streaming_behavior: Option<NameId>,
+    model_streaming_mode: Option<NameId>,
     character: Option<NameId>,
     primary_part: Option<NameId>,
     focus: Option<NameId>,
@@ -119,6 +123,8 @@ pub struct Gravity {
     stepping: bool,
     /// The parts Player:AddReplicationFocus added, in order
     added: Vec<InstanceId>,
+    streamed_out: FxHashMap<InstanceId, (InstanceId, usize)>,
+    persistent_players: FxHashSet<(InstanceId, InstanceId)>,
     /// Falling parts whose assembly started about a focus (held to its reach)
     bounded: FxHashSet<InstanceId>,
     /// Each flying part's spin (world, rad/s), its assembly's
@@ -157,6 +163,10 @@ pub fn install(engine: &Rc<Engine>) {
         gravity,
         streaming: name("StreamingEnabled"),
         radius: name("StreamingTargetRadius"),
+        streaming_min_radius: name("StreamingMinRadius"),
+        stream_out_behavior: name("StreamOutBehavior"),
+        model_streaming_behavior: name("ModelStreamingBehavior"),
+        model_streaming_mode: name("ModelStreamingMode"),
         character: name("Character"),
         primary_part: name("PrimaryPart"),
         focus: name("ReplicationFocus"),
@@ -222,6 +232,7 @@ pub fn install(engine: &Rc<Engine>) {
         gravity.spin.remove(&id);
         gravity.impulses.remove(&id);
         gravity.added.retain(|&focus| focus != id);
+        gravity.persistent_players.retain(|(model, player)| *model != id && *player != id);
     }));
     drop(hooks);
     install_body(engine, &body_setup);
@@ -248,6 +259,29 @@ pub fn install(engine: &Rc<Engine>) {
             Ok(crate::lua::none())
         }));
     }
+    if let Some(model_class) = reflection.class_id("Model") {
+        if let Some(add) = name("AddPersistentPlayer") {
+            behaviors.add_method(model_class, add, crate::services::method(|_, engine, model, args| {
+                if let Some(player) = args.instance(1) {
+                    engine.state.borrow_mut().gravity.persistent_players.insert((model, player));
+                }
+                Ok(crate::lua::none())
+            }));
+        }
+        if let Some(remove) = name("RemovePersistentPlayer") {
+            behaviors.add_method(model_class, remove, crate::services::method(|_, engine, model, args| {
+                if let Some(player) = args.instance(1) {
+                    engine.state.borrow_mut().gravity.persistent_players.remove(&(model, player));
+                }
+                Ok(crate::lua::none())
+            }));
+        }
+    }
+    drop(behaviors);
+    engine.state.borrow_mut().sched.add_hook(crate::scheduler::Phase::Simulation, Rc::new(|_, engine, delta| {
+        step(engine, delta);
+        Ok(())
+    }));
 }
 
 /// Whether an instance is in the Workspace's own world (not a WorldModel's).
@@ -394,6 +428,219 @@ fn bounds(state: &State, setup: &Setup, component: &[InstanceId]) -> (Vec3, f32)
     (middle, spheres.iter().map(|(centre, radius)| centre.distance(middle) + radius).fold(0.0, f32::max))
 }
 
+
+fn enum_name(state: &State, reflection: &Reflection, id: InstanceId, name: Option<NameId>) -> Option<String> {
+    let item = name.and_then(|name| state.dom.raw_get(id, name)).and_then(|value| match value {
+        Value::EnumItem(item) => Some(*item),
+        _ => None,
+    })?;
+    Some(reflection.enum_item_info(item).name.to_string())
+}
+
+fn has_model_ancestor(state: &State, reflection: &Reflection, model: ClassId, workspace: InstanceId, id: InstanceId) -> bool {
+    let mut parent = state.dom.parent_of(id);
+    while let Some(node) = parent {
+        if node == workspace {
+            return false;
+        }
+        if reflection.class(state.dom.at(node).class).is_a(model) {
+            return true;
+        }
+        parent = state.dom.parent_of(node);
+    }
+    false
+}
+
+fn part_radius(state: &State, setup: &Setup, part: InstanceId) -> f32 {
+    match setup.size.and_then(|name| state.dom.raw_get(part, name)) {
+        Some(Value::Vector3(size)) => Vec3::new(size.x, size.y, size.z).length() * 0.5,
+        _ => 0.0,
+    }
+}
+
+fn part_position(state: &State, setup: &Setup, part: InstanceId) -> Vec3 {
+    Vec3::from(frame::affine_of(state.dom.raw_get(part, setup.cframe)).translation)
+}
+
+fn close_to_focus(parts: &[InstanceId], state: &State, setup: &Setup, foci: &[Focus], radius: f32) -> bool {
+    parts.iter().any(|&part| {
+        let position = part_position(state, setup, part);
+        let bounds = part_radius(state, setup, part);
+        foci.iter().any(|focus| focus.at.distance(position) - bounds <= radius)
+    })
+}
+
+fn far_from_foci(parts: &[InstanceId], state: &State, setup: &Setup, foci: &[Focus], target: f32, minimum: f32) -> bool {
+    parts.iter().all(|&part| {
+        let position = part_position(state, setup, part);
+        let bounds = part_radius(state, setup, part);
+        foci.iter().all(|focus| {
+            let distance = focus.at.distance(position) - bounds;
+            distance > target && distance > minimum
+        })
+    })
+}
+
+fn restore_streamed_out(
+    state: &mut State,
+    reflection: &Reflection,
+    hooks: &Hooks,
+    setup: &Setup,
+    local_player: Option<InstanceId>,
+    streamed_out: &mut FxHashMap<InstanceId, (InstanceId, usize)>,
+    restore_all: bool,
+    foci: &[Focus],
+    radius: f32,
+) {
+    let mut entries: Vec<(InstanceId, InstanceId, usize)> = streamed_out
+        .iter()
+        .map(|(&root, &(parent, index))| (root, parent, index))
+        .collect();
+    entries.sort_by_key(|(_, parent, index)| (parent.index, *index));
+    for (root, parent, index) in entries {
+        let alive = state.dom.get(root).is_some() && state.dom.get(parent).is_some();
+        let destroyed = state.dom.get(root).is_some_and(|instance| instance.has(crate::dom::flags::DESTROYED));
+        let still_detached = alive && state.dom.parent_of(root).is_none();
+        let parent_in_workspace = alive && (reflection.class(state.dom.at(parent).class).is_a(setup.workspace) || in_workspace(state, reflection, setup, parent));
+        if !alive || destroyed || !still_detached || !parent_in_workspace {
+            streamed_out.remove(&root);
+            if alive {
+                state.dom.unpin(root);
+            }
+            continue;
+        }
+        let mut parts = if reflection.class(state.dom.at(root).class).is_a(setup.base_part) { vec![root] } else { Vec::new() };
+        parts.extend(state.dom.descendants(root).into_iter().filter(|&id| reflection.class(state.dom.at(id).class).is_a(setup.base_part)));
+        let model = reflection.class_id("Model");
+        let mode = enum_name(state, reflection, root, setup.model_streaming_mode);
+        let persistent = model.is_some_and(|model| reflection.class(state.dom.at(root).class).is_a(model))
+            && (mode.as_deref() == Some("Persistent")
+                || mode.as_deref() == Some("PersistentPerPlayer")
+                    && local_player.is_some_and(|player| state.gravity.persistent_players.contains(&(root, player))));
+        let should_restore = restore_all || persistent || close_to_focus(&parts, state, setup, foci, radius);
+        if !should_restore {
+            continue;
+        }
+        if core::set_parent(state, reflection, hooks, root, Some(parent)).is_ok() {
+            let parent_instance = state.dom.at_mut(parent);
+            if let Some(current) = parent_instance.children.iter().position(|&child| child == root) {
+                let child = parent_instance.children.remove(current);
+                parent_instance.children.insert(index.min(parent_instance.children.len()), child);
+                parent_instance.child_version = parent_instance.child_version.wrapping_add(1);
+            }
+        }
+        streamed_out.remove(&root);
+        state.dom.unpin(root);
+    }
+}
+
+fn stream_instances(
+    state: &mut State,
+    reflection: &Reflection,
+    hooks: &Hooks,
+    setup: &Setup,
+    local_player: Option<InstanceId>,
+    foci: &[Focus],
+    target: f32,
+) {
+    let workspace = state.dom.instances_of_class(setup.workspace).into_iter().next();
+    let Some(workspace) = workspace else { return };
+    let opportunistic = enum_name(state, reflection, workspace, setup.stream_out_behavior).as_deref() == Some("Opportunistic");
+    if !opportunistic {
+        return;
+    }
+    let improved = enum_name(state, reflection, workspace, setup.model_streaming_behavior).as_deref() == Some("Improved");
+    let minimum = setup.streaming_min_radius.and_then(|name| state.dom.number(workspace, name)).unwrap_or(64.0) as f32;
+    let model = reflection.class_id("Model");
+    let mut candidates: Vec<(InstanceId, Vec<InstanceId>)> = Vec::new();
+    let descendants = state.dom.descendants(workspace);
+    if let Some(model_class) = model {
+        let models: Vec<InstanceId> = descendants
+            .iter()
+            .copied()
+            .filter(|&id| reflection.class(state.dom.at(id).class).is_a(model_class))
+            .filter(|&id| !has_model_ancestor(state, reflection, model_class, workspace, id))
+            .collect();
+        for root in models {
+            let mode = enum_name(state, reflection, root, setup.model_streaming_mode).unwrap_or_else(|| "Nonatomic".to_string());
+            if mode == "Persistent"
+                || mode == "PersistentPerPlayer" && local_player.is_some_and(|player| state.gravity.persistent_players.contains(&(root, player)))
+            {
+                continue;
+            }
+            let descendants = state.dom.descendants(root);
+            let nested_persistent = descendants.iter().copied().any(|id| {
+                if !model.is_some_and(|model| reflection.class(state.dom.at(id).class).is_a(model)) {
+                    return false;
+                }
+                let mode = enum_name(state, reflection, id, setup.model_streaming_mode);
+                mode.as_deref() == Some("Persistent")
+                    || mode.as_deref() == Some("PersistentPerPlayer")
+                        && local_player.is_some_and(|player| state.gravity.persistent_players.contains(&(id, player)))
+            });
+            if nested_persistent {
+                continue;
+            }
+            let parts: Vec<InstanceId> = descendants.into_iter().filter(|&id| reflection.class(state.dom.at(id).class).is_a(setup.base_part)).collect();
+            if parts.is_empty() {
+                continue;
+            }
+            if mode == "Nonatomic" && !improved {
+                candidates.extend(parts.iter().copied().map(|part| (part, vec![part])));
+            } else {
+                candidates.push((root, parts));
+            }
+        }
+    }
+    for part in descendants.iter().copied().filter(|&id| {
+        reflection.class(state.dom.at(id).class).is_a(setup.base_part)
+            && model.map_or(true, |model| !has_model_ancestor(state, reflection, model, workspace, id))
+    }) {
+        candidates.push((part, vec![part]));
+    }
+    let candidates: Vec<(InstanceId, Vec<InstanceId>, InstanceId, usize)> = candidates
+        .into_iter()
+        .filter_map(|(root, parts)| {
+            let parent = state.dom.parent_of(root)?;
+            let index = state.dom.at(parent).children.iter().position(|&child| child == root)?;
+            Some((root, parts, parent, index))
+        })
+        .collect();
+    for (root, parts, parent, index) in candidates {
+        if state.gravity.streamed_out.contains_key(&root)
+            || state.dom.get(root).is_none()
+            || !far_from_foci(&parts, state, setup, foci, target, minimum)
+        {
+            continue;
+        }
+        state.dom.pin(root);
+        if core::set_parent(state, reflection, hooks, root, None).is_ok() {
+            state.gravity.streamed_out.insert(root, (parent, index));
+        } else {
+            state.dom.unpin(root);
+        }
+    }
+}
+
+fn streaming_step(engine: &Engine, hooks: &Hooks, state: &mut State, setup: &Setup, reach: Option<&(Vec<Focus>, f32)>) {
+    let workspace = engine.world().workspace;
+    let enabled = setup.streaming.is_some_and(|name| state.dom.boolean(workspace, name) == Some(true));
+    let streamed_out = std::mem::take(&mut state.gravity.streamed_out);
+    let mut streamed_out = streamed_out;
+    if !enabled {
+        restore_streamed_out(state, &engine.reflection, hooks, setup, engine.world().local_player, &mut streamed_out, true, &[], 0.0);
+        state.gravity.streamed_out = streamed_out;
+        return;
+    }
+    let Some((foci, radius)) = reach else {
+        state.gravity.streamed_out = streamed_out;
+        return;
+    };
+    restore_streamed_out(state, &engine.reflection, hooks, setup, engine.world().local_player, &mut streamed_out, false, foci, *radius);
+    state.gravity.streamed_out = streamed_out;
+    stream_instances(state, &engine.reflection, hooks, setup, engine.world().local_player, foci, *radius);
+}
+
 /// The simulation step: every free assembly falls for `delta` seconds.
 pub fn step(engine: &Engine, delta: f64) {
     let hooks = engine.hooks.borrow();
@@ -409,11 +656,12 @@ pub fn step(engine: &Engine, delta: f64) {
             }
         }
     }
-    if state.gravity.loose.is_empty() || delta <= 0.0 {
+    let reach = reach(&state, reflection, &setup, engine);
+    streaming_step(engine, &hooks, &mut state, &setup, reach.as_ref());
+    if delta <= 0.0 || state.gravity.loose.is_empty() {
         return;
     }
     let g = Vec3::new(0.0, -(state.dom.number(workspace, setup.gravity).unwrap_or(196.2) as f32), 0.0);
-    let reach = reach(&state, reflection, &setup, engine);
     let dt = delta as f32;
     let candidates = state.gravity.loose.clone();
     let mut visited: FxHashSet<InstanceId> = FxHashSet::default();

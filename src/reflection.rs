@@ -307,6 +307,7 @@ const ITEM_ALIASES: &[(&str, &[(&str, &str)])] = &[
 
 // Events of classes only rbx-dom describes (reflection.luau EventSupplement).
 const EVENT_SUPPLEMENT: &[(&str, &[&str])] = &[
+    ("RunService", &["Heartbeat", "RenderStepped", "PreRender", "PreAnimation", "Stepped", "PreSimulation", "PostSimulation"]),
     (
         "Player",
         &[
@@ -327,6 +328,7 @@ const METHOD_SUPPLEMENT: &[(&str, &[&str])] = &[(
     "UserGameSettings",
     &[
         "GetCameraYInvert",
+        "GetCameraYInvertValue",
         "GetOnboardingCompleted",
         "InFullScreen",
         "InStudioMode",
@@ -1142,6 +1144,12 @@ mod tests {
         let player = reflection.class_by_name("Player").unwrap();
         assert!(player.events.contains(&reflection.name_id("CharacterAdded").unwrap()));
         assert!(player.properties.contains_key(&(K::UserId as NameId)));
+        let run_service = reflection.class_by_name("RunService").unwrap();
+        for event in ["Heartbeat", "RenderStepped", "PreRender", "PreAnimation", "Stepped", "PreSimulation", "PostSimulation"] {
+            assert!(run_service.events.contains(&reflection.name_id(event).unwrap()));
+        }
+        let user_game_settings = reflection.class_by_name("UserGameSettings").unwrap();
+        assert!(user_game_settings.methods.contains(&reflection.name_id("GetCameraYInvertValue").unwrap()));
         let workspace = reflection.class_by_name("Workspace").unwrap();
         assert!(workspace.service);
         // Aliases resolve but are not enumerated

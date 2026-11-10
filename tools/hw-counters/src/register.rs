@@ -1,7 +1,9 @@
-//! The counters the CPU's built-in list lacks (protocol.rs: the data caches' accesses and misses, events of AMD Family
-//! 1Ah) are registered with Windows the way its own tools do it: Windows Performance Recorder (wpr.exe, part of Windows)
-//! reads a profile's micro-architectural counter definitions and adds them to the CPU's profile sources until the next
-//! restart. The service writes that profile beside itself and runs `wpr -profiledetails` on it, which starts no trace.
+//! The counters the CPU's built-in list lacks (counters.rs: the stall cycles, the miss buffer's occupancy and
+//! allocations, the demand fills by source, the load-store dispatch: events of AMD Family 1Ah) are registered with
+//! Windows the way its own tools do it: Windows Performance Recorder (wpr.exe, part of Windows) reads a profile's
+//! micro-architectural counter definitions and adds them to the CPU's profile sources until the next restart. The service
+//! writes a profile of the ones the CPU does not offer yet beside itself and runs `wpr -profiledetails` on it, which
+//! starts no trace (those a service registered before stay: they are left out, so none is registered twice).
 //! Registering needs the system's profiling right, which the service has and a console does not.
 
 use std::fmt::Write as _;
@@ -34,18 +36,23 @@ pub fn custom_counters_fit() -> bool {
     vendor == "AuthenticAMD" && family == 0x1A
 }
 
-/// The registration profile: every custom counter, as a micro-architectural counter WPR adds (schema: WPR's own)
+/// The registration profile of every custom counter (`ree-hw-counters profile`)
 pub fn profile() -> String {
+    profile_of(&protocol::KNOWN.iter().filter(|known| known.custom.is_some()).collect::<Vec<_>>())
+}
+
+/// The registration profile of `counters` (custom ones), as micro-architectural counters WPR adds (schema: WPR's own)
+pub fn profile_of(counters_wanted: &[&protocol::Known]) -> String {
     let mut sources = String::new();
     let mut counters = String::new();
-    for known in protocol::KNOWN.iter().filter(|known| known.custom.is_some()) {
+    for known in counters_wanted.iter().filter(|known| known.custom.is_some()) {
         let custom = known.custom.unwrap();
         let _ = writeln!(sources, "        <ProfileSource Name=\"{}\" Event=\"0x{:X}\" Unit=\"0x{:02X}\" Interval=\"0x02000003\"/>", known.source, custom.event, custom.unit);
         let _ = writeln!(counters, "        <Counter Value=\"{}\"/>", known.source);
     }
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
-<WindowsPerformanceRecorder Version="1.0" Author="ree-hw-counters" Comments="Registers the data cache counters ree's hardware-counter profiles read">
+<WindowsPerformanceRecorder Version="1.0" Author="ree-hw-counters" Comments="Registers the AMD counters ree's hardware-counter profiles read">
   <Profiles>
     <SystemCollector Id="ReeSystemCollector" Name="ree counters registration">
       <BufferSize Value="64"/>
@@ -57,7 +64,7 @@ pub fn profile() -> String {
       </Keywords>
     </SystemProvider>
     <MicroArchitecturalConfig Id="ReeCounters" Strict="true">
-      <ProfileSources Architecture="AMD" Description="AMD Family 1Ah: load-store dispatch and demand data cache fills by source">
+      <ProfileSources Architecture="AMD" Description="AMD Family 1Ah: retire stalls, the L1 data cache's miss buffer, demand fills by source, load-store dispatch">
 {sources}      </ProfileSources>
     </MicroArchitecturalConfig>
     <HardwareCounter Id="ReeHardwareCounter" Strict="true">
@@ -143,8 +150,10 @@ pub fn ensure(wanted: &[String], notes: &mut Vec<String>) -> Result<(), String> 
             names(&list)
         ));
     }
+    // (only those missing: a source registered already is not registered again)
+    let unregistered: Vec<&protocol::Known> = protocol::KNOWN.iter().filter(|known| known.custom.is_some() && !offered(&list, known.source)).collect();
     let path = own_folder()?.join("counters.wprp");
-    std::fs::write(&path, profile()).map_err(|error| format!("writing {}: {error}", path.display()))?;
+    std::fs::write(&path, profile_of(&unregistered)).map_err(|error| format!("writing {}: {error}", path.display()))?;
     let code = run_wpr(&format!("-profiledetails \"{}!ReeCounters\"", path.display()))?;
     let list = etw::sources()?;
     let still: Vec<&str> = wanted.iter().filter(|name| !offered(&list, name)).map(|name| name.as_str()).collect();
@@ -152,7 +161,7 @@ pub fn ensure(wanted: &[String], notes: &mut Vec<String>) -> Result<(), String> 
         let hint = if code == 0xC558_063A { ": adding them needs the system's profiling right, which the installed service has and a console does not" } else { "" };
         return Err(format!("registering {} with Windows Performance Recorder failed (wpr exit code {code:#010x}){hint}", still.join(", ")));
     }
-    notes.push(format!("registered {} with Windows until the next restart", missing.iter().map(|name| name.as_str()).collect::<Vec<_>>().join(", ")));
+    notes.push(format!("registered {} with Windows until the next restart", unregistered.iter().map(|known| known.name).collect::<Vec<_>>().join(", ")));
     Ok(())
 }
 
@@ -160,14 +169,21 @@ pub fn ensure(wanted: &[String], notes: &mut Vec<String>) -> Result<(), String> 
 mod tests {
     use super::*;
 
-    /// The profile names every custom counter with its event and unit mask, the way WPR's schema takes them
+    /// The profile names every custom counter with its event and unit mask, the way WPR's schema takes them, and a
+    /// profile of some names those only
     #[test]
     fn the_profile_defines_every_custom_counter() {
         let text = profile();
         assert!(text.contains(r#"<ProfileSource Name="ReeL2Misses" Event="0x43" Unit="0xFE" Interval="0x02000003"/>"#), "{text}");
         assert!(text.contains(r#"<ProfileSource Name="ReeL1dAccesses" Event="0x29" Unit="0x07""#));
+        assert!(text.contains(r#"<ProfileSource Name="ReeLoadStallCycles" Event="0xD6" Unit="0xA2""#), "{text}");
+        assert!(text.contains(r#"<ProfileSource Name="ReeMabOccupancy" Event="0x5F" Unit="0x00""#), "{text}");
+        assert!(text.contains(r#"<ProfileSource Name="ReeMabAllocs" Event="0x41" Unit="0x0F""#), "{text}");
         assert!(text.contains(r#"<Counter Value="ReeLlcMisses"/>"#));
         assert!(text.contains(r#"Architecture="AMD""#));
+        let stall = protocol::known("load-stall-cycles").unwrap();
+        let some = profile_of(&[stall]);
+        assert!(some.contains("ReeLoadStallCycles") && !some.contains("ReeL2Misses"), "{some}");
     }
 
     #[test]

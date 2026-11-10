@@ -183,6 +183,8 @@ TString* luaS_bufstart(lua_State* L, size_t size)
 
 TString* luaS_buffinish(lua_State* L, TString* ts)
 {
+    // (the bytes a buffer built, hashed here and compared with an equal string's: lua.h LUA_WORK_STRBYTES)
+    luaE_worklib(L, LUA_WORK_STRBYTES, ts->len);
     unsigned int h = luaS_hash(ts->data, ts->len);
     stringtable* tb = &L->global->strt;
     unsigned int saltedh = FFlag::LuauSaltedInterningTable ? salthash(h, tb->saltmult, tb->saltadd) : 0;
@@ -221,6 +223,8 @@ TString* luaS_buffinish(lua_State* L, TString* ts)
 
 TString* luaS_newlstr(lua_State* L, const char* str, size_t l)
 {
+    // (hashed, compared with an equal string's, and copied when no live string equals it: lua.h LUA_WORK_STRBYTES)
+    luaE_worklib(L, LUA_WORK_STRBYTES, l);
     if (FFlag::LuauSaltedInterningTable)
     {
         global_State* g = L->global;

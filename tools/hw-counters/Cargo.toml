@@ -12,8 +12,9 @@ description = "The Windows service ree's --profile hw reads the CPU's hardware c
 name = "ree-hw-counters"
 path = "src/main.rs"
 
-# A workspace of its own, with no dependencies: setup.ps1 builds it from an elevated shell in a temporary folder, and
-# nothing is fetched or written outside it. It shares the wire format and the client with ree (src/profiler/hw).
+# A workspace of its own, with no dependencies: setup.ps1 builds it from an ordinary shell (never an elevated one) in
+# %LOCALAPPDATA%\ree-hw-counters-build, and nothing is fetched or written outside it; the elevated step installs that
+# build once its hash checks. It shares the wire format and the client with ree (src/profiler/hw).
 [workspace]
 
 [profile.release]

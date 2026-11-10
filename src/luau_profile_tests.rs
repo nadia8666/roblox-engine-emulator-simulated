@@ -129,17 +129,29 @@ fn sampling_estimates_the_bytes_within_five_percent_and_the_counts_within_their_
 /// the same 100 ms goes to its own row; outside it the next Luau function carries it, as before.
 #[test]
 fn the_engine_step_has_its_own_row_in_the_host_time_profile() {
+    fn wait_for_ticks() {
+        let before = luau_profile::ticks();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        // A busy host can delay the ticker's first scheduling beyond a fixed sleep.
+        while luau_profile::ticks().saturating_sub(before) < 100 {
+            assert!(std::time::Instant::now() < deadline, "the host-time ticker did not advance");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let path = std::env::temp_dir().join(format!("ree-time-profile-{}-{stamp}", std::process::id()));
     let lua = Lua::new();
     assert!(luau_profile::begin_time_at(path.clone(), false, false));
     let guard = luau_profile::ProfileGuard;
     luau_profile::install(&lua);
-    let work = lua.create_function(|_, ()| Ok(std::thread::sleep(std::time::Duration::from_millis(100)))).unwrap();
+    let work = lua.create_function(|_, ()| {
+        wait_for_ticks();
+        Ok(())
+    }).unwrap();
     lua.globals().set("sleep", work).unwrap();
     let handler = "local function handler() local n = 0 for i = 1, 200000 do n += i end return n end\nhandler()\n";
     // the engine's step first, as the scheduler runs it between two handlers
-    luau_profile::engine_step("probe", || std::thread::sleep(std::time::Duration::from_millis(100)));
+    luau_profile::engine_step("probe", wait_for_ticks);
     lua.load(handler).set_name("=after").exec().unwrap();
     // the same time spent by a native function a handler called: the handler carries it
     lua.load(format!("sleep()\n{handler}")).set_name("=control").exec().unwrap();

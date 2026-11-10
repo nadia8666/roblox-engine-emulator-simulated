@@ -158,6 +158,9 @@ pub fn apart_work(app: &App) -> Option<(f64, f64, Scope)> {
 pub fn series_label(column: &str) -> String {
     let label = match column {
         "work_ms" => "work",
+        "game_ms" => "the game's code",
+        "harness_ms" => "the harness's code",
+        "collector_ms" => "the collector's work",
         "host_ms" => "host time",
         "heap_bytes" => "heap",
         "allocated_bytes" => "allocated",
@@ -191,6 +194,11 @@ pub fn phase_color(order: &[u32], phase: u32, theme: &Theme) -> Color {
 
 /// A timeline column's unit
 pub fn unit_of(column: &str) -> Unit {
+    match column.strip_prefix("hw:") {
+        Some(crate::hw_counters::LOAD_STALL_SHARE) => return Unit::Share,
+        Some("IPC" | crate::hw_counters::STALL_PER_THOUSAND) => return Unit::Decimal,
+        _ => {}
+    }
     if column.ends_with("_ms") {
         Unit::Ms
     } else if column.contains("bytes") || column == "gc_freed" {
@@ -225,11 +233,13 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
     let split = apart.then(|| apart_work(app)).flatten();
     let mut list = app.overview;
     let p = &app.profiles[app.shown];
+    let budget = p.budget_ms();
     let fidelity = p.raw.work.as_ref().map(|w| w.fidelity.trim_start_matches("fidelity: ").to_string()).filter(|f| !f.is_empty());
     let has_timeline = p.raw.timeline.is_some();
     // (the profile's reported phases, whatever the metric: the counts are the engine's, not a function's)
     let engine = engine_line(p, &p.scope(), apart, theme);
-    let parts = kit::rows(area, &[4, u16::from(fidelity.is_some()), u16::from(engine.is_some()), if has_timeline { if engine.is_some() { 8 } else { 9 } } else { 0 }, 0]);
+    let warning = p.raw.warnings.first().cloned();
+    let parts = kit::rows(area, &[4, u16::from(fidelity.is_some()), u16::from(warning.is_some()), u16::from(engine.is_some()), if has_timeline { if engine.is_some() { 8 } else { 9 } } else { 0 }, 0]);
     cards(buf, parts[0], p, split.as_ref(), theme);
     if let Some(fidelity) = fidelity {
         let line = Line::from(vec![
@@ -239,14 +249,23 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
         ]);
         Paragraph::new(line).render(parts[1], buf);
     }
-    if let Some(line) = engine {
+    if let Some(warning) = warning {
+        let more = p.raw.warnings.len() - 1;
+        let line = Line::from(vec![
+            Span::styled(" ⚠ ", Style::new().fg(theme.warning).add_modifier(Modifier::BOLD)),
+            Span::styled(fmt::fit(&warning, parts[2].width.saturating_sub(16) as usize), Style::new().fg(theme.ink2)),
+            Span::styled(if more > 0 { format!("  +{more} more") } else { String::new() }, Style::new().fg(theme.muted)),
+        ]);
         Paragraph::new(line).render(parts[2], buf);
     }
+    if let Some(line) = engine {
+        Paragraph::new(line).render(parts[3], buf);
+    }
     if has_timeline {
-        frames(buf, parts[3], app, theme);
+        frames(buf, parts[4], app, theme);
     }
     // the issues and the hottest functions, side by side
-    let (left, right) = kit::split(parts[4], parts[4].width / 2);
+    let (left, right) = kit::split(parts[5], parts[5].width / 2);
     let (found, unchecked) = (&issues.0, &issues.1);
     let inner = kit::draw_panel(buf, left, kit::panel(theme, "Issues", &fmt::grouped(found.len() as f64), true));
     if found.is_empty() {
@@ -255,8 +274,8 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
         Paragraph::new(lines).render(inner, buf);
     } else {
         list.fit(found.len(), kit::rows_shown(inner));
-        let rows = found.iter().map(|issue| vec![severity_cell(issue.severity, theme), Item::label(&issue.title, Style::new().fg(theme.ink))]).collect();
-        let grid = kit::table(buf, inner, theme, &[col("", 10), col_fill("issue", 1)], rows, Some(list.selected), list.offset);
+        let rows = found.iter().map(|issue| vec![severity_cell(issue.severity, theme), Item::text(issue.cost_short(budget), Style::new().fg(if issue.ms.is_some() || issue.once.is_some() { theme.ink2 } else { theme.muted })), Item::label(&issue.title, Style::new().fg(theme.ink))]).collect();
+        let grid = kit::table(buf, inner, theme, &[col("", 10), col_r("cost", 13), col_fill("issue", 1)], rows, Some(list.selected), list.offset);
         list.offset = grid.offset;
     }
     app.overview = list;
@@ -268,26 +287,40 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
     if !apart {
         let legend = kit::heat_legend(theme, &format!("{label}, {}", scope.label), right.width / 4);
         let block = kit::bottom(kit::panel(theme, "Hottest functions", &format!("own {label} · {}", scope.label), false), legend);
-        hot_panel(buf, right, block, p, &game, unit, theme);
+        let scale = Scale { whole: game.total, top: game.rows.first().map_or(0.0, |r| r.own), unit };
+        hot_panel(buf, right, block, p, &game, scale, theme);
         return;
     }
+    // (one scale for both panels: a function's heat and bar are its share of the code's work, whichever side it is on)
+    let scale = Scale { whole: game.total + harness.total, top: game.rows.first().map_or(0.0, |r| r.own).max(harness.rows.first().map_or(0.0, |r| r.own)), unit };
     // (the harness's panel: its rows, in a third of the height or what the game's rows leave)
     let game_need = (game.rows.len() as u16 + 3).max(5);
     let harness_height = if harness.rows.is_empty() { 0 } else { (harness.rows.len() as u16 + 3).max(5).min((right.height / 3).max(right.height.saturating_sub(game_need))) };
     let (upper, lower) = (Rect { height: right.height - harness_height, ..right }, Rect { y: right.bottom() - harness_height, height: harness_height, ..right });
-    let legend = kit::heat_legend(theme, &format!("its side's {label}"), right.width / 4);
+    let legend = kit::heat_legend(theme, &format!("{label}, both sides"), right.width / 4);
     let game_note = format!("{} · {}", scope.label, fmt::short(unit, game.total));
     let block = kit::panel(theme, "The game's code", &game_note, false);
     let block = if harness_height == 0 { kit::bottom(block, legend.clone()) } else { block };
-    hot_panel(buf, upper, block, p, &game, unit, theme);
+    hot_panel(buf, upper, block, p, &game, scale, theme);
     if harness_height > 0 {
         let block = kit::bottom(kit::panel(theme, "The harness's code", &format!("{} · {}", scope.label, fmt::short(unit, harness.total)), false), legend);
-        hot_panel(buf, lower, block, p, &harness, unit, theme);
+        hot_panel(buf, lower, block, p, &harness, scale, theme);
     }
 }
 
-/// A panel of one side's hottest functions: each one's own figure, its share of the side's, a bar
-fn hot_panel(buf: &mut Buffer, area: Rect, block: ratatui::widgets::Block, p: &Profile, side: &Side, unit: Unit, theme: &Theme) {
+/// What a panel of hottest functions scales its heat and bars by: the work both panels show, the largest row of them,
+/// and the figures' unit
+#[derive(Clone, Copy)]
+struct Scale {
+    whole: f64,
+    top: f64,
+    unit: Unit,
+}
+
+/// A panel of one side's hottest functions: each one's own figure, its share of the side's, a bar; heat and bar on the
+/// scale both sides share
+fn hot_panel(buf: &mut Buffer, area: Rect, block: ratatui::widgets::Block, p: &Profile, side: &Side, scale: Scale, theme: &Theme) {
+    let unit = scale.unit;
     let inner = kit::draw_panel(buf, area, block);
     if side.rows.is_empty() {
         kit::empty(buf, inner, theme, "none here");
@@ -295,19 +328,18 @@ fn hot_panel(buf: &mut Buffer, area: Rect, block: ratatui::widgets::Block, p: &P
     }
     let cols = [col_fill("function", 3), col_r("own", 10), col_r("share", 6), col_fill("", 2)];
     let bar_width = kit::widths(&cols, inner.width)[3];
-    let max = side.rows.first().map_or(0.0, |r| r.own);
     let rows = side
         .rows
         .iter()
         .take(kit::rows_shown(inner))
         .map(|r| {
-            let share = if side.total > 0.0 { r.own / side.total } else { 0.0 };
-            let style = theme.row(share);
+            let heat = if scale.whole > 0.0 { r.own / scale.whole } else { 0.0 };
+            let style = theme.row(heat);
             vec![
                 Item::label(p.funcs[r.func as usize].label(), style),
                 Item::text(fmt::short(unit, r.own), style),
                 Item::text(fmt::share(r.own, side.total), style),
-                Item::Spans(kit::bar(if max > 0.0 { r.own / max } else { 0.0 }, bar_width, theme.heat_of(share))),
+                Item::Spans(kit::bar(if scale.top > 0.0 { r.own / scale.top } else { 0.0 }, bar_width, theme.heat_of(heat))),
             ]
         })
         .collect();
@@ -360,15 +392,35 @@ fn cards(buf: &mut Buffer, area: Rect, p: &Profile, split: Option<&(f64, f64, Sc
         let startup = phases.iter().find(|(phase, _)| *phase == 0).filter(|_| phases.len() > 1).map(|(_, ms)| *ms);
         let gauge = startup.filter(|_| work.total_ms > 0.0).map(|ms| (ms / work.total_ms, format!("{} {}", p.phase_name(0), fmt::share(ms, work.total_ms)), theme.slot(0)));
         cards.push(("Studio work".into(), fmt::ms(work.total_ms), dim("the work clock".into()), gauge));
+        // (the collector's work, which a newer ree prices inside the work clock: already in every work figure)
+        if let Some(collector) = work.collector_ms.filter(|ms| *ms > 0.0) {
+            let gauge = (work.total_ms > 0.0).then(|| (collector / work.total_ms, format!("of work {}", fmt::share(collector, work.total_ms)), theme.slot(1)));
+            cards.push(("the collector".into(), fmt::ms(collector), dim("in the work clock".into()), gauge));
+        }
         // (the game's code in the scope, beside the harness's: what the harness itself cost)
         if let Some((game, harness, scope)) = split {
             let both = game + harness;
             let gauge = (both > 0.0).then(|| (harness / both, format!("harness {}", fmt::share(*harness, both)), theme.slot(1)));
             cards.push(("the game's code".into(), fmt::ms(*game), dim(scope.label.clone()), gauge));
         }
-        if let Some(values) = p.raw.timeline.as_ref().and_then(|t| t.values("work_ms")) {
-            let worst = p.frames_past_startup(&values).into_iter().fold(0.0, f64::max);
-            cards.push(("a frame, mean".into(), fmt::ms(p.frames_mean(&values)), dim(format!("max {}", fmt::ms(worst))), None));
+        // a frame's work in the scope's frames: the game's code's when the timeline splits it and the harness is apart
+        if let Some(timeline) = p.raw.timeline.as_ref() {
+            let (game, harness) = (timeline.values("game_ms"), timeline.values("harness_ms"));
+            // (the figure is the mean a frame, the line under it the worst frame)
+            let (title, values) = match (game, harness, split.is_some()) {
+                (Some(game), _, true) => ("game code/frame", Some(game)),
+                (Some(game), Some(harness), false) => ("code/frame", Some(game.iter().zip(&harness).map(|(a, b)| a + b).collect())),
+                _ => ("work/frame", timeline.values("work_ms")),
+            };
+            if let Some(values) = values {
+                let scope = p.scope();
+                let phases = timeline.values("phase").unwrap_or_default();
+                let later = phases.iter().any(|phase| *phase > 0.0);
+                let frames = p.whole_frames(&values, |row| phases.get(row).is_some_and(|phase| scope.covers(*phase as u32) && (!later || *phase > 0.0)));
+                let worst = frames.iter().copied().fold(0.0, f64::max);
+                let mean = if frames.is_empty() { 0.0 } else { frames.iter().sum::<f64>() / frames.len() as f64 };
+                cards.push((title.into(), fmt::ms(mean), dim(format!("max {}", fmt::ms(worst))), None));
+            }
         }
         let insns = work.script_insns + work.engine_insns;
         let gauge = (insns > 0.0).then(|| (work.script_insns / insns, format!("scripts {}", fmt::share(work.script_insns, insns)), theme.slot(0)));
@@ -388,8 +440,21 @@ fn cards(buf: &mut Buffer, area: Rect, p: &Profile, split: Option<&(f64, f64, Sc
         }
         cards.push(("collector".into(), format!("{} cycles", fmt::grouped(heap.gc.cycles)), dim(format!("{} steps", fmt::grouped(heap.gc.steps))), None));
     }
+    // the CPU's counters: what memory cost the run thread (the share of its cycles stalled on loads, a miss's latency),
+    // then IPC; derived from the run's counts, so a profile from before the stall counters gets what its counts allow
     if let Some(c) = p.raw.counters.as_ref().filter(|c| c.error.is_none()) {
-        if let Some(ipc) = c.run.rates.get("IPC") {
+        let counts: Vec<f64> = c.names.iter().map(|name| c.run.counts.get(name).copied().unwrap_or(0.0)).collect();
+        let figures = c.figures(&counts);
+        let get = |key: &str| figures.iter().find(|figure| figure.key == key).map(|figure| figure.value);
+        if let Some(share) = get(crate::hw_counters::LOAD_STALL_SHARE) {
+            let per = get(crate::hw_counters::STALL_PER_THOUSAND).map_or_else(String::new, |per| format!("{} a 1000 instr", fmt::decimal(per)));
+            cards.push(("stalled on loads".into(), fmt::percent(share), dim(per.clone()), Some((share.clamp(0.0, 1.0), format!("of cycles · {per}"), theme.slot(1)))));
+        }
+        if let Some(latency) = get(crate::hw_counters::MISS_LATENCY) {
+            let overlap = get(crate::hw_counters::MISSES_OUTSTANDING).map_or_else(String::new, |outstanding| format!("{} outstanding a cycle", fmt::decimal(outstanding)));
+            cards.push(("a miss".into(), format!("{latency:.0} cycles"), dim(overlap), None));
+        }
+        if let Some(ipc) = get("IPC").or_else(|| c.run.rates.get("IPC").copied()) {
             cards.push(("IPC".into(), format!("{ipc:.2}"), dim("instructions a cycle".into()), None));
         }
     }
@@ -421,7 +486,11 @@ fn frames(buf: &mut Buffer, area: Rect, app: &App, theme: &Theme) {
     let phases: Vec<u32> = timeline.values("phase").unwrap_or_default().into_iter().map(|v| v as u32).collect();
     let max_row = (0..values.len()).max_by(|&a, &b| values[a].total_cmp(&values[b]).then(b.cmp(&a))).unwrap_or(0);
     let frame_of = |row: usize| timeline.value(row, "frame").unwrap_or(row as f64);
-    let note = format!("{} frames · mean {} · max {} at frame {}", fmt::grouped(values.len() as f64), fmt::short(unit, p.frames_mean(&values)), fmt::short(unit, values.get(max_row).copied().unwrap_or(0.0)), frame_of(max_row));
+    // (a frame a phase mark split is one frame: a column a part)
+    let mut numbers = timeline.values("frame").unwrap_or_default();
+    numbers.dedup();
+    let count = if numbers.is_empty() { values.len() } else { numbers.len() };
+    let note = format!("{} frames · mean {} · max {} at frame {}", fmt::grouped(count as f64), fmt::short(unit, p.frames_mean(&values)), fmt::short(unit, values.get(max_row).copied().unwrap_or(0.0)), frame_of(max_row));
     let inner = kit::draw_panel(buf, area, kit::panel(theme, &format!("{} a frame", series_label(&column)), &note, false));
     if inner.height < 2 || values.is_empty() {
         return;

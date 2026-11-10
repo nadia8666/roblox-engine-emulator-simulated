@@ -25,6 +25,7 @@ use serde_json::json;
 use std::{
     cell::RefCell,
     collections::VecDeque,
+    ffi::OsString,
     io::{BufRead, BufReader, Write},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
@@ -749,6 +750,8 @@ struct Worker {
     child: Child,
     input: ChildStdin,
     replies: Receiver<String>,
+    /// The folder a standalone worker runs in (the state dir). `None` for a host's worker, which keeps the folder it had.
+    working_directory: Option<PathBuf>,
 }
 
 impl Drop for Worker {
@@ -760,6 +763,156 @@ impl Drop for Worker {
 
 /// How long one request may take (a first bundle download included).
 const WORKER_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// `path` made absolute from the current directory. The worker runs in the state dir, where a relative path would name
+/// another file.
+pub(crate) fn absolute_path(path: &Path) -> Result<PathBuf, String> {
+    std::path::absolute(path).map_err(|error| error.to_string())
+}
+
+/// A worker path with a directory, made absolute from the client's current folder. A bare name is resolved here on
+/// Windows only.
+///
+/// Windows: a service runs a copy of ree from the state dir. If it were handed the bare name, `Command` would search
+/// beside that copy first, and a worker file in the state dir could replace the client's choice. So the client searches
+/// once and forwards an absolute path, or the lookup failure.
+///
+/// Unix: the bare name stays, for `Command`'s own search and permission checks (a file the caller cannot execute is
+/// skipped). That search never looks beside the executable, and it reads the absolute PATH the client resolved
+/// ([`crate::launch::path_variables`]), so it gives the same answer from the state dir.
+pub(crate) fn resolve_executable(executable: &Path) -> Result<PathBuf, String> {
+    let is_bare_name = executable.components().count() == 1 && !executable.is_absolute();
+    if !is_bare_name {
+        return absolute_path(executable);
+    }
+    #[cfg(windows)]
+    {
+        resolve_windows_executable(executable)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(executable.to_path_buf())
+    }
+}
+
+/// Finds a bare worker name the way `Command` does on Windows, but from the client: the first of the search folders
+/// ([`windows_search_directories`]) that holds the file.
+#[cfg(windows)]
+fn resolve_windows_executable(name: &Path) -> Result<PathBuf, String> {
+    // Command appends .exe only when the bare name has no dot
+    let has_extension = name.as_os_str().as_encoded_bytes().contains(&b'.');
+    for directory in windows_search_directories()? {
+        let mut file = directory.join(name);
+        if !has_extension {
+            file.set_extension("exe");
+        }
+        // Like Command's GetFileAttributesW check, a directory or link counts as found, and spawn diagnoses it.
+        if std::fs::symlink_metadata(&file).is_ok() {
+            return Ok(file);
+        }
+    }
+    Err(format!("asset worker {}: program not found", name.display()))
+}
+
+/// The folders `Command` searches on Windows, in its order: the folder of the running executable, the system folder,
+/// the Windows folder, then each PATH entry made absolute. Empty PATH entries are skipped, and the current folder is
+/// never searched, so a file in the project cannot stand in for the worker.
+#[cfg(windows)]
+fn windows_search_directories() -> Result<Vec<PathBuf>, String> {
+    unsafe extern "system" {
+        fn GetSystemDirectoryW(buffer: *mut u16, size: u32) -> u32;
+        fn GetWindowsDirectoryW(buffer: *mut u16, size: u32) -> u32;
+    }
+    let mut directories = Vec::new();
+    let client = std::env::current_exe().map_err(|error| error.to_string())?;
+    if let Some(directory) = client.parent() {
+        directories.push(directory.to_path_buf());
+    }
+    for get_directory in [GetSystemDirectoryW, GetWindowsDirectoryW] {
+        if let Some(directory) = windows_directory(get_directory) {
+            directories.push(directory);
+        }
+    }
+    if let Some(paths) = std::env::var_os("PATH") {
+        for directory in std::env::split_paths(&paths).filter(|directory| !directory.as_os_str().is_empty()) {
+            directories.push(absolute_path(&directory)?);
+        }
+    }
+    Ok(directories)
+}
+
+/// A Windows folder from `GetSystemDirectoryW` or `GetWindowsDirectoryW`, which return the length written, or the
+/// length needed (the terminating NUL included) when the buffer is too small. `None` when the call fails.
+#[cfg(windows)]
+fn windows_directory(get_directory: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    let mut buffer = vec![0u16; 260];
+    loop {
+        // SAFETY: the OS writes at most the supplied capacity; a larger return asks for a larger buffer.
+        let length = unsafe { get_directory(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+        if length == 0 {
+            return None;
+        }
+        if length < buffer.len() {
+            return Some(PathBuf::from(OsString::from_wide(&buffer[..length])));
+        }
+        buffer.resize(length + 1, 0);
+    }
+}
+
+/// The environment variables that carry the client's worker choice or lookup failure to a standalone service.
+/// Windows always forwards an absolute path or a failure; Unix keeps bare names and uses the client's absolute PATH.
+/// A host keeps its own worker lookup.
+pub(crate) fn worker_variables() -> Vec<(&'static str, OsString)> {
+    // each worker variable with the one that carries its lookup failure
+    let workers = [
+        ("REE_ASSET_WORKER", "REE_ASSET_WORKER_ERROR"),
+    ];
+    let mut variables = Vec::new();
+    for (name, error_name) in workers {
+        let is_named = std::env::var_os(name).is_some_and(|value| !value.is_empty());
+        if !is_named {
+            continue;
+        }
+        // a failure already in the environment is passed on as it is
+        if let Some(error) = std::env::var_os(error_name) {
+            variables.push((error_name, error));
+            continue;
+        }
+        // REE_ASSET_WORKER is the only worker, and standalone_worker is its lookup
+        match standalone_worker() {
+            Ok(executable) => variables.push((name, executable.into_os_string())),
+            Err(error) => variables.push((error_name, error.into())),
+        }
+    }
+    variables
+}
+
+/// What a run reports when no worker is named and there is no checkout to look beside (a standalone run, or the public
+/// build).
+const WORKER_NOT_NAMED: &str = "manifest bundles need an asset worker: set REE_ASSET_WORKER to its executable (docs/engine.md, \"Asset bundles\")";
+
+/// An explicitly named worker, or the lookup failure the client sent along with it. `None` when `name` is not set.
+fn named_worker(name: &str) -> Option<Result<PathBuf, String>> {
+    let value = std::env::var_os(name).filter(|value| !value.is_empty())?;
+    Some(match std::env::var(format!("{name}_ERROR")) {
+        Ok(error) => Err(error),
+        Err(_) => Ok(PathBuf::from(value)),
+    })
+}
+
+/// The named standalone worker, resolved by [`resolve_executable`], or the lookup failure passed by the client.
+fn standalone_worker() -> Result<PathBuf, String> {
+    // Looked up once, so every start and every forwarded variable agrees with the first answer, which is the client's
+    // (a service or worker may later run from another executable folder or working folder).
+    static WORKER: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+    WORKER.get_or_init(resolve_named_worker).clone()
+}
+
+fn resolve_named_worker() -> Result<PathBuf, String> {
+    let named = named_worker("REE_ASSET_WORKER").unwrap_or_else(|| Err(WORKER_NOT_NAMED.to_string()));
+    named.and_then(|executable| resolve_executable(&executable))
+}
 
 /// The worker's failures, as warnings and errors name them
 const WORKER_TIMED_OUT: &str = "the asset worker's request timed out";
@@ -774,17 +927,36 @@ impl AssetWorker {
         Self { repo: repo.to_path_buf(), offline, worker: None, manifest: None, directory: None }
     }
 
-    /// The executable this source runs.
+    /// The executable this source runs. A standalone run names its worker and may carry the client's lookup failure; a
+    /// host or a binary in a checkout looks for it exactly as before standalone binaries.
     pub fn executable(_repo: &Path) -> Result<PathBuf, String> {
+        if crate::is_standalone(_repo) {
+            return standalone_worker();
+        }
+        // host mode keeps the lookup it had before standalone binaries
         std::env::var_os("REE_ASSET_WORKER")
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
-            .ok_or_else(|| "manifest bundles need an asset worker: set REE_ASSET_WORKER to its executable (docs/engine.md, \"Asset bundles\")".to_string())
+            .ok_or_else(|| WORKER_NOT_NAMED.to_string())
     }
 
     fn start(&self) -> Result<Worker, String> {
-        let mut command = Command::new(Self::executable(&self.repo)?);
+        let standalone = crate::is_standalone(&self.repo);
+        let executable = Self::executable(&self.repo)?;
+        let mut command = Command::new(&executable);
         command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut working_directory = None;
+        if standalone {
+            // the worker keeps its caches in the same state dir as this process
+            let state = std::path::absolute(crate::state_dir(&self.repo)).map_err(|error| error.to_string())?;
+            std::fs::create_dir_all(&state).map_err(|error| error.to_string())?;
+            // the same environment a service is keyed and started with, so a direct and a served worker see one
+            command.env_clear().envs(crate::launch::worker_environment());
+            command.current_dir(&state).env("RUR_STATE_DIR", &state);
+            // a relative spelling of the worker would lead elsewhere from the state dir
+            command.env("REE_ASSET_WORKER", &executable);
+            working_directory = Some(state);
+        }
         if self.offline {
             command.arg("--offline");
         }
@@ -805,7 +977,7 @@ impl AssetWorker {
                 }
             }
         });
-        Ok(Worker { child, input, replies })
+        Ok(Worker { child, input, replies, working_directory })
     }
 
     fn request(&mut self, request: serde_json::Value) -> Result<serde_json::Value, String> {
@@ -831,6 +1003,19 @@ impl AssetWorker {
             }
         }
     }
+
+    /// The file a worker's `asset` reply names, or `missing` when the reply has none. Only a standalone worker has a
+    /// working directory (the state dir), and a relative file in its reply is a path inside it. Joining an absolute file
+    /// leaves it as it is. A host's worker has no such directory, so its reply is returned unchanged, as before
+    /// standalone binaries.
+    fn reply_file(&self, reply: &serde_json::Value, missing: &str) -> Result<PathBuf, String> {
+        let file = reply["file"].as_str().map(PathBuf::from).ok_or_else(|| missing.to_string())?;
+        let working_directory = self.worker.as_ref().and_then(|worker| worker.working_directory.as_ref());
+        match working_directory {
+            Some(directory) => Ok(directory.join(file)),
+            None => Ok(file),
+        }
+    }
 }
 
 impl BundleSource for AssetWorker {
@@ -847,6 +1032,8 @@ impl BundleSource for AssetWorker {
                 }
             }
         }
+        // The cache file above is keyed by the project as the caller spelled it; only the request to the worker changes
+        let project = self.worker_path(project)?;
         let reply = self.request(json!({ "command": "catalog", "project": project, "manifest": project.join(MANIFEST) }))?;
         let bundles: Vec<String> = reply["bundles"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
         write_atomic(&file, json!({ "manifest": manifest, "bundles": bundles }).to_string().as_bytes());
@@ -854,14 +1041,27 @@ impl BundleSource for AssetWorker {
     }
 
     fn bundle(&mut self, project: &Path, key: &str) -> Result<PathBuf, String> {
-        let out = self.bundle_file(project, key)?;
+        let file = self.bundle_file(project, key)?;
+        let out = self.worker_path(&file)?;
         self.forget_members_file(project, key);
         if crate::files::is_file(&out) {
             return Ok(out);
         }
         let uri = self.manifest(project)?.uri(key).ok_or_else(|| format!("{NOT_IN_MANIFEST} {key}'s AssetId"))?;
         let reply = self.request(json!({ "command": "asset", "uri": uri, "out": out }))?;
-        reply["file"].as_str().map(PathBuf::from).ok_or_else(|| WORKER_NO_MODEL.to_string())
+        let reported = self.reply_file(&reply, WORKER_NO_MODEL)?;
+        if !crate::is_standalone(&self.repo) {
+            // a host's worker names the file it wants imported, as before standalone binaries
+            return Ok(reported);
+        }
+        // Converting a bundle writes its plan beside the model it imports. A worker may report a cache file of its
+        // own, which is not an output the user named, so a standalone import reads the requested path in the state dir
+        // and the plan lands there too. A worker that did not write that path gets a copy of what it reported.
+        let wrote_requested_output = crate::files::is_file(&out);
+        if reported != out && !wrote_requested_output {
+            std::fs::copy(&reported, &out).map_err(|error| format!("{}: {error}", out.display()))?;
+        }
+        Ok(out)
     }
 
     fn cached(&mut self, project: &Path, key: &str) -> Option<PathBuf> {
@@ -877,8 +1077,16 @@ impl AssetWorker {
     /// Downloads asset `uri` (`rbxassetid://N`) into file `out` through the worker (its `asset`
     /// command): the KeyframeSequences AnimationTracks play.
     pub fn fetch_asset(&mut self, uri: &str, out: &Path) -> Result<PathBuf, String> {
+        let out = self.worker_path(out)?;
         let reply = self.request(json!({ "command": "asset", "uri": uri, "out": out }))?;
-        reply["file"].as_str().map(PathBuf::from).ok_or_else(|| WORKER_NO_ASSET.to_string())
+        self.reply_file(&reply, WORKER_NO_ASSET)
+    }
+
+    /// `path` as the worker should be told it. A standalone worker runs in the state dir, where a relative path would
+    /// name another file, so it gets an absolute one. A host's worker is not moved, so a host's paths stay as passed
+    /// (a host may also key caches by them).
+    fn worker_path(&self, path: &Path) -> Result<PathBuf, String> {
+        if crate::is_standalone(&self.repo) { absolute_path(path) } else { Ok(path.to_path_buf()) }
     }
 
     fn directory(&mut self) -> Result<PathBuf, String> {
@@ -1056,6 +1264,19 @@ fn write_atomic(path: &Path, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_paths_resolve_directories_and_leave_names_for_native_search() {
+        // a bare name stays bare on Unix; Windows searches for it in the client, and a missing one is a lookup failure
+        #[cfg(not(windows))]
+        assert_eq!(resolve_executable(Path::new("worker")).unwrap(), Path::new("worker"));
+        #[cfg(windows)]
+        assert!(resolve_executable(Path::new("ree_missing_test_worker.exe")).unwrap_err().contains("program not found"));
+        assert_eq!(resolve_executable(Path::new("./worker")).unwrap(), absolute_path(Path::new("./worker")).unwrap());
+        assert_eq!(resolve_executable(Path::new("helpers/worker")).unwrap(), absolute_path(Path::new("helpers/worker")).unwrap());
+        #[cfg(windows)]
+        assert_eq!(resolve_executable(Path::new(r"helpers\worker.exe")).unwrap(), absolute_path(Path::new(r"helpers\worker.exe")).unwrap());
+    }
 
     /// Bundles from a source: a model file per key
     struct Files(PathBuf);
@@ -1541,6 +1762,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&project);
         let _ = std::fs::remove_dir_all(&other_project);
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// A host's catalog cache is keyed by the project path as the host passed it, relative or not, and a cached catalog
+    /// needs no worker.
+    #[test]
+    fn a_host_reads_a_cached_catalog_for_a_relative_project_without_a_worker() {
+        let repo = scratch("catalog-host");
+        let project = PathBuf::from(".cache").join(repo.file_name().unwrap()).join("project");
+        write_manifest(&project, &[("Models/Props", 1, 2)]);
+        let mut worker = AssetWorker::new(&repo, true);
+        let directory = repo.join("model-bundles");
+        std::fs::create_dir_all(&directory).unwrap();
+        worker.directory = Some(directory.clone());
+        // the cache file a host's earlier run wrote, named by the relative project path
+        let key = short_digest(&serde_json::to_string(&json!([project])).unwrap());
+        let catalog = directory.join(format!("catalog-{key}.json"));
+        let cached = json!({ "manifest": Manifest::read(&project).unwrap().digest, "bundles": ["Models/Props"] });
+        std::fs::write(&catalog, cached.to_string()).unwrap();
+
+        assert_eq!(worker.catalog(&project).unwrap(), ["Models/Props"]);
+        assert!(worker.worker.is_none(), "a cached catalog must not start a worker");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1, "no second cache file under another key");
+        let _ = std::fs::remove_dir_all(project.parent().unwrap());
+        let _ = std::fs::remove_dir_all(repo);
     }
 
     /// A kept plan goes once its bundle file changes or is gone; one whose file holds stays.

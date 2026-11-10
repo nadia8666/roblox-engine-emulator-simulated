@@ -22,16 +22,16 @@
 │ collector freed                       2.29 MB → 2.29 MB            same                                              │
 │ Studio work a frame (mean)           0.121 ms → 0.121 ms           same                                              │
 │ Studio work a frame (worst)          2.000 ms → 2.000 ms           same                                              │
-│ host time a frame (mean, noisy)      0.400 ms → 0.400 ms           same                                              │
 │ frames                                    120 → 120                same                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭ Moved  3 · own Studio work · by what grew most ──────────────────────────────────────────────────────────────────────╮
 │  Functions   Lines   Allocation sites                                                                                │
 │                                                                                                                      │
-│                                      before       after        change                      calls                     │
-│ ▌ sort [C]                         0.200 ms      2.0 µs ▼   -0.198 ms   -99.0%           100 → 1         █│          │
-│   rank  Main:20                    3.000 ms    0.772 ms ▼   -2.228 ms   -74.2%         100 → 100     █████│          │
-│   anonymous  Main:22               4.000 ms     40.0 µs ▼   -3.960 ms   -99.0%       50.0K → 500 █████████│          │
+│                               before       after        change                  calls    instructions                │
+│ ▌ sort [C]                  0.200 ms      2.0 µs ▼   -0.198 ms   -99.0%       100 → 1               0       █│       │
+│   rank  Main:20             3.000 ms    0.772 ms ▼   -2.228 ms   -74.2%           100           20.0K    ████│       │
+│   anonymous  Main:22        4.000 ms     40.0 µs ▼   -3.960 ms   -99.0%   50.0K → 500   300.0K → 3000 ███████│       │
+│                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

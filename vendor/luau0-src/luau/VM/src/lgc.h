@@ -167,3 +167,9 @@ LUAI_FUNC void luaC_coldmade(lua_State* L, GCObject* o);
 LUAI_FUNC bool luaC_colddefer(lua_State* L, struct lua_Page* page);
 LUAI_FUNC void luaC_coldfree(lua_State* L);
 #define luaC_touch(L, o) (LUAU_LIKELY(testbit(obj2gco(o)->gch.marked, COLDBIT)) ? (void)0 : luaC_coldtouch(L, obj2gco(o)))
+
+// Each executed instruction disarms its cold opcode marker until the next frame. The
+// marker belongs to the prototype, so every activation and coroutine shares that fact.
+LUAI_FUNC void luaC_coldprepare(lua_State* L, Proto* p);
+LUAI_FUNC void luaC_coldinstruction(lua_State* L, Closure* cl, const Instruction* pc);
+LUAI_FUNC void luaC_coldfreed(lua_State* L, Proto* p);

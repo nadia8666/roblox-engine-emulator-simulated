@@ -869,6 +869,7 @@ static int loadsafe(
             offset = protoStartOffset + protoSize;
         }
 
+        luaC_coldprepare(L, p);
         protos[i] = p;
     }
 
@@ -886,6 +887,10 @@ static int loadsafe(
         if (native)
             p->flags |= LUAU_PROTO_WORK_NATIVE;
     }
+
+    // (a host's profile registers the chunk's functions: lprofile.cpp)
+    if (luaP_state)
+        luaP_loaded(L, main);
 
     luaC_threadbarrier(L);
 

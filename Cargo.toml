@@ -18,6 +18,14 @@ name = "ree"
 path = "src/main.rs"
 required-features = ["cli"]
 
+[[test]]
+name = "standalone"
+required-features = ["cli"]
+
+[[test]]
+name = "host_worker"
+required-features = ["cli", "bundles"]
+
 [features]
 default = ["jit", "bundles", "meshes", "cli"]
 # Luau native code generation (a WebAssembly build has none: its VM interprets)
@@ -70,8 +78,8 @@ base64 = "=0.13.1"
 resolver = "3"
 # profile-view: the profile viewer (`ree profile view|render` runs its binary), a crate of its own so the engine's has
 # no terminal UI; a plain `cargo build` or `cargo test` here covers both
-members = ["profile-view"]
-default-members = [".", "profile-view"]
+members = ["profile-view", "tests/host"]
+default-members = [".", "profile-view", "tests/host"]
 exclude = ["vendor"]
 
 # The patched Luau VM (vendor/luau0-src), and mlua-sys with its bytecode version range (vendor/mlua-sys: 0.13.0 reads the
@@ -93,3 +101,7 @@ codegen-units = 256
 
 [profile.dev.package."*"]
 opt-level = 2
+
+[profile.profiling]
+inherits = "release"
+debug = true

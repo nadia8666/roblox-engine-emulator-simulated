@@ -79,6 +79,7 @@ typedef struct CallInfo
 #define LUA_CALLINFO_HANDLE (1 << 1) // should the error thrown during execution get handled by continuation from this callinfo? func must be C
 #define LUA_CALLINFO_NATIVE (1 << 2) // should this function be executed using execution callback for native code
 #define LUA_CALLINFO_OPYIELD (1 << 3) // call frame has yielded on a non-call opcode and requires luau_finishop
+#define LUA_CALLINFO_PROFILECALL (1 << 8) // a host's profile sampled this call: its return calls the profile's call hook (lprofile.cpp)
 #define LUA_CALLINFO_PCALL (1 << 4)   // call frame was setup by a synthetic protected call and requires luau_pospcallsuccess
 
 #define TAGGED_PAGESET_BASE (LUA_TSTRING)
@@ -217,6 +218,7 @@ typedef struct global_State
     uint8_t gcstate; // state of garbage collector
     uint8_t gcdisabled;
     uint8_t coldon; // cold touches are tracked (lua_coldtracking; in the padding before gray: the state keeps its size)
+    uint8_t profilecalls; // a profile's call hook is set (lua_setprofilecalls; in the same padding)
 
     GCObject* gray;      // list of gray objects
     GCObject* grayagain; // list of objects to be traversed atomically
@@ -419,6 +421,36 @@ inline int luaE_workframe(lua_State* L, CallInfo* ci)
 
 #define luaE_scriptframe(L, ci) (luaE_workframe(L, ci) == 1)
 #define luaE_scriptwork(L) luaE_scriptframe(L, (L)->ci)
+
+// whether the innermost frame of L is one of the host's own C functions (lua_sethostcfunction)
+LUAI_FUNC bool luaE_hostcall(lua_State* L);
+
+// counts `n` units of a library or engine function's work in the work counters' hostops slot `slot` (lua.h LUA_WORK_SCANNED and the
+// rest) when a script's work asked for it
+#define luaE_worklib(L, slot, n) \
+    do \
+    { \
+        if (luaE_scriptwork(L) && !luaE_hostcall(L)) \
+            (L)->global->work.hostops[(slot)] += uint64_t(n); \
+    } while (0)
+// a new buffer's bytes (lua.h LUA_WORK_BUFBYTES), and those past Luau's own pages again (LUA_WORK_BUFFRESH)
+#define luaE_workbufnew(L, n) \
+    do \
+    { \
+        size_t workbytes = size_t(n); \
+        luaE_worklib(L, LUA_WORK_BUFBYTES, workbytes); \
+        if (workbytes > 1024) \
+            luaE_worklib(L, LUA_WORK_BUFFRESH, workbytes); \
+    } while (0)
+// bytes a buffer copy, fill or string write moved (lua.h LUA_WORK_BUFBYTES), and those of a call over 64 KB again (LUA_WORK_BUFBIGCOPY)
+#define luaE_workbufmove(L, n) \
+    do \
+    { \
+        size_t workbytes = size_t(n); \
+        luaE_worklib(L, LUA_WORK_BUFBYTES, workbytes); \
+        if (workbytes > 65536) \
+            luaE_worklib(L, LUA_WORK_BUFBIGCOPY, workbytes); \
+    } while (0)
 
 LUAI_FUNC lua_State* luaE_newthread(lua_State* L);
 LUAI_FUNC void luaE_freethread(lua_State* L, lua_State* L1, struct lua_Page* page);

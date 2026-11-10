@@ -142,6 +142,8 @@ enum Base {
     HasTag,
     /// BindableEvent:Fire (services/mod.rs): fires Event with the arguments
     FireBindable,
+    /// WorldRoot:Raycast (world/query.rs raw_cast)
+    Raycast,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -258,6 +260,8 @@ fn compute_member(engine: &Engine, class: ClassId, key: NameId) -> Member {
                     }
                 } else if owner.is_some() && owner == reflection.class_id("BindableEvent") && name == K::Fire as NameId {
                     member.call = Call::Base(Base::FireBindable);
+                } else if owner.is_some() && reflection.name(name).to_string() == "Raycast" {
+                    member.call = Call::Base(Base::Raycast);
                 }
             }
         }
@@ -389,12 +393,29 @@ impl Api {
     }
 
     /// A crossing for the boundary profiler (src/boundary.rs): nothing unless profiling, and nothing inside the engine's own
-    /// Luau pricing a whole call (muted); `name` None is a child looked up by name.
+    /// Luau pricing a whole call (muted); `name` None, or `child`, is a child looked up by name.
     #[inline]
-    fn cross(&self, kind: crate::boundary::Kind, class: ClassId, name: Option<NameId>, id: InstanceId, cost: f64, changed: bool) {
+    #[allow(clippy::too_many_arguments)]
+    fn cross(&self, kind: crate::boundary::Kind, class: ClassId, name: Option<NameId>, child: bool, id: InstanceId, cost: f64, changed: bool) {
         if crate::boundary::active() && self.muted.get() == 0 {
-            let reflection = &self.engine().reflection;
-            crate::boundary::record(kind, class, name.unwrap_or(crate::boundary::NO_MEMBER), id.index, cost, changed, || {
+            let engine = self.engine();
+            let reflection = &engine.reflection;
+            // (a read's stamp: its instance's version, which a change of its own properties by a script or the engine bumps, so the next
+            // read is a new value; Parent's value is the parent, which a reparent (Destroy's too) changes without touching the
+            // instance's own properties; a child looked up by name reads the child list, whose own version a child added or removed
+            // bumps, and the children's names, which any rename changes)
+            let version = (kind == crate::boundary::Kind::Get)
+                .then(|| {
+                    engine.state.try_borrow().ok().and_then(|state| {
+                        state.dom.get(id).map(|instance| match name {
+                            Some(member) if !child && member == K::Parent as NameId => instance.version ^ instance.parent.map_or(u32::MAX, |parent| parent.index).rotate_left(16),
+                            Some(_) if !child => instance.version,
+                            _ => instance.child_version ^ state.dom.name_version.rotate_left(16),
+                        })
+                    })
+                })
+                .flatten();
+            crate::boundary::record(kind, class, name.unwrap_or(crate::boundary::NO_MEMBER), id.index, version, cost, changed, || {
                 let owner = name.map_or(class, |name| reflection.declaring_class(class, name));
                 (reflection.class(owner).name.to_string(), name.map_or_else(|| "[child]".to_string(), |name| reflection.name(name).to_string()))
             });
@@ -442,9 +463,11 @@ impl Api {
 
 static ATOM_REFLECTION: OnceLock<Arc<Reflection>> = OnceLock::new();
 
-/// `useratom`: a string's atom is its member NameId (-1: not a member name, -2: look it up).
+/// `useratom`: a string's atom is its member NameId (-1: not a member name, -2: look it up). The VM asks once per new string,
+/// and the answer is a lookup by its bytes: the member atoms cache's miss (a later read off the string is its hit).
 unsafe extern "C-unwind" fn user_atom(_state: *mut ffi::lua_State, s: *const c_char, len: usize) -> i16 {
     let Some(reflection) = ATOM_REFLECTION.get() else { return -2 };
+    crate::profiler::caches::miss(crate::profiler::caches::Cache::Atoms);
     let bytes = unsafe { std::slice::from_raw_parts(s as *const u8, len) };
     match reflection.name_id_bytes(bytes) {
         Some(id) if id < i16::MAX as NameId => id as i16,
@@ -662,6 +685,9 @@ pub fn install(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
     if let Some(counters) = counters {
         crate::cost::install_gc_clock(lua, counters)?;
     }
+    crate::scheduler::start_cold_tracking(lua, engine);
+    // (the engine's own C functions, mlua's callback among them: the objects they make for a script are priced with their operation)
+    crate::cost::mark_host_functions(lua, &[meta_index, meta_newindex, meta_namecall, meta_tostring, create_instance, instance_new, table_namecall, typeof_c])?;
 
     // Parent changes that move a subtree into or out of the DataModel re-anchor its userdata
     engine.hooks.borrow_mut().hierarchy_changed.push(Box::new(move |state, id, old, new| {
@@ -720,6 +746,7 @@ pub fn instance_value(lua: &Lua, engine: &Engine, id: InstanceId) -> LuaResult<L
         }
     }
     crate::profiler::caches::miss(crate::profiler::caches::Cache::Wrappers);
+    crate::profiler::caches::instance_touched(id.index, id.generation);
     let create = api.create.borrow().clone().expect("instance factory");
     create.call::<LuaValue>((id.index, id.generation))
 }
@@ -918,6 +945,7 @@ unsafe fn push_instance_with(state: *mut ffi::lua_State, api: &Api, dom_state: O
             }
         }
         crate::profiler::caches::miss(crate::profiler::caches::Cache::Wrappers);
+        crate::profiler::caches::instance_touched(id.index, id.generation);
         ffi::lua_pop(state, 1);
         let payload = ffi::lua_newuserdatataggedwithmetatable(state, PAYLOAD_SIZE, INSTANCE_TAG) as *mut Payload;
         let serial = match dom_state {
@@ -951,6 +979,8 @@ unsafe fn push_instance_with(state: *mut ffi::lua_State, api: &Api, dom_state: O
 /// `Instance.new(className, parent)` (InstanceModule.New) as a C function.
 unsafe extern "C-unwind" fn instance_new(state: *mut ffi::lua_State) -> c_int {
     crate::boundary::enter(state);
+    // (host time: the call's time is its line's)
+    let _time = crate::luau_profile::ApiCall::new(state);
     let out = guard(|| unsafe {
         let api = &*(ffi::lua_touserdata(state, ffi::lua_upvalueindex(1)) as *const Api);
         let engine = api.engine();
@@ -968,6 +998,7 @@ unsafe extern "C-unwind" fn instance_new(state: *mut ffi::lua_State) -> c_int {
                     let class = dom_state.dom.at(id).class;
                     let cost = crate::cost::created(&engine.reflection, class);
                     api.charge(cost);
+                    api.touched.borrow().book_kinds_with(cost, || crate::cost::created_kinds(&engine.reflection, class));
                     if crate::boundary::active() && api.muted.get() == 0 {
                         crate::boundary::record_named(crate::boundary::Kind::Create, "Instance", &format!("new({})", engine.reflection.class(class).name), cost);
                     }
@@ -1092,12 +1123,17 @@ unsafe fn push_value(state: *mut ffi::lua_State, api: &Api, dom_state: &State, i
 
 unsafe extern "C-unwind" fn meta_index(state: *mut ffi::lua_State) -> c_int {
     crate::boundary::enter(state);
+    crate::boundary::access_begin(state);
+    // (host time: the call's time is its line's)
+    let _time = crate::luau_profile::ApiCall::new(state);
     let out = guard(|| unsafe { index_fast(state) });
-    match out {
+    let count = match out {
         Out::Ret(count) => count,
         Out::Raise(message, level) => unsafe { raise(state, message, level) },
         _ => unsafe { index_slow(state) },
-    }
+    };
+    crate::boundary::access_end(state, false);
+    count
 }
 
 /// What a read's value adds to its price (cost.rs `read_value`), charged and booked to the read's boundary crossing
@@ -1167,7 +1203,7 @@ unsafe fn index_fast(state: *mut ffi::lua_State) -> Out {
         if first > 0.0 {
             api.charge(first);
         }
-        api.cross(crate::boundary::Kind::Get, class, name, id, cost + lower_first + first, true);
+        api.cross(crate::boundary::Kind::Get, class, name, matches!(read.read, Read::Child), id, cost + lower_first + first, true);
         match read.read {
             Read::Plain => {
                 let name = read.name;
@@ -1259,6 +1295,9 @@ unsafe fn index_slow(state: *mut ffi::lua_State) -> c_int {
 unsafe extern "C-unwind" fn meta_newindex(state: *mut ffi::lua_State) -> c_int {
     crate::trace::enter(state);
     crate::boundary::enter(state);
+    crate::boundary::access_begin(state);
+    // (host time: the call's time is its line's)
+    let _time = crate::luau_profile::ApiCall::new(state);
     let out = guard(|| unsafe { newindex_fast(state) });
     match out {
         Out::Ret(_) => {}
@@ -1270,6 +1309,7 @@ unsafe extern "C-unwind" fn meta_newindex(state: *mut ffi::lua_State) -> c_int {
             sync_if_moved(state, api);
         }
     }
+    crate::boundary::access_end(state, true);
     0
 }
 
@@ -1336,8 +1376,6 @@ unsafe fn newindex_fast(state: *mut ffi::lua_State) -> Out {
                 if super::actors::any_actor(engine) {
                     return Out::Slow;
                 }
-                // (priced by the reparenting itself: instance.rs set_parent adds its charge to this crossing)
-                api.cross(crate::boundary::Kind::Set, class, Some(K::Parent as NameId), id, 0.0, true);
                 let parent = match kind {
                     ffi::LUA_TNIL => None,
                     _ => match arg_instance(state, 3) {
@@ -1345,6 +1383,10 @@ unsafe fn newindex_fast(state: *mut ffi::lua_State) -> Out {
                         None => return Out::Slow,
                     },
                 };
+                // (priced by the reparenting itself: instance.rs set_parent adds its charge to this crossing; a write of the
+                // parent it has changes nothing)
+                let changed = engine.state.borrow().dom.get(id).is_none_or(|instance| instance.parent != parent);
+                api.cross(crate::boundary::Kind::Set, class, Some(K::Parent as NameId), false, id, 0.0, changed);
                 match linstance::set_parent(engine, id, parent) {
                     Ok(()) => Out::Ret(0),
                     Err(Flow::Error(error)) => Out::Raise(error.message, error.level),
@@ -1407,6 +1449,8 @@ unsafe fn newindex_slow(state: *mut ffi::lua_State) {
 unsafe extern "C-unwind" fn meta_namecall(state: *mut ffi::lua_State) -> c_int {
     crate::trace::enter(state);
     crate::boundary::enter(state);
+    // (host time: the call's time is its line's)
+    let _time = crate::luau_profile::ApiCall::new(state);
     let out = guard(|| unsafe { namecall_fast(state) });
     match out {
         Out::Ret(count) => count,
@@ -1565,6 +1609,8 @@ unsafe fn namecall_fast(state: *mut ffi::lua_State) -> Out {
         let serial = engine.state.borrow().dom.at(id).serial;
         let cost = {
             let mut touched = api.touched.borrow_mut();
+            // (where the method's own price came from: cost.rs method_kinds)
+            touched.book_kinds_with(member.cost as f64, || crate::cost::method_kinds(engine.reflection.name(name)));
             // (the method's code, cold at its first call in the frame: cost.rs FIRST_CALL)
             member.cost as f64 + touched.touch(id.index, class, serial) + touched.first_use(crate::cost::MemberUse::Call, name) + lower_first
         };
@@ -1572,7 +1618,7 @@ unsafe fn namecall_fast(state: *mut ffi::lua_State) -> Out {
         // Path::Pivot, priced here so the engine's Luau body is unchanged)
         let cost = if api.touched.borrow().pivot_to == Some(name) { cost + linstance::pivot_cold(engine, id) } else { cost };
         api.charge(cost);
-        api.cross(crate::boundary::Kind::Method, class, Some(name), id, cost, true);
+        api.cross(crate::boundary::Kind::Method, class, Some(name), false, id, cost, true);
         match member.call {
             Call::Base(base) => base_call(state, api, engine, id, class, base),
             Call::Function => Out::General,
@@ -1622,6 +1668,34 @@ fn is_a_bytes(engine: &Engine, class: ClassId, wanted: Option<&[u8]>) -> bool {
 }
 
 /// The base Instance methods inline (same semantics as lua/instance.rs install_base).
+/// The three components of the native vector at `index`.
+#[inline]
+unsafe fn stack_vector(state: *mut ffi::lua_State, index: c_int) -> Option<glam::Vec3> {
+    unsafe {
+        let components = ffi::lua_tovector(state, index);
+        if components.is_null() { None } else { Some(glam::Vec3::new(*components, *components.add(1), *components.add(2))) }
+    }
+}
+
+/// Pushes the metatable of a RaycastResult (made once, kept in the bridge table's slot 2); false: none made.
+unsafe fn push_result_meta(state: *mut ffi::lua_State, api: &Api) -> bool {
+    unsafe {
+        ffi::lua_rawgeti_(state, REGISTRY, api.refs.bridge);
+        if ffi::lua_rawgeti_(state, -1, 2) != ffi::LUA_TTABLE {
+            ffi::lua_pop(state, 2);
+            let Some(lua) = api.lua.try_upgrade() else { return false };
+            let Ok(meta) = lua.create_table() else { return false };
+            if meta.set("__type", "RaycastResult").is_err() || meta.set("__metatable", "The metatable is locked").is_err() || api.bridge.raw_set(2, meta).is_err() {
+                return false;
+            }
+            ffi::lua_rawgeti_(state, REGISTRY, api.refs.bridge);
+            ffi::lua_rawgeti_(state, -1, 2);
+        }
+        ffi::lua_remove(state, -2);
+        true
+    }
+}
+
 unsafe fn base_call(state: *mut ffi::lua_State, api: &Api, engine: &Engine, id: InstanceId, class: ClassId, base: Base) -> Out {
     unsafe {
         match base {
@@ -1828,6 +1902,57 @@ unsafe fn base_call(state: *mut ffi::lua_State, api: &Api, engine: &Engine, id: 
                 }
                 core::fire_event_measured(&mut engine.state.borrow_mut(), id, K::Event as NameId, arguments, crate::cost::SignalKind::Bindable);
                 Out::Ret(0)
+            }
+            Base::Raycast => {
+                let (Some(origin), Some(direction)) = (stack_vector(state, 2), stack_vector(state, 3)) else { return Out::General };
+                let Some(method) = engine.reflection.name_id("Raycast") else { return Out::General };
+                let params = match ffi::lua_type(state, 4) {
+                    ffi::LUA_TNONE | ffi::LUA_TNIL => None,
+                    ffi::LUA_TUSERDATA | ffi::LUA_TTABLE => {
+                        ffi::lua_rawgeti_(state, REGISTRY, api.refs.bridge);
+                        ffi::lua_pushvalue(state, 4);
+                        ffi::lua_rawseti_(state, -2, 1);
+                        ffi::lua_pop(state, 1);
+                        match api.bridge.raw_get::<LuaValue>(1) {
+                            Ok(value) => Some(value),
+                            Err(_) => return Out::General,
+                        }
+                    }
+                    _ => return Out::General,
+                };
+                crate::project::before_method(&mut engine.state.borrow_mut(), &engine.reflection, id, method);
+                let hit = crate::world::query::raw_cast(engine, origin, direction, params.as_ref());
+                if params.is_some() {
+                    let _ = api.bridge.raw_set(1, LuaValue::Nil);
+                }
+                let Some((part, position, normal, distance, material)) = hit else {
+                    ffi::lua_pushnil(state);
+                    return Out::Ret(1);
+                };
+                ffi::lua_createtable(state, 0, 5);
+                let table = ffi::lua_gettop(state);
+                push_instance(state, api, None, part);
+                ffi::lua_setfield(state, table, c"Instance".as_ptr());
+                ffi::lua_pushvector(state, position.x, position.y, position.z);
+                ffi::lua_setfield(state, table, c"Position".as_ptr());
+                ffi::lua_pushvector(state, normal.x, normal.y, normal.z);
+                ffi::lua_setfield(state, table, c"Normal".as_ptr());
+                ffi::lua_pushnumber(state, distance as f64);
+                ffi::lua_setfield(state, table, c"Distance".as_ptr());
+                if let Some(item) = material {
+                    ffi::lua_rawgeti_(state, REGISTRY, api.refs.enums);
+                    if ffi::lua_rawgeti_(state, -1, item as c_int + 1) != ffi::LUA_TNIL {
+                        ffi::lua_remove(state, -2);
+                        ffi::lua_setfield(state, table, c"Material".as_ptr());
+                    } else {
+                        ffi::lua_pop(state, 2);
+                    }
+                }
+                if push_result_meta(state, api) {
+                    ffi::lua_setmetatable(state, table);
+                    ffi::lua_setreadonly(state, table, 1);
+                }
+                Out::Ret(1)
             }
             Base::GetFullName => {
                 let name = engine.state.borrow().dom.full_name(&engine.reflection, id);

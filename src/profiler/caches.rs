@@ -2,6 +2,11 @@
 //! cache the engine keeps between script calls. Off, a count site pays one relaxed load. The counts are the process's
 //! (a profile runs in its own process): work the engine does on other threads (bundles decoded ahead, modules compiled
 //! ahead) counts too. A host counts its own caches (rur's layout) through [`named`].
+//!
+//! The caches measure how fast ree runs, not what the game costs (the summary lists them under "emulator"); three of them
+//! say something a client does too, and [`facts`] gives those as the game's: the instances its scripts touched (a userdata
+//! made for each, as a client makes one), the modules that ran, and the datatype property reads (a client makes a value for
+//! each read; ree hands back the one it made while the property is unchanged).
 
 use std::sync::{
     Mutex,
@@ -9,6 +14,9 @@ use std::sync::{
 };
 
 static ON: AtomicBool = AtomicBool::new(false);
+
+/// The instances a userdata was made for, by (index, generation): the instances the scripts touched
+static TOUCHED: Mutex<Option<rustc_hash::FxHashSet<u64>>> = Mutex::new(None);
 
 /// A cache of the engine's
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,7 +61,7 @@ impl Cache {
 
     pub fn about(self) -> &'static str {
         match self {
-            Cache::Atoms => "a property or method name's id kept on the Luau string (miss: looked up by its bytes)",
+            Cache::Atoms => "a property or method name's id kept on the Luau string (hit: read off the string; miss: looked up by its bytes, once for each new string the VM makes)",
             Cache::Members => "the Instance API's fast path per class and member (miss: worked out from the reflection)",
             Cache::Resolve => "the engine's member resolution per class and name",
             Cache::Values => "a UDim2, Color3, ... property's converted value, kept while the instance is unchanged",
@@ -171,6 +179,47 @@ pub fn snapshot() -> Vec<(&'static str, &'static str, Counts)> {
     rows
 }
 
+/// A userdata was made for the instance (index, generation): one the scripts touched
+#[inline]
+pub fn instance_touched(index: u32, generation: u32) {
+    if on() {
+        let mut touched = TOUCHED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        touched.get_or_insert_with(Default::default).insert(((generation as u64) << 32) | index as u64);
+    }
+}
+
+/// What the engine's caches say of the game itself: what a client does too
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Facts {
+    /// Instances the scripts touched: a userdata was made for each (a client makes one for an instance a script first reaches)
+    pub instances_touched: u64,
+    /// The userdata made (an instance's again once the VM collected its first) and collected
+    pub userdata_made: u64,
+    pub userdata_collected: u64,
+    /// ModuleScripts that ran (a require that ran the module), and requires served by the result kept
+    pub modules_run: u64,
+    pub requires_kept: u64,
+    /// Datatype property reads (UDim2, Color3, ...): a client makes a new value for each; ree handed back the value it made
+    /// while the property was unchanged for `datatype_reads_reused` of them
+    pub datatype_reads: u64,
+    pub datatype_reads_reused: u64,
+}
+
+/// The game's facts the caches counted (the counts since the profile began)
+pub fn facts() -> Facts {
+    let (wrappers, requires, values) = (counts(Cache::Wrappers as usize), counts(Cache::Requires as usize), counts(Cache::Values as usize));
+    let touched = TOUCHED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref().map_or(0, |set| set.len() as u64);
+    Facts {
+        instances_touched: touched,
+        userdata_made: wrappers.misses,
+        userdata_collected: wrappers.evictions,
+        modules_run: requires.misses,
+        requires_kept: requires.hits,
+        datatype_reads: values.hits + values.misses,
+        datatype_reads_reused: values.hits,
+    }
+}
+
 /// Clears the counts (a profile's start).
 pub(crate) fn reset() {
     for slot in &COUNTS {
@@ -178,4 +227,5 @@ pub(crate) fn reset() {
             field.store(0, Ordering::Relaxed);
         }
     }
+    *TOUCHED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }

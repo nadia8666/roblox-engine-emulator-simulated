@@ -85,6 +85,181 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 static WORK_CLOCK: AtomicBool = AtomicBool::new(false);
 /// The profiling suite samples host time (profiler.rs `time`): the ticker runs for it, and the interrupt samples for it
 static SUITE_TIME: AtomicBool = AtomicBool::new(false);
+/// The tick the suite's safepoint work last ran at (the counters' reading and host time's booking at a safepoint): the interrupt
+/// returns after this compare, before any thread-local work, while the ticker has not moved past it
+static SUITE_SEEN: AtomicU64 = AtomicU64::new(0);
+/// The VM's count of the C calls scripts make (its work counters' `ccalls`, while the suite samples host time), read at safepoints:
+/// a sample whose count moved holds a C function's time, which no safepoint inside it samples. A level for each of the
+/// interpreter's entries open (a C function a script called, calling back into Luau, is one more): (the count when the level began,
+/// the count its last Luau safepoint consumed). Only a safepoint in a Luau frame consumes, its own level's: an interrupt from
+/// inside a C function, or a safepoint in a Luau function it called back, leaves the calling frame's count to the calling frame,
+/// whose next safepoint comes when the C function has returned
+struct CCalls {
+    counter: *const u64,
+    levels: Vec<(u64, u64)>,
+}
+
+thread_local! {
+    static C_CALLS: RefCell<CCalls> = const { RefCell::new(CCalls { counter: std::ptr::null(), levels: Vec::new() }) };
+}
+
+fn c_calls_now(counter: *const u64) -> u64 {
+    if counter.is_null() { 0 } else { unsafe { counter.read_volatile() } }
+}
+
+/// Watches the VM's count of the C calls scripts make (its work counters' `ccalls` field; null: none) for host time's samples
+pub(crate) fn watch_c_calls(counter: *const u64) {
+    let now = c_calls_now(counter);
+    C_CALLS.with(|calls| *calls.borrow_mut() = CCalls { counter, levels: vec![(now, now)] });
+}
+
+/// Whether a C function ran in the code a sample now stands for, so it holds that function's time: its level's count moved since
+/// that level's last Luau safepoint (false while none is watched)
+pub(crate) fn c_called() -> bool {
+    C_CALLS.with(|calls| {
+        let calls = calls.borrow();
+        !calls.counter.is_null() && calls.levels.last().is_some_and(|&(_, seen)| c_calls_now(calls.counter) != seen)
+    })
+}
+
+/// A safepoint's interrupt: the levels follow the interpreter's entries (a level a callback ended gives its C calls back: they are
+/// not the calling frame's), and then whether it comes from inside a C function, which consumes nothing
+fn c_calls_follow(state: *mut mlua::ffi::lua_State) -> bool {
+    C_CALLS.with(|calls| {
+        let mut calls = calls.borrow_mut();
+        if calls.counter.is_null() {
+            return true;
+        }
+        let now = c_calls_now(calls.counter);
+        let (entries, in_c) = unsafe { crate::profiler::vm::entries(state) };
+        let depth = entries.max(1);
+        while calls.levels.len() > depth {
+            let (began, _) = calls.levels.pop().unwrap();
+            if let Some(outer) = calls.levels.last_mut() {
+                outer.1 += now - began;
+            }
+        }
+        while calls.levels.len() < depth {
+            calls.levels.push((now, now));
+        }
+        in_c
+    })
+}
+
+/// A Luau safepoint: its level's C calls so far are the next sample's starting point
+fn c_calls_seen() {
+    C_CALLS.with(|calls| {
+        let mut calls = calls.borrow_mut();
+        let now = c_calls_now(calls.counter);
+        if let Some(level) = calls.levels.last_mut() {
+            level.1 = now;
+        }
+    })
+}
+
+/// The tick host time last booked at (a safepoint, the VM's entry or exit, an engine step, an Instance API call): host time's own
+/// booking points compare with it, and a booking there leaves the tick's safepoint work, the counters' reading, to the next
+/// safepoint
+static TIME_SEEN: AtomicU64 = AtomicU64::new(0);
+/// The interpreter is running (the VM's enter and leave hook): engine time between handlers is told from Luau's
+static IN_VM: AtomicBool = AtomicBool::new(false);
+
+/// The ticker's count (a millisecond a tick since it started)
+#[inline]
+pub(crate) fn ticks() -> u64 {
+    #[cfg(test)]
+    if let Some(manual) = MANUAL_TICKS.with(std::cell::Cell::get) {
+        return manual;
+    }
+    TICKS.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's own clock for the suite's host time on its thread (`manual_ticks`): what the bookings see in place of the ticker's
+    static MANUAL_TICKS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    /// A test's clock that ticks at every so many safepoints of the interpreter (`ticks_every`): (every, safepoints so far)
+    static SAFEPOINT_TICKS: std::cell::Cell<Option<(u64, u64)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Makes the test clock (`manual_ticks`) tick once every `every` safepoints of the interpreter on this thread (None: only when
+/// the test moves it): samples land on every kind of safepoint in turn, a loop's edge as often as a call, as a millisecond
+/// ticker's would, and exactly the same way each run
+#[cfg(test)]
+pub(crate) fn ticks_every(every: Option<u64>) {
+    SAFEPOINT_TICKS.with(|ticks| ticks.set(every.map(|every| (every.max(1), 0))));
+}
+
+/// Makes the suite's host time on this thread read a clock the test moves (`advance_ticks`), from tick 1, instead of the ticker
+/// (`None` gives it back): a test's bookings are then exact, whatever the machine's load
+#[cfg(test)]
+pub(crate) fn manual_ticks(on: bool) {
+    MANUAL_TICKS.with(|manual| manual.set(on.then_some(1)));
+}
+
+/// Moves this thread's test clock (`manual_ticks`) on by `ticks`
+#[cfg(test)]
+pub(crate) fn advance_ticks(ticks: u64) {
+    MANUAL_TICKS.with(|manual| manual.set(manual.get().map(|now| now + ticks)));
+}
+
+/// The tick host time last booked at ([`TIME_SEEN`])
+#[inline]
+pub(crate) fn seen() -> u64 {
+    TIME_SEEN.load(Ordering::Relaxed)
+}
+
+#[inline]
+pub(crate) fn set_seen(ticks: u64) {
+    TIME_SEEN.store(ticks, Ordering::Relaxed);
+}
+
+/// The safepoint's work ran for `ticks` ([`SUITE_SEEN`])
+#[inline]
+pub(crate) fn set_suite_seen(ticks: u64) {
+    SUITE_SEEN.store(ticks, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn in_vm() -> bool {
+    IN_VM.load(Ordering::Relaxed)
+}
+
+#[inline]
+pub(crate) fn set_in_vm(running: bool) {
+    IN_VM.store(running, Ordering::Relaxed);
+}
+
+/// An Instance API call (its C metamethod's entry and return) while the suite samples host time: the time it took is booked to
+/// its own line, not to the next safepoint after it (a loop's edge took a 3,000-write loop's writes). Off, one atomic load.
+pub struct ApiCall(*mut mlua::ffi::lua_State);
+
+impl ApiCall {
+    #[inline]
+    pub fn new(state: *mut mlua::ffi::lua_State) -> ApiCall {
+        if !SUITE_TIME.load(Ordering::Relaxed) {
+            return ApiCall(std::ptr::null_mut());
+        }
+        let now = ticks();
+        if now != seen() {
+            crate::profiler::time_call(state, true, now);
+        }
+        ApiCall(state)
+    }
+}
+
+impl Drop for ApiCall {
+    #[inline]
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+        let now = ticks();
+        if now != seen() {
+            crate::profiler::time_call(self.0, false, now);
+        }
+    }
+}
 
 thread_local! {
     static SUITE_TICKER: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
@@ -94,7 +269,7 @@ thread_local! {
 pub(crate) fn start_suite_ticker() -> u64 {
     let stop = Arc::new(AtomicBool::new(false));
     let ticker_stop = stop.clone();
-    let (base, started) = (TICKS.load(Ordering::Relaxed), Instant::now());
+    let (base, started) = (ticks(), Instant::now());
     let spawned = thread::Builder::new().name("ree-profile-ticker".into()).spawn(move || {
         while !ticker_stop.load(Ordering::Relaxed) {
             thread::sleep(Duration::from_millis(1));
@@ -103,6 +278,9 @@ pub(crate) fn start_suite_ticker() -> u64 {
     });
     if spawned.is_ok() {
         SUITE_TICKER.with(|ticker| *ticker.borrow_mut() = Some(stop));
+        SUITE_SEEN.store(base, Ordering::Relaxed);
+        TIME_SEEN.store(base, Ordering::Relaxed);
+        IN_VM.store(false, Ordering::Relaxed);
         SUITE_TIME.store(true, Ordering::Relaxed);
     }
     base
@@ -110,6 +288,7 @@ pub(crate) fn start_suite_ticker() -> u64 {
 
 pub(crate) fn stop_suite_ticker() {
     SUITE_TIME.store(false, Ordering::Relaxed);
+    watch_c_calls(std::ptr::null());
     SUITE_TICKER.with(|ticker| {
         if let Some(stop) = ticker.borrow_mut().take() {
             stop.store(true, Ordering::Relaxed);
@@ -303,24 +482,27 @@ unsafe extern "C-unwind" fn allocating(state: *mut mlua::ffi::lua_State, _block:
 }
 
 /// Runs a step of ree's own engine (the Animator, joint and physics steps the scheduler makes between a
-/// frame's Luau handlers) and, in the host-time profile, books its ticks to `phase;(ree engine step:
-/// name)` instead of to the next Luau safepoint, where they made a spring module's PreSimulation and
-/// PostSimulation handlers and a Stepped handler's first native line look like 25-57 % of a frame
-/// (the same time with no springs and no enemies). A step that reached a Luau safepoint
-/// itself is left as it is.
+/// frame's Luau handlers, the recorder's sampling) and, in the host-time profile, books its time to
+/// `phase;(ree engine step: name)` instead of to the next Luau safepoint, where they made a spring module's
+/// PreSimulation and PostSimulation handlers and a Stepped handler's first native line look like 25-57 % of a frame
+/// (the same time with no springs and no enemies), and a recorder's walk the first handler's loop line. Luau a step
+/// runs is booked as its own (the VM's enter and leave hook).
 pub fn engine_step<R>(name: &str, step: impl FnOnce() -> R) -> R {
+    // (the hardware counters' readings around the step, whether host time is sampled or not: its counts are its own)
+    let counted = crate::profiler::hw_step(Some(name));
+    let result = timed_engine_step(name, step);
+    if counted {
+        crate::profiler::hw_step(None);
+    }
+    result
+}
+
+/// [`engine_step`]'s host time: a frame of its own for the step in the samples
+fn timed_engine_step<R>(name: &str, step: impl FnOnce() -> R) -> R {
     if SUITE_TIME.load(Ordering::Relaxed) {
-        // (the hardware counters' readings around the step: its counts are its own)
-        let counted = crate::profiler::hw_step(Some(name));
-        let start = TICKS.load(Ordering::Relaxed);
+        crate::profiler::time_step(Some(name));
         let result = step();
-        if counted {
-            crate::profiler::hw_step(None);
-        }
-        let ticks = TICKS.load(Ordering::Relaxed) - start;
-        if ticks > 0 {
-            crate::profiler::engine_step(name, ticks);
-        }
+        crate::profiler::time_step(None);
         return result;
     }
     if !ENABLED.load(Ordering::Relaxed) || WORK_CLOCK.load(Ordering::Relaxed) {
@@ -437,10 +619,30 @@ fn folded_stack(state: *mut mlua::ffi::lua_State, phase: &str, line_under_native
 unsafe extern "C-unwind" fn sampling_interrupt(state: *mut mlua::ffi::lua_State, gc: i32) {
     if gc < 0 {
         sample(state);
+        #[cfg(test)]
+        SAFEPOINT_TICKS.with(|ticks| {
+            if let Some((every, seen)) = ticks.get() {
+                ticks.set(Some((every, seen + 1)));
+                if (seen + 1) % every == 0 {
+                    advance_ticks(1);
+                }
+            }
+        });
+        // (the suite's host time and counters: a compare of the ticker with the tick last booked, and nothing more until it moves)
         if SUITE_TIME.load(Ordering::Relaxed) {
-            crate::profiler::safepoint(state, TICKS.load(Ordering::Relaxed));
+            let in_c = c_calls_follow(state);
+            let now = ticks();
+            if now != SUITE_SEEN.load(Ordering::Relaxed) {
+                crate::profiler::safepoint(state, now);
+            }
+            // (the next sample's C calls count from here, unless a C function still runs: an interrupt from inside it)
+            if !in_c {
+                c_calls_seen();
+            }
         }
-        crate::boundary::safepoint(state);
+        if crate::boundary::on() {
+            crate::boundary::safepoint(state);
+        }
         // (a profile holds the interrupt slot: the script timeout checks from here)
         unsafe { crate::watchdog::check(state) };
     } else {

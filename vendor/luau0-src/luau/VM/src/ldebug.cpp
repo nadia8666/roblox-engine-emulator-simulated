@@ -415,8 +415,8 @@ void luaG_breakpoint(lua_State* L, Proto* p, int line, bool enable)
 
             uint8_t op = enable ? LOP_BREAK : LUAU_INSN_OP(p->debuginsn[i]);
 
-            // patch just the opcode byte, leave arguments alone
-            p->code[i] &= ~0xff;
+            // Keep the cold marker: changing a breakpoint does not execute the instruction.
+            p->code[i] &= ~0x7f;
             p->code[i] |= op;
             LUAU_ASSERT(LUAU_INSN_OP(p->code[i]) == op);
 

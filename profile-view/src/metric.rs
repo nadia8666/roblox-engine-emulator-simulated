@@ -25,13 +25,18 @@ pub enum Unit {
     Ms,
     Count,
     Bytes,
+    /// A part of a whole, 0 to 1, shown as a percentage (the share of cycles stalled on loads)
+    Share,
+    /// A ratio with its decimals (IPC, cycles per thousand instructions)
+    Decimal,
 }
 
 impl Metric {
     /// The metrics a profile has, in the order `m` cycles them
     pub fn available(p: &Profile) -> Vec<Metric> {
         let mut out = Vec::new();
-        let work = p.raw.work.is_some() || !p.raw.tree.is_empty();
+        // (a profile without the work kind keeps a call tree of one empty node: no work was measured)
+        let work = p.has_work();
         if work {
             out.push(Metric::Work);
         }
@@ -60,6 +65,8 @@ impl Metric {
     pub fn label(self, p: &Profile) -> String {
         match self {
             Metric::Work => "Studio work".into(),
+            // (a newer ree weighs host time samples by the run thread's CPU time)
+            Metric::Time if p.raw.time.as_ref().and_then(|t| t.weight.as_deref()) == Some("thread CPU") => "host CPU time".into(),
             Metric::Time => "host time".into(),
             Metric::Insns => "instructions".into(),
             Metric::AllocBytes => "allocated bytes".into(),
@@ -95,6 +102,20 @@ impl Metric {
         }
     }
 
+    /// What the metric is, one line, for this profile: a hardware counter's own words (what it counts, and how its
+    /// counts reached functions and lines)
+    pub fn describe(self, p: &Profile) -> String {
+        let Metric::Counter(index) = self else { return self.about().to_string() };
+        let Some(counters) = p.raw.counters.as_ref() else { return self.about().to_string() };
+        let what = counters.about_of(index as usize).unwrap_or_else(|| "a CPU counter".into());
+        let how = if counters.by_calls() {
+            "on the run thread, read around sampled Luau calls (a function's own, estimated where one call in several was read, a short one a little high; an estimate below zero is not listed here, summary.txt lists it; a line shows what the calls made from it cost); varies run to run"
+        } else {
+            "on the run thread, booked to the stack of the 1 ms sample after it; varies run to run"
+        };
+        format!("{what}; {how}")
+    }
+
     /// The name `--metric` takes
     pub fn cli_name(self, p: &Profile) -> String {
         match self {
@@ -124,7 +145,8 @@ impl Metric {
         if named.is_some() {
             return named;
         }
-        let counter = name.strip_prefix("hw:").unwrap_or(&name);
+        // (an old counter name is its name now: hw_counters::OLD_NAMES)
+        let counter = crate::hw_counters::canonical(name.strip_prefix("hw:").unwrap_or(&name));
         p.raw.counters.as_ref()?.names.iter().position(|n| n.eq_ignore_ascii_case(counter)).map(|index| Metric::Counter(index as u8))
     }
 
@@ -160,7 +182,7 @@ impl Metric {
     /// borrow work's
     pub fn has_stacks(self, p: &Profile) -> bool {
         match self {
-            Metric::Work | Metric::Insns => !p.raw.tree.is_empty(),
+            Metric::Work | Metric::Insns => p.has_work() && !p.raw.tree.is_empty(),
             Metric::CacheMisses => false,
             _ => self.folded(p).is_some_and(|name| p.folded.contains_key(&name)),
         }
@@ -179,7 +201,7 @@ impl Metric {
             Metric::Insns => p.raw.work.as_ref().map(|w| w.script_insns + w.engine_insns).filter(|t| *t > 0.0).unwrap_or_else(|| p.funcs.iter().map(|f| f.own.insns).sum()),
             Metric::AllocBytes => p.raw.alloc.as_ref().map_or(0.0, |a| a.bytes),
             Metric::AllocCount => p.raw.alloc.as_ref().map_or(0.0, |a| a.objects),
-            Metric::CacheMisses => p.raw.luau_caches.as_ref().map_or(0.0, |c| c.by_kind.iter().map(|k| k.misses + k.slow).sum()),
+            Metric::CacheMisses => p.raw.luau_caches.as_ref().map_or(0.0, |c| c.by_kind.iter().map(|k| k.lookups() - k.hit_count()).sum()),
             Metric::Counter(index) => p.raw.counters.as_ref().and_then(|c| c.names.get(index as usize).and_then(|name| c.run.counts.get(name))).copied().unwrap_or(0.0),
         }
     }
@@ -238,6 +260,8 @@ impl Metric {
     /// The timeline column that holds this metric a frame (`counters.frames` for a counter)
     pub fn timeline_column(self, p: &Profile) -> Option<String> {
         match self {
+            // (the game's code a frame, the harness's apart, when the timeline splits a frame's work by side)
+            Metric::Work if p.harness_set_apart() && p.raw.timeline.as_ref().is_some_and(|t| t.index("game_ms").is_some()) => Some("game_ms".into()),
             Metric::Work => Some("work_ms".into()),
             Metric::Time => Some("host_ms".into()),
             Metric::Insns => Some("instructions".into()),

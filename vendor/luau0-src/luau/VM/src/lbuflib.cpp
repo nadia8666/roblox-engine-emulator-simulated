@@ -3,6 +3,7 @@
 
 #include "lcommon.h"
 #include "lbuffer.h"
+#include "lstate.h"
 
 #if defined(LUAU_BIG_ENDIAN)
 #include <endian.h>
@@ -50,6 +51,7 @@ static int buffer_fromstring(lua_State* L)
     const char* val = luaL_checklstring(L, 1, &len);
 
     void* data = lua_newbuffer(L, len);
+    luaE_worklib(L, LUA_WORK_BUFBYTES, len);
     memcpy(data, val, len);
     return 1;
 }
@@ -231,6 +233,7 @@ static int buffer_writestring(lua_State* L)
     if (isoutofbounds(offset, len, unsigned(count)))
         luaL_error(L, "buffer access out of bounds");
 
+    luaE_workbufmove(L, count);
     memcpy((char*)buf + offset, val, count);
     return 0;
 }
@@ -265,6 +268,7 @@ static int buffer_copy(lua_State* L)
     if (isoutofbounds(toffset, tlen, unsigned(size)))
         luaL_error(L, "buffer access out of bounds");
 
+    luaE_workbufmove(L, size);
     memmove((char*)tbuf + toffset, (char*)sbuf + soffset, size);
     return 0;
 }
@@ -283,6 +287,7 @@ static int buffer_fill(lua_State* L)
     if (isoutofbounds(offset, len, unsigned(size)))
         luaL_error(L, "buffer access out of bounds");
 
+    luaE_workbufmove(L, size);
     memset((char*)buf + offset, value & 0xff, size);
     return 0;
 }

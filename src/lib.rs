@@ -60,6 +60,10 @@ mod server_tests;
 mod luau_profile_tests;
 #[cfg(test)]
 mod profiler_tests;
+#[cfg(test)]
+mod profiler_prices_tests;
+#[cfg(test)]
+mod profiler_vm_tests;
 
 use std::{
     any::Any,
@@ -113,11 +117,13 @@ pub struct Options {
     pub local_player_display_name: Option<String>,
     pub verbose: bool,
     pub offline: bool,
+    pub loopback: bool,
     /// The place's Workspace.StreamingTargetRadius when it streams (StreamingEnabled), as its place
     /// file holds it (the project's rur.json `streamingTargetRadius`, or --streaming)
     pub streaming_target_radius: Option<f64>,
     /// The host's checkout: its state dir ([`state_dir`]) holds the caches (manifest bundles, Studio
-    /// snapshots), and the default project sits beside it (launch.rs). Hosts set their own.
+    /// snapshots), and the default project sits beside it (launch.rs). Hosts set their own. After
+    /// [`init_binary`], a standalone binary uses this only for explicitly named input data.
     pub repo: PathBuf,
     /// The project's folder, which content naming a relative local path is read from
     /// ([`Options::local_file`]): launch.rs gives `--project`, else the folder holding the first root,
@@ -126,14 +132,11 @@ pub struct Options {
     /// The places whose clients pay more than ree's default prices (a Text write's localization lookup, a match place's
     /// geometry writes): cost.rs's list, plus `REE_LOCALIZED_PLACES` / `REE_MATCH_PLACES` on a command line (launch.rs)
     pub place_prices: cost::PlacePrices,
-    /// `--loopback` (a client run): one VM plays both sides. The server-only services load beside the client's, a client's
-    /// FireServer reaches OnServerEvent (the local player in front), FireClient / FireAllClients reach OnClientEvent, Invoke*
-    /// call the other side's callback, and the local player fires PlayerAdded / PlayerRemoving like any joining player
-    pub loopback: bool,
-    /// A sub-frame timing check's second run (`ree record --timing-check`, record/run.rs): the in-frame clock moves, on twice
-    /// the modelled work and never frozen (a frozen run's wall clock stays pinned), so a recording that changes with it hinges
-    /// on when within a frame a script reads os.clock
-    pub clock_moved: bool,
+    /// A sub-frame timing check's probe (`ree record --timing-check`, record/run.rs): the in-frame clock runs on this many
+    /// times the modelled work (a faster client below 1, a slower one above) and is never frozen (a frozen run's wall clock
+    /// stays pinned), so a recording that changes with it hinges on when within a frame a script reads os.clock. None: the
+    /// clock as modelled
+    pub clock_probe: Option<f64>,
 }
 
 impl Default for Options {
@@ -159,12 +162,12 @@ impl Default for Options {
             local_player_display_name: None,
             verbose: false,
             offline: false,
+            loopback: false,
             streaming_target_radius: None,
             repo: default_repo(),
             project: None,
             place_prices: cost::PlacePrices::default(),
-            loopback: false,
-            clock_moved: false,
+            clock_probe: None,
         }
     }
 }
@@ -178,7 +181,6 @@ impl Options {
         self.run_context == RunContext::Server
     }
 
-    /// Whether the server-only services are installed: a server's, or a loopback client's
     pub fn server_services(&self) -> bool {
         self.server() || self.loopback
     }
@@ -286,6 +288,15 @@ pub struct LogLine {
     pub context: Option<Value>,
 }
 
+/// A bounded session history, independent of deferred MessageOut delivery and output spooling.
+pub const LOG_HISTORY_CAP: usize = 10_000;
+
+pub struct LogEntry {
+    pub kind: &'static str,
+    pub text: String,
+    pub timestamp: f64,
+}
+
 /// The side a run's scripts are on ([`Options::run_context`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RunContext {
@@ -315,17 +326,79 @@ impl RunContext {
 /// `--features dhat-heap` build writes its heap profile here)
 pub static BEFORE_EXIT: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
 
-/// This crate's checkout (where `ree` runs from): a service's starter's, else the executable's; hosts pass their own [`Options::repo`].
+/// The checkout a host runs from: a service's starter's, else the nearest `Cargo.lock` above the
+/// executable, else `.`. This is the lookup library hosts (rur and others) were written against. Ree's
+/// own binary does not use it: [`init_binary`] sets its defaults first.
 pub fn default_repo() -> PathBuf {
     if let Some(repo) = STARTER_REPO.get() {
         return repo.clone();
     }
-    DEFAULT_REPO.get_or_init(|| std::env::current_exe().ok().and_then(|exe| checkout_of(&exe)).unwrap_or_else(|| PathBuf::from("."))).clone()
+    DEFAULT_REPO
+        .get_or_init(|| {
+            let checkout = std::env::current_exe().ok().and_then(|exe| checkout_of(&exe));
+            checkout.unwrap_or_else(|| PathBuf::from("."))
+        })
+        .clone()
 }
 
-/// The checkout an executable belongs to: the nearest folder above it holding a `Cargo.lock`, without a verbatim prefix.
+/// Whether ree's binary started outside its own checkout. [`init_binary`] decides this once, for every job
+/// of the process. A release binary never switches to host mode for a job: `--repo` only names inputs, so
+/// letting it pick the mode would move caches into that folder and give one service different keys per job.
+/// A library host never calls [`init_binary`] and always stays in host mode. `repo` is unused; it keeps the
+/// signature hosts were written against.
+pub fn is_standalone(_repo: &Path) -> bool {
+    is_standalone_binary()
+}
+
+/// [`is_standalone`] for code with no repo to ask about, such as `ree serve` and its client.
+pub(crate) fn is_standalone_binary() -> bool {
+    STANDALONE_STATE.get().is_some()
+}
+
+/// For ree's own binary, not for hosts: picks the binary's defaults before anything reads them, so
+/// call it first thing in `main`. A host that never calls it keeps [`default_repo`] and `<repo>/.cache`.
+///
+/// `source` is the executable, or the starter of a service (`serve --source`). If a ree checkout holds
+/// it (a `Cargo.lock` beside a `Cargo.toml` that names this package), that checkout is the default
+/// repo. Otherwise ree is standalone: the default repo is the empty path and the cache is `state`
+/// (`serve --state-dir`) or else the per-user folder. Selecting the mode does not resolve that folder:
+/// metadata and other stateless commands need no cache. `--repo` never changes this mode.
+///
+/// The first call wins: later calls do not change the defaults.
+pub fn init_binary(source: &Path, state: Option<PathBuf>) -> Result<(), String> {
+    let repo = ree_checkout_of(source).unwrap_or_default();
+    if repo.as_os_str().is_empty() {
+        // a service changes its working directory, so a relative `--state-dir` is made absolute here
+        let state = match state {
+            Some(dir) => Some(std::path::absolute(dir).map_err(|error| error.to_string())?),
+            None => None,
+        };
+        // an explicit directory fills the lock now; without one it stays empty until the first command that needs state
+        let pinned_state = match state {
+            Some(dir) => std::sync::OnceLock::from(dir),
+            None => std::sync::OnceLock::new(),
+        };
+        let _ = STANDALONE_STATE.set(pinned_state);
+    }
+    set_default_repo(repo);
+    Ok(())
+}
+
+/// The checkout a host's executable belongs to: the nearest ancestor holding a `Cargo.lock`, whatever package it is. rur
+/// and other hosts call this, so it keeps the lookup they were written against.
 pub fn checkout_of(exe: &Path) -> Option<PathBuf> {
-    let dir = exe.ancestors().skip(1).find(|dir| dir.join("Cargo.lock").is_file())?;
+    checkout_matching(exe, |dir| dir.join("Cargo.lock").is_file())
+}
+
+/// Ree's own checkout, which also needs ree's manifest beside the lockfile: an installed ree can sit under any Cargo
+/// project, and its defaults and the copies it runs as a service must not take that project for a checkout.
+pub(crate) fn ree_checkout_of(exe: &Path) -> Option<PathBuf> {
+    checkout_matching(exe, is_ree_checkout)
+}
+
+/// The nearest ancestor of `exe` (not `exe` itself) that `is_checkout` accepts, without a verbatim prefix.
+fn checkout_matching(exe: &Path, is_checkout: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    let dir = exe.ancestors().skip(1).find(|dir| is_checkout(dir))?;
     let text = dir.to_string_lossy();
     Some(match text.strip_prefix(r"\\?\") {
         Some(rest) if !rest.starts_with("UNC") => PathBuf::from(rest),
@@ -333,23 +406,145 @@ pub fn checkout_of(exe: &Path) -> Option<PathBuf> {
     })
 }
 
-/// Sets [`default_repo`] for the rest of this process, even after something read it (a service: its starter's checkout).
+/// Whether `dir` is ree's own checkout: a `Cargo.lock` beside a `Cargo.toml` whose package is this crate. A lockfile
+/// alone is not enough, since an installed binary can sit under any Cargo project.
+fn is_ree_checkout(dir: &Path) -> bool {
+    if !dir.join("Cargo.lock").is_file() {
+        return false;
+    }
+    let Ok(manifest) = std::fs::read_to_string(dir.join("Cargo.toml")) else { return false };
+    package_name(&manifest) == Some(env!("CARGO_PKG_NAME"))
+}
+
+/// The `name` in a manifest's `[package]` table. That one key is all that is needed, so the manifest is read line by
+/// line instead of through a TOML parser.
+fn package_name(manifest: &str) -> Option<&str> {
+    let mut in_package = false;
+    for line in manifest.lines() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else { continue };
+        if key.trim() == "name" {
+            return unquote(value.trim());
+        }
+    }
+    None
+}
+
+/// The text inside a TOML basic (`"..."`) or literal (`'...'`) string.
+fn unquote(value: &str) -> Option<&str> {
+    let basic = value.strip_prefix('"').and_then(|rest| rest.strip_suffix('"'));
+    basic.or_else(|| value.strip_prefix('\'').and_then(|rest| rest.strip_suffix('\'')))
+}
+
+/// Sets [`default_repo`] for the rest of this process, even after something read it (a service: its
+/// starter's checkout). Only the first call counts.
 pub fn set_default_repo(repo: PathBuf) {
     let _ = STARTER_REPO.set(repo);
 }
 
+/// What [`set_default_repo`] set, which [`default_repo`] returns before it looks for a checkout.
 static STARTER_REPO: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+/// The checkout [`default_repo`] found above the executable, looked up once.
 static DEFAULT_REPO: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+/// Set only by [`init_binary`], and only for a standalone ree. The inner lock holds `serve --state-dir`, or the first
+/// successful cache lookup when a command needs state. Every later job shares it, even after the service changes its
+/// environment and working directory. `--help` needs no cache at all.
+static STANDALONE_STATE: std::sync::OnceLock<std::sync::OnceLock<PathBuf>> = std::sync::OnceLock::new();
 
-/// The state dir: RUR_STATE_DIR, else RUR_CACHE_DIR, else `<repo>/.cache`. Caches live here, so a
-/// checkout can be used without writing into it. (The variables keep the names they have in
-/// roblox-ui-renderer, which shares this engine's caches.)
+/// The state dir: RUR_STATE_DIR, else RUR_CACHE_DIR, else `<repo>/.cache` for a host's checkout,
+/// or, for every job of a standalone ree ([`init_binary`]), the per-user `ree` cache. Caches
+/// live here, so a checkout can be used without writing into it. (The variables keep the names they
+/// have in roblox-ui-renderer, which shares this engine's caches.)
 pub fn state_dir(repo: &Path) -> PathBuf {
-    ["RUR_STATE_DIR", "RUR_CACHE_DIR"]
-        .iter()
-        .find_map(|name| std::env::var_os(name).filter(|value| !value.is_empty()))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| repo.join(".cache"))
+    // Every command that reaches this has already called `try_state_dir` and reported its error, so this cannot fail
+    try_state_dir(repo).expect("the state dir was resolved when the command started")
+}
+
+/// [`state_dir`] with an ordinary error when a standalone process has no per-user cache folder.
+/// Hosts always have `<repo>/.cache` as their fallback.
+pub(crate) fn try_state_dir(repo: &Path) -> Result<PathBuf, String> {
+    match STANDALONE_STATE.get() {
+        // `repo` only names inputs here, so it never provides the cache
+        Some(state) => resolve_standalone_state(state, std::env::consts::OS, |name| std::env::var_os(name)),
+        // a host, or a binary in its checkout
+        None => Ok(state_override(|name| std::env::var_os(name)).unwrap_or_else(|| repo.join(".cache"))),
+    }
+}
+
+/// The standalone state dir held in `state`, looked up from the environment `var` reads on the first call and kept after.
+///
+/// A service normalizes its environment (relative paths become absolute) and moves into its state dir. Looking the
+/// folder up again after that could pick another one, for example a relative `XDG_CACHE_HOME` that was ignored before,
+/// so the first successful answer is pinned. A failed lookup pins nothing: a stateless command still needs no cache.
+fn resolve_standalone_state(state: &std::sync::OnceLock<PathBuf>, os: &str, var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<PathBuf, String> {
+    if let Some(pinned) = state.get() {
+        return Ok(pinned.clone());
+    }
+    let looked_up = standalone_state_dir(os, var)?;
+    // absolute now, because the service changes its working directory later
+    let absolute = std::path::absolute(looked_up).map_err(|error| error.to_string())?;
+    Ok(state.get_or_init(|| absolute).clone())
+}
+
+/// Resolves a standalone process's state folder now, so that a missing cache is reported before the command has written
+/// anything (profilers, child passes and harness files all write ahead of the first `state_dir` call). A host has
+/// nothing to resolve: its `<repo>/.cache` fallback always exists.
+pub(crate) fn require_standalone_state(repo: &Path) -> Result<(), String> {
+    if is_standalone_binary() {
+        try_state_dir(repo)?;
+    }
+    Ok(())
+}
+
+/// Where an output that no flag named goes: `relative` under state for a standalone binary (which must not write into
+/// whatever folder it was started in), else `relative` from the current folder as hosts always had it. Call it only
+/// after [`require_standalone_state`] succeeded.
+pub(crate) fn default_output_path(relative: impl AsRef<Path>) -> PathBuf {
+    if is_standalone_binary() { state_dir(&default_repo()).join(relative) } else { relative.as_ref().to_path_buf() }
+}
+
+/// A path the environment `var` reads gives for `name`. An unset or empty variable counts as not set.
+fn env_path(var: &impl Fn(&str) -> Option<std::ffi::OsString>, name: &str) -> Option<PathBuf> {
+    var(name).filter(|value| !value.is_empty()).map(PathBuf::from)
+}
+
+/// The environment variables that name the state dir, the first one set winning.
+const STATE_VARIABLES: [&str; 2] = ["RUR_STATE_DIR", "RUR_CACHE_DIR"];
+
+/// The cache folder the user chose: RUR_STATE_DIR, else RUR_CACHE_DIR.
+fn state_override(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
+    STATE_VARIABLES.iter().find_map(|name| env_path(&var, name))
+}
+
+/// The standalone cache for `os` and the environment `var` reads, so tests can try every platform
+/// without touching the real per-user folders. A job's input repo never chooses its cache.
+fn standalone_state_dir(os: &str, var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<PathBuf, String> {
+    if let Some(dir) = state_override(&var) {
+        return Ok(dir);
+    }
+    per_user_cache_dir(os, |name| env_path(&var, name))
+        .map(|dir| dir.join("ree"))
+        .ok_or_else(|| "cannot find a per-user cache folder; set RUR_STATE_DIR to a writable folder".into())
+}
+
+/// The folder the platform keeps a user's caches in: `%LOCALAPPDATA%` on Windows, `~/Library/Caches` on
+/// macOS, else `$XDG_CACHE_HOME` or `~/.cache`. None when the environment does not give an absolute one.
+fn per_user_cache_dir(os: &str, value: impl Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
+    let home = || value("HOME");
+    let cache = match os {
+        "windows" => value("LOCALAPPDATA"),
+        "macos" => home().map(|home| home.join("Library/Caches")),
+        // the XDG specification says to ignore a relative XDG_CACHE_HOME
+        _ => value("XDG_CACHE_HOME").filter(|dir| dir.is_absolute()).or_else(|| home().map(|home| home.join(".cache"))),
+    };
+    cache.filter(|dir| dir.is_absolute())
 }
 
 /// `relative` in the state dir, else the checkout's own `.cache` copy when only that one exists
@@ -357,6 +552,10 @@ pub fn state_dir(repo: &Path) -> PathBuf {
 pub fn shared_state_path(repo: &Path, relative: &str) -> PathBuf {
     let own = state_dir(repo).join(relative);
     files::note(&own);
+    // a standalone run has no checkout `.cache` to fall back to
+    if is_standalone(repo) {
+        return own;
+    }
     files::note(&repo.join(".cache").join(relative));
     if own.exists() {
         return own;
@@ -400,6 +599,7 @@ pub struct State {
     pub signals: signal::Signals,
     pub sched: scheduler::Scheduler,
     pub output: output::Output,
+    pub log_history: std::collections::VecDeque<LogEntry>,
     pub project: project::ProjectState,
     /// Engine-wide instance signals by (instance, event) are in the dom; these are services'
     pub collection: services::CollectionState,
@@ -481,6 +681,8 @@ impl Engine {
 
     /// Creates the engine state with the host's `layers` (installed by `lua::start`).
     pub fn with_layers(options: Options, layers: Vec<Rc<dyn Layer>>) -> Result<Rc<Engine>, String> {
+        // an engine made without `launch::prepare` still reports a missing standalone cache
+        try_state_dir(&options.repo)?;
         let reflection = Reflection::shared()?;
         let mut output = output::Output::default();
         output.verbose = options.verbose;
@@ -492,6 +694,7 @@ impl Engine {
                 signals: Default::default(),
                 sched,
                 output,
+                log_history: Default::default(),
                 project: Default::default(),
                 collection: Default::default(),
                 joints: Default::default(),
@@ -588,6 +791,17 @@ impl Engine {
         let mut state = self.state.borrow_mut();
         let now = state.sched.now;
         let message = message.into();
+        let text = match &trace {
+            Some(trace) if kind == "error" || kind == "warn" => client_error_text(&message, trace),
+            _ => message.clone(),
+        };
+        if matches!(kind, "print" | "info" | "warn" | "error") {
+            let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+            if state.log_history.len() == LOG_HISTORY_CAP {
+                state.log_history.pop_front();
+            }
+            state.log_history.push_back(LogEntry { kind, text: text.clone(), timestamp });
+        }
         let server = self.options.server();
         if server && kind == "error" {
             self.fire_script_error(&mut state, &message, trace.as_deref());
@@ -599,10 +813,6 @@ impl Engine {
             // an engine warning that carries the script's stack, has its stack lines in the text, on a client and on a server
             // alike (measured in a server's game script too: tools/parity/probes/logservice.luau and logservice_text.luau run
             // with run.mjs --server).
-            let text = match &trace {
-                Some(trace) if kind == "error" || kind == "warn" => client_error_text(&message, trace),
-                _ => message.clone(),
-            };
             state.sched.log_queue.push(LogLine { kind, text, context });
         }
         state.output.add(kind, message, trace, now);

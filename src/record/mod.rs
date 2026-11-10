@@ -313,6 +313,9 @@ struct Inner {
     walked: Option<(u64, InstanceId)>,
     /// Walk every frame (a test comparing the two)
     walk_always: bool,
+    /// The work clock's total (seconds, desktop prices) at each sampled frame, for a timing check's comparison of the work a
+    /// frame did ([`Recorder::track_work`]); None when not asked for
+    frame_work: Option<Vec<f64>>,
     /// An Adornee was written since the last walk: a GUI of the PlayerGui may draw on something else
     /// now, or on nothing, with nothing parented (the walk finds what [`Inner::adorned`] holds)
     adornee_written: bool,
@@ -430,12 +433,24 @@ impl Recorder {
         self.inner.borrow_mut().walk_always = true;
     }
 
+    /// Records the work each frame does (the summary's `frame_work_ms`): a timing check compares it between its probes, as a
+    /// script that budgets its work on os.clock does a different amount of it a frame when the clock moves.
+    pub fn track_work(&self) {
+        self.inner.borrow_mut().frame_work = Some(Vec::new());
+    }
+
     /// Records the world as it is now as frame `frame`.
     pub fn sample(&self, engine: &Rc<Engine>, frame: u32) {
         // (EditableMesh snapshots of the meshes changed since the last sample)
         crate::meshes::flush(engine);
         let mut inner = self.inner.borrow_mut();
         inner.frame = frame;
+        if inner.frame_work.is_some() {
+            let total = engine.state.borrow().sched.work_total();
+            if let Some(work) = inner.frame_work.as_mut() {
+                work.push(total);
+            }
+        }
         sample(&mut inner, engine);
     }
 
@@ -1998,6 +2013,19 @@ fn events(inner: &Inner, engine: &Engine) -> Json {
 
 /// The summary; `(errors, warns)`: the output lines of those kinds.
 fn summary(inner: &Inner, (errors, warns): (usize, usize), playback: &Playback, mut extra: Map<String, Json>) -> Json {
+    // (a timing check's: the work each sampled frame did, ms at desktop prices, the first sample's being everything before it)
+    if let Some(totals) = &inner.frame_work {
+        let mut last = 0.0;
+        let work: Vec<Json> = totals
+            .iter()
+            .map(|total| {
+                let frame = (total - last) * 1000.0;
+                last = *total;
+                json!((frame * 1e6).round() / 1e6)
+            })
+            .collect();
+        extra.insert("frame_work_ms".into(), Json::Array(work));
+    }
     let mut activity: Vec<(u32, usize)> = Vec::new();
     let mut bump = |frame: u32, count: usize| match activity.iter_mut().find(|(f, _)| *f == frame) {
         Some((_, c)) => *c += count,

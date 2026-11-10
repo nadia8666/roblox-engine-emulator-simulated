@@ -146,6 +146,10 @@ fn main() {
         let _ = roblox_engine_emulator::BEFORE_EXIT.set(|| drop(PROFILER.lock().unwrap().take()));
     }
     let argv: Vec<String> = std::env::args().collect();
+    if let Err(error) = select_defaults(&argv) {
+        eprintln!("ree: {error}");
+        std::process::exit(2);
+    }
     if std::env::var_os("RUR_CHARGE_TALLY").is_some() {
         roblox_engine_emulator::cost::enable_tally();
     }
@@ -171,10 +175,36 @@ fn main() {
     std::process::exit(code);
 }
 
+/// Picks ree's checkout or standalone defaults ([`roblox_engine_emulator::init_binary`]), which must happen
+/// before anything reads a default repo or a cache folder. Only the `ree` binary does this: a library host
+/// that never calls it keeps the nearest-`Cargo.lock` lookup.
+///
+/// A service runs from a copy in its state dir, so it takes its defaults from its starter
+/// (`serve --source`), not from where the copy sits. `serve --state-dir` is the cache of a standalone
+/// service.
+fn select_defaults(argv: &[String]) -> Result<(), String> {
+    let args = roblox_engine_emulator::launch::split_equals(argv);
+    let value_after = |key: &str| args.iter().position(|arg| arg == key).and_then(|index| args.get(index + 1));
+    let is_service = args.get(1).map(String::as_str) == Some("serve");
+    let (starter, state_dir) = if is_service {
+        (value_after("--source"), value_after("--state-dir").map(std::path::PathBuf::from))
+    } else {
+        (None, None)
+    };
+    let exe = std::env::current_exe().map_err(|error| format!("cannot find the ree executable: {error}"))?;
+    let source = starter.map(std::path::Path::new).unwrap_or(&exe);
+    roblox_engine_emulator::init_binary(source, state_dir)
+}
+
 /// `ree profile view|render ...`: the profile viewer, a binary of its own beside this one (profile-view/, which
 /// `cargo build --release` builds with ree), so the engine's crate carries no terminal UI. Its standard streams are
 /// this process's: the terminal UI runs in this terminal.
 fn profile_viewer(args: &[String]) -> i32 {
+    // a release install holds ree alone, with no profile viewer beside it
+    if roblox_engine_emulator::is_standalone(&roblox_engine_emulator::default_repo()) {
+        eprintln!("ree profile {}: release installs contain only ree; build the workspace from source for the profile viewer, or use `ree profile report <dir>`", args[0]);
+        return 2;
+    }
     let name = format!("ree-profile-view{}", std::env::consts::EXE_SUFFIX);
     let Some(exe) = std::env::current_exe().ok().map(|exe| exe.with_file_name(&name)).filter(|exe| exe.is_file()) else {
         eprintln!("ree profile {}: the profile viewer ({name}) is not beside ree: `cargo build --release` in the checkout builds both", args[0]);

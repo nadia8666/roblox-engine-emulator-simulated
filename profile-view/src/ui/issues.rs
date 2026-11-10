@@ -1,5 +1,6 @@
-//! Issues: the problems the measured patterns show, most severe first, each with its numbers, what would remove it
-//! and a link (enter) to the view and line that show it; what the profile's kinds could not check, at the bottom.
+//! Issues: the problems the measured patterns show, most severe first and costliest first within a severity, each with
+//! the work it accounts for (ms a frame on the work clock), its numbers, what would remove it and a link (enter) to the
+//! view and line that show it; what the profile could not check, and why, at the bottom.
 
 use ratatui::{
     buffer::Buffer,
@@ -9,7 +10,7 @@ use ratatui::{
     widgets::{Paragraph, Widget, Wrap},
 };
 
-use super::kit::{self, Item, col, col_fill};
+use super::kit::{self, Item, col, col_fill, col_r};
 use crate::{
     app::App,
     fmt,
@@ -54,9 +55,17 @@ pub fn target_text(app: &App, target: &Target) -> String {
 pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
     let issues = app.issues();
     let (found, unchecked) = (&issues.0, &issues.1);
+    let budget = app.profiles.get(app.shown).map_or(1000.0 / 60.0, |p| p.budget_ms());
     let mut list = app.issues_list;
-    let unchecked_height = if unchecked.is_empty() { 0 } else { (unchecked.len() as u16 + 2).min(6) };
-    let detail_height = 10u16.min(area.height / 2);
+    // (every note, wrapped to the panel's text beside its mark: as many lines as they take, up to half the screen, the rest
+    // counted)
+    let note_width = (area.width.saturating_sub(6) as usize).max(10);
+    let wrapped: Vec<Vec<String>> = unchecked.iter().map(|note| super::wrap(note, note_width)).collect();
+    let needed = wrapped.iter().map(|lines| lines.len()).sum::<usize>() as u16;
+    // (the list keeps room for its first few issues: the detail and the notes take what is left)
+    let list_min = found.len().clamp(1, 4) as u16 + 3;
+    let detail_height = 10u16.min(area.height / 3);
+    let unchecked_height = if unchecked.is_empty() { 0 } else { (needed + 2).min(area.height.saturating_sub(list_min + detail_height).max(3)).min(area.height / 2) };
     let parts = kit::rows(area, &[area.height.saturating_sub(detail_height + unchecked_height), detail_height, unchecked_height]);
     // the issues
     let block = kit::panel(theme, "Issues", &fmt::grouped(found.len() as f64), true);
@@ -65,8 +74,8 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
         kit::empty(buf, inner, theme, "none found");
     } else {
         list.fit(found.len(), kit::rows_shown(inner));
-        let rows = found.iter().map(|issue| vec![severity_cell(issue.severity, theme), Item::text(issue.kind, Style::new().fg(theme.muted)), Item::label(&issue.title, Style::new().fg(theme.ink))]).collect();
-        let grid = kit::table(buf, inner, theme, &[col("severity", 10), col("kind", 18), col_fill("issue", 1)], rows, Some(list.selected), list.offset);
+        let rows = found.iter().map(|issue| vec![severity_cell(issue.severity, theme), Item::text(issue.cost_short(budget), Style::new().fg(if issue.ms.is_some() || issue.once.is_some() { theme.ink } else { theme.muted })), Item::text(issue.kind, Style::new().fg(theme.muted)), Item::label(&issue.title, Style::new().fg(theme.ink))]).collect();
+        let grid = kit::table(buf, inner, theme, &[col("severity", 10), col_r("cost", 13), col("kind", 18), col_fill("issue", 1)], rows, Some(list.selected), list.offset);
         list.offset = grid.offset;
     }
     app.issues_list = list;
@@ -75,8 +84,28 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
         draw_detail(buf, parts[1], app, issue, theme);
     }
     if unchecked_height > 0 {
-        let inner = kit::draw_panel(buf, parts[2], kit::panel(theme, "Not checked", "what the issues do not cover", false));
-        let lines: Vec<Line> = unchecked.iter().map(|note| Line::from(vec![Span::styled("○ ", Style::new().fg(theme.muted)), Span::styled(note.clone(), Style::new().fg(theme.ink2))])).collect();
+        let inner = kit::draw_panel(buf, parts[2], kit::panel(theme, "Not checked", &format!("{} · what the issues do not cover", unchecked.len()), false));
+        let room = inner.height as usize;
+        let mut lines: Vec<Line> = Vec::new();
+        // (the lines each note shown took)
+        let mut shown: Vec<usize> = Vec::new();
+        for note in &wrapped {
+            if lines.len() + note.len() > room {
+                break;
+            }
+            for (index, part) in note.iter().enumerate() {
+                lines.push(Line::from(vec![Span::styled(if index == 0 { "○ " } else { "  " }, Style::new().fg(theme.muted)), Span::styled(part.clone(), Style::new().fg(theme.ink2))]));
+            }
+            shown.push(note.len());
+        }
+        // (what does not fit is counted, never dropped silently: whole notes make room for the count, never half of one)
+        if shown.len() < wrapped.len() {
+            while lines.len() + 1 > room {
+                let Some(taken) = shown.pop() else { break };
+                lines.truncate(lines.len() - taken);
+            }
+            lines.push(Line::from(Span::styled(format!("… and {} more (a taller screen shows them all)", wrapped.len() - shown.len()), Style::new().fg(theme.muted))));
+        }
         Paragraph::new(lines).render(inner, buf);
     }
 }
@@ -119,7 +148,7 @@ pub fn copy(app: &App) -> Option<String> {
     let issues = app.issues();
     let list = if app.view == crate::app::View::Overview { app.overview } else { app.issues_list };
     let issue = issues.0.get(list.selected)?;
-    let mut text = format!("{} {}: {}", issue.severity.icon(), issue.severity.word(), issue.title);
+    let mut text = format!("{} {} ({}): {}", issue.severity.icon(), issue.severity.word(), issue.cost_text(), issue.title);
     for line in &issue.evidence {
         text.push_str(&format!("\n  {line}"));
     }

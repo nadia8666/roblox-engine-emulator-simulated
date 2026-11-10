@@ -1534,6 +1534,11 @@ fn place_content_files(dir: &Path, up: Option<&Above>, files: &mut Vec<PathBuf>,
 /// snapshot adds nothing below them (it can be older than the place). Returns how many roots were
 /// mounted.
 pub fn mount_place_content(engine: &Engine, hierarchy: &str) -> usize {
+    // a standalone run has no checkout of its own: it reads place content only from a repo named with `--repo`
+    let names_input_repo = !engine.options.repo.as_os_str().is_empty();
+    if crate::is_standalone(&engine.options.repo) && !names_input_repo {
+        return 0;
+    }
     let Some(place) = Path::new(hierarchy).file_stem().map(|stem| stem.to_string_lossy().into_owned()) else { return 0 };
     let top = repo_path(engine, "data/place-content").join(&place);
     let mut files = Vec::new();

@@ -43,7 +43,24 @@ is not measured yet (the 3D world); [docs/engine.md](docs/engine.md) is the cont
 
 ## Quick start
 
-You need Rust 1.90 or later and a C++ toolchain for the Luau VM ([docs/building.md](docs/building.md) has the rest).
+Download your platform's zip from [Releases](https://github.com/Anime-Vanguards/roblox-engine-emulator/releases)
+and put `ree` on PATH, or add this to `rokit.toml`:
+
+```toml
+ree = "Anime-Vanguards/roblox-engine-emulator@0.1.0"
+```
+
+Use rokit 1.0 or later on Linux and macOS: rokit 0.2.x cannot select `ree` there, because its name differs from the
+repository's. The zip also works with aftman and foreman, and `ree --version` prints the installed version.
+What a release needs, where it keeps its caches and how to verify it are in
+[docs/building.md](docs/building.md#release-binaries).
+
+A release binary is standalone for every job. `--repo` names input data only; state goes to `RUR_STATE_DIR`, else
+`RUR_CACHE_DIR`, else the per-user `ree` cache, and the project is the current folder unless `--project` or `--roots`
+say otherwise. `--version`, `--help` and stateless commands work without a cache folder.
+
+To build from source, you need Rust 1.90 or later and a C++ toolchain for the Luau VM
+([docs/building.md](docs/building.md) has the rest).
 
 ```sh
 cargo build --release        # target/release/ree(.exe)
@@ -85,6 +102,9 @@ services.
 
 ## Profiling
 
+The terminal viewer needs a source build of the workspace. A release install can generate the same profiles and
+read their text summary with `ree profile report <dir>`.
+
 `ree run` and `ree record` take `--profile all`: the Luau's work by function and line, priced as a Roblox client pays
 for it, with allocations, the heap, Luau's inline caches and the run frame by frame. `ree profile view` opens a profile
 in the terminal, one key per view: a flame graph, callers and callees, each line's cost, allocation sites, the heap, the
@@ -123,10 +143,12 @@ machine, for a pull request or an agent to read. Views, keys and options: [docs/
 
 ## Status
 
-Used daily by its maintainers to run UI and effect code offline, on Windows. The API is not stable
-yet and there are no releases: depend on a commit. Linux and macOS build, but are not tested (see
-"Known limitations" in [docs/engine.md](docs/engine.md)). What runs and what does not (physics beyond free
-fall, CurveAnimations and the default `Animate` script are not emulated) is in
+Used daily by its maintainers to run UI and effect code offline. They develop and test on Windows. The
+[quick start](#quick-start) installs a release binary; a library host depends on a tag or commit, because the API is
+not stable yet. The release workflow builds and smoke-tests Windows x86_64, Linux x86_64 and macOS arm64 on GitHub's
+runners, and publishes a release only when every platform passes. Known limitations are in
+[docs/engine.md](docs/engine.md#known-limitations). What runs and what does not (physics beyond free fall,
+CurveAnimations and the default `Animate` script are not emulated) is in
 [docs/cli.md](docs/cli.md#what-is-not-simulated).
 
 ## Contributing, security and license

@@ -19,52 +19,9 @@ pub const MAX_COUNTERS: usize = 8;
 pub const MAX_REQUEST_BYTES: u32 = 64 * 1024;
 pub const MAX_REPLY_BYTES: u32 = 1 << 30;
 
-/// The counters a profile reads when it names none: what IPC, the data caches' misses and miss rates and branch
-/// mispredictions need, within the six counters the CPU counts at once
-pub const DEFAULT_COUNTERS: [&str; 6] = ["instructions", "cycles", "l1d-misses", "l2-misses", "llc-misses", "branch-misses"];
-
-/// An AMD event the CPU's built-in list lacks, which the service registers with Windows (the event select and unit
-/// mask of the vendor's documentation; Family 1Ah)
-#[derive(Clone, Copy, Debug)]
-pub struct Custom {
-    pub event: u16,
-    pub unit: u8,
-}
-
-/// A counter a profile names: the Windows profile source it reads and what it counts
-#[derive(Clone, Copy, Debug)]
-pub struct Known {
-    pub name: &'static str,
-    pub source: &'static str,
-    pub about: &'static str,
-    pub custom: Option<Custom>,
-}
-
-/// The counters known by name. Any other name is taken for a Windows profile source as `wpr -pmcsources` lists it.
-pub const KNOWN: [Known; 8] = [
-    Known { name: "instructions", source: "InstructionRetired", about: "instructions retired", custom: None },
-    Known { name: "cycles", source: "TotalCycles", about: "core clock cycles while the thread ran (not halted)", custom: None },
-    Known { name: "branches", source: "BranchInstructions", about: "branches retired", custom: None },
-    Known { name: "branch-misses", source: "BranchMispredictions", about: "branches retired that were mispredicted", custom: None },
-    Known { name: "l1d-accesses", source: "ReeL1dAccesses", about: "loads and stores dispatched to the L1 data cache", custom: Some(Custom { event: 0x29, unit: 0x07 }) },
-    Known { name: "l1d-misses", source: "ReeL1dMisses", about: "lines the L1 data cache filled for loads and stores (demand misses)", custom: Some(Custom { event: 0x43, unit: 0xFF }) },
-    Known { name: "l2-misses", source: "ReeL2Misses", about: "of those, lines filled from beyond the core's L2", custom: Some(Custom { event: 0x43, unit: 0xFE }) },
-    Known { name: "llc-misses", source: "ReeLlcMisses", about: "of those, lines filled from beyond the core complex's L3 (another complex's cache or memory)", custom: Some(Custom { event: 0x43, unit: 0xDC }) },
-];
-
-pub fn known(name: &str) -> Option<&'static Known> {
-    KNOWN.iter().find(|known| known.name == name)
-}
-
-/// The Windows profile source a counter's name reads
-pub fn source_of(name: &str) -> &str {
-    known(name).map_or(name, |known| known.source)
-}
-
-/// The name a profile shows for a Windows profile source (the known name, else the source's own)
-pub fn name_of(source: &str) -> &str {
-    KNOWN.iter().find(|known| known.source == source).map_or(source, |known| known.name)
-}
+// (the counters by name: counters.rs, shared with the profile viewer)
+#[allow(unused_imports)]
+pub use super::counters::{Custom, DEFAULT_COUNTERS, KNOWN, Known, known, name_of, source_of};
 
 /// A client's request
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -436,13 +393,15 @@ mod tests {
         assert!(Reply::decode(99, &[]).is_err());
     }
 
-    /// Names: the known ones read their source, any other is a source of its own
+    /// Names: the known ones read their source (old names the same source), any other is a source of its own
     #[test]
     fn counter_names_map_to_sources() {
         assert_eq!(source_of("instructions"), "InstructionRetired");
         assert_eq!(source_of("llc-misses"), "ReeLlcMisses");
+        assert_eq!(source_of("demand-fills-beyond-l3"), "ReeLlcMisses");
+        assert_eq!(source_of("load-stall-cycles"), "ReeLoadStallCycles");
         assert_eq!(source_of("IcacheMisses"), "IcacheMisses");
-        assert_eq!(name_of("ReeL2Misses"), "l2-misses");
+        assert_eq!(name_of("ReeL2Misses"), "demand-fills-beyond-l2");
         assert_eq!(name_of("DcacheMisses"), "DcacheMisses");
         assert!(DEFAULT_COUNTERS.iter().all(|name| known(name).is_some()));
     }

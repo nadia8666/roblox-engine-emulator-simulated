@@ -74,7 +74,12 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
     let run_total = tree.total();
     let stat = tree.funcs.get(&func).copied().unwrap_or_default();
     let f = &p.funcs[func as usize];
-    let mut lines: Vec<(i64, f64, &crate::model::LineFig)> = p.lines_of(func as usize).map(|(line, fig)| (line, app.metric.line_self(fig), fig)).filter(|(_, v, _)| *v > 0.0).collect();
+    // (a line's work in the profile's reported phases when the profile counts lines per phase, a newer ree's; else over
+    // the run, which the panel says)
+    let scope = p.scope();
+    let per_phase = app.metric == Metric::Work && p.lines_of(func as usize).any(|(_, fig)| !fig.phases.is_empty());
+    let line_value = |fig: &crate::model::LineFig| if per_phase { fig.phases.iter().filter(|(phase, _)| scope.covers(**phase)).map(|(_, work)| *work).sum() } else { app.metric.line_self(fig) };
+    let mut lines: Vec<(i64, f64, &crate::model::LineFig)> = p.lines_of(func as usize).map(|(line, fig)| (line, line_value(fig), fig)).filter(|(_, v, _)| *v > 0.0).collect();
     lines.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     // each panel's rows: what it needs, the lines taking what is left (a panel is its rows, a header and two borders)
     let (callers_len, callees_len) = (split, rows.len() - split);
@@ -129,7 +134,13 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
     let mut spans = figure("own", stat.own);
     spans.push(Span::raw("     "));
     spans.extend(figure("total", stat.total));
-    if tree.has_calls && stat.calls > 0 {
+    // (a function C calls, a sort's comparator, counts one call per C call in a profile without invocation counts: its
+    // runs are not known, and a figure each would be a C call's)
+    let from_c = tree.callers(func).iter().any(|(caller, _)| matches!(caller, Frame::Func(c) if p.funcs[*c as usize].kind == crate::model::Kind::C));
+    let invocations = p.raw.work.as_ref().is_some_and(|w| w.c_invocations);
+    if tree.has_calls && stat.calls > 0 && from_c && !invocations {
+        spans.push(Span::styled(format!("     {} calls, counted once a C call (needs invocation counts)", fmt::grouped(stat.calls as f64)), Style::new().fg(theme.muted)));
+    } else if tree.has_calls && stat.calls > 0 {
         spans.push(Span::styled(format!("     {} calls, {} each", fmt::grouped(stat.calls as f64), fmt::short(unit, stat.total / stat.calls as f64)), Style::new().fg(theme.ink2)));
     }
     Paragraph::new(Line::from(spans)).render(Rect { height: 1, ..inner }, buf);
@@ -148,8 +159,11 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &mut App, theme: &Theme) {
     }
     // its hottest lines, with their code and their commonest instructions
     if !lines.is_empty() && parts[3].height >= 4 {
-        let inner = kit::draw_panel(buf, parts[3], kit::panel(theme, "Hottest lines", &format!("own {}", app.metric.label(p)), false));
-        let line_total = Metric::total(app.metric, p);
+        let over = if per_phase { scope.label.clone() } else if app.metric == Metric::Work && scope.phases.is_some() { "the whole run (lines are not counted per phase)".into() } else { String::new() };
+        let note = if over.is_empty() { format!("own {}", app.metric.label(p)) } else { format!("own {} · {over}", app.metric.label(p)) };
+        let inner = kit::draw_panel(buf, parts[3], kit::panel(theme, "Hottest lines", &note, false));
+        // (a share of the reported phases' work when the lines are theirs)
+        let line_total = if per_phase { p.scope_work().map_or(0.0, |(game, harness)| game + harness) } else { Metric::total(app.metric, p) };
         let max = lines.first().map_or(0.0, |l| l.1);
         let source = p.source(&f.module);
         let cols = [col_r("line", 6), col_r("own", 10), col_r("share", 6), col("", 14), col_fill("code", 3), col_fill("instructions", 2)];
