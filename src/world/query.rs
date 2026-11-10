@@ -414,6 +414,82 @@ struct QueryTraceCalls {
     counts: HashMap<&'static str, u64>,
 }
 
+/// PhysicsService's collision groups: up to 32 named groups ("Default" is id 0) and, for each, a bitmask of the groups it
+/// collides with (a grid read by index: `collides[a] >> b & 1`). Everything collides until a pair is set otherwise.
+pub struct CollisionGroups {
+    names: [Option<Box<[u8]>>; 32],
+    collides: [u32; 32],
+}
+
+impl Default for CollisionGroups {
+    fn default() -> Self {
+        let mut names: [Option<Box<[u8]>>; 32] = std::array::from_fn(|_| None);
+        names[0] = Some(b"Default".as_slice().into());
+        Self { names, collides: [u32::MAX; 32] }
+    }
+}
+
+impl CollisionGroups {
+    pub fn id(&self, name: &[u8]) -> Option<usize> {
+        self.names.iter().position(|n| n.as_deref() == Some(name))
+    }
+
+    pub fn name(&self, id: usize) -> Option<&[u8]> {
+        self.names.get(id).and_then(|n| n.as_deref())
+    }
+
+    pub fn collidable(&self, a: usize, b: usize) -> bool {
+        self.collides[a] >> b & 1 == 1
+    }
+
+    pub fn mask(&self, id: usize) -> u32 {
+        self.collides[id]
+    }
+
+    pub fn set_collidable(&mut self, a: usize, b: usize, collidable: bool) {
+        if collidable {
+            self.collides[a] |= 1 << b;
+            self.collides[b] |= 1 << a;
+        } else {
+            self.collides[a] &= !(1 << b);
+            self.collides[b] &= !(1 << a);
+        }
+    }
+
+    /// The new group's id; a group made in a freed slot collides with everything
+    pub fn register(&mut self, name: &[u8]) -> Result<usize, &'static str> {
+        if self.id(name).is_some() {
+            return Err("a collision group with that name already exists");
+        }
+        let slot = self.names.iter().position(Option::is_none).ok_or("the maximum of 32 collision groups is registered")?;
+        self.names[slot] = Some(name.into());
+        self.collides[slot] = u32::MAX;
+        for group in &mut self.collides {
+            *group |= 1 << slot;
+        }
+        Ok(slot)
+    }
+
+    pub fn unregister(&mut self, id: usize) {
+        if id != 0 {
+            self.names[id] = None;
+        }
+    }
+
+    pub fn rename(&mut self, id: usize, name: &[u8]) {
+        self.names[id] = Some(name.into());
+    }
+}
+
+#[derive(Default)]
+struct CollisionGroupsCell(RefCell<CollisionGroups>);
+
+impl crate::Extension for CollisionGroupsCell {}
+
+pub fn collision_groups(engine: &Engine) -> &RefCell<CollisionGroups> {
+    &engine.extension_or_insert_with(CollisionGroupsCell::default).0
+}
+
 fn query_trace_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("REE_TRACE_QUERIES").as_deref() == Ok("1"))

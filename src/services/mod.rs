@@ -1027,6 +1027,98 @@ pub fn install(engine: &Rc<Engine>) {
             }));
         }
     }
+    // PhysicsService: collision groups (world/query.rs CollisionGroups)
+    if let Some(physics) = class(&reflection, "PhysicsService") {
+        use crate::world::query::collision_groups;
+        let bytes = |args: &crate::lua::Args, n: usize| args.string(n).map(|s| s.as_bytes().to_vec());
+        let mut add = |member: &str, f: MethodFn| {
+            if let Some(n) = name(&reflection, member) {
+                behaviors.add_method(physics, n, f);
+            }
+        };
+        add("IsCollisionGroupRegistered", method(move |_, engine, _, args| {
+            let found = bytes(args, 1).is_some_and(|group| collision_groups(engine).borrow().id(&group).is_some());
+            Ok(values([LuaValue::Boolean(found)]))
+        }));
+        add("RegisterCollisionGroup", method(move |_, engine, _, args| {
+            let Some(group) = bytes(args, 1) else { return raise("Argument 1 missing or nil") };
+            match collision_groups(engine).borrow_mut().register(&group) {
+                Ok(_) => Ok(none()),
+                Err(message) => raise(format!("Failed to register collision group '{}': {message}", String::from_utf8_lossy(&group))),
+            }
+        }));
+        add("UnregisterCollisionGroup", method(move |_, engine, _, args| {
+            let Some(group) = bytes(args, 1) else { return raise("Argument 1 missing or nil") };
+            let mut groups = collision_groups(engine).borrow_mut();
+            match groups.id(&group) {
+                Some(id) => {
+                    groups.unregister(id);
+                    Ok(none())
+                }
+                None => raise(format!("Collision group '{}' is not registered", String::from_utf8_lossy(&group))),
+            }
+        }));
+        add("CollisionGroupSetCollidable", method(move |_, engine, _, args| {
+            let (Some(first), Some(second)) = (bytes(args, 1), bytes(args, 2)) else { return raise("Argument 1 or 2 missing or nil") };
+            let collidable = matches!(args.get(3), LuaValue::Boolean(true));
+            let mut groups = collision_groups(engine).borrow_mut();
+            match (groups.id(&first), groups.id(&second)) {
+                (Some(a), Some(b)) => {
+                    groups.set_collidable(a, b, collidable);
+                    Ok(none())
+                }
+                _ => raise("Both collision groups must be registered"),
+            }
+        }));
+        add("CollisionGroupsAreCollidable", method(move |_, engine, _, args| {
+            let (Some(first), Some(second)) = (bytes(args, 1), bytes(args, 2)) else { return raise("Argument 1 or 2 missing or nil") };
+            let groups = collision_groups(engine).borrow();
+            match (groups.id(&first), groups.id(&second)) {
+                (Some(a), Some(b)) => Ok(values([LuaValue::Boolean(groups.collidable(a, b))])),
+                _ => raise("Both collision groups must be registered"),
+            }
+        }));
+        add("GetCollisionGroupId", method(move |_, engine, _, args| {
+            let id = bytes(args, 1).and_then(|group| collision_groups(engine).borrow().id(&group));
+            Ok(values([LuaValue::Number(id.map_or(-1.0, |id| id as f64))]))
+        }));
+        add("GetCollisionGroupName", method(move |lua, engine, _, args| {
+            let id = match args.get(1) {
+                LuaValue::Number(n) if *n >= 0.0 => *n as usize,
+                LuaValue::Integer(n) if *n >= 0 => *n as usize,
+                _ => return raise("Argument 1 missing or nil"),
+            };
+            match collision_groups(engine).borrow().name(id) {
+                Some(group) => Ok(values([string_value(lua, &String::from_utf8_lossy(group))?])),
+                None => raise("The collision group id is not registered"),
+            }
+        }));
+        add("RenameCollisionGroup", method(move |_, engine, _, args| {
+            let (Some(from), Some(to)) = (bytes(args, 1), bytes(args, 2)) else { return raise("Argument 1 or 2 missing or nil") };
+            let mut groups = collision_groups(engine).borrow_mut();
+            match (groups.id(&from), groups.id(&to)) {
+                (Some(id), None) => {
+                    groups.rename(id, &to);
+                    Ok(none())
+                }
+                _ => raise("The collision group to rename must be registered and the new name unused"),
+            }
+        }));
+        add("GetMaxCollisionGroups", constant(|_| Ok(LuaValue::Number(32.0))));
+        add("GetRegisteredCollisionGroups", method(move |lua, engine, _, _| {
+            let groups = collision_groups(engine).borrow();
+            let list = lua.create_table()?;
+            for id in 0..32 {
+                let Some(group) = groups.name(id) else { continue };
+                let entry = lua.create_table()?;
+                entry.set("name", string_value(lua, &String::from_utf8_lossy(group))?)?;
+                entry.set("id", id as f64)?;
+                entry.set("mask", groups.mask(id) as i32 as f64)?;
+                list.push(entry)?;
+            }
+            Ok(values([LuaValue::Table(list)]))
+        }));
+    }
     drop(behaviors);
     engine.clear_member_cache();
 }
