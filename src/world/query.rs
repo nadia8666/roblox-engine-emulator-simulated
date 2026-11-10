@@ -255,6 +255,8 @@ struct QueryCache {
     params_seen: RefCell<Option<(Vec<LuaValue>, Filter)>>,
     /// The last params object and its stored data table, so the next cast with the same object skips the lookup
     params_data: RefCell<Option<(LuaValue, LuaTable)>>,
+    /// The solids near the last cast's line, for the next cast along the same line (PA's re-casts past what it ignores)
+    rays: RefCell<RayCache>,
 }
 
 struct CachedSolids {
@@ -378,6 +380,33 @@ fn slab(min:Vec3,max:Vec3,mo:Vec3,po:Vec3,inv:Vec3,limit:f32)->bool {
 
 
 impl crate::Extension for QueryCache {}
+
+/// The solids whose boxes a cast's ray (grown by `RAY_SLACK`) met, kept while the cache entry and its stamp stand
+#[derive(Default)]
+struct RayCache {
+    entry: usize,
+    stamp: (u64, u64),
+    origin: Vec3,
+    direction: Vec3,
+    candidates: Vec<usize>,
+}
+
+/// How far a box may sit from the ray and still be kept (a later ray lying within `RAY_TOLERANCE` of the first reuses them)
+const RAY_SLACK: f32 = 0.02;
+/// How far a later ray's ends may lie from the first ray's segment, in studs, for it to reuse the first's solids
+const RAY_TOLERANCE_SQUARED: f32 = 1e-4;
+
+fn near_segment(origin: Vec3, direction: Vec3, point: Vec3) -> bool {
+    let length_squared = direction.length_squared();
+    let along = if length_squared > 0.0 { ((point - origin).dot(direction) / length_squared).clamp(0.0, 1.0) } else { 0.0 };
+    (origin + direction * along - point).length_squared() <= RAY_TOLERANCE_SQUARED
+}
+
+impl RayCache {
+    fn covers(&self, origin: Vec3, direction: Vec3) -> bool {
+        near_segment(self.origin, self.direction, origin) && near_segment(self.origin, self.direction, origin + direction)
+    }
+}
 
 #[derive(Default)]
 struct QueryTraceCalls {
@@ -1138,30 +1167,52 @@ pub(crate) fn raw_cast(engine: &Engine, origin: Vec3, direction: Vec3, params: O
     let all = cached_solids(engine, &Filter::default());
     lap(&mut clock, 0);
     // one walk of the whole ray serves both the hit (the nearest crossed solid the filter admits) and the charge (every solid crossed)
+    let entry = Rc::as_ptr(&all) as usize;
     let (best, crossed) = {
         let state = engine.state.borrow();
         let collide = if filter.respect_can_collide { engine.reflection.name_id("CanCollide") } else { None };
         let mut crossed = 0usize;
         let mut best: Option<(usize, f32, Vec3)> = None;
-        all.index.walk_ray(origin, direction, 0.0, |i| {
+        let mut test = |i: usize| {
             let solid = &all.solids[i];
-            let (t, local) = ray_solid(solid, origin, direction, 0.0)?;
+            let Some((t, local)) = ray_solid(solid, origin, direction, 0.0) else { return };
             crossed += 1;
             if let Some((best_index, best_t, _)) = best {
                 if best_t < t || (best_t == t && best_index < i) {
-                    return None;
+                    return;
                 }
             }
             if let Some(name) = collide {
                 if state.dom.boolean(solid.part, name) == Some(false) {
-                    return None;
+                    return;
                 }
             }
             if filter.admits(&state, solid.part) {
                 best = Some((i, t, local));
             }
-            None
-        });
+        };
+        let mut rays = query_cache(engine).rays.borrow_mut();
+        if rays.entry == entry && rays.stamp == all.stamp && rays.covers(origin, direction) {
+            // a cast along the line the last one walked (a re-cast past what the game ignores): its solids are all there are
+            let inv = Vec3::new(1.0 / direction.x, 1.0 / direction.y, 1.0 / direction.z);
+            let (before, after) = (origin + Vec3::splat(1e-4), origin - Vec3::splat(1e-4));
+            for &i in &rays.candidates {
+                let b = &all.index.boxes[i];
+                if b.min.x > b.max.x || !slab(b.min, b.max, before, after, inv, 1.0) {
+                    continue;
+                }
+                test(i);
+            }
+        } else {
+            let mut candidates = std::mem::take(&mut rays.candidates);
+            candidates.clear();
+            all.index.walk_ray(origin, direction, RAY_SLACK, |i| {
+                candidates.push(i);
+                test(i);
+                None
+            });
+            *rays = RayCache { entry, stamp: all.stamp, origin, direction, candidates };
+        }
         (best, crossed)
     };
     lap(&mut clock, 1);
