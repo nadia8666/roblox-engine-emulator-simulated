@@ -144,6 +144,8 @@ enum Base {
     FireBindable,
     /// WorldRoot:Raycast (world/query.rs raw_cast)
     Raycast,
+    /// PhysicsService:CollisionGroupsAreCollidable (world/query.rs CollisionGroups)
+    GroupsCollide,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -262,6 +264,8 @@ fn compute_member(engine: &Engine, class: ClassId, key: NameId) -> Member {
                     member.call = Call::Base(Base::FireBindable);
                 } else if owner.is_some() && reflection.name(name).to_string() == "Raycast" {
                     member.call = Call::Base(Base::Raycast);
+                } else if owner.is_some() && reflection.name(name).to_string() == "CollisionGroupsAreCollidable" {
+                    member.call = Call::Base(Base::GroupsCollide);
                 }
             }
         }
@@ -1668,6 +1672,19 @@ fn is_a_bytes(engine: &Engine, class: ClassId, wanted: Option<&[u8]>) -> bool {
 }
 
 /// The base Instance methods inline (same semantics as lua/instance.rs install_base).
+/// The bytes of the string at `index` (nothing for any other type: a number would be converted in place).
+#[inline]
+unsafe fn stack_string<'a>(state: *mut ffi::lua_State, index: c_int) -> Option<&'a [u8]> {
+    unsafe {
+        if ffi::lua_type(state, index) != ffi::LUA_TSTRING {
+            return None;
+        }
+        let mut length = 0usize;
+        let data = ffi::lua_tolstring(state, index, &mut length);
+        if data.is_null() { None } else { Some(std::slice::from_raw_parts(data as *const u8, length)) }
+    }
+}
+
 /// The three components of the native vector at `index`.
 #[inline]
 unsafe fn stack_vector(state: *mut ffi::lua_State, index: c_int) -> Option<glam::Vec3> {
@@ -1902,6 +1919,13 @@ unsafe fn base_call(state: *mut ffi::lua_State, api: &Api, engine: &Engine, id: 
                 }
                 core::fire_event_measured(&mut engine.state.borrow_mut(), id, K::Event as NameId, arguments, crate::cost::SignalKind::Bindable);
                 Out::Ret(0)
+            }
+            Base::GroupsCollide => {
+                let (Some(first), Some(second)) = (stack_string(state, 2), stack_string(state, 3)) else { return Out::General };
+                let groups = crate::world::query::collision_groups(engine).borrow();
+                let (Some(a), Some(b)) = (groups.id(first), groups.id(second)) else { return Out::General };
+                ffi::lua_pushboolean(state, groups.collidable(a, b) as c_int);
+                Out::Ret(1)
             }
             Base::Raycast => {
                 let (Some(origin), Some(direction)) = (stack_vector(state, 2), stack_vector(state, 3)) else { return Out::General };
