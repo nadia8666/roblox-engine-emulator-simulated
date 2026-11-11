@@ -547,7 +547,7 @@ fn load_collision_groups(engine: &Engine, cell: &RefCell<CollisionGroups>) {
         },
         _ => None,
     }));
-    match data.as_deref().and_then(parse_collision_group_data) {
+    match data.as_deref().and_then(|bytes| parse_collision_group_string(bytes).or_else(|| parse_collision_group_data(bytes))) {
         Some(found) => {
             for (id, mask, name) in &found {
                 groups.names[*id] = Some(name.as_slice().into());
@@ -560,6 +560,23 @@ fn load_collision_groups(engine: &Engine, cell: &RefCell<CollisionGroups>) {
             crate::output::diagnostic(&format!("ree: no collision groups read from the place's PhysicsService ({} bytes of CollisionGroupData: {})", data.as_ref().map_or(0, Vec::len), head.join(" ")));
         }
     }
+}
+
+/// Workspace.CollisionGroups: `name^id^mask` for each group, joined by `\` (a mask of -1 collides with every group)
+fn parse_collision_group_string(bytes: &[u8]) -> Option<Vec<(usize, u32, Vec<u8>)>> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut groups: Vec<(usize, u32, Vec<u8>)> = Vec::new();
+    for entry in text.split('\\').filter(|entry| !entry.is_empty()) {
+        let mut fields = entry.split('^');
+        let name = fields.next()?;
+        let id: usize = fields.next()?.trim().parse().ok()?;
+        let mask: i64 = fields.next()?.trim().parse().ok()?;
+        if id >= 32 || name.is_empty() || groups.iter().any(|(other, _, _)| *other == id) {
+            return None;
+        }
+        groups.push((id, mask as i32 as u32, name.as_bytes().to_vec()));
+    }
+    (!groups.is_empty()).then_some(groups)
 }
 
 /// CollisionGroupData: a version byte (1), the group count, then each group's id, mask and name. The layout is not
