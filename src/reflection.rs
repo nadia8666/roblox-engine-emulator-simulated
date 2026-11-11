@@ -346,6 +346,7 @@ const PROPERTY_SUPPLEMENT: &[(&str, &str, &str, &str, bool, bool)] = &[
     ("Path2D", "Transparency", "number", "float", true, true),
     ("Path2D", "SelectedControlPoint", "number", "int", true, false),
     ("Path2D", "SelectedControlPointData", "any", "", true, false),
+    ("GuiService", "CoreGuiNavigationEnabled", "boolean", "bool", true, false),
 ];
 
 // Callbacks the dump leaves out (it lists none for any class): every callback Roblox's API dump lets
@@ -363,11 +364,6 @@ const CALLBACK_SUPPLEMENT: &[(&str, &[&str])] = &[
     ("AdGui", &["OnAdEvent"]),
     ("DataModel", &["OnClose"]),
 ];
-
-// Properties the dump leaves out although a game script reads or writes them (deprecated ones the Studio plugin's reflection
-// hides; a game's UI core sets GuiService.CoreGuiNavigationEnabled): (class, property, script type, engine type). Each is
-// readable, writable and not serialized
-const PROPERTY_SUPPLEMENT: &[(&str, &str, &str, &str)] = &[("GuiService", "CoreGuiNavigationEnabled", "boolean", "bool")];
 
 /// The dump as written by the Studio plugin: empty tables may be `[]` or `{}` anywhere.
 fn list(value: Option<&serde_json::Value>) -> &[serde_json::Value] {
@@ -647,19 +643,6 @@ impl Reflection {
             }
         }
 
-        for (class, property, script_type, engine_type_name) in PROPERTY_SUPPLEMENT {
-            if let Some(&id) = reflection.class_ids.get(*class) {
-                let name = reflection.intern(property);
-                let present = reflection.classes[id as usize]
-                    .own_properties
-                    .iter()
-                    .any(|&index| reflection.properties[index as usize].name == name);
-                if !present {
-                    let index = reflection.add_property(property, script_type, engine_type_name, None, false, true, false, id);
-                    reflection.classes[id as usize].own_properties.push(index);
-                }
-            }
-        }
 
         for (index, superclass) in superclass_names.iter().enumerate() {
             reflection.classes[index].superclass =
