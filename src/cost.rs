@@ -1322,6 +1322,9 @@ pub fn write(reflection: &Reflection, class: ClassId, property: &str, changed: b
             * match property {
                 "Size" => 0.245,
                 "Image" => 0.78,
+                // (this property's price, which only reads like 1/pi: FRAC_1_PI is 0.31830988..., another number, and
+                // the work clock's prices must not move, so the literal stays)
+                #[allow(clippy::approx_constant)]
                 "BackgroundColor3" | "BorderColor3" | "TextColor3" | "TextStrokeColor3" => 0.318,
                 _ => 0.203,
             };

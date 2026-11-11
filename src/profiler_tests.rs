@@ -111,12 +111,12 @@ fn the_instruction_profile_counts_every_instruction_the_vm_counts() {
     let source = "local function leaf(x)\n\treturn x * 2\nend\nlocal function middle(n)\n\tlocal total = 0\n\tfor i = 1, n do\n\t\ttotal += leaf(i)\n\tend\n\treturn total\nend\nlocal sum = 0\nfor round = 1, 10 do\n\tsum += middle(100)\nend\nresult = sum\n";
     let function = lua.load(source).set_name("=probe").into_function().unwrap();
     let before = ops(&lua);
-    assert!(vm::start(state, true, None, None));
+    assert!(unsafe { vm::start(state, true, None, None) });
     function.call::<()>(()).unwrap();
-    vm::stop(state);
+    unsafe { vm::stop(state) };
     let after = ops(&lua);
     let results = unsafe { vm::results(state) };
-    vm::free(state);
+    unsafe { vm::free(state) };
     assert_eq!(lua.globals().get::<f64>("result").unwrap(), 10.0 * 2.0 * 5050.0);
     let counted: u64 = results.functions.iter().filter(|f| !f.exempt()).flat_map(|f| f.counts.iter()).sum();
     assert_eq!(counted, after.0 - before.0, "the profile counts what the VM's counters count");
@@ -158,16 +158,16 @@ fn booked_work_adds_up_to_the_work_clock_and_leaves_it_unchanged() {
         let before = engine.state.borrow().sched.work_total();
         if profiled {
             let prices = vm::prices().expect("the work clock's model is a weighted sum");
-            assert!(vm::start(state, true, Some(&prices), Some((work.as_ptr() as *const f64, drained.as_ptr() as *const f64))));
+            assert!(unsafe { vm::start(state, true, Some(&prices), Some((work.as_ptr() as *const f64, drained.as_ptr() as *const f64))) });
         }
         let output = run(&lua, &engine, "work", script);
         scheduler::step(&lua, &engine, Some(1.0 / 60.0)).unwrap();
         let after = engine.state.borrow().sched.work_total();
         let mut booked = 0.0;
         if profiled {
-            vm::stop(state);
+            unsafe { vm::stop(state) };
             let results = unsafe { vm::results(state) };
-            vm::free(state);
+            unsafe { vm::free(state) };
             booked = results.nodes.iter().map(|node| node.work).sum::<f64>() + results.engine_work;
         }
         (after - before, booked, output)
@@ -192,11 +192,11 @@ fn inline_caches_tell_what_each_lookup_did() {
     let state = main_state(&lua);
     let source = "local same = table.clone({a = 1, b = 2, c = 3})\nlocal x = 0\nfor i = 1, 100 do\n\tx += same.c\nend\nlocal empty = {}\nfor i = 1, 100 do\n\tx += empty.c or 0\nend\nlocal inherited = setmetatable({}, {__index = {c = 1}})\nfor i = 1, 100 do\n\tx += inherited.c\nend\nG = 0\nfor i = 1, 100 do\n\tG += 1\nend\nresult = x\n";
     let function = lua.load(source).set_name("=caches").into_function().unwrap();
-    assert!(vm::start(state, true, None, None));
+    assert!(unsafe { vm::start(state, true, None, None) });
     function.call::<()>(()).unwrap();
-    vm::stop(state);
+    unsafe { vm::stop(state) };
     let results = unsafe { vm::results(state) };
-    vm::free(state);
+    unsafe { vm::free(state) };
     let main = results.functions.iter().find(|f| f.source == "caches" && f.line == 0).unwrap_or_else(|| &results.functions[0]);
     let outcomes = |line: i32, op: &str| -> ([u64; vm::CACHE_OUTCOMES], [u64; vm::CACHE_DEPTHS]) {
         let (mut total, mut depths) = ([0u64; vm::CACHE_OUTCOMES], [0u64; vm::CACHE_DEPTHS]);
@@ -309,7 +309,7 @@ thread_local! {
 }
 
 unsafe extern "C-unwind" fn keep_allocation(state: *mut mlua::ffi::lua_State, _block: *mut std::ffi::c_void, _old: usize, _new: usize, _memcat: u8, _tt: i32, _tag: i32) {
-    let (block, kind) = vm::alloc_block(state);
+    let (block, kind) = unsafe { vm::alloc_block(state) };
     LAST_ALLOCATION.with(|last| last.set((block as usize, kind)));
 }
 
@@ -514,11 +514,11 @@ fn a_heap_snapshots_reachable_heap_is_what_a_full_collection_keeps() {
     let end = json["heap"]["snapshots"].as_array().unwrap().last().unwrap().clone();
     let reachable: std::collections::BTreeMap<String, (u64, u64)> =
         end["by_type"].as_array().unwrap().iter().map(|row| (row["type"].as_str().unwrap().to_string(), (row["count"].as_u64().unwrap(), row["bytes"].as_u64().unwrap()))).collect();
-    let total_before = vm::total_bytes(state);
+    let total_before = unsafe { vm::total_bytes(state) };
     // the collector itself
     unsafe { mlua::ffi::lua_gc(state, mlua::ffi::LUA_GCCOLLECT, 0) };
     let resolver = memory::resolver(Rc::downgrade(&engine));
-    let collected = memory::snapshot(state, "collected", 0, 0.0, Some(&*resolver), 5);
+    let collected = unsafe { memory::snapshot(state, "collected", 0, 0.0, Some(&*resolver), 5) };
     let kept = objects_by_type(&collected);
     for (name, (count, bytes)) in &reachable {
         let (kept_count, kept_bytes) = kept.get(name).copied().unwrap_or_default();
@@ -531,18 +531,18 @@ fn a_heap_snapshots_reachable_heap_is_what_a_full_collection_keeps() {
     assert_eq!(end["objects"].as_u64().unwrap() - end["unswept"]["count"].as_u64().unwrap(), collected.objects, "the collection freed what the snapshot had as garbage");
     assert!(end["unswept"]["count"].as_u64().unwrap() >= 6000, "the loop's 3,000 tables and strings: {}", end["unswept"]);
     // the VM's own count: the collection freed at least that garbage (and the string table it no longer needs)
-    let freed = total_before - vm::total_bytes(state);
+    let freed = total_before - unsafe { vm::total_bytes(state) };
     assert!(freed as u64 >= end["unswept"]["bytes"].as_u64().unwrap(), "freed {freed}, garbage {}", end["unswept"]);
     // once the collector has freed what it found, the walk reaches every object left: nothing the collector keeps (a
     // name, a metatable, a fixed string) is taken for garbage. (A collection can leave garbage of its own: a userdata it
     // frees can let go of a reference, so the walk is checked again after each one.)
-    let mut settled = memory::snapshot(state, "settled", 0, 0.0, Some(&*resolver), 5);
+    let mut settled = unsafe { memory::snapshot(state, "settled", 0, 0.0, Some(&*resolver), 5) };
     for _ in 0..4 {
         if settled.unswept == (0, 0) {
             break;
         }
         unsafe { mlua::ffi::lua_gc(state, mlua::ffi::LUA_GCCOLLECT, 0) };
-        settled = memory::snapshot(state, "settled", 0, 0.0, Some(&*resolver), 5);
+        settled = unsafe { memory::snapshot(state, "settled", 0, 0.0, Some(&*resolver), 5) };
     }
     assert_eq!(settled.unswept, (0, 0), "{:?}", settled.unswept_by_type);
     // the weak tables kept their strings and lost their tables
@@ -565,7 +565,7 @@ fn a_heap_snapshot_during_a_sweep_counts_the_objects_it_has_yet_to_free() {
     run(&lua, &engine, "sweep", "local kept = {}\nfor i = 1, 500 do\n\tkept[i] = {i}\nend\n_G.Kept = kept\nfor i = 1, 20000 do\n\tlocal _ = {i}\nend\n");
     // the collector steps into its sweep: the loop's tables are found dead, and many are not freed yet
     let mut steps = 0;
-    while vm::gc_state(state) != 4 {
+    while unsafe { vm::gc_state(state) } != 4 {
         unsafe { mlua::ffi::lua_gc(state, mlua::ffi::LUA_GCSTEP, 0) };
         steps += 1;
         assert!(steps < 1_000_000, "the collector never reached its sweep");
@@ -1286,6 +1286,8 @@ fn booked_cycles(name: &str, source: &str, frames: usize) -> (std::collections::
 /// calls gave (the nested call and its caller never sampled together)
 #[test]
 fn hardware_counters_book_a_recursive_function_its_own() {
+    // (25 us calls against the 100 us threshold: one call in four is sampled once learned, however fast or loaded the host)
+    let _fixed_call_length = profiler::hw::fixed_call_us(25.0);
     let (own, attribution, summary) = booked_cycles(
         "rec",
         "local work = {}
@@ -2590,7 +2592,7 @@ fn substring_argument_fixes_add_the_expected_warm_instructions_and_code_words() 
         let lua = Lua::new();
         lua.enable_jit(false);
         let state = main_state(&lua);
-        assert!(vm::start(state, true, None, None));
+        assert!(unsafe { vm::start(state, true, None, None) });
         let is_byte = call.starts_with("string.byte");
         // (string.sub returns a string, whose length is summed; string.byte returns a number)
         let summed = if is_byte { call.to_string() } else { format!("#{call}") };
@@ -2598,9 +2600,9 @@ fn substring_argument_fixes_add_the_expected_warm_instructions_and_code_words() 
         let result = lua.load(&source).set_name("=substring-shape").set_compiler(engine_lua::modules::compiler()).eval::<f64>().unwrap();
         let expected_sum = if is_byte { 970.0 } else { 50.0 };
         assert_eq!(result, expected_sum);
-        vm::stop(state);
+        unsafe { vm::stop(state) };
         let results = unsafe { vm::results(state) };
-        vm::free(state);
+        unsafe { vm::free(state) };
         results.functions.iter().find(|function| function.name == "Read").unwrap().clone()
     };
     let rewrites = [

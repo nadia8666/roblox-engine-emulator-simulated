@@ -147,8 +147,8 @@ Used daily by its maintainers to run UI and effect code offline. They develop an
 [quick start](#quick-start) installs a release binary; a library host depends on a tag or commit, because the API is
 not stable yet. The release workflow builds and smoke-tests Windows x86_64, Linux x86_64 and macOS arm64 on GitHub's
 runners, and publishes a release only when every platform passes. Known limitations are in
-[docs/engine.md](docs/engine.md#known-limitations). What runs and what does not (physics beyond free fall,
-CurveAnimations and the default `Animate` script are not emulated) is in
+[docs/engine.md](docs/engine.md#known-limitations). What runs and what does not (physics beyond free fall
+and the default `Animate` script are not emulated) is in
 [docs/cli.md](docs/cli.md#what-is-not-simulated).
 
 ## Contributing, security and license

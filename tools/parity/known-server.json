@@ -5,6 +5,28 @@
 			"why": "Model:MoveTo itself: a client leaves a model outside the DataModel where it is (the exact name too); ree moves it"
 		}
 	],
+	"buffer_vector_f32": [
+		{
+			"line": "vector-f32-native false",
+			"why": "the capture's engine (Studio 0.744) has no buffer.readvectorf32x2/x3 or writevectorf32x2/x3 (release 747 lists them as pending): it ran the probe's float32 reference, ree runs the functions"
+		},
+		{
+			"line": "read-unaligned ok 1 0 -1.36468614e-12 -3123882.5 | ok 1 2.52437386e-29 -3.03172418e-13 0",
+			"why": "subnormal float32s: a server reads and writes zero for a float32 below the smallest normal one (buffer.readf32 and writef32 alike, and a vector's components); ree keeps them. A float mode of the engine, not of these functions"
+		},
+		{
+			"line": "read-special ok 1 inf -inf nan | ok 1 0 -0 3.40282347e+38 | ok 1 0 -0 0",
+			"why": "subnormal float32s: a server reads and writes zero for a float32 below the smallest normal one (buffer.readf32 and writef32 alike, and a vector's components); ree keeps them. A float mode of the engine, not of these functions"
+		},
+		{
+			"line": "write-subnormal ok 0 000000000000008000000000 | ok 0000000000000000",
+			"why": "subnormal float32s: a server reads and writes zero for a float32 below the smallest normal one (buffer.readf32 and writef32 alike, and a vector's components); ree keeps them. A float mode of the engine, not of these functions"
+		},
+		{
+			"line": "arguments (the functions are not in this engine)",
+			"why": "the argument errors name the function and the vector type, which the float32 reference cannot say: printed only by an engine that has the functions (not checked against one)"
+		}
+	],
 	"buffer_vector_time": [
 		{
 			"line": "vector-format error invalid argument #2 to 'format' (string expected, got Vector3) ok 1, 2, 3 concat error @86: attempt to concatenate string with Vector3",
@@ -357,14 +379,6 @@
 		{
 			"line": "value SharedTable typeof=SharedTable type=userdata tostring=SharedTable: ADDR",
 			"why": "SharedTable is a userdata in a client; ree makes it a table"
-		},
-		{
-			"line": "value FloatCurveKey typeof=FloatCurveKey type=userdata tostring={Linear, 0, 1, nil, nil}",
-			"why": "FloatCurveKey has no constructor in ree"
-		},
-		{
-			"line": "value RotationCurveKey typeof=RotationCurveKey type=userdata tostring={Linear, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0}",
-			"why": "RotationCurveKey has no constructor in ree"
 		},
 		{
 			"line": "value SecurityCapabilities typeof=SecurityCapabilities type=userdata tostring=",

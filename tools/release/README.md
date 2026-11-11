@@ -53,7 +53,8 @@ node tools/release/notes.mjs --tag v0.1.0 --out out/release-notes.md
   in direct and in served runs. Its Unix mock workers launch the installed Node by absolute path: copying Homebrew's
   executable alone loses its relative libraries, and the helper checks deliberately restrict PATH. On GitHub Actions
   it checks that the input checkout stayed unchanged. Successful checks remove the temp folder; failures keep it and
-  print its path. `cargo test --release` runs the smoke too
+  print its path. Temporary paths are resolved through the OS, including linked folders and Windows verbatim paths
+  from Rust's `canonicalize`. `cargo test --release` runs the smoke too
   (`tests/standalone.rs`), with only the built binary copied into a fresh folder (`--binary <path>`), so the tests need
   Node.js.
 - `notes.mjs` writes the release notes. It needs a full-history checkout that has the tag. Commit subjects are read

@@ -293,6 +293,22 @@ pub struct Session {
 thread_local! {
     /// A test's `REE_HW_COUNTERS` for this thread (the variable is the process's: tests run side by side)
     pub static TEST_MODE: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+    /// A test's call length in microseconds for this thread (`fixed_call_us`): what sampling sees in place of the measured one
+    static TEST_CALL_US: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Makes every call on this thread read `us` microseconds long to the sampling, and keeps the threshold at its initial value
+/// (`THRESHOLD_US`), until the returned guard drops: which calls are sampled then does not depend on the host's speed or load.
+/// The counters themselves are still read from the run thread, so the booked cycles stay real.
+#[cfg(test)]
+pub fn fixed_call_us(us: f64) -> impl Drop {
+    struct Restore(Option<f64>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_CALL_US.with(|fixed| fixed.set(self.0));
+        }
+    }
+    Restore(TEST_CALL_US.with(|fixed| fixed.replace(Some(us))))
 }
 
 /// `REE_HW_COUNTERS`: where the counts come from (the installed service unless it names `mock` or `console`)
@@ -532,6 +548,11 @@ impl Session {
             let leave = self.readings.len() - 1;
             let inside = leave.saturating_sub(entered.reading + 1);
             let ticks = (self.readings[leave].at - entered.at) as f64 - (inside + 1) as f64 * self.reading_ticks;
+            #[cfg(test)]
+            let ticks = match TEST_CALL_US.with(std::cell::Cell::get) {
+                Some(us) => us * 1e-6 * self.frequency as f64,
+                None => ticks,
+            };
             // (a call stands for its `every` calls; one read for its length alone, for the calls since the last)
             let every = self.calls[entered.call as usize].every;
             let stands_for = if every > 0 { every } else { self.pacing.functions.get(&function).map_or(1, |learned| learned.remeasure.max(1)) };
@@ -547,7 +568,7 @@ impl Session {
             self.functions.resize(memory::MAX_DEPTH, 0);
             self.lines.resize(memory::MAX_DEPTH, 0);
         }
-        let depth = vm::stack(state, &mut self.functions, &mut self.lines);
+        let depth = unsafe { vm::stack(state, &mut self.functions, &mut self.lines) };
         let mut frames: Vec<memory::Frame> = (0..depth).map(|index| (self.functions[index], self.lines[index])).collect();
         match frames.first_mut() {
             Some(top) => *top = (function, -1),
@@ -585,6 +606,11 @@ impl Session {
 
     /// Keeps call readings near [`READINGS_A_SECOND`], within the threshold's bounds
     fn pace(&mut self, state: *mut mlua::ffi::lua_State) {
+        // (a test that fixes the call length keeps the threshold where it starts)
+        #[cfg(test)]
+        if TEST_CALL_US.with(|fixed| fixed.get().is_some()) {
+            return;
+        }
         let Some(last) = self.readings.last() else { return };
         if !self.pacing.adjust_threshold(last.at) {
             return;

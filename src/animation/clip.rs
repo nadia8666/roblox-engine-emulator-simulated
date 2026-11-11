@@ -1,6 +1,7 @@
-//! A KeyframeSequence as an AnimationTrack plays it: each joint's keys, the named keyframes and the
+//! An animation clip as an AnimationTrack plays it: each joint's keys, the named keyframes and the
 //! markers. Read from a model file (a downloaded animation asset, rbx-dom) or from the engine's own
-//! instances (KeyframeSequenceProvider:RegisterKeyframeSequence), through [`Tree`].
+//! instances (KeyframeSequenceProvider:RegisterKeyframeSequence), through [`Tree`]: a
+//! KeyframeSequence here, a CurveAnimation in [`super::curve_clip`].
 //!
 //! A Pose names the joint it moves by its own name and its parent Pose's: a Motor6D whose Part0 and
 //! Part1 have those names, else a Bone of the Pose's name whose parent has the parent Pose's name
@@ -31,6 +32,10 @@ const ELASTIC: u32 = 2;
 const CUBIC: u32 = 3;
 const BOUNCE: u32 = 4;
 const CUBIC_V2: u32 = 5;
+/// Not a PoseEasingStyle: a key sampled from a CurveAnimation's curves ([`super::curve_clip`]). To the
+/// next one the translation moves in a line and the rotation as the normalized mix of the two
+/// quaternions.
+pub const SAMPLED: u32 = u32::MAX;
 // Enum.PoseEasingDirection
 const IN: u32 = 0;
 const OUT: u32 = 1;
@@ -51,6 +56,9 @@ pub struct JointTrack {
     pub parent: String,
     pub name: String,
     pub keys: Vec<Key>,
+    /// Whether the track turns the joint. A CurveAnimation's joint without a Rotation curve does
+    /// not: it leaves the joint's rotation to the other tracks (its translation counts all the same).
+    pub rotation: bool,
 }
 
 /// A KeyframeMarker: its Keyframe's time, its name and Value.
@@ -75,6 +83,9 @@ pub struct Clip {
     /// Every keyframe by name and time (GetTimeOfKeyframe)
     pub names: Vec<(f32, String)>,
     pub markers: Vec<Marker>,
+    /// Read from a CurveAnimation: a joint is found by its own name alone, and the track knows no
+    /// keyframe names (GetTimeOfKeyframe refuses)
+    pub curve: bool,
 }
 
 /// What a clip is read from: a model file's instances or the engine's.
@@ -89,25 +100,43 @@ pub trait Tree {
     /// An enum property's value
     fn enumeration(&self, node: Self::Node, property: &str) -> Option<u32>;
     fn string(&self, node: Self::Node, property: &str) -> Option<String>;
+    /// A binary string property's bytes (a curve's `ValuesAndTimes`)
+    fn bytes(&self, _node: Self::Node, _property: &str) -> Option<Vec<u8>> {
+        None
+    }
 }
 
-/// The first KeyframeSequence at or below `root`; an error names what was found instead.
-pub fn sequence_node<T: Tree>(tree: &T, root: T::Node) -> Result<T::Node, String> {
+/// The first animation clip at or below `root`, a KeyframeSequence or a CurveAnimation (true).
+pub fn clip_node<T: Tree>(tree: &T, root: T::Node) -> Result<(T::Node, bool), String> {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         match tree.class(node) {
-            "KeyframeSequence" => return Ok(node),
-            "CurveAnimation" => return Err(format!("{:?} is a CurveAnimation, which is not supported", tree.name(node))),
+            "KeyframeSequence" => return Ok((node, false)),
+            "CurveAnimation" => return Ok((node, true)),
             _ => stack.extend(tree.children(node).into_iter().rev()),
         }
     }
-    Err("the asset holds no KeyframeSequence".into())
+    Err("the asset holds no KeyframeSequence or CurveAnimation".into())
+}
+
+/// The first animation clip at or below `root` when it is a KeyframeSequence; an error names what
+/// was found instead.
+pub fn sequence_node<T: Tree>(tree: &T, root: T::Node) -> Result<T::Node, String> {
+    match clip_node(tree, root)? {
+        (node, false) => Ok(node),
+        (node, true) => Err(format!("{:?} is a CurveAnimation, not a KeyframeSequence", tree.name(node))),
+    }
 }
 
 impl Clip {
-    /// The clip of the first KeyframeSequence at or below `root` ([`sequence_node`]).
+    /// The clip of the first KeyframeSequence or CurveAnimation at or below `root` ([`clip_node`]).
     pub fn find<T: Tree>(tree: &T, root: T::Node) -> Result<Clip, String> {
-        sequence_node(tree, root).map(|node| Self::from_sequence(tree, node))
+        clip_node(tree, root).map(|(node, curve)| Self::of(tree, node, curve))
+    }
+
+    /// The clip of `node`, a CurveAnimation (`curve`) or a KeyframeSequence.
+    pub fn of<T: Tree>(tree: &T, node: T::Node, curve: bool) -> Clip {
+        if curve { super::curve_clip::clip(tree, node) } else { Self::from_sequence(tree, node) }
     }
 
     pub fn from_sequence<T: Tree>(tree: &T, sequence: T::Node) -> Clip {
@@ -160,7 +189,7 @@ impl Clip {
                 };
                 match joints.iter_mut().find(|joint| joint.name == name && joint.parent == parent) {
                     Some(joint) => joint.keys.push(key),
-                    None => joints.push(JointTrack { parent, name, keys: vec![key] }),
+                    None => joints.push(JointTrack { parent, name, keys: vec![key], rotation: true }),
                 }
             }
         }
@@ -193,6 +222,11 @@ pub fn sample(keys: &[Key], time: f32) -> (Quat, Vec3A) {
     let span = b.time - a.time;
     if span <= 0.0 {
         return (b.rotation, b.translation);
+    }
+    if a.style == SAMPLED {
+        let alpha = ((time - a.time) / span).clamp(0.0, 1.0);
+        let towards = if a.rotation.dot(b.rotation) < 0.0 { -b.rotation } else { b.rotation };
+        return ((a.rotation * (1.0 - alpha) + towards * alpha).normalize(), a.translation.lerp(b.translation, alpha));
     }
     let alpha = ease(a.style, a.direction, ((time - a.time) / span).clamp(0.0, 1.0));
     (a.rotation.slerp(b.rotation, alpha), a.translation.lerp(b.translation, alpha))
@@ -326,6 +360,16 @@ impl Tree for FileTree<'_> {
             _ => None,
         }
     }
+
+    fn bytes(&self, node: Self::Node, property: &str) -> Option<Vec<u8>> {
+        use rbx_dom_weak::types::Variant;
+        match self.property(node, property)? {
+            Variant::BinaryString(value) => Some(AsRef::<[u8]>::as_ref(value).to_vec()),
+            Variant::SharedString(value) => Some(value.data().to_vec()),
+            Variant::String(value) => Some(value.as_bytes().to_vec()),
+            _ => None,
+        }
+    }
 }
 
 // The engine's instances
@@ -377,5 +421,9 @@ impl Tree for EngineTree<'_> {
 
     fn string(&self, node: Self::Node, property: &str) -> Option<String> {
         Some(self.value(node, property)?.as_str()?.to_str_lossy().into_owned())
+    }
+
+    fn bytes(&self, node: Self::Node, property: &str) -> Option<Vec<u8>> {
+        Some(self.value(node, property)?.as_str()?.as_bytes().to_vec())
     }
 }

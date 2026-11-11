@@ -69,7 +69,7 @@ fn blending_by_priority_then_weight() {
     assert!(clip::priority_rank(0) < clip::priority_rank(5));
 }
 
-fn start(mode: &str) -> (Lua, Rc<Engine>) {
+pub(super) fn start(mode: &str) -> (Lua, Rc<Engine>) {
     let engine = Engine::new(Options { mode: mode.into(), ..Options::default() }).expect("engine");
     let lua = Lua::new();
     engine_lua::start(&lua, &engine).expect("start");
@@ -77,7 +77,7 @@ fn start(mode: &str) -> (Lua, Rc<Engine>) {
 }
 
 /// Runs `source` for `seconds` of play; panics with the script's error. Returns the output lines.
-fn run(lua: &Lua, engine: &Rc<Engine>, source: &str, seconds: f64) -> Vec<String> {
+pub(super) fn run(lua: &Lua, engine: &Rc<Engine>, source: &str, seconds: f64) -> Vec<String> {
     let script = {
         let mut state = engine.state.borrow_mut();
         let class = engine.reflection.class_id("ModuleScript").unwrap();
@@ -95,7 +95,7 @@ fn run(lua: &Lua, engine: &Rc<Engine>, source: &str, seconds: f64) -> Vec<String
     engine.state.borrow().output.entries.iter().map(|line| format!("{}: {}", line.kind, line.message)).collect()
 }
 
-fn check(source: &str, seconds: f64) {
+pub(super) fn check(source: &str, seconds: f64) {
     let (lua, engine) = start("play");
     run(&lua, &engine, source, seconds);
 }
@@ -463,7 +463,8 @@ fn looping_markers_and_keyframes() {
         local Track = Animator:LoadAnimation(Sequence({ {0, 0, "Start"}, {0.25, 0.5, "Hit", { Impact = "big" }}, {0.5, 0} }, true))
         assert(Track.Looped, "Looped comes from the sequence")
         assert(Track:GetTimeOfKeyframe("Hit") == 0.25)
-        assert(not pcall(Track.GetTimeOfKeyframe, Track, "Nope"), "an unknown keyframe errors")
+        local Found, Message = pcall(Track.GetTimeOfKeyframe, Track, "Nope")
+        assert(not Found and Message == "Could not find a keyframe by that name!", Message)
         local Seen = {}
         Track.KeyframeReached:Connect(function(Name) table.insert(Seen, Name) end)
         Track:GetMarkerReachedSignal("Impact"):Connect(function(Value) table.insert(Seen, "Impact=" .. Value) end)
@@ -820,4 +821,29 @@ fn get_keyframe_sequence_async_makes_a_files_sequence() {
         1.0,
     );
     let _ = std::fs::remove_dir_all(&directory);
+}
+
+/// A track's marker signal fires when tracks before it that had a marker signal were collected: the signals' slots are
+/// reused, and a script must get the new signal, not what it held for the slot before.
+#[test]
+fn a_marker_signal_fires_after_earlier_tracks_were_collected() {
+    check(
+        r#"
+        local Seen = {}
+        for Round = 1, 8 do
+            local Model, Animator = Rig()
+            local Track = Animator:LoadAnimation(Sequence({ {0, 0}, {0.1, 0.5, "Hit", { Impact = "big" }}, {0.2, 0} }))
+            local Count = 0
+            Track:GetMarkerReachedSignal("Impact"):Connect(function() Count += 1 end)
+            Track:Play(0)
+            task.wait(0.4)
+            table.insert(Seen, Count)
+            Model:Destroy()
+            for _ = 1, 200 do local _ = table.create(1000, 0) end
+            task.wait(0.2)
+        end
+        assert(table.concat(Seen, " ") == "1 1 1 1 1 1 1 1", table.concat(Seen, " "))
+        "#,
+        6.0,
+    );
 }

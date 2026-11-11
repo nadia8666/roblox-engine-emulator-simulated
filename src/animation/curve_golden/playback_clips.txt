@@ -1,0 +1,64 @@
+neg-keys length 1 1
+neg-keys at0 0 true x=0 <>
+neg-keys set -0.5 0 true x=0 <>
+neg-keys set -2 0 true x=0 <>
+neg-keys set 0.25 0.25 true x=2.5 <>
+neg-keys set 0.75 0.75 true x=7.5 <>
+neg-keys set 1 1 false x=10 <K:End,Stopped>
+neg-keys set 5 1 false x=10 <>
+only-neg length 0 0
+only-neg at0 0 true x=-10 <>
+only-neg step 0.100000001 true x=-10 <>
+only-neg step 0.200000003 true x=-10 <>
+late length 2
+late set 0 0 true x=10
+late set 0.5 0.5 true x=10
+late set 1 1 true x=10
+late set 1.5 1.5 true x=15
+late set 2 2 false x=20
+zero curve 1 length 0
+zero curve 1 start 0 true x=7 <>
+zero curve 1 1 0.100000001 true x=7 <M:M=string:zero>
+zero curve 1 2 0.200000003 true x=7 <>
+zero curve 1 3 0.300000012 true x=7 <>
+zero curve 1 set 5 5.0999999 true x=7 <>
+zero curve 1 stopped 5.0999999 false <Stopped,Ended>
+zero curve 1 replay 0.100000001 true x=7 <M:M=string:zero>
+zero curve -1 length 0
+zero curve -1 start 0 true x=7 <>
+zero curve -1 1 -0.100000001 true x=7 <M:M=string:zero>
+zero curve -1 2 -0.200000003 true x=7 <>
+zero curve -1 3 -0.300000012 true x=7 <>
+zero curve -1 set 5 4.9000001 true x=7 <>
+zero curve -1 stopped 4.9000001 false <Stopped,Ended>
+zero curve -1 replay -0.100000001 true x=7 <M:M=string:zero>
+empty register true string
+empty length 0
+empty start 0 true x=0 <>
+empty step 0.100000001 true x=0 <>
+zero-markers 1 0.300000012 true x=7 <M:M=string:zero>
+zero-markers 2 0.600000024 true x=7 <M:M=string:half>
+zero-markers 3 0.900000036 true x=7 <>
+zero-markers-back 1 -0.300000012 true x=7 <M:M=string:zero>
+zero-markers-back 2 -0.600000024 true x=7 <M:M=string:before>
+zero-markers-back 3 -0.900000036 true x=7 <>
+zero-set 1 0.600000024 true x=7 <M:M=string:half>
+zero-set 2 -2.79999995 true x=7 <>
+neg-marker 1 0.25 true x=2.5 <M:M=string:half>
+neg-marker 2 0 false x=0 <K:End,Stopped,Loop>
+marker-fire <M:M=string:5,M:M=string:true,M:M=string:1.5>
+non-clip load Instance Animation ks ok(KeyframeSequence, 0, false) clip nil
+non-clip register ok(string) E(Invalid AnimationClip instance passed to registerAnimationClip) E(Argument 1 missing or nil) E(Unable to cast value to Object) E(Argument 1 missing or nil) E(Unable to cast value to Object)
+non-clip track 0 false Enum.AnimationPriority.Action false
+non-clip play 0 true x=0 <>
+non-clip play 0 true x=0 <>
+non-clip stop 0 false x=0 <Stopped,Ended>
+ids again true changed false twin of changed true clone true ks true
+ids early track 1 5
+ids id1 loaded after change 1 5
+ids id2 2 10
+ids active late track 2 10
+ids ks true true true
+id-content same build true name false loop false priority false extra child false attribute false tag false joint name false key false archivable false
+id-nonclip true false false false false
+id-args E(Argument 1 missing or nil) E(Unable to cast value to Object) E(Unable to cast value to Object) E(Argument 1 missing or nil) E(Unable to cast value to Object)

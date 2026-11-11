@@ -59,6 +59,7 @@ src/lua/             the Luau-facing API: Instance userdata (raw.rs), datatypes,
 src/world/ src/record/   the 3D world and the recorder
 src/animation/       AnimationTracks: the Animator step, clips, keyframe loading
 src/meshes.rs images.rs  EditableMesh and EditableImage
+src/path2d.rs        Path2D: control points, the curve and its queries, the parent rectangle a host's layout gives
 src/serve/           `ree serve` (a warm process running record / run jobs) and its client (`--service`)
 src/watchdog.rs      the script timeout, the wall-clock cap, the exit when the parent is gone
 src/trace.rs census.rs lua/holders.rs   Context.TraceWrites, Context.Census, Context.Holders
@@ -115,6 +116,9 @@ with or without a layer.
   Without it those members keep the core's static answers (GetMouseLocation (-1000, -1000), GuiState
   Idle), TextService:GetTextSize answers from Studio's measured advances (src/text_measure.rs), and the
   rest is reported as not emulated.
+- A Path2D's curve is the core's (`path2d`), and only its parent's rectangle is a layout's: a layer gives it with
+  `path2d::set_frame_source` (a `Frame`: the parent's corner, size and rotation on the screen) and says when a
+  path was laid out with `path2d::laid_out`. Without one a parent measures nothing ("Path2D" under "Engine API").
 
 ## Project mount (`src/mount.rs`, `src/project.rs`)
 
@@ -143,6 +147,9 @@ there).
   directory (a symlink or a Windows junction) mounts what it leads to, unless it leads back to a
   directory on the way down to it: that directory would hold itself without end, so the link is left
   out with a warning (place content's folders, below, are walked the same way).
+- **Module sources kept between runs** (a process that runs many engines, such as `ree serve`): a module's source and
+  bytecode are reused while the file's size and modification time are unchanged. Both are checked against the file
+  itself each time the module is read, never against the mount's listing, which can be older than an edit.
 - **Project settings**: `rur.json` at the project folder, keyed by the root folder's name (the first
   root with a value wins): `placeIds`, `modelAssets` (`mount`, `prefixes`), `clientGui`,
   `streamingTargetRadius`. The name is kept from rur, which wrote these files first.
@@ -362,6 +369,19 @@ scheduler.rs    Scheduler data and the Luau-running steps (flush_deferred, resum
   since 0.701) are builtins (fast calls, a constant argument folded by the compiler) that take a number or a string Luau reads as one (`"1"`, `"inf"`,
   `"nan"`, `"1e400"`) and raise `invalid argument #1 to 'isnan' (number expected, got nil)` for anything
   else, as a playing client does (tools/parity/probes/math_classify.luau).
+  `buffer.readvectorf32x2` / `readvectorf32x3` and `buffer.writevectorf32x2` / `writevectorf32x3` (Roblox release 747;
+  no Luau release up to 0.746 has them, so they are a topic of the series, patches/luau/18-buffer-vector.patch) read
+  or write two or three contiguous little-endian float32s as a vector's first components, a read zeroing the rest.
+  They are builtins (one fast call, where three `readf32` and `vector.create` are four), and they follow the
+  functions' design, Luau RFC pull 198: each is the `readf32` / `writef32` calls it stands for, with the bounds of
+  the whole access checked before any byte moves, the offset taken as `readf32` takes it and
+  `buffer access out of bounds` past the end. Not measured in a client: release 747 lists them as pending and no
+  client had them when this was written. tools/parity/probes/buffer_vector_f32.luau runs the equivalent float32
+  calls in a client that lacks them, and every line they define matches but the subnormal ones (a client's vector
+  and a server's float32 reads and writes hold zero for a value below the smallest normal float32; the engine here
+  keeps it); the argument errors
+  (`invalid argument #3 to 'writevectorf32x3' (vector expected, got number)`, a bad value named before a bad
+  offset's bounds) follow `vector.magnitude` and `buffer.writef32` as measured in Studio 0.746.
 - **CFrame:FuzzyEq(other, eps = 1e-5)** (measured in a playing client, Studio 0.744: about 25,000 pairs at its
   thresholds; tools/parity/probes/cframe_fuzzyeq.luau): single precision, eps taken as a float and its size
   used. Position component by component: self's `a` and the other's `b` are equal, or `|a - b| <= |eps| *
@@ -374,6 +394,39 @@ scheduler.rs    Scheduler data and the Luau-running steps (flush_deferred, resum
   (CFrame expected, got number)`, `invalid argument #2 (CFrame expected, got nil)` and `#3 (number expected,
   ...)` at the calling line (an eps of nil given is an error), `Invalid number of arguments: 1, CFrame.FuzzyEq
   expects 2 or 3.` without one.
+- **Path2D** (`src/path2d.rs`; measured in Studio 0.747 and a playing client, Studio 0.744;
+  tools/parity/probes/path2d.luau and path2d_layout.luau). A GuiBase with Closed, Color3 (black), Thickness (1,
+  clamped to 0..100 when written), Visible and ZIndex. Transparency, SelectedControlPoint, SelectedControlPointData
+  and GetSegmentCount raise the client's capability errors (`The current thread cannot read 'Transparency' (lacking
+  capability RobloxScript)`).
+  - Points: `Path2DControlPoint.new()` takes no, one or three UDim2s (Position, LeftTangent, RightTangent). A path
+    holds up to 100 (`GetMaxControlPoints`); `SetControlPoints` of more keeps the first 100 and raises
+    `Path2D:SetControlPoints() only supports 100 control points.`. `GetControlPoints`, `GetControlPoint`,
+    `InsertControlPoint`, `UpdateControlPoint` and `RemoveControlPoint` take an index rounded to an integer and raise
+    `Path2D:GetControlPoint() at index N access out of bounds` (by method name). Each successful change fires
+    ControlPointChanged once (deferred, no arguments), also when the list is what it was. The points are the hidden
+    property `PropertiesSerialize` (a count, then 49 bytes a point), so `Clone`, a model file and a recording carry them.
+  - Parent: a GuiObject or a LayerCollector, in the DataModel or not. Under any other parent Insert, Update and the
+    curve queries of a path with points raise `Attempting to use Path2D with invalid parent`.
+  - The spline behind the list trails it: `SetControlPoints` leaves it stale, a curve query or the next layout of
+    a path on screen rebuilds it, and Insert, Update or Remove of an index the spline does not have yet raises
+    `Spline inserting control point at index I access out of bounds` after the list has changed (no event).
+  - Curve: segment i runs from point i to point i + 1 (Closed adds the last to the first when there are three or
+    more points). Positions resolve against the parent's rectangle, tangents as sizes; a segment whose two
+    handles are zero is a line, with one a quadratic, else a cubic. `GetPositionOnCurve(t)` answers a UDim2 of
+    scales of the parent (offsets when the parent has no size), `GetTangentOnCurve(t)` the segment's derivative on
+    the screen, `GetLength()` the length by halving until a piece is straight to 1e-5 pixels, and
+    `GetBoundingRect()` the curve's bounds on the screen grown by (Thickness + 1) / 2. A query without a segment
+    raises `Path2D:GetPositionOnCurve() attempting to query with zero segments`.
+  - By length (`GetPositionOnCurveArcLength`, `GetTangentOnCurveArcLength`) a client does not answer the point at
+    that share of the length, and neither does the engine: `t` (held to 0..1) times the length is taken off
+    segment by segment, a line answers its share, and a curved segment is walked in 32 Runge-Kutta steps in
+    float32. On gentle curves that is the point to about 1e-5 of the length. Near a tight bend the walk ends
+    elsewhere on the curve or past the segment's end, at `t` = 1 it usually stops a hair short of the end, and
+    when float32 leaves the last segment a hair more than its length the answer is the path's start.
+  - Every number above comes out in Roblox's float32 digits (tools/parity, probe path2d: 385 lines, none known).
+  - The core has no layout: a GuiObject parent has no size and sits at the origin, a ScreenGui or SurfaceGui
+    measures 800 by 600. A host's layout answers instead ("Layers and extensions").
 - **Lifetime**: instances a script can reach keep their userdata identity; unreachable parentless
   subtrees are freed by `lua::raw::collect` (run from the render step). Rust code that holds an
   `InstanceId` outside the tree across frames keeps it reachable with `state.dom.pin(id)` / `unpin(id)`,
@@ -1093,13 +1146,15 @@ record/prepare.rs runs prepared ahead by `ree serve`
 ## Animation (`src/animation`)
 
 AnimationTracks run as Roblox's documentation describes them (AnimationTrack, Animator, Motor6D,
-KeyframeSequence pages); how a track behaves before its asset arrives is measured in Studio.
+KeyframeSequence pages); how a track behaves before its asset arrives is measured in Studio, and so is
+everything about CurveAnimations and their curves (below).
 
 - Loading is the host's choice: `animation::enable(&engine, Loading { directories, download })`.
   `ree record` / `ree run` enable it with `--animations` directories (`<id>.rbxm` / `.rbxmx`), the
   download cache (`<state dir>/animations`) and, with feature `bundles`, the asset worker's `asset`
-  command. An engine without it loads only RegisterKeyframeSequence's ids. An id that loads nowhere warns
-  once per engine and its tracks have Length 0.
+  command. An engine without it loads only the ids of clips registered in it (RegisterKeyframeSequence,
+  RegisterAnimationClip and their Active forms). An id that loads nowhere warns once per engine and its
+  tracks have Length 0. The clip an id names is a KeyframeSequence or a CurveAnimation.
 - LoadAnimation on an Animator, Humanoid or AnimationController makes an AnimationTrack; Play, Stop,
   AdjustWeight and AdjustSpeed fade and play as documented; KeyframeReached, GetMarkerReachedSignal,
   DidLoop, Stopped and Ended fire in time order.
@@ -1111,7 +1166,98 @@ KeyframeSequence pages); how a track behaves before its asset arrives is measure
 - Fetching (measured in Studio playtests): an asset's first request in a session arrives 0.45 s later;
   tracks and preloads of it share the fetch, and one fetched before loads at once. Until it arrives a
   track has Length 0 and never poses. ContentProvider:PreloadAsync waits for the Animations it is given.
-- Not emulated: CurveAnimations, the default `Animate` script, animation graphs, RootMotion.
+- `Animator:StepAnimations(delta)` steps that animator's tracks and poses its rig, as the frame's step
+  does for every animator. It has Plugin security: in play mode it raises "The current thread cannot call
+  'StepAnimations' (lacking capability Plugin)", in edit mode (`--mode edit`, where no Animator steps by
+  itself) it works. A delta below 0 or not a number steps by 0.
+- Not emulated: the default `Animate` script, animation graphs, RootMotion, FaceControls channels (a
+  CurveAnimation's FloatCurves outside `Position` and `Rotation` count for its Length and pose nothing;
+  no clip here drives a FaceControls instance, a KeyframeSequence's NumberPoses neither).
+
+### Animation curves (`src/animation/curve.rs`, `curve_clip.rs`, `curves.rs`, `src/lua/curve_keys.rs`)
+
+Measured in Roblox Studio 0.747 with curves and clips built by script. `src/animation/curve_golden/` holds
+scripts that run unchanged in Studio and here, with what Studio returned; `curve_tests.rs` holds the
+poses, events and provider answers Studio gave for a small rig.
+
+- **Keys.** `FloatCurveKey.new(time, value, interpolation?)` and `RotationCurveKey.new(time, cframe,
+  interpolation?)` (Cubic when the mode is not given), with `Time`, `Value`, `Interpolation`, `LeftTangent`
+  and `RightTangent` readable and writable, Studio's errors, equality by value and Studio's text
+  (`{Linear, 0, 1, nil, nil}`). A FloatCurveKey's tangents start unset; a RotationCurveKey's start at 0. A
+  right tangent can only be set on a Cubic key.
+- **Times** are whole ticks of 1/2400 s (the nearest), one key a tick. `SetKeys` sorts by time and drops a
+  key less than 1/2400 s (float32) after the one kept before it.
+- **FloatCurve:GetValueAtTime** holds the first and last key's value outside them. Between two keys the
+  earlier one's mode decides: Constant holds, Linear is `a * (1 - s) + b * s`, Cubic is the Hermite basis
+  with the earlier key's right tangent and the later key's left one as slopes. All in float32, in the
+  order written in `curve.rs`; every value of `curve_golden/float_curve.luau` and
+  `curve_golden/tangents.luau` equals Studio's to the last bit. A tangent that is not set takes the slope
+  on the key's other side: the neighbouring Linear segment's, 0 beside a Constant one or at the curve's
+  ends, the key's other tangent when that is set, else the mean of the two segments' slopes scaled by
+  `min(1, 4 * min(r, 1 - r))`, `r` how far the key's value is from the key before's to the key after's
+  (0 at a peak or dip).
+- **RotationCurve** turns along the shortest arc: Linear by the fraction of the way, Cubic by the same
+  Hermite basis run from 0 to 1 (not clamped). Values agree with Studio's within 2e-6 rad (Studio's own
+  float32 arithmetic). `RotationCurve:SetKeys` raises "Variant cast failed" for any key, as Studio 0.747
+  does; keys go in with `InsertKey`.
+- **EulerRotationCurve** is `CFrame.fromEulerAngles(x, y, z, RotationOrder)` of its `X`, `Y`, `Z`
+  FloatCurves; **Vector3Curve** the three values. `X()`, `Y()`, `Z()` return the channel and make it when
+  missing. `Length` is the number of keys, read only.
+- **Channels** are remembered, as Studio remembers them (`curve_golden/channels.luau`): a FloatCurve named
+  X, Y or Z when it becomes a child is that channel if the curve has none, and stays it under any other
+  name; a FloatCurve named so when it stops being a child empties that channel, whichever curve was it. A
+  child renamed to X is therefore no channel, of two children named X the first is, and a channel renamed
+  and then removed is still what `X()` returns. Playing a clip finds the channels by name.
+- **MarkerCurve** holds `{Time, Value}` markers. A value is text of at most 64 bytes
+  (`curve_golden/markers.luau`): a number is written with up to 20 significant digits
+  (`0.10000000000000000555`), an EnumItem as its name, an instance as "Instance", a table as "{}", a
+  datatype as `tostring` writes it; a longer one raises "Invalid marker passed to InsertMarkerAtTime, max
+  string size is 64".
+- **Storage.** A curve keeps its keys in its `ValuesAndTimes` property in the form model files hold, so
+  clones and files carry them; scripts cannot read the property.
+- **A CurveAnimation as a track.** A Folder below the clip (through Folders only) is a joint by its own
+  name alone: the Motor6D whose Part1 has that name, else the Bone of that name. Its `Position` child
+  (Vector3Curve) and `Rotation` child (EulerRotationCurve or RotationCurve, the later of two) pose it; a
+  joint without a `Rotation` leaves the rotation to the other playing tracks. Length is the last key's
+  time among the curves inside Folders, 0 or later: keys before 0 s do not play and markers there do not
+  fire. Loop and Priority are the clip's. Each MarkerCurve fires `GetMarkerReachedSignal(its Name)` with
+  the marker's Value; `GetTimeOfKeyframe` raises "Invalid operation for this animation format.".
+- **How a CurveAnimation's track steps** (`curve_golden/playback_steps.luau` and `playback_clips.luau`,
+  stepped with StepAnimations in Studio; 183 lines equal). TimePosition is a float32 that each step adds
+  `delta * Speed` to. A step fires the markers from where it starts up to, but not at, where it stops: a
+  marker at the time a step lands on fires with the next step that moves, one at the start with the first.
+  Reaching the last key forwards, or 0 s backwards, ends a pass: the end's own marker, then
+  `KeyframeReached("End")`, then `Stopped` for a track that does not loop, then `DidLoop` when the step
+  went past the end (looped or not). A looped track goes on from the other end; one that does not loop
+  fades out over 0.3 s, still moving if its TimePosition is set, and `Ended` fires a step after its weight
+  reached 0. `Play` with a negative speed starts at the last key. A TimePosition set on a looped track at
+  or past the last key is 0 s. A clip of Length 0 never ends: its time runs on, below 0 too, and passes
+  markers wherever they are.
+- **Tracks play samples, as Studio does.** The pose at a time is the line between the curves' values at
+  the two nearest multiples of 1/30 s (rotations: the normalized mix of the two quaternions), so a
+  Constant step is a ramp over the sample before it. The samples start at 0 s and the last lies at or
+  past Length. Poses agree with Studio's within 2e-4 (Studio rounds the sampled rotations it stores).
+- **Providers.** `KeyframeSequenceProvider:RegisterKeyframeSequence` takes a CurveAnimation too;
+  `AnimationClipProvider:RegisterAnimationClip` and `RegisterActiveAnimationClip` take either clip and
+  refuse a CurveAnimation whose `Position` or `Rotation` child is of another class;
+  `RegisterActiveKeyframeSequence` takes a KeyframeSequence. An id of the two that are not Active stands
+  for the clip's content: registering the same clip again, a clone or another built the same way returns
+  the same id, a clip changed in any way (a key, its name, an attribute) another, and a track of the id
+  plays the clip as it was when registered. `RegisterKeyframeSequence` also takes an instance that is no
+  clip: its id loads a track of Length 0 that stays at 0 s, `GetKeyframeSequenceAsync` of it returns an
+  empty KeyframeSequence and `GetAnimationClipAsync` never returns. `GetAnimationClipAsync(id)` yields and
+  returns a copy of the clip as it is (the instance itself for an `active://` id);
+  `GetKeyframeSequenceAsync` of a CurveAnimation returns the KeyframeSequence Studio makes of one (a
+  Keyframe every 1/30 s and at Length, a Pose per Folder, the markers as KeyframeMarkers).
+- **Differences from Studio.** Registered ids are `rbxtemp://N`, counted up, one per content (Studio's are
+  32 hexadecimal digits of the content, which a script cannot predict either).
+  `GetKeyframeSequenceAsync` and `GetAnimationClipAsync` of a registered id copy the instance as it is
+  now (Studio: as it was when registered), and a track of an `active://` id keeps the clip it loaded
+  (Studio: it follows the instance). A track's pose can differ from Studio's in the seventh digit (its
+  samples' times are not exactly ours). The steps above are a CurveAnimation's track's only: a
+  KeyframeSequence's track steps as before. A curve that came whole (a clone, a model file) takes its channels by name when it is
+  first asked for one or a child comes or goes, not when it was made. A marker's value is cut at a zero
+  byte. The messages of ids that do not load are this engine's own.
 
 ## Server run context (`--run-context server`, `src/lua/server.luau`)
 

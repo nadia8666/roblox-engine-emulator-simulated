@@ -269,7 +269,10 @@ pub fn prices() -> Option<Vec<f64>> {
 
 /// Starts the VM's profile on this thread: stepping (instructions, work, tree, caches) or only naming functions for
 /// stacks. `host` is the engine's work cells (Scheduler::work and work_drained), whose charges are booked too.
-pub fn start(state: *mut lua_State, stepping: bool, prices: Option<&[f64]>, host: Option<(*const f64, *const f64)>) -> bool {
+///
+/// # Safety
+/// `state` is a live thread of the VM to profile, and `host`'s cells, when given, stay readable until [`free`].
+pub unsafe fn start(state: *mut lua_State, stepping: bool, prices: Option<&[f64]>, host: Option<(*const f64, *const f64)>) -> bool {
     let (prices_ptr, count) = prices.map_or((std::ptr::null(), 0), |prices| (prices.as_ptr(), prices.len() as c_int));
     let (work, drained) = host.unwrap_or((std::ptr::null(), std::ptr::null()));
     unsafe { lua_profilestart(state, stepping as c_int, prices_ptr, count, work, drained) != 0 }
@@ -321,17 +324,25 @@ pub unsafe fn resumes(state: *mut lua_State) -> u64 {
 }
 
 /// Stops stepping (the last instruction's charges are booked); the results stay until [`free`].
-pub fn stop(state: *mut lua_State) {
+///
+/// # Safety
+/// `state` is a live thread of the VM the profile runs on.
+pub unsafe fn stop(state: *mut lua_State) {
     unsafe { lua_profilestop(state) }
 }
 
 /// The phase what follows belongs to: its frames hang from a node of the phase's (function -1, callpc the phase; phase 0
 /// is the root itself)
-pub fn phase(state: *mut lua_State, phase: u32) {
+///
+/// # Safety
+/// `state` is a live thread of the VM the profile runs on.
+pub unsafe fn phase(state: *mut lua_State, phase: u32) {
     unsafe { lua_profilephase(state, phase as c_int) }
 }
 
-pub fn free(state: *mut lua_State) {
+/// # Safety
+/// `state` is a live thread of the VM the profile runs on.
+pub unsafe fn free(state: *mut lua_State) {
     unsafe { lua_profilefree(state) }
 }
 
@@ -741,7 +752,10 @@ pub fn walk_site_charges(state: *mut lua_State, mut each: impl FnMut(SiteCharges
 
 /// The frames of `state`, innermost first, as (function id, line) pairs (ids as [`Node::function`]; line -1 for C and
 /// native frames), written into `out`; the count.
-pub fn stack(state: *mut lua_State, functions: &mut [c_int], lines: &mut [c_int]) -> usize {
+///
+/// # Safety
+/// `state` is a live thread of the VM the profile runs on.
+pub unsafe fn stack(state: *mut lua_State, functions: &mut [c_int], lines: &mut [c_int]) -> usize {
     let max = functions.len().min(lines.len()) as c_int;
     unsafe { lua_profilestack(state, functions.as_mut_ptr(), lines.as_mut_ptr(), max).max(0) as usize }
 }
@@ -779,7 +793,10 @@ pub unsafe fn chunks(state: *mut lua_State, on: bool) {
 
 /// During an allocation callback: the collectable object being allocated (null for other memory) and what the memory is
 /// for (`ALLOC_*`)
-pub fn alloc_block(state: *mut lua_State) -> (*mut c_void, i32) {
+///
+/// # Safety
+/// `state` is the thread an allocation callback was called with, during that callback.
+pub unsafe fn alloc_block(state: *mut lua_State) -> (*mut c_void, i32) {
     let mut kind: c_int = 0;
     let block = unsafe { lua_allocblock(state, &mut kind) };
     (block, kind)
@@ -812,12 +829,17 @@ pub unsafe fn mark(block: *mut c_void) {
     unsafe { lua_profilemark(block) }
 }
 
-pub fn set_freed(state: *mut lua_State, freed: Option<unsafe extern "C-unwind" fn(*mut c_void, *mut c_void)>, ud: *mut c_void) {
+/// # Safety
+/// `state` is a live thread of the VM the profile runs on, and `ud` is what `freed` takes, valid while the hook is set.
+pub unsafe fn set_freed(state: *mut lua_State, freed: Option<unsafe extern "C-unwind" fn(*mut c_void, *mut c_void)>, ud: *mut c_void) {
     unsafe { lua_setprofilefreed(state, freed, ud) }
 }
 
 /// The hook told of each table that rehashed to fit a new key (the profile's own thread's VM), or none
-pub fn set_rehash(state: *mut lua_State, rehash: Option<RehashHook>, ud: *mut c_void) {
+///
+/// # Safety
+/// `state` is a live thread of the VM the profile runs on, and `ud` is what `rehash` takes, valid while the hook is set.
+pub unsafe fn set_rehash(state: *mut lua_State, rehash: Option<RehashHook>, ud: *mut c_void) {
     unsafe { lua_setprofilerehash(state, rehash, ud) }
 }
 
@@ -898,7 +920,10 @@ pub struct CacheTotals {
 
 /// What the instructions with an inline cache and the builtin calls did so far, summed over the profile's functions (the
 /// engine's own Luau and ree's tools' chunks aside: [`tool_chunks`])
-pub fn cache_totals(state: *mut lua_State) -> CacheTotals {
+///
+/// # Safety
+/// `state` is a live thread of the VM the profile runs on.
+pub unsafe fn cache_totals(state: *mut lua_State) -> CacheTotals {
     const DEPTHS_AT: usize = 4 * CACHE_OUTCOMES + 1 + DECLINES;
     const TOTAL: usize = DEPTHS_AT + 4 * CACHE_DEPTHS;
     let mut out = [0u64; TOTAL];
@@ -945,7 +970,10 @@ pub unsafe fn current_op(state: *mut lua_State) -> Option<u8> {
 /// is its data), `edge(from, to, name)` for every reference the collector follows, the collector's roots as edges from
 /// 0 (the main thread, the registry, the basic types' metatables, the fixed objects), and `dead(tt, size)` for each
 /// object a sweep found dead and has not freed yet (lua.h lua_enumheap).
-pub fn enum_heap(state: *mut lua_State, mut node: impl FnMut(usize, u8, usize, Option<&str>), mut edge: impl FnMut(usize, usize, Option<&str>), mut dead: impl FnMut(u8, usize)) {
+///
+/// # Safety
+/// `state` is a live thread of a VM, and no other thread runs that VM during the walk.
+pub unsafe fn enum_heap(state: *mut lua_State, mut node: impl FnMut(usize, u8, usize, Option<&str>), mut edge: impl FnMut(usize, usize, Option<&str>), mut dead: impl FnMut(u8, usize)) {
     struct Context<'a> {
         node: &'a mut dyn FnMut(usize, u8, usize, Option<&str>),
         edge: &'a mut dyn FnMut(usize, usize, Option<&str>),
@@ -970,16 +998,24 @@ pub fn enum_heap(state: *mut lua_State, mut node: impl FnMut(usize, u8, usize, O
 }
 
 /// The collector's state: 0 pause, 1 propagate, 2 propagate again, 3 atomic, 4 sweep (lgc.h)
-pub fn gc_state(state: *mut lua_State) -> i32 {
+///
+/// # Safety
+/// `state` is a live thread of a VM.
+pub unsafe fn gc_state(state: *mut lua_State) -> i32 {
     unsafe { lua_gcstate(state) }
 }
 
 /// The VM's heap in bytes (what gcinfo() and collectgarbage("count") report in KB)
-pub fn total_bytes(state: *mut lua_State) -> usize {
+///
+/// # Safety
+/// `state` is a live thread of a VM.
+pub unsafe fn total_bytes(state: *mut lua_State) -> usize {
     unsafe { lua_totalbytes(state, -1) }
 }
 
-pub fn main_thread(state: *mut lua_State) -> *mut lua_State {
+/// # Safety
+/// `state` is a live thread of a VM.
+pub unsafe fn main_thread(state: *mut lua_State) -> *mut lua_State {
     unsafe { lua_mainthread(state) }
 }
 

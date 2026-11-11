@@ -235,14 +235,16 @@ pub(crate) fn set_in_vm(running: bool) {
 pub struct ApiCall(*mut mlua::ffi::lua_State);
 
 impl ApiCall {
+    /// # Safety
+    /// `state` is a live thread of the VM the profile runs on, and stays one until the returned ApiCall is dropped.
     #[inline]
-    pub fn new(state: *mut mlua::ffi::lua_State) -> ApiCall {
+    pub unsafe fn new(state: *mut mlua::ffi::lua_State) -> ApiCall {
         if !SUITE_TIME.load(Ordering::Relaxed) {
             return ApiCall(std::ptr::null_mut());
         }
         let now = ticks();
         if now != seen() {
-            crate::profiler::time_call(state, true, now);
+            unsafe { crate::profiler::time_call(state, true, now) };
         }
         ApiCall(state)
     }
@@ -256,7 +258,7 @@ impl Drop for ApiCall {
         }
         let now = ticks();
         if now != seen() {
-            crate::profiler::time_call(self.0, false, now);
+            unsafe { crate::profiler::time_call(self.0, false, now) };
         }
     }
 }
@@ -633,7 +635,7 @@ unsafe extern "C-unwind" fn sampling_interrupt(state: *mut mlua::ffi::lua_State,
             let in_c = c_calls_follow(state);
             let now = ticks();
             if now != SUITE_SEEN.load(Ordering::Relaxed) {
-                crate::profiler::safepoint(state, now);
+                unsafe { crate::profiler::safepoint(state, now) };
             }
             // (the next sample's C calls count from here, unless a C function still runs: an interrupt from inside it)
             if !in_c {
@@ -641,13 +643,13 @@ unsafe extern "C-unwind" fn sampling_interrupt(state: *mut mlua::ffi::lua_State,
             }
         }
         if crate::boundary::on() {
-            crate::boundary::safepoint(state);
+            unsafe { crate::boundary::safepoint(state) };
         }
         // (a profile holds the interrupt slot: the script timeout checks from here)
         unsafe { crate::watchdog::check(state) };
     } else {
         // (a collector step's start and end)
-        crate::profiler::gc_interrupt(state);
+        unsafe { crate::profiler::gc_interrupt(state) };
     }
 }
 

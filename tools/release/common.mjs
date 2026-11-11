@@ -8,6 +8,13 @@ import { spawnSync } from "node:child_process";
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const BINARY = "ree";
 
+// The real path of a file, links resolved by the OS. Rust's canonicalize gives Windows paths a `\\?\` verbatim prefix, and
+// Node 22.23.4 (the CI runner's) fails on that spelling with EISDIR, `lstat 'C:'`, as it does on a verbatim drive root.
+// A file URL carries no prefix, so the path goes through one first.
+export function realPath(file) {
+	return fs.realpathSync.native(pathToFileURL(file));
+}
+
 // The manifests whose versions must agree (the hardware-counter service has its own version and is not shipped)
 export const MANIFESTS = ["Cargo.toml", "profile-view/Cargo.toml"];
 
@@ -28,7 +35,7 @@ export function isMain(moduleUrl) {
 	if (!process.argv[1]) return false;
 	const script = path.resolve(process.argv[1]);
 	try {
-		return fs.realpathSync(fileURLToPath(moduleUrl)) === fs.realpathSync(script);
+		return realPath(fileURLToPath(moduleUrl)) === realPath(script);
 	} catch {
 		// a path that does not exist has no real path to resolve, so only the plain spellings can match
 		return moduleUrl === pathToFileURL(script).href;

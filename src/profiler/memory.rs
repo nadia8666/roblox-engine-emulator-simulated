@@ -43,12 +43,15 @@ pub struct Stacks {
 
 impl Stacks {
     /// The id of `state`'s current stack
-    pub fn of(&mut self, state: *mut lua_State) -> u32 {
+    ///
+    /// # Safety
+    /// `state` is a live thread of the VM the profile runs on.
+    pub unsafe fn of(&mut self, state: *mut lua_State) -> u32 {
         if self.functions.len() < MAX_DEPTH {
             self.functions.resize(MAX_DEPTH, 0);
             self.lines.resize(MAX_DEPTH, 0);
         }
-        let depth = vm::stack(state, &mut self.functions, &mut self.lines);
+        let depth = unsafe { vm::stack(state, &mut self.functions, &mut self.lines) };
         self.frames.clear();
         self.frames.extend((0..depth).map(|index| (self.functions[index], self.lines[index])));
         self.intern_current()
@@ -404,8 +407,8 @@ unsafe extern "C-unwind" fn allocating(state: *mut lua_State, _block: *mut std::
             return;
         }
         let size = (new - old) as u64;
-        let (block, kind) = vm::alloc_block(state);
-        let sampled = allocations.sample(size).map(|weight| (allocations.stacks.of(state), weight));
+        let (block, kind) = unsafe { vm::alloc_block(state) };
+        let sampled = allocations.sample(size).map(|weight| (unsafe { allocations.stacks.of(state) }, weight));
         allocations.bytes += size;
         if kind == vm::ALLOC_OBJECT && !block.is_null() {
             allocations.objects += 1;
@@ -445,7 +448,7 @@ unsafe extern "C-unwind" fn rehashing(_ud: *mut c_void, state: *mut lua_State, t
         let Some(allocations) = allocations.as_mut() else { return };
         // (a table made by the last allocation is booked first, so that it is followed)
         allocations.resolve_pending();
-        let stack = allocations.stacks.of(state);
+        let stack = unsafe { allocations.stacks.of(state) };
         let made = allocations.live.get(&(table as usize)).map_or(NO_STACK, |live| live.stack);
         let parts = |array: c_int, nodes: c_int| array.max(0) as u64 * allocations.slot_bytes + nodes.max(0) as u64 * allocations.node_bytes;
         let (before, after) = (parts(old_array, old_nodes), parts(new_array, new_nodes));
@@ -456,20 +459,26 @@ unsafe extern "C-unwind" fn rehashing(_ud: *mut c_void, state: *mut lua_State, t
 }
 
 /// Starts the allocation profile of `state`'s VM (the VM's profile must have started: its function ids name the stacks).
-pub fn start(state: *mut lua_State, step: u64, track_live: bool, resolver: Option<Resolver>) {
+///
+/// # Safety
+/// `state` is a live thread of the VM the profile runs on.
+pub unsafe fn start(state: *mut lua_State, step: u64, track_live: bool, resolver: Option<Resolver>) {
     ALLOCATIONS.with(|cell| *cell.borrow_mut() = Some(Allocations::new(step, track_live, resolver)));
     if track_live {
-        vm::set_freed(state, Some(freed), std::ptr::null_mut());
+        unsafe { vm::set_freed(state, Some(freed), std::ptr::null_mut()) };
     }
-    vm::set_rehash(state, Some(rehashing), std::ptr::null_mut());
+    unsafe { vm::set_rehash(state, Some(rehashing), std::ptr::null_mut()) };
     unsafe { (*mlua::ffi::lua_callbacks(state)).onallocate = Some(allocating) };
 }
 
 /// Ends it: the profile so far (the callback is removed)
-pub fn stop(state: *mut lua_State) -> Option<Allocations> {
+///
+/// # Safety
+/// `state` is a live thread of the VM the profile runs on.
+pub unsafe fn stop(state: *mut lua_State) -> Option<Allocations> {
     unsafe { (*mlua::ffi::lua_callbacks(state)).onallocate = None };
-    vm::set_freed(state, None, std::ptr::null_mut());
-    vm::set_rehash(state, None, std::ptr::null_mut());
+    unsafe { vm::set_freed(state, None, std::ptr::null_mut()) };
+    unsafe { vm::set_rehash(state, None, std::ptr::null_mut()) };
     ALLOCATIONS.with(|cell| {
         let mut allocations = cell.borrow_mut().take()?;
         allocations.resolve_pending();
@@ -504,9 +513,12 @@ pub const GC_STATES: [&str; 5] = ["pause", "propagate", "propagate again", "atom
 
 impl Collector {
     /// The interrupt with `gc` >= 0: a step begins (the first of a pair) or ends
-    pub fn interrupt(&mut self, state: *mut lua_State) {
-        let bytes = vm::total_bytes(state);
-        let now = vm::gc_state(state);
+    ///
+    /// # Safety
+    /// `state` is a live thread of a VM.
+    pub unsafe fn interrupt(&mut self, state: *mut lua_State) {
+        let bytes = unsafe { vm::total_bytes(state) };
+        let now = unsafe { vm::gc_state(state) };
         match self.started.take() {
             None => self.started = Some((Instant::now(), bytes, now)),
             Some((at, before, from)) => {
@@ -709,8 +721,11 @@ pub struct Held {
 /// The walk follows every reference the collector follows from the collector's roots (lua.h lua_enumheap), so what it
 /// reaches is what a full collection would keep, and the rest, with the objects a sweep found dead and has not freed, is
 /// what it would free. Nothing is collected: a snapshot changes nothing the VM does.
-pub fn snapshot(state: *mut lua_State, label: &str, frame: u64, seconds: f64, resolver: Option<&dyn Fn(u32, u32) -> Option<String>>, top: usize) -> Snapshot {
-    let main = vm::main_thread(state) as usize;
+///
+/// # Safety
+/// `state` is a live thread of a VM, and no other thread runs that VM during the walk.
+pub unsafe fn snapshot(state: *mut lua_State, label: &str, frame: u64, seconds: f64, resolver: Option<&dyn Fn(u32, u32) -> Option<String>>, top: usize) -> Snapshot {
+    let main = unsafe { vm::main_thread(state) } as usize;
     let instance_tag = crate::lua::raw::INSTANCE_TAG;
     // (a userdata's pointer is its data: the offset back to its block, from a probe of the layout)
     let mut ptrs: Vec<usize> = Vec::new();
@@ -725,34 +740,32 @@ pub fn snapshot(state: *mut lua_State, label: &str, frame: u64, seconds: f64, re
     let mut dead: FxHashMap<u8, (u64, u64)> = FxHashMap::default();
     // (each table's shape, read while the walk holds it: (node, shape))
     let mut shapes: Vec<(u32, vm::TableShape)> = Vec::new();
-    vm::enum_heap(
-        state,
-        |ptr, tt, size, name| {
-            if tt as i32 == vm::T_TABLE {
-                if let Some(shape) = unsafe { vm::table_shape(ptr as *mut c_void) } {
-                    shapes.push((ptrs.len() as u32, shape));
-                }
+    let node = |ptr: usize, tt: u8, size: usize, name: Option<&str>| {
+        if tt as i32 == vm::T_TABLE {
+            if let Some(shape) = unsafe { vm::table_shape(ptr as *mut c_void) } {
+                shapes.push((ptrs.len() as u32, shape));
             }
-            index.insert(ptr, ptrs.len() as u32);
-            ptrs.push(ptr);
-            tts.push(tt);
-            sizes.push(size as u64);
-            names.push(name.map(|name| name.into()));
-        },
-        |from, to, name| {
-            let name = edge_names.id(name.unwrap_or(""));
-            if from == 0 {
-                root_edges.push((to, name));
-            } else {
-                pending_edges.push((from, to, name));
-            }
-        },
-        |tt, size| {
-            let entry = dead.entry(tt).or_default();
-            entry.0 += 1;
-            entry.1 += size as u64;
-        },
-    );
+        }
+        index.insert(ptr, ptrs.len() as u32);
+        ptrs.push(ptr);
+        tts.push(tt);
+        sizes.push(size as u64);
+        names.push(name.map(|name| name.into()));
+    };
+    let edge = |from: usize, to: usize, name: Option<&str>| {
+        let name = edge_names.id(name.unwrap_or(""));
+        if from == 0 {
+            root_edges.push((to, name));
+        } else {
+            pending_edges.push((from, to, name));
+        }
+    };
+    let dead_object = |tt: u8, size: usize| {
+        let entry = dead.entry(tt).or_default();
+        entry.0 += 1;
+        entry.1 += size as u64;
+    };
+    unsafe { vm::enum_heap(state, node, edge, dead_object) };
     for (from, to, name) in pending_edges {
         if let (Some(&from), Some(&to)) = (index.get(&from), index.get(&to)) {
             edges.push((from, to, name));
@@ -1081,7 +1094,7 @@ pub fn snapshot(state: *mut lua_State, label: &str, frame: u64, seconds: f64, re
         label: label.to_string(),
         frame,
         seconds,
-        total_bytes: vm::total_bytes(state),
+        total_bytes: unsafe { vm::total_bytes(state) },
         objects: reachable.0 + unswept.0,
         object_bytes,
         reachable,

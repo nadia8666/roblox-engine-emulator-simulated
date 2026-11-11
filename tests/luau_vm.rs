@@ -8,6 +8,7 @@ use mlua::{chunk::Compiler, Function, Lua, LuaSerdeExt, Result, Table, Value};
 
 const TABLE_FIND: &str = include_str!("luau/table_find.luau");
 const NATIVE_BUILTINS: &str = include_str!("luau/native_builtins.luau");
+const BUFFER_VECTOR: &str = include_str!("luau/buffer_vector.luau");
 
 fn codegen_supported() -> bool {
     unsafe { mlua::ffi::luau_codegen_supported() != 0 }
@@ -22,6 +23,20 @@ fn table_find_fast_path() -> Result<()> {
         let lua = Lua::new();
         lua.enable_jit(jit);
         lua.load(TABLE_FIND).set_name("table_find").exec()?;
+    }
+    Ok(())
+}
+
+/// buffer.readvectorf32x2/x3 and buffer.writevectorf32x2/x3 (Roblox release 747): the builtin, the library function and
+/// the float32 calls they stand for agree on every outcome, error message and byte; interpreted, and in native code
+/// when the CPU supports it.
+#[test]
+fn buffer_vector_functions_match_their_float32_equivalents() -> Result<()> {
+    for jit in [false, true] {
+        let lua = Lua::new();
+        lua.enable_jit(jit && codegen_supported());
+        let cases: i64 = lua.load(BUFFER_VECTOR).set_name("buffer_vector").eval()?;
+        assert_eq!(cases, 8568);
     }
     Ok(())
 }

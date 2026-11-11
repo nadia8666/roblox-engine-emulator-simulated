@@ -1,0 +1,119 @@
+boundary-once 1 0.25 true x=2.5 <>
+boundary-once 2 0.5 true x=5 <M:M=string:q>
+boundary-once 3 0.75 true x=7.5 <M:M=string:h>
+boundary-once 4 1 false x=10 <K:End,Stopped>
+boundary-once 5 1 false x=1.6667 <>
+boundary-back-once 1 0.75 true x=7.5 <>
+boundary-back-once 2 0.5 true x=5 <>
+boundary-back-once 3 0.25 true x=2.5 <M:M=string:h>
+boundary-back-once 4 0 false x=0 <M:M=string:q,K:End,Stopped>
+boundary-back-once 5 0 false x=0 <>
+ends-once 1 0.75 true x=7.5 <M:M=string:zero>
+ends-once 2 1 false x=10 <M:M=string:one,K:End,Stopped,Loop>
+ends-once 3 1 false x=0 <>
+ends-once 4 1 false x=0 <Ended>
+ends-back-once 1 0.75 true x=7.5 <M:M=string:one>
+ends-back-once 2 0.25 true x=2.5 <>
+ends-back-once 3 0 false x=0 <M:M=string:zero,K:End,Stopped,Loop>
+ends-back-once 4 0 false x=0 <>
+exact-zero-back-once 1 0.5 true x=5 <>
+exact-zero-back-once 2 0 false x=0 <M:M=string:q,K:End,Stopped>
+exact-zero-back-once 3 0 false x=0 <>
+exact-zero-back-once 4 0 false x=0 <>
+set-once 1 1 false x=10 <K:End,Stopped>
+set-once 2 0 false x=0 <>
+set-once 3 1 false x=10 <>
+set-once 4 0.25 false x=2.5 <>
+set-once 5 0.375 false x=2.1875 <>
+set-once 6 0.375 false x=0.625 <>
+set-once 7 0.949999988 false x=0 <>
+set-back-once 1 0 false x=0 <K:End,Stopped>
+set-back-once 2 0.5 false x=5 <>
+set-back-once 3 0.375 false x=2.1875 <>
+boundary-loop 1 0.25 true x=2.5 <>
+boundary-loop 2 0.5 true x=5 <M:M=string:q>
+boundary-loop 3 0.75 true x=7.5 <M:M=string:h>
+boundary-loop 4 0 true x=0 <K:End>
+boundary-loop 5 0.25 true x=2.5 <>
+boundary-back-loop 1 0.75 true x=7.5 <>
+boundary-back-loop 2 0.5 true x=5 <>
+boundary-back-loop 3 0.25 true x=2.5 <M:M=string:h>
+boundary-back-loop 4 0 true x=0 <M:M=string:q>
+boundary-back-loop 5 0.75 true x=7.5 <K:End,Loop>
+ends-loop 1 0.75 true x=7.5 <M:M=string:zero>
+ends-loop 2 0.25 true x=2.5 <M:M=string:one,M:M=string:zero,K:End,Loop>
+ends-loop 3 0 true x=0 <M:M=string:one,K:End>
+ends-loop 4 0.25 true x=2.5 <M:M=string:zero>
+ends-back-loop 1 0.75 true x=7.5 <M:M=string:one>
+ends-back-loop 2 0.25 true x=2.5 <>
+ends-back-loop 3 0.75 true x=7.5 <M:M=string:zero,M:M=string:one,K:End,Loop>
+ends-back-loop 4 0.25 true x=2.5 <>
+exact-zero-back-loop 1 0.5 true x=5 <>
+exact-zero-back-loop 2 0 true x=0 <M:M=string:q>
+exact-zero-back-loop 3 0.75 true x=7.5 <K:End,Loop>
+exact-zero-back-loop 4 0.5 true x=5 <>
+set-loop 1 0 true x=0 <>
+set-loop 2 0 true x=0 <K:End>
+set-loop 3 0 true x=0 <>
+set-loop 4 0.25 true x=2.5 <>
+set-loop 5 0.375 true x=3.75 <M:M=string:q>
+set-loop 6 0.375 true x=3.75 <M:M=string:q>
+set-loop 7 0.949999988 true x=9.5 <>
+set-back-loop 1 0 true x=0 <>
+set-back-loop 2 0.5 true x=5 <>
+set-back-loop 3 0.375 true x=3.75 <>
+curve-once fwd start 0 true x=0 <>
+curve-once fwd 1 0.300000012 true x=3 <M:M=string:a>
+curve-once fwd 2 0.600000024 true x=6 <>
+curve-once fwd 3 0.900000036 true x=9 <M:M=string:b>
+curve-once fwd 4 1 false x=10 <K:End,Stopped,Loop>
+curve-once fwd 5 1 false x=0 <>
+curve-once rev start 1 true x=10 <>
+curve-once rev 1 0.699999988 true x=7 <M:M=string:b>
+curve-once rev 2 0.399999976 true x=4 <>
+curve-once rev 3 0.0999999642 true x=1 <M:M=string:a>
+curve-once rev 4 0 false x=0 <K:End,Stopped,Loop>
+curve-once rev 5 0 false x=0 <>
+curve-once rev first 0.3 0.699999988 true x=7 <M:M=string:b>
+curve-once rev second 0.399999976 true x=4 <>
+curve-once exact half 0.5 true x=5 <M:M=string:a>
+curve-once exact end 1 false x=10 <M:M=string:b,K:End,Stopped>
+curve-once after 1 false x=1.6667 <>
+curve-once wrap order 1 false x=10 <M:M=string:b,K:End,Stopped,Loop>
+curve-once wrap order back 0 false x=0 <>
+curve-once speed 0 0 true x=0 <>
+curve-once speed 0 set end 1 false x=10 <K:End,Stopped>
+curve-once speed 0 set marker 0.25 false x=1.6667 <>
+curve-once then speed 1 0.349999994 false x=1.1667 <>
+curve-loop fwd start 0 true x=0 <>
+curve-loop fwd 1 0.300000012 true x=3 <M:M=string:a>
+curve-loop fwd 2 0.600000024 true x=6 <>
+curve-loop fwd 3 0.900000036 true x=9 <M:M=string:b>
+curve-loop fwd 4 0.200000048 true x=2 <K:End,Loop>
+curve-loop fwd 5 0.50000006 true x=5 <M:M=string:a>
+curve-loop rev start 0 true x=0 <M:M=string:b,M:M=string:a>
+curve-loop rev 1 0.699999988 true x=7 <M:M=string:b,K:End,Loop>
+curve-loop rev 2 0.399999976 true x=4 <>
+curve-loop rev 3 0.0999999642 true x=1 <M:M=string:a>
+curve-loop rev 4 0.799999952 true x=8 <K:End,Loop>
+curve-loop rev 5 0.49999994 true x=5 <M:M=string:b>
+curve-loop rev first 0.3 0.699999988 true x=7 <M:M=string:b>
+curve-loop rev second 0.399999976 true x=4 <>
+curve-loop exact half 0.5 true x=5 <M:M=string:a>
+curve-loop exact end 0 true x=0 <M:M=string:b,K:End>
+curve-loop after 0.25 true x=2.5 <>
+curve-loop wrap order 0.349999905 true x=3.5 <M:M=string:b,M:M=string:a,K:End,Loop>
+curve-loop wrap order back 0.650000036 true x=6.5 <M:M=string:a,M:M=string:b,K:End,Loop>
+curve-loop speed 0 0 true x=0 <>
+curve-loop speed 0 set end 0 true x=0 <>
+curve-loop speed 0 set marker 0.25 true x=2.5 <>
+curve-loop then speed 1 0.349999994 true x=3.5 <M:M=string:a>
+start curve step 0 0 true x=0 <>
+start curve step 0.1 0.100000001 true x=1 <M:M=string:zero>
+start curve to end 1 false x=10 <M:M=string:one,K:End,Stopped,Loop>
+start curve replay 0.1 0.100000001 true x=1 <M:M=string:zero>
+start curve speed 0 step 0.1 0 true x=0 <>
+start curve speed 1 step 0.1 0.100000001 true x=1 <M:M=string:zero>
+step-args E(Argument 1 missing or nil) E(Unable to cast string to float) ok() E(Unable to cast Array to float)
+step-other ok() 0.25
+step-string 0.5

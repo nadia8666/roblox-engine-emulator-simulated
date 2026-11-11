@@ -125,8 +125,7 @@ fn read_file(engine: &Engine, path: &str) -> std::io::Result<(Vec<u8>, Option<Ve
         return Ok(taken);
     }
     if let Some(compiled) = COMPILED.get() {
-        let listed = engine.state.borrow().project.stamps.get(path).copied();
-        return compiled.read(path, listed);
+        return compiled.read(path);
     }
     std::fs::read(path).map(|bytes| (bytes, None))
 }
@@ -156,13 +155,10 @@ fn kept(source: &[u8], bytecode: Option<&[u8]>) -> std::sync::Arc<(Vec<u8>, Opti
 static COMPILED: std::sync::OnceLock<CompiledSources> = std::sync::OnceLock::new();
 
 impl CompiledSources {
-    /// `path`'s source and bytecode; `listed` is its stamp when the caller knows it already (the
-    /// project listing's).
-    fn read(&self, path: &str, listed: Option<crate::files::Stamp>) -> std::io::Result<(Vec<u8>, Option<Vec<u8>>)> {
-        let stamp = match listed {
-            Some(stamp) => stamp,
-            None => crate::files::stamp(std::path::Path::new(path)).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?,
-        };
+    /// `path`'s source and bytecode, checked against the file now: the mount's listing can predate
+    /// an edit, and a cached Windows listing can carry a stamp from an earlier run.
+    fn read(&self, path: &str) -> std::io::Result<(Vec<u8>, Option<Vec<u8>>)> {
+        let stamp = crate::files::stamp(std::path::Path::new(path)).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
         let lasting = !TRANSIENT.with(std::cell::Cell::get);
         let known = self.entries.lock().ok().and_then(|entries| entries.get(path).cloned());
         if let Some((known_stamp, entry, home)) = known {
@@ -213,7 +209,7 @@ pub fn precompile(paths: Vec<String>) {
         use rayon::prelude::*;
         let pool = rayon::ThreadPoolBuilder::new().num_threads(4).thread_name(|_| "ree-precompile".into()).start_handler(|_| TRANSIENT.with(|transient| transient.set(true)));
         let Ok(pool) = pool.build() else { return };
-        pool.install(|| missing.par_iter().for_each(|path| drop(compiled.read(path, None))));
+        pool.install(|| missing.par_iter().for_each(|path| drop(compiled.read(path))));
     });
 }
 
@@ -226,7 +222,7 @@ pub fn precompile_now(paths: &[String]) -> usize {
         let Ok(entries) = compiled.entries.lock() else { return 0 };
         paths.iter().filter(|path| !entries.contains_key(*path)).collect()
     };
-    missing.par_iter().filter(|path| compiled.read(path, None).is_ok()).count()
+    missing.par_iter().filter(|path| compiled.read(path).is_ok()).count()
 }
 
 /// Drops the kept sources and bytecode of module files that changed or are gone (a changed file is
@@ -737,4 +733,36 @@ impl ModuleRecords {
 /// Modules.Reset
 pub fn reset(engine: &Engine, module: InstanceId) {
     engine.modules.borrow_mut().records.retain(|&(_, required), _| required != module);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The stamp the mount saved when it listed a module is not the file's: a module edited after the listing is read
+    /// again (source and bytecode), and one deleted after it is not found.
+    #[test]
+    fn a_compiled_module_follows_the_file_not_its_listing() {
+        reuse_compiled_modules();
+        let directory = std::env::temp_dir().join(format!("ree-compiled-source-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let file = directory.join("Module.luau");
+        let path = file.to_string_lossy().into_owned();
+        std::fs::write(&file, "return 'before 1'").unwrap();
+        let listed_stamp = crate::files::stamp(&file).unwrap();
+        let engine = Engine::new(crate::Options::default()).unwrap();
+        engine.state.borrow_mut().project.stamps.insert(path.clone(), listed_stamp);
+        let original = read_file(&engine, &path).unwrap();
+        // (the new source is two bytes longer, so its stamp differs whatever the clock's resolution)
+        std::fs::write(&file, "return 'before two'").unwrap();
+        assert_ne!(crate::files::stamp(&file), Some(listed_stamp), "the edit changes the file's stamp");
+        let edited = read_file(&engine, &path).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        let deleted = read_file(&engine, &path);
+        std::fs::remove_dir(&directory).unwrap();
+        assert_eq!(original.0, b"return 'before 1'");
+        assert_eq!(edited.0, b"return 'before two'");
+        assert_eq!(Lua::new().load(edited.1.unwrap()).eval::<String>().unwrap(), "before two");
+        assert_eq!(deleted.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    }
 }

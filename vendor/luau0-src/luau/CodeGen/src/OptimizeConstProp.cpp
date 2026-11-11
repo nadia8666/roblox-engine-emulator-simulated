@@ -1583,6 +1583,8 @@ static void handleBuiltinEffects(ConstPropState& state, LuauBuiltinFunction bfid
     case LBF_INTEGER_CLAMP:
     case LBF_INTEGER_EXTRACT:
     case LBF_INTEGER_TONUMBER:
+    case LBF_BUFFER_READVECTORF32X2:
+    case LBF_BUFFER_READVECTORF32X3:
         break;
     case LBF_BUFFER_WRITEU8:
     case LBF_BUFFER_WRITEU16:
@@ -1590,6 +1592,8 @@ static void handleBuiltinEffects(ConstPropState& state, LuauBuiltinFunction bfid
     case LBF_BUFFER_WRITEF32:
     case LBF_BUFFER_WRITEF64:
     case LBF_BUFFER_WRITEINTEGER:
+    case LBF_BUFFER_WRITEVECTORF32X2:
+    case LBF_BUFFER_WRITEVECTORF32X3:
         state.invalidateHeapBufferData();
         break;
     case LBF_TABLE_INSERT:

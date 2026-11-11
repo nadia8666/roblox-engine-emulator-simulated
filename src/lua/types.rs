@@ -163,6 +163,7 @@ pub fn register(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
     register_random(lua, engine)?;
     register_date_time(lua, engine)?;
     register_instance_handle(lua, engine)?;
+    super::curve_keys::register(lua, engine)?;
     Ok(())
 }
 

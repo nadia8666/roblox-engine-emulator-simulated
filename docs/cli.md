@@ -21,7 +21,8 @@ are elsewhere. `profile diff --out <dir>` uses the named output directory.
 A path you name is used as given, and a recording's profile stays in the recording's output folder. A run that spools
 its script output to a file does so in `<state dir>/output` and deletes the file when it closes.
 
-`--version` and `--help` need no cache. A command that writes files resolves state first and fails
+`--version` and `--help` need no cache, and `--help` or `-h` after `run` or `record` prints the same usage and exits 0.
+A command that writes files resolves state first and fails
 with an error asking for `RUR_STATE_DIR` when neither an override nor a usable per-user cache exists, also with
 `--repo`. A binary in its own checkout and library hosts keep their existing defaults.
 
@@ -204,9 +205,11 @@ ree serve --warm --roots "game/shared;game/src" --assets-at ReplicatedStorage.Bu
   none of them has is warned about once and its tracks have Length 0. As in Studio, an asset's first
   request in a run arrives 0.45 s later (its tracks keep Length 0 and no pose until then; a later one,
   or one ContentProvider:PreloadAsync waited for, loads at once).
+  The asset may hold a KeyframeSequence or a CurveAnimation; both play.
   `KeyframeSequenceProvider:GetKeyframeSequenceAsync` returns a copy of the same KeyframeSequence (it
-  raises for an id none of them has). CurveAnimations and the default `Animate` script are not
-  emulated.
+  raises for an id none of them has; of a CurveAnimation it returns the KeyframeSequence Studio makes
+  of one) and `AnimationClipProvider:GetAnimationClipAsync` the clip as it is. The default `Animate`
+  script is not emulated.
 
 ## What is not simulated
 

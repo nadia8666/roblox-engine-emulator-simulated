@@ -431,20 +431,20 @@ Datatypes.Faces = Faces
 Datatypes.Axes = Axes
 
 local Path2DControlPoint = {}
-function Path2DControlPoint.new(Position, LeftTangent, RightTangent)
-	local Fields = {
-		Position = Position or UDim2.new(),
-		LeftTangent = LeftTangent or UDim2.new(),
-		RightTangent = RightTangent or UDim2.new(),
-	}
-	return Proxy("Path2DControlPoint", function(_, Key)
-		local Value = Fields[Key]
-		if Value == nil then
-			error(`{Key} is not a valid member of Path2DControlPoint`, 0)
-		end
-		return Value
-	end, nil, { __tostring = function() return `Path2DControlPoint \{ Position = {Fields.Position}, LeftTangent = {Fields.LeftTangent}, RightTangent = {Fields.RightTangent} \}` end })
-end
+-- (Path2DControlPoint.new and its values are defined below the traced functions, beside the other
+-- additions; these lines keep the count of the ones that built it here: rur's golden traces record
+-- prelude line numbers.)
+--
+--
+--
+--
+--
+--
+--
+--
+--
+--
+--
 
 local function ParamsType(TypeName, Defaults, Methods, Meta)
 	return {
@@ -881,6 +881,61 @@ do
 	}
 end
 
+-- Path2DControlPoint: three UDim2 fields a script reads and writes, compared by value. Its fields live in
+-- Path2DPoints, where the engine reads them (path2d.rs). Measured in a playing client (Studio 0.744) and in Studio
+-- 0.747 (tools/parity/probes/path2d.luau): new takes no argument, a Position, or all three; a field takes a UDim2 only.
+local Path2DPoints = setmetatable({}, { __mode = "k" })
+local Path2DPointMeta = {
+	__tostring = function(Self)
+		local Fields = Path2DPoints[Self]
+		return `Path2DControlPoint \{ Position = {Fields.Position}, LeftTangent = {Fields.LeftTangent}, RightTangent = {Fields.RightTangent} \}`
+	end,
+	__eq = function(Left, Right)
+		local A, B = Path2DPoints[Left], Path2DPoints[Right]
+		return A ~= nil and B ~= nil and A.Position == B.Position and A.LeftTangent == B.LeftTangent and A.RightTangent == B.RightTangent
+	end,
+}
+local function Path2DPointIndex(Self, Key)
+	local Value = Path2DPoints[Self][Key]
+	if Value == nil then
+		error(`'{Key}' is not a valid member of Path2DControlPoint`, 0)
+	end
+	return Value
+end
+local function Path2DPointNewIndex(Self, Key, Value)
+	local Fields = Path2DPoints[Self]
+	if Fields[Key] == nil then
+		error(`{Key} is not a valid member of Path2DControlPoint`, 0)
+	elseif Typeof(Value) ~= "UDim2" then
+		error(`invalid argument #3 (UDim2 expected, got {Typeof(Value)})`, 2)
+	end
+	Fields[Key] = Value
+end
+function Path2DControlPoint.new(...)
+	local Count = select("#", ...)
+	local Fields = { Position = UDim2.new(), LeftTangent = UDim2.new(), RightTangent = UDim2.new() }
+	if Count > 0 then
+		local Position, LeftTangent, RightTangent = ...
+		if Typeof(Position) ~= "UDim2" then
+			error(`invalid argument #1 to 'new' (UDim2 expected, got {Typeof(Position)})`, 2)
+		elseif Count ~= 1 and Count ~= 3 then
+			error("Trying to create a Path2DControlPoint with wrong number of arguments", 0)
+		end
+		Fields.Position = Position
+		if Count == 3 then
+			if Typeof(LeftTangent) ~= "UDim2" then
+				error(`invalid argument #2 to 'new' (UDim2 expected, got {Typeof(LeftTangent)})`, 2)
+			elseif Typeof(RightTangent) ~= "UDim2" then
+				error(`invalid argument #3 to 'new' (UDim2 expected, got {Typeof(RightTangent)})`, 2)
+			end
+			Fields.LeftTangent, Fields.RightTangent = LeftTangent, RightTangent
+		end
+	end
+	local Point = Proxy("Path2DControlPoint", Path2DPointIndex, Path2DPointNewIndex, Path2DPointMeta)
+	Path2DPoints[Point] = Fields
+	return Point
+end
+
 return {
 	Wrap = Wrap,
 	WrapIndex = WrapIndex,
@@ -895,6 +950,7 @@ return {
 	Faces = Faces,
 	Axes = Axes,
 	Path2DControlPoint = Path2DControlPoint,
+	Path2DPoints = Path2DPoints,
 	RaycastParams = FilterParamsType("RaycastParams", { FilterDescendantsInstances = {}, IgnoreWater = false, RespectCanCollide = false, CollisionGroup = "Default" }, RaycastParamsText),
 	OverlapParams = FilterParamsType("OverlapParams", { FilterDescendantsInstances = {}, MaxParts = 0, RespectCanCollide = false, CollisionGroup = "Default" }, OverlapParamsText),
 	ParamsData = ParamsData,

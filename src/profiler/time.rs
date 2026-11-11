@@ -83,9 +83,12 @@ impl Time {
     }
 
     /// A safepoint where the ticker moved: what ran since the last booking was this stack's
-    pub fn safepoint(&mut self, state: *mut mlua::ffi::lua_State, ticks: u64, phase: u32) {
+    ///
+    /// # Safety
+    /// `state` is a live thread of the VM the profile runs on.
+    pub unsafe fn safepoint(&mut self, state: *mut mlua::ffi::lua_State, ticks: u64, phase: u32) {
         let elapsed = self.take(ticks);
-        let stack = self.stacks.of(state);
+        let stack = unsafe { self.stacks.of(state) };
         self.last_stack = Some(stack);
         self.add(phase, stack, elapsed);
         self.add_pc(state, elapsed);
@@ -94,12 +97,15 @@ impl Time {
     /// The interpreter was entered from outside (`entered`) or left back to it, and the ticker moved: what ran since the last
     /// booking was the engine's (entered) or the Luau that ran last (left: the thread's frames when it yielded, else the stack the
     /// last safepoint found)
-    pub fn vm(&mut self, state: *mut mlua::ffi::lua_State, entered: bool, ticks: u64, phase: u32) {
+    ///
+    /// # Safety
+    /// `state` is a live thread of the VM the profile runs on.
+    pub unsafe fn vm(&mut self, state: *mut mlua::ffi::lua_State, entered: bool, ticks: u64, phase: u32) {
         let elapsed = self.take(ticks);
         let stack = if entered {
             self.outside_now()
         } else {
-            let here = self.stacks.of(state);
+            let here = unsafe { self.stacks.of(state) };
             if self.stacks.stacks[here as usize].iter().any(|frame| frame.0 >= 0) { here } else { self.last_stack.unwrap_or(self.outside) }
         };
         self.add(phase, stack, elapsed);
@@ -122,9 +128,12 @@ impl Time {
     }
 
     /// An Instance API call begins (the ticker moved): what ran before it was the Luau that made it
-    pub fn call_begin(&mut self, state: *mut mlua::ffi::lua_State, ticks: u64, phase: u32) {
+    ///
+    /// # Safety
+    /// `state` is a live thread of the VM the profile runs on.
+    pub unsafe fn call_begin(&mut self, state: *mut mlua::ffi::lua_State, ticks: u64, phase: u32) {
         let elapsed = self.take(ticks);
-        let stack = self.stacks.of(state);
+        let stack = unsafe { self.stacks.of(state) };
         // (the call's C frame is innermost: the Luau under it ran)
         let frames: Option<Vec<memory::Frame>> = self.stacks.stacks[stack as usize].iter().position(|frame| frame.0 >= 0).map(|index| self.stacks.stacks[stack as usize][index..].to_vec());
         let stack = match frames {
@@ -137,9 +146,12 @@ impl Time {
     }
 
     /// An Instance API call ends (the ticker moved during it): what ran since the last booking was the call's, on its line
-    pub fn call_end(&mut self, state: *mut mlua::ffi::lua_State, ticks: u64, phase: u32) {
+    ///
+    /// # Safety
+    /// `state` is a live thread of the VM the profile runs on.
+    pub unsafe fn call_end(&mut self, state: *mut mlua::ffi::lua_State, ticks: u64, phase: u32) {
         let elapsed = self.take(ticks);
-        let stack = self.stacks.of(state);
+        let stack = unsafe { self.stacks.of(state) };
         self.add(phase, stack, elapsed);
     }
 

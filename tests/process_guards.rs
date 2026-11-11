@@ -33,6 +33,16 @@ fn ree(root: &Path, harness: &str, extra: &[&str]) -> Command {
 }
 
 #[test]
+fn help_after_run_or_record_prints_the_usage() {
+    // help after `run` or `record` prints the usage instead of starting a run that lacks its `--harness`
+    for words in [&["run", "--help"][..], &["run", "-h"], &["record", "--help"], &["record", "-h"]] {
+        let done = Command::new(env!("CARGO_BIN_EXE_ree")).args(words).output().unwrap();
+        assert_eq!(done.status.code(), Some(0), "{words:?}: {}", String::from_utf8_lossy(&done.stderr));
+        assert!(String::from_utf8_lossy(&done.stdout).starts_with("usage: ree record --harness"), "{words:?}");
+    }
+}
+
+#[test]
 fn a_run_past_its_wall_clock_cap_exits_124() {
     let root = scratch("cap");
     let spin = harness(&root, "return function() while true do end end");

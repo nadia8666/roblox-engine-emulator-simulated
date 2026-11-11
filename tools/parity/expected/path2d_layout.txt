@@ -1,0 +1,88 @@
+# engine: Roblox Studio 0.744.0.7441077, a rendered desktop playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-11
+screen Vector2(1920 1080) frame Vector2(50 -28) Vector2(200 100)
+frame length -> 256.431
+frame rect -> Rect(49 29 251 111)
+frame t=0 -> UDim2(0 0 0 0) | Vector2(110 80)
+frame t=0.25 -> UDim2(0.275 0 0.4 0) | Vector2(110 80)
+frame t=0.5 -> UDim2(0.55 0 0.8 0) | Vector2(90 -80)
+frame t=0.75 -> UDim2(0.775 0 0.4 0) | Vector2(90 -80)
+frame t=1 -> UDim2(1 0 0 0) | Vector2(90 -80)
+frame arc -> UDim2(0.259 0 0.377 0) | Vector2(110 80)
+frame closed length -> 456.431
+frame closed rect -> Rect(49 29 251 111)
+frame closed t=0 -> UDim2(0 0 0 0) | Vector2(110 80)
+frame closed t=0.25 -> UDim2(0.412 0 0.6 0) | Vector2(110 80)
+frame closed t=0.5 -> UDim2(0.775 0 0.4 0) | Vector2(90 -80)
+frame closed t=0.75 -> UDim2(0.75 0 0 0) | Vector2(-200 0)
+frame closed t=1 -> UDim2(0 0 0 0) | Vector2(-200 0)
+handles length -> 255.111
+handles rect -> Rect(49 29 231 101.97)
+handles t=0 -> UDim2(0 0 0 0) | Vector2(0 180)
+handles t=0.10000000000000001 -> UDim2(0.028 0 0.282 0) | Vector2(54 105.6)
+handles t=0.25 -> UDim2(0.156 0 0.475 0) | Vector2(112.5 30)
+handles t=0.40000000000000002 -> UDim2(0.352 0 0.506 0) | Vector2(144 -2.4)
+handles t=0.5 -> UDim2(0.5 0 0.5 0) | Vector2(75 150)
+handles t=0.59999999999999998 -> UDim2(0.59 0 0.689 0) | Vector2(100.8 43.2)
+handles t=0.75 -> UDim2(0.747 0 0.637 0) | Vector2(101.25 -67.5)
+handles t=0.90000000000000002 -> UDim2(0.87 0 0.343 0) | Vector2(55.8 -118.8)
+handles t=1 -> UDim2(0.9 0 0.1 0) | Vector2(0 -120)
+cancelled handle length -> 100
+cancelled handle rect -> Rect(49 29 151 31)
+cancelled handle t=0 -> UDim2(0 0 0 0) | Vector2(100 0)
+cancelled handle t=0.20000000000000001 -> UDim2(0.1 0 0 0) | Vector2(100 0)
+cancelled handle t=1 -> UDim2(0.5 0 0 0) | Vector2(100 0)
+before resize -> 256.431 | UDim2(0.275 0 0.4 0)
+resized, same step -> 256.431 | UDim2(0.275 0 0.4 0)
+resized, next frame -> 430.877 | UDim2(0.262 0 0.4 0)
+screen length -> 2166.01
+screen rect -> Rect(9 19 1911 541)
+screen t=0 -> UDim2(0.005 0 0.019 0) | Vector2(950 520)
+screen t=0.5 -> UDim2(0.5 0 0.5 0) | Vector2(950 -520)
+screen t=1 -> UDim2(0.995 0 0.019 0) | Vector2(950 -520)
+flat parent length -> 98.489
+flat parent rect -> Rect(119 39 211 81)
+flat parent t=0 -> UDim2(0 120 0 40) | Vector2(90 40)
+flat parent t=0.5 -> UDim2(0 165 0 60) | Vector2(90 40)
+flat parent t=1 -> UDim2(0 210 0 80) | Vector2(90 40)
+negative size Vector2(-50 100) Vector2(10 -38)
+negative parent length -> 91.241
+negative parent rect -> Rect(-6 89 11 181)
+negative parent t=0 -> UDim2(0.7 0 0.7 0) | Vector2(15 90)
+negative parent t=0.5 -> UDim2(0.85 0 1.15 0) | Vector2(15 90)
+negative parent t=1 -> UDim2(1 0 1.6 0) | Vector2(15 90)
+rotated length -> 119.237
+rotated rect -> Rect(120.699 178.019 179.301 281.981)
+rotated t=0 -> UDim2(0 0 0 0) | Vector2(69.282 40)
+rotated t=0.5 -> UDim2(0.45 0 0.25 0) | Vector2(56.603 101.962)
+rotated t=1 -> UDim2(1 0 1 0) | Vector2(43.923 163.923)
+rotated twice length -> 50
+rotated twice rect -> Rect(133.527 196.469 154.152 244.871)
+rotated twice t=0 -> UDim2(0 0 0 0) | Vector2(-18.625 46.402)
+rotated twice t=0.5 -> UDim2(0.5 0 0.5 0) | Vector2(-18.625 46.402)
+rotated twice t=1 -> UDim2(1 0 1 0) | Vector2(-18.625 46.402)
+scaled parent Vector2(200 120) Vector2(100 142) inner Vector2(80 60) Vector2(140 162)
+under UIScale length -> 234.976
+under UIScale rect -> Rect(94.5 194.5 305.5 325.5)
+under UIScale t=0 -> UDim2(0 0 0 0) | Vector2(80 0)
+under UIScale t=0.5 -> UDim2(0.35 0 0.25 0) | Vector2(200 120)
+under UIScale t=1 -> UDim2(1 0 1 0) | Vector2(320 240)
+under UIScale nested length -> 100
+under UIScale nested rect -> Rect(139 219 221 281)
+under UIScale nested t=0 -> UDim2(0 0 0 0) | Vector2(80 60)
+under UIScale nested t=1 -> UDim2(1 0 1 0) | Vector2(80 60)
+on screen: set then insert 4 -> error Spline inserting control point at index 3 access out of bounds
+on screen: set, frames, insert 4 -> 
+on screen: not visible, set, frames, insert 4 -> 
+hidden parent: set then insert 4 -> error Spline inserting control point at index 3 access out of bounds
+hidden parent: set, frames, insert 4 -> error Spline inserting control point at index 3 access out of bounds
+hidden parent: not visible, set, frames, insert 4 -> error Spline inserting control point at index 3 access out of bounds
+disabled gui: set then insert 4 -> error Spline inserting control point at index 3 access out of bounds
+disabled gui: set, frames, insert 4 -> error Spline inserting control point at index 3 access out of bounds
+disabled gui: not visible, set, frames, insert 4 -> error Spline inserting control point at index 3 access out of bounds
+under the gui: set then insert 4 -> error Spline inserting control point at index 3 access out of bounds
+under the gui: set, frames, insert 4 -> 
+under the gui: not visible, set, frames, insert 4 -> 
+hidden parent length -> 89.443
+hidden parent rect -> Rect(299 299 381 341)
+hidden parent t=0.5 -> UDim2(0.5 0 0.5 0) | Vector2(80 40)

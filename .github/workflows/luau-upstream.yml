@@ -1,25 +1,35 @@
-# Weekly: does the Luau patch series (patches/luau/) still apply to the newest upstream release? It runs
-# `node tools/vendor.mjs try latest` (docs/building.md "Updating Luau"), which changes nothing and fails naming the topics
-# that conflict. Runs on the public repository only, as ci.yml does: the private one has no free Actions minutes to spare.
+# Daily: is a Luau release out that the engine does not build yet? `node tools/luau-release.mjs` compares the pinned
+# release (patches/luau/upstream.json) with upstream's newest tag and with the release a live Roblox client runs. When
+# upstream has published a newer one it runs `node tools/vendor.mjs try` (docs/building.md "Updating Luau"), which
+# changes nothing, and opens or moves the issue "Update Luau to 0.NNN" with the topics that conflict and the steps of
+# the update; it closes the issue once the pin has caught up. Runs on the public repository only, as ci.yml does: the private one has no free
+# Actions minutes to spare.
 name: Luau upstream
 
 on:
   schedule:
-    - cron: "17 6 * * 1"
+    - cron: "17 6 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
+  issues: write
+
+concurrency:
+  group: luau-upstream
+  cancel-in-progress: false
 
 jobs:
-  try:
+  track:
     if: ${{ !github.event.repository.private }}
-    name: The series against the newest Luau release
+    name: The newest Luau release against the pinned one
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Apply patches/luau/ to the newest release
-        run: node tools/vendor.mjs try latest
+      - name: Open, move or close the Luau update issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node tools/luau-release.mjs

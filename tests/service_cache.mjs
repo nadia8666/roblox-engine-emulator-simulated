@@ -6,6 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
+import { realPath } from "../tools/release/common.mjs";
 import { pixelPng, removeTestFolder, servedRun, startManualService, stopServices } from "../tools/release/smoke.mjs";
 
 // Environment variables with these prefixes steer ree and its helpers, so the check starts without them
@@ -25,7 +26,7 @@ end`;
 function check(name, body) {
 	test(name, async () => {
 		// the real path of the temp folder: ree reports paths with links resolved, and the checks compare against them
-		const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ree-service-cache-")));
+		const root = realPath(fs.mkdtempSync(path.join(os.tmpdir(), "ree-service-cache-")));
 		const executable = path.join(root, process.platform === "win32" ? "ree.exe" : "ree");
 		fs.copyFileSync(process.env.REE_TEST_BINARY, executable);
 		fs.chmodSync(executable, 0o755);
@@ -393,6 +394,16 @@ check("an input repo never substitutes for a missing per-user cache", async ({ r
 		["serve", "--warm", ...args],
 	];
 	const before = contentsOf(root);
+	// A drive-relative per-user folder is not an absolute cache root, even though Windows can resolve it.
+	if (process.platform === "win32") {
+		const drive = path.parse(project).root.slice(0, -1);
+		env.LOCALAPPDATA = drive;
+		const result = run(["run", ...args]);
+		assert.notEqual(result.status, 0);
+		assert(result.stderr.includes(MISSING_CACHE_ERROR), result.stderr);
+		assert.deepEqual(contentsOf(root), before);
+		delete env.LOCALAPPDATA;
+	}
 	for (const command of commands) {
 		const result = run(command);
 		assert.notEqual(result.status, 0);

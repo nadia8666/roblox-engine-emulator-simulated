@@ -219,7 +219,17 @@ fn profile_viewer(args: &[String]) -> i32 {
     }
 }
 
+/// `ree record|run ... --help` (or `-h`) asks for the usage. Their parser ignores flags it does not know, so without
+/// this the command runs, or fails on the missing `--harness`. `serve` and `profile` print their own usage.
+fn asks_for_help(argv: &[String]) -> bool {
+    matches!(argv.get(1).map(String::as_str), Some("record" | "run")) && argv[2..].iter().any(|arg| arg == "--help" || arg == "-h")
+}
+
 fn run_command(argv: &[String], service: bool) -> i32 {
+    if asks_for_help(argv) {
+        println!("{USAGE}");
+        return 0;
+    }
     let host = Host::default();
     let code = match argv.get(1).map(String::as_str) {
         Some("record") if service => serve::client::cli(&argv[2..], true),
@@ -256,4 +266,21 @@ fn run_command(argv: &[String], service: bool) -> i32 {
     // (the tally is the command thread's)
     roblox_engine_emulator::cost::dump_tally();
     code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--help` and `-h` after `record` or `run` ask for the usage, not for a run; `serve` and `profile` keep their own.
+    #[test]
+    fn help_after_run_or_record_asks_for_the_usage() {
+        let asks = |words: &[&str]| asks_for_help(&std::iter::once("ree").chain(words.iter().copied()).map(String::from).collect::<Vec<_>>());
+        for words in [&["run", "--help"][..], &["run", "-h"], &["record", "--help"], &["record", "-h"], &["run", "--service", "--help"], &["run", "--harness", "a.luau", "-h"]] {
+            assert!(asks(words), "{words:?}");
+        }
+        for words in [&[][..], &["run"], &["run", "--harness", "a.luau"], &["serve", "--help"], &["profile", "--help"], &["profile", "try", "--help"], &["profile", "view", "--help"], &["--help"], &["bogus", "--help"]] {
+            assert!(!asks(words), "{words:?}");
+        }
+    }
 }

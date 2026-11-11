@@ -1,0 +1,27 @@
+fck ok({Linear, 0, 1, nil, nil}) ok({Constant, 0.5, 2, nil, nil}) ok({Cubic, 1.25, -3, nil, nil})
+fck-args E(FloatCurveKey.new expects 2 or 3 input arguments) E(FloatCurveKey.new expects 2 or 3 input arguments) ok({Cubic, 1, 2, nil, nil}) ok({Linear, 0, 2, nil, nil}) E(Invalid value for enum 'KeyInterpolationMode') E(Invalid value for enum 'KeyInterpolationMode') E(Invalid type 'Material' for enum 'KeyInterpolationMode') E(FloatCurveKey.new expects 2 or 3 input arguments)
+fck-args-more E(Invalid value for enum 'KeyInterpolationMode') E(Invalid value for enum 'KeyInterpolationMode') ok({Linear, 0, 0, nil, nil}) ok({Linear, 2, 3, nil, nil}) ok({Linear, 0, 0, nil, nil})
+fck-props 1.5 2.5 Enum.KeyInterpolationMode.Cubic nil nil FloatCurveKey userdata The metatable is locked
+fck-bad E('Nope' is not a valid member of FloatCurveKey) E(Nope is not a valid member of FloatCurveKey)
+fck-set ok(3) ok(4) ok(Enum.KeyInterpolationMode.Linear) ok(0.5) E(Attempting to set a right tangent value on a curve key for which the interpolation mode is not Cubic) {Linear, 3, 4, 0.5, nil}
+fck-set-nil ok(0.5) {Linear, 3, 4, 0.5, nil}
+fck-set-bad ok(nil) E(Invalid value for enum 'KeyInterpolationMode') E(Invalid value for enum 'KeyInterpolationMode') E(Invalid type 'Material' for enum 'KeyInterpolationMode') ok(-1) ok(7) ok(nil)
+fck-eq true false false
+fck-text {Linear, NAN, INF, nil, nil} {Linear, -INF, -0, nil, nil} {Linear, 1.00000002e+20, -9.99999968e-21, nil, nil} {Linear, 0.100000001, 0.333333343, nil, nil} {Linear, 9.99999975e-06, 123456792, nil, nil} {Linear, 0.5, 1e+09, nil, nil} {Linear, 100000, 1234567.5, nil, nil}
+fck-lib ok(nil) table
+fck-rt {Cubic, 0.100000001, 0.200000003, nil, 1.10000002} 1.10000002
+fck-rt-linear {Linear, 0.100000001, 0.200000003, nil, nil} nil
+fck-rt-back {Cubic, 0.100000001, 0.200000003, nil, nil} nil
+fck-rt-nil ok(2) {Cubic, 0.100000001, 0.200000003, nil, 2}
+fck-linear-rt-nil ok(nil)
+rck {Cubic, 0.5, 0, 0, 0, 1, 0, 0, 0, 0.87758255, -0.479425579, 0, 0.479425579, 0.87758255, 0, 0} RotationCurveKey The metatable is locked
+rck-props 0.5 0, 0, 0, 1, 0, 0, 0, 0.87758255, -0.479425579, 0, 0.479425579, 0.87758255 Enum.KeyInterpolationMode.Cubic 0 0
+rck-args E(RotationCurveKey.new expects 2 or 3 input arguments) E(RotationCurveKey.new expects 2 or 3 input arguments) ok({Cubic, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0}) ok({Linear, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0}) E(Invalid value for enum 'KeyInterpolationMode') ok({Linear, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0})
+rck-set ok(3) ok(0, 0, 0, 1, 0, 0, 0, 0.540302336, -0.841470957, 0, 0.841470957, 0.540302336) ok(Enum.KeyInterpolationMode.Linear) ok(0.5) E(Attempting to set a right tangent value on a curve key but the interpolation mode is not Cubic) {Linear, 3, 0, 0, 0, 1, 0, 0, 0, 0.540302336, -0.841470957, 0, 0.841470957, 0.540302336, 0.5, nil}
+rck-bad E('Nope' is not a valid member of RotationCurveKey) E(Nope is not a valid member of RotationCurveKey) ok(nil) ok(0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1) ok(nil) true
+rck-default {Cubic, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0} 0 0
+rck-rt {Cubic, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2}
+rck-lt {Cubic, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 3, 2}
+rck-lt-nil {Cubic, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, nil, 2} nil 2
+rck-linear {Linear, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0} E(Attempting to set a right tangent value on a curve key but the interpolation mode is not Cubic) ok(nil) {Linear, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, nil}
+rck-not-orthonormal {Linear, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0}

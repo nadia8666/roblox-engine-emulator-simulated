@@ -142,12 +142,12 @@ fn a_binding_helpers_code_belongs_to_its_executing_frame() {
     let mut prices = vec![0.0; std::mem::size_of::<crate::cost::VmCounters>() / 8];
     prices[std::mem::offset_of!(crate::cost::VmCounters, coldcode) / 8] = crate::cost::LUAU_COLD_CODE * 1e-9;
     let state = main_state(&lua);
-    assert!(vm::start(state, true, Some(&prices), None));
+    assert!(unsafe { vm::start(state, true, Some(&prices), None) });
     unsafe { vm::split(state, &crate::cost::slot_kinds(), std::ptr::null()) };
     assert_eq!(caller.call::<i32>(helper).unwrap(), 2);
-    vm::stop(state);
+    unsafe { vm::stop(state) };
     let results = unsafe { vm::results(state) };
-    vm::free(state);
+    unsafe { vm::free(state) };
     let function = results.functions.iter().position(|function| function.name == "Helper").unwrap();
     let helper = &results.functions[function];
     assert!(helper.binding);

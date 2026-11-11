@@ -677,7 +677,7 @@ impl State {
         }
         totals.gc = (self.collector.steps, self.collector.cycles, self.collector.freed, self.collector.seconds);
         if kinds.has(Kinds::CACHES) {
-            totals.caches = Some(vm::cache_totals(installed.state));
+            totals.caches = Some(unsafe { vm::cache_totals(installed.state) });
         }
         Some(totals)
     }
@@ -846,7 +846,7 @@ pub fn install(lua: &Lua) {
         with_state(|s| s.warnings.push("the work clock's model is not a weighted sum of the VM's counts: work is not booked per instruction".into()));
     }
     let host = Some((work.as_ptr() as *const f64, drained.as_ptr() as *const f64));
-    let profiling_vm = vm::start(state, kinds.steps(), prices.as_deref(), host);
+    let profiling_vm = unsafe { vm::start(state, kinds.steps(), prices.as_deref(), host) };
     if !profiling_vm {
         with_state(|s| s.warnings.push("another profile of the VM already runs on this thread".into()));
     }
@@ -878,7 +878,7 @@ pub fn install(lua: &Lua) {
     };
     if kinds.has(Kinds::ALLOC) || kinds.has(Kinds::HEAP) {
         let step = with_state(|s| s.config.alloc_step).unwrap_or(1);
-        memory::start(state, step, kinds.has(Kinds::HEAP), Some(memory::resolver(Rc::downgrade(&engine))));
+        unsafe { memory::start(state, step, kinds.has(Kinds::HEAP), Some(memory::resolver(Rc::downgrade(&engine)))) };
     }
     if kinds.has(Kinds::TIMELINE) {
         // threads made: the VM's thread callback (census.rs chains the same function)
@@ -976,7 +976,7 @@ pub fn collect(lua: &Lua) {
     if kinds.has(Kinds::HEAP) {
         snapshot("end");
     }
-    vm::stop(state);
+    unsafe { vm::stop(state) };
     if let Some((preresume, postresume)) = RESUME_CALLBACKS.take() {
         let callbacks = unsafe { &mut *mlua::ffi::lua_callbacks(state) };
         callbacks.preresume = preresume;
@@ -996,7 +996,7 @@ pub fn collect(lua: &Lua) {
     });
     // (the VM the profile ran on, stopped above and freed below)
     let results = unsafe { vm::results(state) };
-    vm::free(state);
+    unsafe { vm::free(state) };
     let engine = with_state(|s| s.installed.as_ref().and_then(|installed| installed.engine.upgrade())).flatten();
     if let Some(engine) = &engine {
         let mut state = engine.state.borrow_mut();
@@ -1004,7 +1004,7 @@ pub fn collect(lua: &Lua) {
         state.sched.touched.borrow_mut().profile_work(None);
     }
     let attributed = attribution::finish(engine.as_deref());
-    let allocations = if kinds.has(Kinds::ALLOC) || kinds.has(Kinds::HEAP) { memory::stop(state) } else { None };
+    let allocations = if kinds.has(Kinds::ALLOC) || kinds.has(Kinds::HEAP) { unsafe { memory::stop(state) } } else { None };
     if kinds.has(Kinds::TIMELINE) && !crate::census::installed() {
         // (the thread callback stays while a census uses it)
         unsafe { (*mlua::ffi::lua_callbacks(state)).userthread = None };
@@ -1043,7 +1043,7 @@ fn snapshot(label: &str) {
     };
     let seconds = engine.upgrade().map_or(0.0, |engine| engine.state.borrow().sched.now);
     let resolver = memory::resolver(engine);
-    let snapshot = memory::snapshot(state, label, frame, seconds, Some(&*resolver), top.max(25));
+    let snapshot = unsafe { memory::snapshot(state, label, frame, seconds, Some(&*resolver), top.max(25)) };
     with_state(|s| s.snapshots.push(snapshot));
 }
 
@@ -1086,7 +1086,7 @@ pub fn phase(name: &str) {
     if let Some((vm_state, id)) = state {
         if stepping {
             // (books what the instruction that made the mark was charged so far to the phase before)
-            vm::phase(vm_state, id);
+            unsafe { vm::phase(vm_state, id) };
         }
         memory::with(|allocations| allocations.phase = id);
     }
@@ -1188,7 +1188,7 @@ fn close_row(s: &mut State, engine: &Engine, phase: u32, split: bool) {
         work_ms: (totals.work - last.work) * 1e3,
         collector_ms: (totals.collector - last.collector) * 1e3,
         instructions: totals.instructions - last.instructions,
-        heap_bytes: if detailed { vm::total_bytes(installed.state) as u64 } else { 0 },
+        heap_bytes: if detailed { (unsafe { vm::total_bytes(installed.state) }) as u64 } else { 0 },
         allocated_bytes: totals.allocated_bytes - last.allocated_bytes,
         allocations: totals.allocations - last.allocations,
         gc_steps: totals.gc_steps - last.gc_steps,
@@ -1248,7 +1248,10 @@ thread_local! {
 }
 
 /// The interrupt at a non-GC safepoint where the ticker moved (luau_profile.rs compares it first): a host time sample
-pub fn safepoint(state: *mut lua_State, ticks: u64) {
+///
+/// # Safety
+/// `state` is a live thread of the VM the profile runs on.
+pub unsafe fn safepoint(state: *mut lua_State, ticks: u64) {
     crate::luau_profile::set_suite_seen(ticks);
     #[cfg(test)]
     LAST_SAFEPOINT.with(|last| last.set(ticks));
@@ -1256,7 +1259,7 @@ pub fn safepoint(state: *mut lua_State, ticks: u64) {
         let phase = s.phase;
         if let Some(time) = s.time.as_mut() {
             crate::luau_profile::set_seen(ticks);
-            time.safepoint(state, ticks, phase);
+            unsafe { time.safepoint(state, ticks, phase) };
         }
     });
 }
@@ -1271,7 +1274,7 @@ unsafe extern "C-unwind" fn vm_entered(_ud: *mut std::ffi::c_void, state: *mut l
         with_state(|s| {
             let phase = s.phase;
             if let Some(time) = s.time.as_mut() {
-                time.vm(state, entered, ticks, phase);
+                unsafe { time.vm(state, entered, ticks, phase) };
             }
         });
     }
@@ -1296,16 +1299,19 @@ pub fn time_step(step: Option<&str>) {
 
 /// An Instance API call begins (`begin`) or ends, and the ticker moved (luau_profile::ApiCall): the host time since the last
 /// booking was the Luau that made the call, or the call's own (booked to its line)
-pub fn time_call(state: *mut lua_State, begin: bool, ticks: u64) {
+///
+/// # Safety
+/// `state` is a live thread of the VM the profile runs on.
+pub unsafe fn time_call(state: *mut lua_State, begin: bool, ticks: u64) {
     with_state(|s| {
         let phase = s.phase;
         if let Some(time) = s.time.as_mut() {
             // (the profile's own thread: another thread's Instance API calls see the switch, not this state)
             crate::luau_profile::set_seen(ticks);
             if begin {
-                time.call_begin(state, ticks, phase);
+                unsafe { time.call_begin(state, ticks, phase) };
             } else {
-                time.call_end(state, ticks, phase);
+                unsafe { time.call_end(state, ticks, phase) };
             }
         }
     });
@@ -1363,8 +1369,11 @@ pub fn hw_step(step: Option<&str>) -> bool {
 }
 
 /// The interrupt at a collector step's start and end
-pub fn gc_interrupt(state: *mut lua_State) {
-    with_state(|s| s.collector.interrupt(state));
+///
+/// # Safety
+/// `state` is a live thread of the VM the profile runs on.
+pub unsafe fn gc_interrupt(state: *mut lua_State) {
+    with_state(|s| unsafe { s.collector.interrupt(state) });
 }
 
 /// The VM made (`parent` set) or freed a thread (census.rs's callback): the threads made are counted (what the collector has

@@ -1,0 +1,49 @@
+r-empty 0 ok(nil) ok({}) E(RotationCurve index is out of range) ok({0, 0}) ok(0) E(Invalid argument provided: startingIndex.) E(Unable to assign property Length. Property is read only)
+r-insert ok({true, 0}) ok({true, 0}) ok({false, 1}) E(Unable to cast FloatCurveKey to RotationCurveKey) E(Unable to cast double to RotationCurveKey) E(Unable to cast Vector3 to RotationCurveKey) E(Argument 1 missing or nil) 2
+r-keys {{Linear, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0}, {Constant, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0}}
+r-index E(RotationCurve index is out of range) ok({Constant, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0}) {1, 2} {1, 2} {1, 2} {1, 2} {1, 2} E(Unable to cast string to float) E(Argument 1 missing or nil)
+r-set E(Variant cast failed) E(Variant cast failed) E(Variant cast failed) E(Unable to cast double to Array) E(Argument 1 missing or nil) 2 ok(0) 0
+r-remove ok(1) 2 ok(2) 0 E(Invalid argument provided: count.)
+r-one ~0.500000041 ~0.500000041 0, 0, 0
+r-kept {{Cubic, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, nil, nil}, {Cubic, 2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, nil}, {Linear, 3, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, nil, 0}}
+linear ~0 ~0 ~0 ~0.124999964 ~0.249999976 ~0.374999912 ~0.499999908 ~0.624999916 ~0.749999933 ~0.874999823 ~0.999999959 ~0.999999959 ~0.999999959
+constant ~0 ~0 ~0 ~0 ~0 ~0 ~0 ~0 ~0.999999959
+cubic ~0 ~0.0429687473 ~0.156249983 ~0.316406203 ~0.499999908 ~0.683593531 ~0.843749827 ~0.95703102 ~0.999999959
+cubic-unset ~0 ~0.0429687473 ~0.156249983 ~0.316406203 ~0.499999908 ~0.683593531 ~0.843749827 ~0.95703102 ~0.999999959
+cubic-right-1 ~0 ~0.234374964 ~0.43749991 ~0.609374925 ~0.749999933 ~0.859374882 ~0.937499747 ~0.984374948 ~0.999999959
+cubic-right-1-one-second ~0 ~0.138671852 ~0.29687497 ~0.462890552 ~0.624999916 ~0.771484281 ~0.890624934 ~0.970703024 ~0.999999959
+cubic-right-1-two-radians ~0 ~0.468749964 ~0.874999861 ~1.21875003 ~1.50000002 ~1.7187501 ~1.87500002 ~1.96874994 ~2.00000015
+cubic-left-minus-2 ~0 ~0.0976562356 ~0.34374993 ~0.667968694 ~0.999999959 ~1.26953099 ~1.40624977 ~1.33984364 ~0.999999959
+cubic-both ~0 ~0.141406233 ~0.231249956 ~0.292968688 ~0.349999966 ~0.425781165 ~0.543749942 ~0.727343593 ~0.999999959
+cubic-past-the-ends ~0 ~0.863281019 ~1.09374983 ~0.90234359 ~0.499999908 ~0.0976562356 ~-0.0937499918 ~0.136718731 ~0.999999959
+three ~0 ~0.156249983 ~0.499999908 ~0.843749827 ~0.999999959 ~1.02148427 ~1.07812494 ~1.15820295 ~1.24999993 ~1.34179677 ~1.42187495 ~1.47851554 ~1.50000002
+three-unset ~0 ~0.121093731 ~0.406249942 ~0.738281206 ~0.999999959 ~1.09326156 ~1.18359355 ~1.26806637 ~1.34374984 ~1.40771467 ~1.4570311 ~1.48876956 ~1.50000002
+linear-cubic-linear ~0 ~0.249999976 ~0.499999908 ~0.749999933 ~0.999999959 ~1.11718722 ~1.21874992 ~1.30468744 ~1.37499978 ~1.4296874 ~1.46874989 ~1.49218739 ~1.50000002 ~1.12499997 ~0.750000021 ~0.374999989 ~0
+the-short-way ~0 ~-0.347898166 ~-0.695796343 ~-1.04369455 ~-1.39159269 ~-1.73949095 ~-2.08738892 ~-2.43528721 ~-2.78318532
+near-key ~0.999999959 ~0.999999959 ~0.999999959 ~1.00019987 ~1.0004
+e-empty Enum.RotationOrder.XYZ 0 {nil, nil, nil}#0 [0,0,0,1,-0,0,0,1,-0,0,0,1] 0
+e-x FloatCurve X true 1 true 0
+e-made 3 {nil, nil, nil}#0
+e-x-key {0.300000012, nil, nil}#1 [0,0,0,1,-0,0,0,0.955336511,-0.295520216,0,0.295520216,0.955336511]
+e-bad E(Argument 1 missing or nil) E(Argument 1 missing or nil) E(Unable to cast string to float) E(Unable to cast Array to float) [0,0,0,1,-0,0,0,0.955336511,-0.295520216,0,0.295520216,0.955336511]
+e-y-only true {nil, 0.5, nil}#1 1 [0,0,0,0.87758255,-0,0.47942555,0,1,-0,-0.47942555,0,0.87758255]
+e-angles {0.300000012, 0.5, 0.699999988}#3 {0.450000018, 0.75, 1.04999995}#3 {0.600000024, 1, 1.39999998}#3 3
+e-order XYZ [0,0,0,0.671212196,-0.565354168,0.47942555,0.723807454,0.639409006,-0.259343386,-0.159928113,0.521086216,0.838386655] [0,0,0,0.364067227,-0.634683847,0.681638777,0.928593218,0.190854669,-0.318259448,0.0719001889,0.748832941,0.658847094]
+e-order XZY [0,0,0,0.671212196,-0.64421767,0.366684884,0.681783438,0.730681717,0.0357165039,-0.290939152,0.226026341,0.929659367] [0,0,0,0.364067227,-0.867423177,0.33916375,0.867988586,0.448036432,0.21414724,-0.337714046,0.216426283,0.916028857]
+e-order YZX [0,0,0,0.671212196,-0.398423553,0.625086308,0.64421767,0.730681717,-0.226026341,-0.366684884,0.554403305,0.747113943] [0,0,0,0.364067227,-0.275009841,0.889845252,0.867423177,0.448036432,-0.216426283,-0.33916375,0.850666165,0.40166533]
+e-order YXZ [0,0,0,0.762484908,-0.456991374,0.45801273,0.61544466,0.730681717,-0.295520216,-0.199611291,0.507211149,0.838386655] [0,0,0,0.62124896,-0.487159312,0.613779664,0.781068683,0.448036432,-0.434965551,-0.0630981326,0.749625921,0.658847094]
+e-order ZXY [0,0,0,0.579939485,-0.61544466,0.533758461,0.673716962,0.730681717,0.110497624,-0.45801273,0.295520216,0.838386655] [0,0,0,0.106885463,-0.781068683,0.615229368,0.782208383,0.448036432,0.432912558,-0.613779664,0.434965551,0.658847094]
+e-order ZYX [0,0,0,0.671212196,-0.507081866,0.540686846,0.565354168,0.821954429,0.0690335482,-0.47942555,0.259343386,0.838386655] [0,0,0,0.364067227,-0.633544147,0.68269819,0.634683847,0.705218196,0.315980405,-0.681638777,0.318259448,0.658847094]
+e-two-of-a-name true false
+e-other-children FloatCurve true 3 {nil, nil, nil}#0
+v-empty 0 {nil, nil, nil}#0 0
+v-y-only true {nil, 0.75, nil}#1 1
+v-all {1.5, 0.75, 6}#3 {1, 0.5, 4}#3 {2, 1, 8}#3 {1.25, 0.625, 5}#3 E(Argument 1 missing or nil) E(Unable to cast string to float)
+v-made Z FloatCurve true 1 {nil, nil, nil}#0
+m-empty 0 ok({}) E(MarkerCurve index is out of range) E(MarkerCurve index is out of range) E(Argument 1 missing or nil) ok(0) E(Invalid argument provided: startingIndex.) ok(0) E(Unable to assign property Length. Property is read only)
+m-insert ok({true, 0}) ok({true, 0}) ok({false, 1}) E(Argument 2 missing or nil) E(Argument 2 missing or nil) ok({true, 2}) ok({true, 2}) ok({true, 0}) E(Unable to cast string to float) E(Unable to cast Array to float) 5
+m-markers 1{Time=-1:number,Value=before:string} 2{Time=0.5:number,Value=half:string} 3{Time=1:number,Value=again:string} 4{Time=1.00041664:number,Value=near:string} 5{Time=3:number,Value=7:string}
+m-at 0.5 half E(MarkerCurve index is out of range) E(MarkerCurve index is out of range)
+m-remove ok(2) 3 E(Invalid argument provided: count.) ok(0) ok(3) 0
+c-new 0 true Enum.AnimationPriority.Action E(Unable to assign property Length. Property is read only)
+c-length 1.5 3 3 0 0 4 3 0 1.23458338 0

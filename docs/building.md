@@ -212,5 +212,10 @@ need it too. After a bump:
    own checks.
 8. THIRD_PARTY_NOTICES.md names the new release and crate.
 
-A weekly workflow (`.github/workflows/luau-upstream.yml`) runs `try latest` and fails when the series no
-longer applies to the newest release.
+A daily workflow (`.github/workflows/luau-upstream.yml`) runs `node tools/luau-release.mjs`, which keeps
+one issue for the update. When upstream has tagged a release newer than the pinned one, or a live Roblox
+client runs one that upstream's master already has, it opens "Update Luau to 0.NNN" with what `try` says
+about the series (the topics that conflict, and where) and the steps above as a checklist. A release a
+client runs before upstream has published it is only logged: there is nothing to build yet. A later
+release moves the same issue, and the issue closes once the pin has reached the release. `node tools/luau-release.mjs --dry-run` prints what it
+would do and changes nothing.

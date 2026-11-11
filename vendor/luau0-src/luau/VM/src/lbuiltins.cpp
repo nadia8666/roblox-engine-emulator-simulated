@@ -1477,6 +1477,49 @@ static int luauF_writefp(lua_State* L, StkId res, TValue* arg0, int nresults, St
     return -1;
 }
 
+// N contiguous little-endian binary32 values as a vector's first N components, the rest zero
+template<int N>
+static int luauF_readvectorf32(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
+{
+#if !defined(LUAU_BIG_ENDIAN)
+    if (nparams >= 2 && nresults <= 1 && ttisbuffer(arg0) && ttisnumber(args))
+    {
+        int offset;
+        luai_num2int(offset, nvalue(args));
+        if (checkoutofbounds(offset, bufvalue(arg0)->len, N * sizeof(float)))
+            return -1;
+
+        float v[3] = {0.0f, 0.0f, 0.0f};
+        memcpy(v, (char*)bufvalue(arg0)->data + unsigned(offset), N * sizeof(float));
+        setvvalue(L, res, v[0], v[1], v[2], 0.0f);
+        return 1;
+    }
+#endif
+
+    return -1;
+}
+
+template<int N>
+static int luauF_writevectorf32(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
+{
+#if !defined(LUAU_BIG_ENDIAN)
+    if (nparams >= 3 && nresults <= 0 && ttisbuffer(arg0) && ttisnumber(args) && ttisvector(args + 1))
+    {
+        int offset;
+        luai_num2int(offset, nvalue(args));
+        if (checkoutofbounds(offset, bufvalue(arg0)->len, N * sizeof(float)))
+            return -1;
+
+        const LUA_VECTOR_TYPE* value = vvalue(args + 1);
+        float v[3] = {float(value[0]), float(value[1]), float(value[2])};
+        memcpy((char*)bufvalue(arg0)->data + unsigned(offset), v, N * sizeof(float));
+        return 0;
+    }
+#endif
+
+    return -1;
+}
+
 static int luauF_vectormagnitude(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
 {
     if (nparams >= 1 && nresults <= 1 && ttisvector(arg0))
@@ -2808,6 +2851,11 @@ const luau_FastFunction luauF_table[256] = {
 
     luauF_tablecreate,
     luauF_tableclear,
+
+    luauF_readvectorf32<2>,
+    luauF_readvectorf32<3>,
+    luauF_writevectorf32<2>,
+    luauF_writevectorf32<3>,
 
 // When adding builtins, add them above this line; what follows is 64 "dummy" entries with luauF_missing fallback.
 // This is important so that older versions of the runtime that don't support newer builtins automatically fall back via luauF_missing.

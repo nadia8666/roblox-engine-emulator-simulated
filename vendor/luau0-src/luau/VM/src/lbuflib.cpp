@@ -373,6 +373,68 @@ static int buffer_writebits(lua_State* L)
     return 0;
 }
 
+// buffer.readvectorf32x2/x3: N contiguous binary32 values as a vector's first N components, the rest zero
+template<int N>
+static int buffer_readvectorf32(lua_State* L)
+{
+    size_t len = 0;
+    void* buf = luaL_checkbuffer(L, 1, &len);
+    int offset = luaL_checkinteger(L, 2);
+
+    if (isoutofbounds(offset, len, N * sizeof(float)))
+        luaL_error(L, "buffer access out of bounds");
+
+    float v[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    for (int i = 0; i < N; i++)
+    {
+#if defined(LUAU_BIG_ENDIAN)
+        uint32_t tmp;
+        memcpy(&tmp, (char*)buf + offset + i * sizeof(float), sizeof(tmp));
+        tmp = buffer_swapbe(tmp);
+        memcpy(&v[i], &tmp, sizeof(tmp));
+#else
+        memcpy(&v[i], (char*)buf + offset + i * sizeof(float), sizeof(float));
+#endif
+    }
+
+#if LUA_VECTOR_SIZE == 4
+    lua_pushvector(L, v[0], v[1], v[2], v[3]);
+#else
+    lua_pushvector(L, v[0], v[1], v[2]);
+#endif
+    return 1;
+}
+
+// buffer.writevectorf32x2/x3: a vector's first N components as contiguous binary32 values
+template<int N>
+static int buffer_writevectorf32(lua_State* L)
+{
+    size_t len = 0;
+    void* buf = luaL_checkbuffer(L, 1, &len);
+    int offset = luaL_checkinteger(L, 2);
+    const LUA_VECTOR_TYPE* value = luaL_checkvector(L, 3);
+
+    if (isoutofbounds(offset, len, N * sizeof(float)))
+        luaL_error(L, "buffer access out of bounds");
+
+    for (int i = 0; i < N; i++)
+    {
+        float val = float(value[i]);
+
+#if defined(LUAU_BIG_ENDIAN)
+        uint32_t tmp;
+        memcpy(&tmp, &val, sizeof(tmp));
+        tmp = buffer_swapbe(tmp);
+        memcpy((char*)buf + offset + i * sizeof(float), &tmp, sizeof(tmp));
+#else
+        memcpy((char*)buf + offset + i * sizeof(float), &val, sizeof(float));
+#endif
+    }
+
+    return 0;
+}
+
 static const luaL_Reg bufferlib[] = {
     {"create", buffer_create},
     {"fromstring", buffer_fromstring},
@@ -402,6 +464,10 @@ static const luaL_Reg bufferlib[] = {
     {"writebits", buffer_writebits},
     {"readinteger", buffer_readlong},
     {"writeinteger", buffer_writelong},
+    {"readvectorf32x2", buffer_readvectorf32<2>},
+    {"readvectorf32x3", buffer_readvectorf32<3>},
+    {"writevectorf32x2", buffer_writevectorf32<2>},
+    {"writevectorf32x3", buffer_writevectorf32<3>},
     {NULL, NULL},
 };
 
@@ -432,6 +498,10 @@ static const luaL_Reg bufferlib_NOINTEGER[] = {
     {"fill", buffer_fill},
     {"readbits", buffer_readbits},
     {"writebits", buffer_writebits},
+    {"readvectorf32x2", buffer_readvectorf32<2>},
+    {"readvectorf32x3", buffer_readvectorf32<3>},
+    {"writevectorf32x2", buffer_writevectorf32<2>},
+    {"writevectorf32x3", buffer_writevectorf32<3>},
     {NULL, NULL},
 };
 

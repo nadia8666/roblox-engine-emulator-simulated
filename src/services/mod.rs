@@ -9,7 +9,7 @@
 //! QueryDescendants (query.rs); derived property views are engine::derived. GUI behaviours that
 //! need layout or text measurement (Absolute*, TextBounds, TextService:GetTextSize, ContentText)
 //! and live input are a host layer's (crate::Layer; roblox-ui-renderer installs them). The script-data stubs (Player methods, 3D model helpers,
-//! humanoid stand-ins (AnimationTracks: crate::animation), Path2D, EditableImage, ContentProvider, marketplace / policy /
+//! humanoid stand-ins (AnimationTracks: crate::animation), EditableImage, ContentProvider, marketplace / policy /
 //! social / localization mocks) are Luau (lua/services.luau). The UI Labs package is the Luau
 //! runtime's own file (runtime/engine/packages/ui-labs.luau, mounted by project.rs).
 
@@ -657,6 +657,7 @@ pub fn install(engine: &Rc<Engine>) {
     reflection_service::install(engine, &mut behaviors);
     crate::animation::install(engine, &mut behaviors);
     crate::meshes::install(engine, &mut behaviors);
+    crate::path2d::install(engine, &mut behaviors);
     query::install(engine, &mut behaviors);
     // (a client keeps EncodingService unemulated, as it was: its output does not change)
     if options.server() {

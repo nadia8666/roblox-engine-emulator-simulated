@@ -1,0 +1,316 @@
+# Topic: buffer.readvectorf32x2/x3 and buffer.writevectorf32x2/x3
+#
+# What it does: adds the four buffer functions Roblox release 747 announces (two or three contiguous little-endian
+# binary32 values read into, or written from, a vector's first components; a read zeroes the rest), as library
+# functions with fastcall builtins (four LBF ids after LBF_TABLE_CLEAR) and the profiler's shapes for them. They check
+# their arguments in the order and with the messages of buffer.readf32 / buffer.writef32. Native code calls the
+# builtins; it has no inline lowering of its own.
+#
+# Why upstream lacks it: Roblox wrote its implementation internally (luau-lang/rfcs pull 198 is the design) and no
+# release up to 0.746 carries it. This one follows the RFC and Roblox's documentation, not Roblox's code: when a
+# release brings the functions, drop this topic in the bump (it conflicts with theirs in every table it touches) and
+# move the profiler's shapes to upstream's builtin ids.
+
+diff --git a/luau/CodeGen/src/BytecodeAnalysis.cpp b/luau/CodeGen/src/BytecodeAnalysis.cpp
+index 1065e03..62cd7dc 100644
+--- a/luau/CodeGen/src/BytecodeAnalysis.cpp
++++ b/luau/CodeGen/src/BytecodeAnalysis.cpp
+@@ -518,6 +518,19 @@ static void applyBuiltinCall(LuauBuiltinFunction bfid, BytecodeTypes& types)
+         types.b = LBC_TYPE_NUMBER;
+         types.c = LBC_TYPE_INTEGER;
+         break;
++    case LBF_BUFFER_READVECTORF32X2:
++    case LBF_BUFFER_READVECTORF32X3:
++        types.result = LBC_TYPE_VECTOR;
++        types.a = LBC_TYPE_BUFFER;
++        types.b = LBC_TYPE_NUMBER;
++        break;
++    case LBF_BUFFER_WRITEVECTORF32X2:
++    case LBF_BUFFER_WRITEVECTORF32X3:
++        types.result = LBC_TYPE_NIL;
++        types.a = LBC_TYPE_BUFFER;
++        types.b = LBC_TYPE_NUMBER;
++        types.c = LBC_TYPE_VECTOR;
++        break;
+     case LBF_TABLE_INSERT:
+         types.result = LBC_TYPE_NIL;
+         types.a = LBC_TYPE_TABLE;
+diff --git a/luau/CodeGen/src/OptimizeConstProp.cpp b/luau/CodeGen/src/OptimizeConstProp.cpp
+index 0d0e4ff..363ae8f 100644
+--- a/luau/CodeGen/src/OptimizeConstProp.cpp
++++ b/luau/CodeGen/src/OptimizeConstProp.cpp
+@@ -1583,6 +1583,8 @@ static void handleBuiltinEffects(ConstPropState& state, LuauBuiltinFunction bfid
+     case LBF_INTEGER_CLAMP:
+     case LBF_INTEGER_EXTRACT:
+     case LBF_INTEGER_TONUMBER:
++    case LBF_BUFFER_READVECTORF32X2:
++    case LBF_BUFFER_READVECTORF32X3:
+         break;
+     case LBF_BUFFER_WRITEU8:
+     case LBF_BUFFER_WRITEU16:
+@@ -1590,6 +1592,8 @@ static void handleBuiltinEffects(ConstPropState& state, LuauBuiltinFunction bfid
+     case LBF_BUFFER_WRITEF32:
+     case LBF_BUFFER_WRITEF64:
+     case LBF_BUFFER_WRITEINTEGER:
++    case LBF_BUFFER_WRITEVECTORF32X2:
++    case LBF_BUFFER_WRITEVECTORF32X3:
+         state.invalidateHeapBufferData();
+         break;
+     case LBF_TABLE_INSERT:
+diff --git a/luau/Common/include/Luau/Bytecode.h b/luau/Common/include/Luau/Bytecode.h
+index ef19b95..7a19256 100644
+--- a/luau/Common/include/Luau/Bytecode.h
++++ b/luau/Common/include/Luau/Bytecode.h
+@@ -804,6 +804,12 @@ enum LuauBuiltinFunction
+     // table.create / table.clear
+     LBF_TABLE_CREATE,
+     LBF_TABLE_CLEAR,
++
++    // buffer.readvectorf32x2/x3 / buffer.writevectorf32x2/x3
++    LBF_BUFFER_READVECTORF32X2,
++    LBF_BUFFER_READVECTORF32X3,
++    LBF_BUFFER_WRITEVECTORF32X2,
++    LBF_BUFFER_WRITEVECTORF32X3,
+ };
+ 
+ // Capture type, used in LOP_CAPTURE
+diff --git a/luau/Compiler/src/Builtins.cpp b/luau/Compiler/src/Builtins.cpp
+index d163a67..96e3d2c 100644
+--- a/luau/Compiler/src/Builtins.cpp
++++ b/luau/Compiler/src/Builtins.cpp
+@@ -264,6 +264,14 @@ static int getBuiltinFunctionId(const Builtin& builtin, const CompileOptions& op
+             return LBF_BUFFER_READINTEGER;
+         if (FFlag::LuauIntegerFastcalls && FFlag::LuauIntegerBufferFastcalls && builtin.method == "writeinteger")
+             return LBF_BUFFER_WRITEINTEGER;
++        if (builtin.method == "readvectorf32x2")
++            return LBF_BUFFER_READVECTORF32X2;
++        if (builtin.method == "readvectorf32x3")
++            return LBF_BUFFER_READVECTORF32X3;
++        if (builtin.method == "writevectorf32x2")
++            return LBF_BUFFER_WRITEVECTORF32X2;
++        if (builtin.method == "writevectorf32x3")
++            return LBF_BUFFER_WRITEVECTORF32X3;
+     }
+ 
+     if (builtin.object == "vector")
+@@ -662,9 +670,13 @@ BuiltinInfo getBuiltinInfo(int bfid)
+     case LBF_BUFFER_WRITEF32:
+     case LBF_BUFFER_WRITEF64:
+     case LBF_BUFFER_WRITEINTEGER:
++    case LBF_BUFFER_WRITEVECTORF32X2:
++    case LBF_BUFFER_WRITEVECTORF32X3:
+         return {3, 0, BuiltinInfo::Flag_NoneSafe};
+ 
+     case LBF_BUFFER_READINTEGER:
++    case LBF_BUFFER_READVECTORF32X2:
++    case LBF_BUFFER_READVECTORF32X3:
+         return {2, 1, BuiltinInfo::Flag_NoneSafe};
+ 
+     case LBF_VECTOR_MAGNITUDE:
+diff --git a/luau/Compiler/src/Types.cpp b/luau/Compiler/src/Types.cpp
+index 392a80c..5a5575c 100644
+--- a/luau/Compiler/src/Types.cpp
++++ b/luau/Compiler/src/Types.cpp
+@@ -772,6 +772,8 @@ struct TypeMapVisitor : AstVisitor
+             case LBF_BUFFER_WRITEF32:
+             case LBF_BUFFER_WRITEF64:
+             case LBF_BUFFER_WRITEINTEGER:
++            case LBF_BUFFER_WRITEVECTORF32X2:
++            case LBF_BUFFER_WRITEVECTORF32X3:
+                 break;
+             case LBF_MATH_ABS:
+             case LBF_MATH_ACOS:
+@@ -862,6 +864,8 @@ struct TypeMapVisitor : AstVisitor
+             case LBF_VECTOR_MIN:
+             case LBF_VECTOR_MAX:
+             case LBF_VECTOR_LERP:
++            case LBF_BUFFER_READVECTORF32X2:
++            case LBF_BUFFER_READVECTORF32X3:
+                 recordResolvedType(node, &builtinTypes.vectorType);
+                 break;
+ 
+diff --git a/luau/VM/src/lbuflib.cpp b/luau/VM/src/lbuflib.cpp
+index f13915a..67e149b 100644
+--- a/luau/VM/src/lbuflib.cpp
++++ b/luau/VM/src/lbuflib.cpp
+@@ -373,6 +373,68 @@ static int buffer_writebits(lua_State* L)
+     return 0;
+ }
+ 
++// buffer.readvectorf32x2/x3: N contiguous binary32 values as a vector's first N components, the rest zero
++template<int N>
++static int buffer_readvectorf32(lua_State* L)
++{
++    size_t len = 0;
++    void* buf = luaL_checkbuffer(L, 1, &len);
++    int offset = luaL_checkinteger(L, 2);
++
++    if (isoutofbounds(offset, len, N * sizeof(float)))
++        luaL_error(L, "buffer access out of bounds");
++
++    float v[4] = {0.0f, 0.0f, 0.0f, 0.0f};
++
++    for (int i = 0; i < N; i++)
++    {
++#if defined(LUAU_BIG_ENDIAN)
++        uint32_t tmp;
++        memcpy(&tmp, (char*)buf + offset + i * sizeof(float), sizeof(tmp));
++        tmp = buffer_swapbe(tmp);
++        memcpy(&v[i], &tmp, sizeof(tmp));
++#else
++        memcpy(&v[i], (char*)buf + offset + i * sizeof(float), sizeof(float));
++#endif
++    }
++
++#if LUA_VECTOR_SIZE == 4
++    lua_pushvector(L, v[0], v[1], v[2], v[3]);
++#else
++    lua_pushvector(L, v[0], v[1], v[2]);
++#endif
++    return 1;
++}
++
++// buffer.writevectorf32x2/x3: a vector's first N components as contiguous binary32 values
++template<int N>
++static int buffer_writevectorf32(lua_State* L)
++{
++    size_t len = 0;
++    void* buf = luaL_checkbuffer(L, 1, &len);
++    int offset = luaL_checkinteger(L, 2);
++    const LUA_VECTOR_TYPE* value = luaL_checkvector(L, 3);
++
++    if (isoutofbounds(offset, len, N * sizeof(float)))
++        luaL_error(L, "buffer access out of bounds");
++
++    for (int i = 0; i < N; i++)
++    {
++        float val = float(value[i]);
++
++#if defined(LUAU_BIG_ENDIAN)
++        uint32_t tmp;
++        memcpy(&tmp, &val, sizeof(tmp));
++        tmp = buffer_swapbe(tmp);
++        memcpy((char*)buf + offset + i * sizeof(float), &tmp, sizeof(tmp));
++#else
++        memcpy((char*)buf + offset + i * sizeof(float), &val, sizeof(float));
++#endif
++    }
++
++    return 0;
++}
++
+ static const luaL_Reg bufferlib[] = {
+     {"create", buffer_create},
+     {"fromstring", buffer_fromstring},
+@@ -402,6 +464,10 @@ static const luaL_Reg bufferlib[] = {
+     {"writebits", buffer_writebits},
+     {"readinteger", buffer_readlong},
+     {"writeinteger", buffer_writelong},
++    {"readvectorf32x2", buffer_readvectorf32<2>},
++    {"readvectorf32x3", buffer_readvectorf32<3>},
++    {"writevectorf32x2", buffer_writevectorf32<2>},
++    {"writevectorf32x3", buffer_writevectorf32<3>},
+     {NULL, NULL},
+ };
+ 
+@@ -432,6 +498,10 @@ static const luaL_Reg bufferlib_NOINTEGER[] = {
+     {"fill", buffer_fill},
+     {"readbits", buffer_readbits},
+     {"writebits", buffer_writebits},
++    {"readvectorf32x2", buffer_readvectorf32<2>},
++    {"readvectorf32x3", buffer_readvectorf32<3>},
++    {"writevectorf32x2", buffer_writevectorf32<2>},
++    {"writevectorf32x3", buffer_writevectorf32<3>},
+     {NULL, NULL},
+ };
+ 
+diff --git a/luau/VM/src/lbuiltins.cpp b/luau/VM/src/lbuiltins.cpp
+index f3edc89..f6aa622 100644
+--- a/luau/VM/src/lbuiltins.cpp
++++ b/luau/VM/src/lbuiltins.cpp
+@@ -1477,6 +1477,49 @@ static int luauF_writefp(lua_State* L, StkId res, TValue* arg0, int nresults, St
+     return -1;
+ }
+ 
++// N contiguous little-endian binary32 values as a vector's first N components, the rest zero
++template<int N>
++static int luauF_readvectorf32(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
++{
++#if !defined(LUAU_BIG_ENDIAN)
++    if (nparams >= 2 && nresults <= 1 && ttisbuffer(arg0) && ttisnumber(args))
++    {
++        int offset;
++        luai_num2int(offset, nvalue(args));
++        if (checkoutofbounds(offset, bufvalue(arg0)->len, N * sizeof(float)))
++            return -1;
++
++        float v[3] = {0.0f, 0.0f, 0.0f};
++        memcpy(v, (char*)bufvalue(arg0)->data + unsigned(offset), N * sizeof(float));
++        setvvalue(L, res, v[0], v[1], v[2], 0.0f);
++        return 1;
++    }
++#endif
++
++    return -1;
++}
++
++template<int N>
++static int luauF_writevectorf32(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
++{
++#if !defined(LUAU_BIG_ENDIAN)
++    if (nparams >= 3 && nresults <= 0 && ttisbuffer(arg0) && ttisnumber(args) && ttisvector(args + 1))
++    {
++        int offset;
++        luai_num2int(offset, nvalue(args));
++        if (checkoutofbounds(offset, bufvalue(arg0)->len, N * sizeof(float)))
++            return -1;
++
++        const LUA_VECTOR_TYPE* value = vvalue(args + 1);
++        float v[3] = {float(value[0]), float(value[1]), float(value[2])};
++        memcpy((char*)bufvalue(arg0)->data + unsigned(offset), v, N * sizeof(float));
++        return 0;
++    }
++#endif
++
++    return -1;
++}
++
+ static int luauF_vectormagnitude(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
+ {
+     if (nparams >= 1 && nresults <= 1 && ttisvector(arg0))
+@@ -2809,6 +2852,11 @@ const luau_FastFunction luauF_table[256] = {
+     luauF_tablecreate,
+     luauF_tableclear,
+ 
++    luauF_readvectorf32<2>,
++    luauF_readvectorf32<3>,
++    luauF_writevectorf32<2>,
++    luauF_writevectorf32<3>,
++
+ // When adding builtins, add them above this line; what follows is 64 "dummy" entries with luauF_missing fallback.
+ // This is important so that older versions of the runtime that don't support newer builtins automatically fall back via luauF_missing.
+ // Given the builtin addition velocity this should always provide a larger compatibility window than bytecode versions suggest.
+diff --git a/luau/VM/src/lprofile.cpp b/luau/VM/src/lprofile.cpp
+index cf68546..1b9a820 100644
+--- a/luau/VM/src/lprofile.cpp
++++ b/luau/VM/src/lprofile.cpp
+@@ -466,6 +466,10 @@ const BuiltinShape kBuiltins[] = {
+     {"buffer.writeinteger", 3, -1, R_LE0, "bni", 0, 0},
+     {"table.create", 1, -1, R_LE1, "n", 0, B_GC},
+     {"table.clear", 1, -1, R_LE0, "t", 0, 0},
++    BS2("buffer.readvectorf32x2", "bn"),
++    BS2("buffer.readvectorf32x3", "bn"),
++    {"buffer.writevectorf32x2", 3, -1, R_LE0, "bnv", 0, 0},
++    {"buffer.writevectorf32x3", 3, -1, R_LE0, "bnv", 0, 0},
+ };
+ 
+ #undef BS1
+@@ -473,7 +477,7 @@ const BuiltinShape kBuiltins[] = {
+ #undef BSI
+ 
+ const int kBuiltinCount = int(sizeof(kBuiltins) / sizeof(kBuiltins[0]));
+-static_assert(sizeof(kBuiltins) / sizeof(kBuiltins[0]) == LBF_TABLE_CLEAR + 1, "a builtin shape for each LBF_* id, in order");
++static_assert(sizeof(kBuiltins) / sizeof(kBuiltins[0]) == LBF_BUFFER_WRITEVECTORF32X3 + 1, "a builtin shape for each LBF_* id, in order");
+ 
+ // a function's calls as the call hook samples them: each with a chance of one in `every`; with `every` 0 none, and one
+ // call after every `remeasure` read for its length alone (`left` of those calls still to come). `open` of its sampled

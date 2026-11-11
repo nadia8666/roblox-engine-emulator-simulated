@@ -15,7 +15,7 @@ import { createHash } from "node:crypto";
 import { deflateSync } from "node:zlib";
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
-import { ROOT, PLATFORMS, args, command, isMain, main, version } from "./common.mjs";
+import { ROOT, PLATFORMS, args, command, isMain, main, realPath, version } from "./common.mjs";
 import { checkArchive, crc32 } from "./package.mjs";
 
 // Environment variables with these prefixes steer ree and its helpers, so a run starts without them
@@ -356,7 +356,7 @@ if (isMain(import.meta.url)) main(async () => {
 		throw new Error("usage: smoke.mjs --archive <zip> | --binary <ree> [--version <version>]");
 	}
 	// the real path of the temp folder, so the paths the smoke builds match the ones the binary reports
-	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ree-release-smoke-")));
+	const root = realPath(fs.mkdtempSync(path.join(os.tmpdir(), "ree-release-smoke-")));
 	// A passing run removes its folder; a failing one keeps it for inspection and says where it is
 	try {
 		await smoke(options, root);

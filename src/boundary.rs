@@ -546,7 +546,10 @@ pub fn add_cost(seconds: f64) {
 
 /// Called from the VM interrupt (a call, return or loop edge): books the datatype operations the VM counted since the
 /// last safepoint to the call site that safepoint was at, then notes this one.
-pub fn safepoint(state: *mut ffi::lua_State) {
+///
+/// # Safety
+/// `state` is a live thread of the VM the profile runs on (the interrupt's).
+pub unsafe fn safepoint(state: *mut ffi::lua_State) {
     with(|recorder| {
         recorder.note_return(state);
         let counters = unsafe { &*crate::cost::lua_workcounters(state) };

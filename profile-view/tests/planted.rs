@@ -44,8 +44,15 @@ return M"#;
     let fixed_source = source.replace("math.abs(tostring(x))", "math.abs(x)");
     // The refitted clock charges C calls at 5.77 ns, library allocations and only executed cold instructions.
     let expected_site_ms = 0.146741700000;
-    let expected_saving_ms = 0.414257103130;
-    let expected_upper_ms = 0.470826459796;
+    // tostring's fast call gives way to the C function at a call where a collector step is due (the heap is at its
+    // threshold), and the frame's first such call pays that C function's cold first call. The collector sets its
+    // threshold from the heap's size, so which of the 60 frames have such a call follows from the heap's size when the
+    // run starts, and anything the engine adds to a VM's heap moves the count (56 and 59 of 60 have been recorded).
+    // The figures are therefore those of a run with no such call, and what each one adds: 2497.05 ns, the difference
+    // measured between runs of 56 and 59 (the cold first call's 2500 ns and the C call, less the fast call's own).
+    let saving_without_debt_ms = 0.411801670630;
+    let upper_without_debt_ms = 0.468371027296;
+    let debt_decline_ms = 2497.05e-6 / 60.0;
 
     let temp = Temp::new("planted-numeric-argument");
     let handler = harness("Probe", "sink=M.Step(-3)");
@@ -54,6 +61,17 @@ return M"#;
     let (found, _) = issues(&before);
     let declines = of(&found, "builtin declines");
     let abs_issue = declines.iter().find(|issue| issue.title.starts_with("math.abs")).unwrap();
+
+    let debt_declines = |app: &App| {
+        let builtins = app.profile().raw.builtins.as_ref().unwrap();
+        builtins.iter().find(|builtin| builtin.name == "tostring").and_then(|builtin| builtin.declines.get("gc_debt").copied()).unwrap_or(0.0)
+    };
+    // (at most one a frame: a second in one frame would not pay the cold first call again; the fixed code calls no tostring)
+    let declined = debt_declines(&before);
+    assert!((1.0..=60.0).contains(&declined), "{declined} declines for a due collector step");
+    assert_eq!(debt_declines(&after), 0.0);
+    let expected_saving_ms = saving_without_debt_ms + declined * debt_decline_ms;
+    let expected_upper_ms = upper_without_debt_ms + declined * debt_decline_ms;
 
     let saved_ms = code_per_frame(&before) - code_per_frame(&after);
     let upper_ms = abs_issue.upper_ms.expect("an advised edit has a whole-code bound");

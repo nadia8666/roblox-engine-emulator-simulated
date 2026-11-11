@@ -804,6 +804,12 @@ enum LuauBuiltinFunction
     // table.create / table.clear
     LBF_TABLE_CREATE,
     LBF_TABLE_CLEAR,
+
+    // buffer.readvectorf32x2/x3 / buffer.writevectorf32x2/x3
+    LBF_BUFFER_READVECTORF32X2,
+    LBF_BUFFER_READVECTORF32X3,
+    LBF_BUFFER_WRITEVECTORF32X2,
+    LBF_BUFFER_WRITEVECTORF32X3,
 };
 
 // Capture type, used in LOP_CAPTURE

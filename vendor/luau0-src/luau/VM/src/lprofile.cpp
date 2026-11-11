@@ -466,6 +466,10 @@ const BuiltinShape kBuiltins[] = {
     {"buffer.writeinteger", 3, -1, R_LE0, "bni", 0, 0},
     {"table.create", 1, -1, R_LE1, "n", 0, B_GC},
     {"table.clear", 1, -1, R_LE0, "t", 0, 0},
+    BS2("buffer.readvectorf32x2", "bn"),
+    BS2("buffer.readvectorf32x3", "bn"),
+    {"buffer.writevectorf32x2", 3, -1, R_LE0, "bnv", 0, 0},
+    {"buffer.writevectorf32x3", 3, -1, R_LE0, "bnv", 0, 0},
 };
 
 #undef BS1
@@ -473,7 +477,7 @@ const BuiltinShape kBuiltins[] = {
 #undef BSI
 
 const int kBuiltinCount = int(sizeof(kBuiltins) / sizeof(kBuiltins[0]));
-static_assert(sizeof(kBuiltins) / sizeof(kBuiltins[0]) == LBF_TABLE_CLEAR + 1, "a builtin shape for each LBF_* id, in order");
+static_assert(sizeof(kBuiltins) / sizeof(kBuiltins[0]) == LBF_BUFFER_WRITEVECTORF32X3 + 1, "a builtin shape for each LBF_* id, in order");
 
 // a function's calls as the call hook samples them: each with a chance of one in `every`; with `every` 0 none, and one
 // call after every `remeasure` read for its length alone (`left` of those calls still to come). `open` of its sampled

@@ -33,6 +33,7 @@ pub mod lune_json;
 pub mod microprofile;
 pub mod mount;
 pub mod output;
+pub mod path2d;
 pub mod profile;
 pub mod profiler;
 pub mod project;
@@ -52,6 +53,8 @@ pub mod world;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod path2d_tests;
 #[cfg(test)]
 mod scheduler_tests;
 #[cfg(test)]

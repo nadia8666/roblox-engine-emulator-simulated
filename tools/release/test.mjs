@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { ROOT, MANIFESTS, PLATFORMS, args, command, isMain, sourceText, version } from "./common.mjs";
+import { ROOT, MANIFESTS, PLATFORMS, args, command, isMain, realPath, sourceText, version } from "./common.mjs";
 import { licenses, normalPackages } from "./licenses.mjs";
 import { DOCUMENTS, DOCUMENT_MODE, EXECUTABLE_MODE, checkArchive, crc32, readZip, zip } from "./package.mjs";
 import { notes } from "./notes.mjs";
@@ -137,6 +137,17 @@ test("a held temporary folder reports its path without replacing the check resul
 	assert.equal(await removeTestFolder(root), false);
 	assert(diagnostic.mock.calls[0].arguments[0].includes(held));
 	assert(diagnostic.mock.calls[0].arguments[0].includes(`files kept at ${root}`));
+});
+
+test("real paths accept Windows drive-relative, drive-root and verbatim paths", { skip: process.platform !== "win32" }, (t) => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "ree-release-path-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const driveRoot = path.parse(root).root;
+	const drive = driveRoot.slice(0, -1);
+	assert.equal(realPath(drive), realPath(path.resolve(drive)));
+	assert.equal(realPath(driveRoot), driveRoot);
+	assert.equal(realPath(path.toNamespacedPath(driveRoot)), driveRoot);
+	assert.equal(realPath(path.toNamespacedPath(root)), realPath(root));
 });
 
 test("release scripts run their main step through a linked folder", (t) => {

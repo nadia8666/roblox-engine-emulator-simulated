@@ -1,0 +1,32 @@
+# engine: Roblox Studio 0.744.0.7441077, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-10
+vector-f32-native false
+read-x3 ok 1 1.5 -2.25 0.333333343 | ok 1 -2.25 0.333333343 1.00000002e+30 | ok 1 1.00000002e+30 -0 7
+read-x2 ok 1 1.5 -2.25 0 | ok 1 0.333333343 1.00000002e+30 0 | ok 1 -0 7 0
+read-unaligned ok 1 5.85451288e-39 -1.36468614e-12 -3123882.5 | ok 1 2.52437386e-29 -3.03172418e-13 0
+read-x3-bounds last ok 1 1.00000002e+30 -0 7 | past error buffer access out of bounds | end error buffer access out of bounds | negative error buffer access out of bounds
+read-x2-bounds last ok 1 -0 7 0 | past error buffer access out of bounds | end error buffer access out of bounds | negative error buffer access out of bounds
+read-short x3 error buffer access out of bounds | ok 1 0 0 0 | x2 error buffer access out of bounds | ok 1 0 0 0
+read-empty error buffer access out of bounds | error buffer access out of bounds
+read-offset fraction ok 1 -2.25 0.333333343 1.00000002e+30 | nan error buffer access out of bounds | inf error buffer access out of bounds | -inf error buffer access out of bounds
+read-offset 2^31 error buffer access out of bounds | 2^32 error buffer access out of bounds | 2^32+4 error buffer access out of bounds | -2^31 error buffer access out of bounds | 2^31-4 error buffer access out of bounds | 1e300 error buffer access out of bounds
+read-offset-string ok 1 -2.25 0.333333343 1.00000002e+30 | ok 1 0.333333343 1.00000002e+30 0
+read-extra-arguments ok 1 1.5 -2.25 0.333333343 | ok 1 1.5 -2.25 0
+read-special ok 1 inf -inf nan | ok 1 1.40129846e-45 -0 3.40282347e+38 | ok 1 1.40129846e-45 -0 0
+read-x2-zero-z 0 0
+read-type vector Vector3 Vector3 true
+read-select 1 1
+write-x3 ok 0 0000C03F000010C0ABAAAA3EAAAAAAAA | ok 0 AAAAAAAA0000803F0000004000004040
+write-x2 ok 0 0000C03F000010C0AAAAAAAAAAAAAAAA | ok 0 AAAAAAAAAAAAAAAA0000803F00000040
+write-unaligned ok 0 AAAAAA0000803F0000004000004040AA | ok 0 AAAAAAAAAA0000803F00000040AAAAAA
+write-x3-bounds last ok 0 AAAAAAAA0000803F0000803F0000803F | past error buffer access out of bounds AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA | end error buffer access out of bounds AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA | negative error buffer access out of bounds AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+write-x2-bounds last ok 0 AAAAAAAAAAAAAAAA0000803F0000803F | past error buffer access out of bounds AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA | end error buffer access out of bounds AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA | negative error buffer access out of bounds AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+write-short x3 error buffer access out of bounds AAAAAAAAAAAAAAAAAAAAAA | ok 0 0000803F0000803F0000803F | x2 error buffer access out of bounds AAAAAAAAAAAAAA | ok 0 0000803F0000803F
+write-empty error buffer access out of bounds  | error buffer access out of bounds 
+write-offset fraction ok 0 AAAA0000803F0000803F0000803FAAAA | nan error buffer access out of bounds AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA | inf error buffer access out of bounds AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA | 2^32 error buffer access out of bounds AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA | string ok 0 AAAAAAAA0000803F0000803FAAAAAAAA
+write-special ok 0 0000807F000080FF0000C0FF | ok 0 000000806042A20DFFFF7F7F | ok 0 0000807F00000080
+write-subnormal ok 0 000000000000008000000000 | ok 0100000000000000
+write-results 0 0
+round-trip ok 1 0.100000001 -123456.789 16777216 | ok 1 -123456.789 16777216 0 | 0.100000001 -123456.789 16777216
+sweep 4307.5286865234375 errors 494
+arguments (the functions are not in this engine)

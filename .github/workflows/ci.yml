@@ -1,5 +1,16 @@
 # Runs on the public repository only: the private one has no free Actions minutes to spare.
 # Third-party actions are pinned to full commit SHAs; Dependabot (private repo) keeps them current.
+#
+# Three jobs, side by side, which shortens the run: test runs everything but two slow test binaries, planted runs the
+# planted profile tests in three shards at once, and standalone runs the standalone tests and the checks that need no
+# build. Cargo starts each test binary through tools/ci/test-entry.mjs, and the runner it calls
+# (tools/ci/test-runner.mjs) decides what runs where.
+#
+# Two caches keep a job from compiling everything on every run. The dependency cache (Swatinem/rust-cache) holds what
+# the crates.io crates compile to. The compile cache (sccache, set up by tools/ci/compile-cache.mjs) holds what that one
+# cannot: the Luau VM's C++ and the vendored crates, each under a hash of what its compile read, so a change in vendor/
+# always compiles. Every job reads both caches. Only runs on main store them, and the compile cache only from the test
+# job, so main never reads what a pull request built. Release builds (release.yml) use neither.
 name: CI
 
 on:
@@ -18,13 +29,9 @@ concurrency:
 jobs:
   test:
     if: ${{ !github.event.repository.private }}
-    name: Build and test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Build and test (windows-latest)
+    runs-on: windows-latest
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,14 +40,149 @@ jobs:
         with:
           toolchain: "1.90.0"
           components: clippy
+      # The compile cache is set up before the dependency cache is restored: that cache's key takes in the compiler
+      # this step names, so what it holds was built with the same compiler settings.
+      - name: Set up the compile cache
+        id: compile-cache
+        run: node tools/ci/compile-cache.mjs start --tools "${{ runner.temp }}/sccache" --cache "${{ runner.temp }}/compile-cache"
+      # The newest stored cache will do when this key is not stored: sccache finds in it whatever has not changed.
+      - name: Restore the compile cache
+        id: compile-cache-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/compile-cache
+          key: ${{ steps.compile-cache.outputs.key }}
+          restore-keys: compile-cache-
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          shared-key: test # Every job shares the one cache the single test job used before.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          env-vars: INCLUDE # The key takes in the compilers' variables by itself; the include paths are named here.
+      # Cargo builds all the test targets in one graph, which includes the release binaries the integration tests run,
+      # and runs the doctests. The runner skips planted's and standalone's tests; their jobs run them.
+      # The entry is given by its absolute path, as cargo starts it in each package's folder.
+      - name: Build and test (all but the planted and standalone tests)
+        run: |
+          $entry = (Resolve-Path tools/ci/test-entry.mjs).Path.Replace('\', '/')
+          cargo test --release --locked --no-fail-fast --config "target.x86_64-pc-windows-msvc.runner=['node','$entry','core']"
+      # The next three steps run after a failed test step too, so one failure does not hide the other checks.
+      # A plain release build checks the features the shipped binaries use. The test build has already built the same
+      # artifacts, so this finds them fresh.
+      - name: Build release binaries
+        if: ${{ !cancelled() }}
+        run: cargo build --release --locked
+      - name: Test the counter service (tools/hw-counters, a workspace of its own)
+        if: ${{ !cancelled() }}
+        run: cargo test --release --locked --manifest-path tools/hw-counters/Cargo.toml
+      - name: Compile cache statistics
+        if: ${{ !cancelled() }}
+        run: node tools/ci/compile-cache.mjs stop
+      # Stored by main alone, from this job alone, and only under a key that is not stored yet: a run that found its
+      # key has compiled nothing new from vendor/. A red job stores nothing.
+      - name: Store the compile cache
+        if: ${{ github.ref == 'refs/heads/main' && steps.compile-cache-restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/compile-cache
+          key: ${{ steps.compile-cache.outputs.key }}
+
+  planted:
+    if: ${{ !github.event.repository.private }}
+    name: Planted profile tests, shard ${{ matrix.shard }} (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # One job per shard. The runner is told its position and the shard count by the matrix itself, so adding a shard
+        # here is all it takes to cut the slices thinner.
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-16
+        with:
+          toolchain: "1.90.0"
+      # The two caches, as in the test job. This job reads the compile cache and never stores it.
+      - name: Set up the compile cache
+        id: compile-cache
+        run: node tools/ci/compile-cache.mjs start --tools "${{ runner.temp }}/sccache" --cache "${{ runner.temp }}/compile-cache"
+      - name: Restore the compile cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/compile-cache
+          key: ${{ steps.compile-cache.outputs.key }}
+          restore-keys: compile-cache-
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: test # The test job's cache, see above.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          env-vars: INCLUDE
+      # The runner lists planted's tests and runs this job's slice, one test at a time. The slices of the three jobs
+      # together hold every test once (tools/ci/test-runner.mjs).
+      # Only planted's target is built here: the other test targets are built by the test job.
+      - name: Test planted profiles (this shard's slice)
+        run: |
+          $entry = (Resolve-Path tools/ci/test-entry.mjs).Path.Replace('\', '/')
+          cargo test --release --locked --no-fail-fast -p ree-profile-view --test planted --config "target.x86_64-pc-windows-msvc.runner=['node','$entry','planted','${{ strategy.job-index }}','${{ strategy.job-total }}']"
+      - name: Compile cache statistics
+        if: ${{ !cancelled() }}
+        run: node tools/ci/compile-cache.mjs stop
+
+  standalone:
+    if: ${{ !github.event.repository.private }}
+    name: Standalone tests and source checks (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-16
+        with:
+          toolchain: "1.90.0"
+      # The two checks of the sources need no build. They run here because this job ends before the test job, the
+      # longest of the run, which they used to hold up. They come before the caches, so a cache that fails to download
+      # or restore cannot skip them, and after the toolchain, since the tool tests ask cargo for the packages' targets.
       - name: Vendored VM matches its patches
         run: node tools/vendor.mjs --check
-      - name: Build
-        run: cargo build --release --locked
-      - name: Test
-        run: cargo test --release --locked
-      - name: Test the counter service (tools/hw-counters, a workspace of its own)
-        run: cargo test --release --locked --manifest-path tools/hw-counters/Cargo.toml
+      - name: CI tool tests
+        if: ${{ !cancelled() }}
+        run: node --test tools/ci/test.mjs
+      - name: Luau release tracker tests
+        if: ${{ !cancelled() }}
+        run: node --test tools/luau-release.test.mjs
+      # The two caches, as in the test job. This job reads the compile cache and never stores it.
+      # From here on every step runs after a failed check too, so one failure does not hide the other, and the tests
+      # then still build from the caches.
+      - name: Set up the compile cache
+        id: compile-cache
+        if: ${{ !cancelled() }}
+        run: node tools/ci/compile-cache.mjs start --tools "${{ runner.temp }}/sccache" --cache "${{ runner.temp }}/compile-cache"
+      - name: Restore the compile cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/compile-cache
+          key: ${{ steps.compile-cache.outputs.key }}
+          restore-keys: compile-cache-
+      # This job builds the engine's dependencies but not the viewer's, so it only reads the cache: one stored from here
+      # would leave the other jobs without the viewer's.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !cancelled() }}
+        with:
+          shared-key: test # The test job's cache, see above.
+          save-if: false
+          env-vars: INCLUDE
+      # One of these tests alone takes three minutes: it runs the installed binary's checks six times in a row.
+      # No package is named, so cargo resolves the workspace's features as the test job does and builds the same ree.
+      # Only standalone's target and what it needs are built here: the engine and ree.
+      - name: Test the standalone binary
+        if: ${{ !cancelled() }}
+        run: |
+          $entry = (Resolve-Path tools/ci/test-entry.mjs).Path.Replace('\', '/')
+          cargo test --release --locked --no-fail-fast --test standalone --config "target.x86_64-pc-windows-msvc.runner=['node','$entry','standalone']"
+      - name: Compile cache statistics
+        if: ${{ !cancelled() }}
+        run: node tools/ci/compile-cache.mjs stop

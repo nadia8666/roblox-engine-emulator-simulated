@@ -338,6 +338,16 @@ const METHOD_SUPPLEMENT: &[(&str, &[&str])] = &[(
     ],
 )];
 
+// Properties the dump leaves out: (class, name, script type, engine type, scriptable, serialized). Path2D keeps its
+// control points in PropertiesSerialize, a BinaryString only files see, and a Transparency that only the engine's own
+// scripts reach, like its selection (path2d.rs; measured in Studio 0.747 and a playing client, Studio 0.744).
+const PROPERTY_SUPPLEMENT: &[(&str, &str, &str, &str, bool, bool)] = &[
+    ("Path2D", "PropertiesSerialize", "any", "BinaryString", false, true),
+    ("Path2D", "Transparency", "number", "float", true, true),
+    ("Path2D", "SelectedControlPoint", "number", "int", true, false),
+    ("Path2D", "SelectedControlPointData", "any", "", true, false),
+];
+
 // Callbacks the dump leaves out (it lists none for any class): every callback Roblox's API dump lets
 // a game script assign (Security None; MaximumADHD's Roblox-Client-Tracker API-Dump.json, read
 // 2026-10-24). A script assigns them, the engine keeps the function (`Instance::callbacks`) and
@@ -593,6 +603,15 @@ impl Reflection {
         // rbx-dom supplement (LoadLuneSupplement)
         reflection.load_lune_supplement(&mut superclass_names);
 
+        for (class, name, script_type, engine_type, scriptable, serialized) in PROPERTY_SUPPLEMENT {
+            if let Some(&id) = reflection.class_ids.get(*class) {
+                let known = reflection.classes[id as usize].own_properties.iter().any(|&index| reflection.names[reflection.properties[index as usize].name as usize].as_ref() == *name);
+                if !known {
+                    let index = reflection.add_property(name, script_type, engine_type, None, false, *scriptable, *serialized, id);
+                    reflection.classes[id as usize].own_properties.push(index);
+                }
+            }
+        }
         for (class, events) in EVENT_SUPPLEMENT {
             if let Some(&id) = reflection.class_ids.get(*class) {
                 for event in *events {

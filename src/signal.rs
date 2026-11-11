@@ -72,6 +72,8 @@ pub struct ConnectionData {
 pub struct Signals {
     signals: Vec<SignalData>,
     free_signals: Vec<SignalId>,
+    /// The signals freed since the collector last asked ([`Signals::take_freed`])
+    freed: Vec<SignalId>,
     connections: Vec<ConnectionData>,
     free_connections: Vec<u32>,
     /// The handlers of connected connections, by connection slot + 1, in one Luau table (`hold_in`):
@@ -135,6 +137,15 @@ impl Signals {
         signal.handlers = Vec::new();
         signal.generation = signal.generation.wrapping_add(1);
         self.free_signals.push(id);
+        self.freed.push(id);
+    }
+
+    /// The signals freed since this was last called: the collector's own and those a hook of a freed instance let go
+    /// of (a track's marker signals). Their slots are reused, so what scripts were handed for them must be forgotten
+    /// with them (lua::raw): a script asking for the slot's next signal got the dead one's userdata, and its handlers
+    /// connected to nothing.
+    pub fn take_freed(&mut self) -> Vec<SignalId> {
+        std::mem::take(&mut self.freed)
     }
 
     /// (live signals, live connections) (diagnostics and tests)

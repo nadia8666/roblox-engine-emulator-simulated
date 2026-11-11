@@ -21,7 +21,7 @@ src/watchdog.rs        Roblox's script timeout, the wall-clock cap, the exit whe
 build.rs               the conversion digest: the key of the bundle plan files (`<bundle>.plan`)
 src/lua/               the Luau-facing API: Instance userdata, datatypes, globals, require, stubs
 src/world/ src/record/ the 3D world and the recorder
-src/animation/         AnimationTracks: the Animator's step, clips (KeyframeSequences) and where they load from
+src/animation/         AnimationTracks: the Animator's step, clips (KeyframeSequences, CurveAnimations and their curves) and where they load from
 src/meshes.rs          EditableMesh: meshes scripts build or load, their MeshParts' FileMesh snapshots
 src/profile.rs microprofile.rs luau_profile.rs   simulation profile, MicroProfiler scopes, Luau sampler
 src/profiler/          the profiling suite (`--profile <kinds>`): the VM's instruction profile, memory, caches,

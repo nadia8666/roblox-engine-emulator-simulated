@@ -10,6 +10,7 @@ import path from "node:path";
 import http from "node:http";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
+import { realPath } from "../tools/release/common.mjs";
 import { removeTestFolder, servedRun, startManualService, stopServices, waitForProcesses } from "../tools/release/smoke.mjs";
 
 // Environment variables with these prefixes steer ree and its helpers, so a check starts without them
@@ -57,7 +58,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
 	const logged = {
 		...request,
 		pid: process.pid,
-		worker: fs.realpathSync(worker),
+		worker: fs.realpathSync.native(worker),
 		cwd: process.cwd(),
 		workerEnv: process.env.REE_ASSET_WORKER,
 		pathEnv: process.env.PATH,
@@ -66,6 +67,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
 		customValue: process.env.WORKER_VALUE,
 		customRelative: process.env.WORKER_RELATIVE,
 		userFolders: Object.fromEntries(${JSON.stringify(USER_FOLDER_VARIABLES)}.map((name) => [name, process.env[name]])),
+		drives: { HOMEDRIVE: process.env.HOMEDRIVE, SystemDrive: process.env.SystemDrive },
 	};
 	fs.appendFileSync(process.env.REE_WORKER_LOG, JSON.stringify(logged) + "\\n");
 	if (request.command === "catalog") { console.log(JSON.stringify({ bundles: ["Models/Props"] })); return; }
@@ -74,7 +76,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
 		fs.writeFileSync(request.out, ${JSON.stringify(MODEL_XML)});
 	}
 	const reported = process.env.REE_REPLY_CACHED || request.out;
-	const file = process.env.REE_REPLY_CANONICAL === "1" ? fs.realpathSync(reported)
+	const file = process.env.REE_REPLY_CANONICAL === "1" ? fs.realpathSync.native(reported)
 		: process.env.REE_REPLY_RELATIVE === "1" ? path.relative(process.cwd(), reported) : reported;
 	console.log(JSON.stringify({ file }));
 });
@@ -108,7 +110,7 @@ function installWorker(file, mode = 0o755) {
 function check(name, body) {
 	test(name, async () => {
 		// the real path of the temp folder: ree reports paths with links resolved, and the checks compare against them
-		const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ree-worker-test-")));
+		const root = realPath(fs.mkdtempSync(path.join(os.tmpdir(), "ree-worker-test-")));
 		const executable = path.join(root, WINDOWS ? "ree.exe" : "ree");
 		fs.copyFileSync(process.env.REE_TEST_BINARY, executable);
 		fs.chmodSync(executable, 0o755);
@@ -420,6 +422,52 @@ check("direct, manual and warm workers resolve helper PATH and user folders", as
 	}
 });
 
+if (WINDOWS) {
+	for (const kind of ["drive-relative", "drive-root", "verbatim-root"]) {
+		check(`Windows ${kind} environment paths keep their client meaning`, async ({ root, env, ree, project, requests, executable }) => {
+			const directory = project("project");
+			const driveRoot = path.parse(directory).root;
+			const drive = driveRoot.slice(0, -1);
+			// `C:` alone is the client's current folder on that drive, which is the project's; the others are the drive's root
+			const { value, expected } = {
+				"drive-relative": { value: drive, expected: directory },
+				"drive-root": { value: driveRoot, expected: driveRoot },
+				"verbatim-root": { value: path.toNamespacedPath(driveRoot), expected: driveRoot },
+			}[kind];
+			// The explicit state stays in the test folder; these values must only be forwarded to the worker.
+			for (const name of USER_FOLDER_VARIABLES) env[name] = value;
+			env.PATH = [value, env.PATH].join(path.delimiter);
+			env.NODE_PATH = value;
+			env.HOMEDRIVE = drive;
+			env.SystemDrive = drive;
+			env.REE_ASSET_WORKER = path.join(directory, "helpers", WORKER_FILE);
+			fs.mkdirSync(path.join(directory, "root"));
+			await fetchAnimation(ree, directory, 1251);
+			await warmService(ree, directory);
+			await fetchAnimation(ree, directory, 1252, true);
+			await stopServices((args) => ree(root, args));
+			const service = startManualService(executable, directory, env);
+			try {
+				await service.listening;
+				await fetchAnimation(ree, directory, 1253, true, [], service.service.pid);
+				await warmService(ree, directory, [], service.service.pid);
+			} finally {
+				await stopServices((args) => ree(root, args));
+				await service.closed;
+			}
+			const rows = requests();
+			assert.equal(rows.length, 3);
+			for (const row of rows) {
+				const firstPathEntry = row.pathEnv.split(path.delimiter)[0];
+				for (const name of USER_FOLDER_VARIABLES) assert.equal(realPath(row.userFolders[name]), expected, name);
+				assert.equal(realPath(firstPathEntry), expected);
+				assert.equal(realPath(row.nodePath), expected);
+				assert.deepEqual(row.drives, { HOMEDRIVE: drive, SystemDrive: drive });
+			}
+		});
+	}
+}
+
 // An empty PATH entry names the client's current folder on Unix (Windows does not search it), at any position in the
 // list. Two clients in different folders have different PATHs after resolving it, so each gets its own service and runs
 // the worker in its own folder.
@@ -589,7 +637,7 @@ for (const service of [false, true]) check(`relative asset replies are read from
 	await fetchAnimation(ree, directory, 7002, service);
 	assert.equal(requests().length, 2);
 	// the worker ran in the state dir, which is where its relative replies are read from
-	assert(requests().every((row) => fs.realpathSync(row.cwd) === fs.realpathSync(env.RUR_STATE_DIR)));
+	assert(requests().every((row) => realPath(row.cwd) === realPath(env.RUR_STATE_DIR)));
 });
 
 // Names the client's worker by a relative path, and makes any lookup through the host's variable fail, so a job
@@ -617,8 +665,8 @@ for (const warm of [false, true]) check(`an input repo keeps the standalone work
 	const rows = requests();
 	const expected = path.join(directory, "helpers", WORKER_FILE);
 	assert.equal(rows.length, 3);
-	assert(rows.every((row) => row.workerEnv === expected && fs.realpathSync(row.worker) === fs.realpathSync(expected)), JSON.stringify(rows));
-	assert(rows.every((row) => path.isAbsolute(row.out) && fs.realpathSync(row.cwd) === fs.realpathSync(env.RUR_STATE_DIR)));
+	assert(rows.every((row) => row.workerEnv === expected && realPath(row.worker) === realPath(expected)), JSON.stringify(rows));
+	assert(rows.every((row) => path.isAbsolute(row.out) && realPath(row.cwd) === realPath(env.RUR_STATE_DIR)));
 	assert(!fs.existsSync(path.join(inputs, ".cache")));
 	assert.equal(ree(root, ["serve", "--status"]).trim().split("\n").length, 1, "--repo and --warm find the same service");
 });
@@ -680,9 +728,9 @@ for (const stateFlag of [false, true]) check(`a manual service is found by stand
 		const rows = requests();
 		const expected = path.join(caller, "helpers", WORKER_FILE);
 		assert(rows.some((row) => row.command === "catalog"), JSON.stringify(rows));
-		assert(rows.every((row) => row.workerEnv === expected && fs.realpathSync(row.worker) === fs.realpathSync(expected)), JSON.stringify(rows));
+		assert(rows.every((row) => row.workerEnv === expected && realPath(row.worker) === realPath(expected)), JSON.stringify(rows));
 		assert(rows.filter((row) => row.command === "asset").every((row) => path.isAbsolute(row.out)));
-		assert(rows.every((row) => fs.realpathSync(row.cwd) === fs.realpathSync(env.RUR_STATE_DIR)));
+		assert(rows.every((row) => realPath(row.cwd) === realPath(env.RUR_STATE_DIR)));
 		const services = ree(caller, ["serve", "--status"]).trim().split("\n").map(JSON.parse);
 		assert.equal(services.length, 1, "--warm must reuse the manual service");
 		assert.equal(services[0].pid, service.pid, "run and warm discover the service started by hand");

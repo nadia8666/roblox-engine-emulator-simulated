@@ -5,6 +5,20 @@
 			"why": "Model:MoveTo itself: a client leaves a model outside the DataModel where it is (the exact name too); ree moves it"
 		}
 	],
+	"buffer_vector_f32": [
+		{
+			"line": "vector-f32-native false",
+			"why": "the capture's engine (Studio 0.744) has no buffer.readvectorf32x2/x3 or writevectorf32x2/x3 (release 747 lists them as pending): it ran the probe's float32 reference, ree runs the functions"
+		},
+		{
+			"line": "write-subnormal ok 0 000000000000008000000000 | ok 0100000000000000",
+			"why": "subnormal float32s: a client's vector holds zero for a component below the smallest normal float32 (its buffer.writef32 keeps one); ree's vectors keep them. A float mode of the engine, not of these functions"
+		},
+		{
+			"line": "arguments (the functions are not in this engine)",
+			"why": "the argument errors name the function and the vector type, which the float32 reference cannot say: printed only by an engine that has the functions (not checked against one)"
+		}
+	],
 	"buffer_vector_time": [
 		{
 			"line": "vector-format error invalid argument #2 to 'format' (string expected, got Vector3) ok 1, 2, 3 concat error @86: attempt to concatenate string with Vector3",
@@ -267,6 +281,312 @@
 			"why": "the VM names a vector `vector` in an argument error (luaT_objtypename), the client Vector3 (as vector-format)"
 		}
 	],
+	"path2d_layout": [
+		{
+			"line": "screen Vector2(1920 1080) frame Vector2(50 -28) Vector2(200 100)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "frame rect -> Rect(49 29 251 111)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "frame t=0 -> UDim2(0 0 0 0) | Vector2(110 80)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "frame t=1 -> UDim2(1 0 0 0) | Vector2(90 -80)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "frame closed rect -> Rect(49 29 251 111)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "frame closed t=0 -> UDim2(0 0 0 0) | Vector2(110 80)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "frame closed t=0.75 -> UDim2(0.75 0 0 0) | Vector2(-200 0)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "frame closed t=1 -> UDim2(0 0 0 0) | Vector2(-200 0)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "handles t=0 -> UDim2(0 0 0 0) | Vector2(0 180)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "handles t=0.5 -> UDim2(0.5 0 0.5 0) | Vector2(75 150)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "cancelled handle rect -> Rect(49 29 151 31)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "cancelled handle t=0 -> UDim2(0 0 0 0) | Vector2(100 0)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "cancelled handle t=1 -> UDim2(0.5 0 0 0) | Vector2(100 0)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "screen rect -> Rect(9 19 1911 541)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "screen t=0.5 -> UDim2(0.5 0 0.5 0) | Vector2(950 -520)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "flat parent rect -> Rect(119 39 211 81)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "flat parent t=0 -> UDim2(0 120 0 40) | Vector2(90 40)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "flat parent t=0.5 -> UDim2(0 165 0 60) | Vector2(90 40)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "flat parent t=1 -> UDim2(0 210 0 80) | Vector2(90 40)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "negative size Vector2(-50 100) Vector2(10 -38)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "negative parent rect -> Rect(-6 89 11 181)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "scaled parent Vector2(200 120) Vector2(100 142) inner Vector2(80 60) Vector2(140 162)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "under UIScale rect -> Rect(94.5 194.5 305.5 325.5)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "under UIScale t=1 -> UDim2(1 0 1 0) | Vector2(320 240)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "under UIScale nested length -> 100",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "under UIScale nested rect -> Rect(139 219 221 281)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "under UIScale nested t=0 -> UDim2(0 0 0 0) | Vector2(80 60)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "under UIScale nested t=1 -> UDim2(1 0 1 0) | Vector2(80 60)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "on screen: set, frames, insert 4 -> ",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "on screen: not visible, set, frames, insert 4 -> ",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "under the gui: set, frames, insert 4 -> ",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "under the gui: not visible, set, frames, insert 4 -> ",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "hidden parent rect -> Rect(299 299 381 341)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "hidden parent t=0.5 -> UDim2(0.5 0 0.5 0) | Vector2(80 40)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "frame length -> 256.431",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "frame t=0.25 -> UDim2(0.275 0 0.4 0) | Vector2(110 80)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "frame t=0.5 -> UDim2(0.55 0 0.8 0) | Vector2(90 -80)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "frame t=0.75 -> UDim2(0.775 0 0.4 0) | Vector2(90 -80)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "frame arc -> UDim2(0.259 0 0.377 0) | Vector2(110 80)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "frame closed length -> 456.431",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "frame closed t=0.25 -> UDim2(0.412 0 0.6 0) | Vector2(110 80)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "frame closed t=0.5 -> UDim2(0.775 0 0.4 0) | Vector2(90 -80)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "handles length -> 255.111",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "handles rect -> Rect(49 29 231 101.97)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "handles t=0.10000000000000001 -> UDim2(0.028 0 0.282 0) | Vector2(54 105.6)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "handles t=0.25 -> UDim2(0.156 0 0.475 0) | Vector2(112.5 30)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "handles t=0.40000000000000002 -> UDim2(0.352 0 0.506 0) | Vector2(144 -2.4)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "handles t=0.59999999999999998 -> UDim2(0.59 0 0.689 0) | Vector2(100.8 43.2)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "handles t=0.75 -> UDim2(0.747 0 0.637 0) | Vector2(101.25 -67.5)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "handles t=0.90000000000000002 -> UDim2(0.87 0 0.343 0) | Vector2(55.8 -118.8)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "handles t=1 -> UDim2(0.9 0 0.1 0) | Vector2(0 -120)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "cancelled handle t=0.20000000000000001 -> UDim2(0.1 0 0 0) | Vector2(100 0)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "before resize -> 256.431 | UDim2(0.275 0 0.4 0)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "resized, same step -> 256.431 | UDim2(0.275 0 0.4 0)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "resized, next frame -> 430.877 | UDim2(0.262 0 0.4 0)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "screen length -> 2166.01",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "screen t=0 -> UDim2(0.005 0 0.019 0) | Vector2(950 520)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "screen t=1 -> UDim2(0.995 0 0.019 0) | Vector2(950 -520)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "flat parent length -> 98.489",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "negative parent length -> 91.241",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "negative parent t=0 -> UDim2(0.7 0 0.7 0) | Vector2(15 90)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "negative parent t=0.5 -> UDim2(0.85 0 1.15 0) | Vector2(15 90)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "negative parent t=1 -> UDim2(1 0 1.6 0) | Vector2(15 90)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "rotated length -> 119.237",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "rotated rect -> Rect(120.699 178.019 179.301 281.981)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "rotated t=0 -> UDim2(0 0 0 0) | Vector2(69.282 40)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "rotated t=0.5 -> UDim2(0.45 0 0.25 0) | Vector2(56.603 101.962)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "rotated t=1 -> UDim2(1 0 1 0) | Vector2(43.923 163.923)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "rotated twice length -> 50",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "rotated twice rect -> Rect(133.527 196.469 154.152 244.871)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "rotated twice t=0 -> UDim2(0 0 0 0) | Vector2(-18.625 46.402)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "rotated twice t=0.5 -> UDim2(0.5 0 0.5 0) | Vector2(-18.625 46.402)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "rotated twice t=1 -> UDim2(1 0 1 0) | Vector2(-18.625 46.402)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "under UIScale length -> 234.976",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "under UIScale t=0.5 -> UDim2(0.35 0 0.25 0) | Vector2(200 120)",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		},
+		{
+			"line": "hidden parent length -> 89.443",
+			"why": "plain ree has no GUI layout; rur adds one and prints this line (run.mjs --rur)"
+		}
+	],
 	"reflection": [
 		{
 			"line": "count 656 633",
@@ -429,14 +749,6 @@
 		{
 			"line": "value SharedTable typeof=SharedTable type=userdata tostring=SharedTable: ADDR",
 			"why": "SharedTable is a userdata in a client; ree makes it a table"
-		},
-		{
-			"line": "value FloatCurveKey typeof=FloatCurveKey type=userdata tostring={Linear, 0, 1, nil, nil}",
-			"why": "FloatCurveKey has no constructor in ree"
-		},
-		{
-			"line": "value RotationCurveKey typeof=RotationCurveKey type=userdata tostring={Linear, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0}",
-			"why": "RotationCurveKey has no constructor in ree"
 		},
 		{
 			"line": "value SecurityCapabilities typeof=SecurityCapabilities type=userdata tostring=",

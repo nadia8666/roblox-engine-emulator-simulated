@@ -67,12 +67,12 @@ fn an_installed_binary_and_its_service_use_only_the_redirected_user_cache() {
     // a failing smoke (the wrong version) keeps its folder and says where it is
     let failed = node("tools/release/smoke.mjs", &["--binary", binary, "--version", "wrong-version"], &temp);
     assert!(!failed.status.success());
-    // the folder of the passing run may still be there too (when its removal was deferred), so any entry may be the one named
+    // the folder of the passing run may still be there too (when its removal was deferred), so any line may be the one named;
+    // Node prints an ordinary Windows path where `temp` is canonical with a verbatim prefix, so the paths are compared canonical
     let diagnostic = String::from_utf8_lossy(&failed.stderr);
-    let names_a_kept_folder = std::fs::read_dir(&temp).unwrap().any(|entry| {
-        let kept = entry.unwrap().path();
-        diagnostic.contains(&format!("files kept at {}", kept.display()))
-    });
+    let kept_folders = diagnostic.lines().filter_map(|line| line.strip_prefix("release smoke failed; files kept at "));
+    let names_a_kept_folder = kept_folders.filter_map(|kept| std::fs::canonicalize(kept).ok())
+        .any(|kept| kept.is_dir() && kept.parent() == Some(temp.as_path()));
     assert!(names_a_kept_folder);
     if !cleanup_deferred {
         std::fs::remove_dir_all(&temp).unwrap();
@@ -101,7 +101,7 @@ fn installed_jobs_keep_standalone_state_with_an_input_repo() {
 }
 
 #[test]
-fn standalone_checks_accept_a_linked_temporary_folder() {
+fn standalone_checks_accept_linked_and_canonical_temporary_folders() {
     // Some systems reach their temporary folder through a link (macOS /var, a Windows junction). The checks build their
     // own paths in it and compare them with what the binary reports, so they must work when the folder is a link.
     let root = std::env::temp_dir().join(format!("ree-linked-temp-{}", std::process::id()));
@@ -112,6 +112,8 @@ fn standalone_checks_accept_a_linked_temporary_folder() {
     let link_script = "require('node:fs').symlinkSync(process.argv[1], process.argv[2], process.platform === 'win32' ? 'junction' : 'dir')";
     let setup = Command::new("node").arg("-e").arg(link_script).arg(&real).arg(&linked).output().unwrap();
     assert!(setup.status.success(), "{}", describe(&setup));
+    // Rust's canonical Windows path has a verbatim prefix; Node must accept that spelling too.
+    let canonical = std::fs::canonicalize(&linked).unwrap();
 
     let smoke_args = ["--binary", env!("CARGO_BIN_EXE_ree"), "--version", env!("CARGO_PKG_VERSION")];
     let mut checks: Vec<(&str, &[&str])> = vec![("tests/service_cache.mjs", &[]), ("tools/release/smoke.mjs", &smoke_args)];
@@ -121,9 +123,11 @@ fn standalone_checks_accept_a_linked_temporary_folder() {
     }
     let mut cleanup_deferred = false;
     for (script, args) in checks {
-        let result = node(script, args, &linked);
-        assert!(result.status.success(), "{script}: {}", describe(&result));
-        cleanup_deferred |= report_deferred_cleanup(&result);
+        for temp in [&linked, &canonical] {
+            let result = node(script, args, temp);
+            assert!(result.status.success(), "{script} with {}: {}", temp.display(), describe(&result));
+            cleanup_deferred |= report_deferred_cleanup(&result);
+        }
     }
     if !cleanup_deferred {
         assert_eq!(std::fs::read_dir(&real).unwrap().count(), 0, "passing checks clean up through the link");

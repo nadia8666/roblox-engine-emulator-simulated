@@ -1,0 +1,76 @@
+== Vector3Curve
+empty ok({}) []
+X() X=new [X=new] ok({})
+X() again X=new [X=new]
+Z() Z=new [X=new,Z=new] ok({})
+Y() Y=new [X=new,Z=new,Y=new] ok({})
+A named ok({1}) [X=1]
+A renamed ok({1}) [Q=1] Q=1 [Q=1]
+A renamed Y ok({1}) Y=new [Y=1,Y=new] ok({1})
+B parented Q ok({}) [Q=1]
+B renamed X ok({}) [X=1]
+B X() X=new [X=1,X=new] ok({})
+C two ok({1}) X=1 [X=1,X=2]
+C first removed ok({}) [X=2]
+C X() X=new [X=2,X=new] ok({})
+C2 second removed ok({}) X=new [X=1,X=new]
+D renamed holder removed ok({1}) [] Q=1 []
+E renamed, new X added ok({1}) Q=1 [Q=1,X=2]
+E new X removed ok({}) X=new [Q=1,X=new]
+F late-named X removed ok({}) X=new [X=1,X=new]
+G folder X added ok({1}) [X=1,X=Folder]
+G X() X=1 [X=1,X=Folder]
+G2 folder then curve ok({1}) X=1 [X=Folder,X=1]
+G2 folder removed ok({1}) X=1 [X=1]
+G3 late-named folder removed ok({1}) [X=1]
+H moved ok({}) ok({1}) [] [X=1]
+H moved back as Y ok({1}#1) ok({1}) [Y=1] []
+I clone of renamed ok({}) [Q=1] X=new [Q=1,X=new]
+I2 clone of late-named ok({1}) [X=1]
+J swapped names ok({1, 2, 3}) Y=1 X=2 [Y=1,X=2,Z=3]
+J cleared ok({}) []
+K renamed, out and in ok({1}) [Q=1]
+L lowercase ok({}) [x=1]
+M destroyed ok({}) []
+N holder renamed, twin removed ok({}) X=new [Q=1,X=new]
+== EulerRotationCurve
+empty ok({}) []
+X() X=new [X=new] ok({})
+X() again X=new [X=new]
+Z() Z=new [X=new,Z=new] ok({})
+Y() Y=new [X=new,Z=new,Y=new] ok({})
+A named ok({1}) [X=1]
+A renamed ok({1}) [Q=1] Q=1 [Q=1]
+A renamed Y ok({1}) Y=new [Y=1,Y=new] ok({1})
+B parented Q ok({}) [Q=1]
+B renamed X ok({}) [X=1]
+B X() X=new [X=1,X=new] ok({})
+C two ok({1}) X=1 [X=1,X=2]
+C first removed ok({}) [X=2]
+C X() X=new [X=2,X=new] ok({})
+C2 second removed ok({}) X=new [X=1,X=new]
+D renamed holder removed ok({1}) [] Q=1 []
+E renamed, new X added ok({1}) Q=1 [Q=1,X=2]
+E new X removed ok({}) X=new [Q=1,X=new]
+F late-named X removed ok({}) X=new [X=1,X=new]
+G folder X added ok({1}) [X=1,X=Folder]
+G X() X=1 [X=1,X=Folder]
+G2 folder then curve ok({1}) X=1 [X=Folder,X=1]
+G2 folder removed ok({1}) X=1 [X=1]
+G3 late-named folder removed ok({1}) [X=1]
+H moved ok({}) ok({1}) [] [X=1]
+H moved back as Y ok({1}#1) ok({1}) [Y=1] []
+I clone of renamed ok({}) [Q=1] X=new [Q=1,X=new]
+I2 clone of late-named ok({1}) [X=1]
+J swapped names ok({1, 2, 3}) Y=1 X=2 [Y=1,X=2,Z=3]
+J cleared ok({}) []
+K renamed, out and in ok({1}) [Q=1]
+L lowercase ok({}) [x=1]
+M destroyed ok({}) []
+N holder renamed, twin removed ok({}) X=new [Q=1,X=new]
+slot destroyed holder ok({1}) ok(Q, true, 1) 0
+slot then new X ok({1}) 1
+slot folder only ok({}) ok(FloatCurve) 2
+slot folder X removed ok({3})
+slot made with parent ok({})
+slot number value ok({}) ok(FloatCurve) 3
