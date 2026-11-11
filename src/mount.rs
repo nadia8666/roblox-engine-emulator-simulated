@@ -132,6 +132,12 @@ pub fn begin_project(lua: &Lua, engine: &Rc<Engine>, spec: &ProjectSpec, started
         if let Ok(read) = std::fs::read_dir(dir) {
             for entry in read.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
+                if name == "PhysicsService.collisiongroups" {
+                    if let Ok(bytes) = std::fs::read(entry.path()) {
+                        crate::world::query::set_collision_group_data(engine, bytes);
+                    }
+                    continue;
+                }
                 let Some(service_name) = service_of(&name) else { continue };
                 if let Ok(service) = services::get_service(engine, game, &service_name) {
                     let path = format!("{dir}/{name}");
