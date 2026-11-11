@@ -446,6 +446,8 @@ pub struct CollisionGroups {
     names: [Option<Box<[u8]>>; 32],
     collides: [u32; 32],
     /// The place's CollisionGroupData has been read (the first PhysicsService use or ray cast reads it)
+    /// The place's CollisionGroupData bytes, when the snapshots carry them (read in place of the service's property)
+    pending: Option<Vec<u8>>,
     loaded: bool,
 }
 
@@ -453,7 +455,7 @@ impl Default for CollisionGroups {
     fn default() -> Self {
         let mut names: [Option<Box<[u8]>>; 32] = std::array::from_fn(|_| None);
         names[0] = Some(b"Default".as_slice().into());
-        Self { names, collides: [u32::MAX; 32], loaded: false }
+        Self { names, collides: [u32::MAX; 32], pending: None, loaded: false }
     }
 }
 
@@ -514,6 +516,12 @@ struct CollisionGroupsCell(RefCell<CollisionGroups>);
 
 impl crate::Extension for CollisionGroupsCell {}
 
+pub fn set_collision_group_data(engine: &Engine, bytes: Vec<u8>) {
+    let mut groups = engine.extension_or_insert_with(CollisionGroupsCell::default).0.borrow_mut();
+    groups.pending = Some(bytes);
+    groups.loaded = false;
+}
+
 pub fn collision_groups(engine: &Engine) -> &RefCell<CollisionGroups> {
     let cell = &engine.extension_or_insert_with(CollisionGroupsCell::default).0;
     if !cell.borrow().loaded {
@@ -530,14 +538,15 @@ fn load_collision_groups(engine: &Engine, cell: &RefCell<CollisionGroups>) {
     let Some(service) = state.dom.at(game).children.iter().copied().find(|&child| &*engine.reflection.class(state.dom.at(child).class).name == "PhysicsService") else { return };
     let mut groups = cell.borrow_mut();
     groups.loaded = true;
-    let data: Option<Vec<u8>> = engine.reflection.name_id("CollisionGroupData").and_then(|n| state.dom.raw_get(service, n)).and_then(|value| match value {
+    let pending = groups.pending.take();
+    let data: Option<Vec<u8>> = pending.or_else(|| engine.reflection.name_id("CollisionGroupData").and_then(|n| state.dom.raw_get(service, n)).and_then(|value| match value {
         Value::String(text) => Some(text.as_bytes().to_vec()),
         Value::Dom(variant) => match &**variant {
             rbx_dom_weak::types::Variant::BinaryString(bytes) => Some(AsRef::<[u8]>::as_ref(bytes).to_vec()),
             _ => None,
         },
         _ => None,
-    });
+    }));
     match data.as_deref().and_then(parse_collision_group_data) {
         Some(found) => {
             for (id, mask, name) in &found {
