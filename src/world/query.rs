@@ -87,6 +87,8 @@ pub struct Filter {
     pub include_instances: Listed,
     pub respect_can_collide: bool,
     pub max_parts: usize,
+    /// The params' CollisionGroup (a part in a group that does not collide with it is not seen); None for a query without params
+    pub collision_group: Option<Vec<u8>>,
 }
 
 /// An instance list that may be nil (`{Instance}?`): `given` false for nil; the instances sorted,
@@ -144,6 +146,7 @@ impl Filter {
             && self.instances == other.instances
             && self.exclude_instances == other.exclude_instances
             && self.include_instances == other.include_instances
+            && self.collision_group == other.collision_group
     }
 
     /// RaycastParams / OverlapParams (a prelude proxy, or a table passed in its place) read into this
@@ -173,6 +176,10 @@ impl Filter {
         self.exclude_instances.read(&get("ExcludeInstances"));
         self.include_instances.read(&get("IncludeInstances"));
         self.respect_can_collide = matches!(get("RespectCanCollide"), LuaValue::Boolean(true));
+        self.collision_group = Some(match get("CollisionGroup") {
+            LuaValue::String(group) => group.as_bytes().to_vec(),
+            _ => b"Default".to_vec(),
+        });
     }
 
     /// A legacy FindPartOnRay filter: `list` (an ignore list, or with `include` a whitelist) alone.
@@ -183,6 +190,7 @@ impl Filter {
         self.include_instances.read(&LuaValue::Nil);
         self.respect_can_collide = false;
         self.max_parts = 0;
+        self.collision_group = None;
     }
 }
 
@@ -220,6 +228,8 @@ pub fn solids(engine: &Engine, filter: &Filter) -> Vec<Solid> {
     let can_query = reflection.name_id("CanQuery");
     let can_collide = reflection.name_id("CanCollide");
     let workspace = engine.world().workspace;
+    let groups = filter.collision_group.is_some().then(|| collision_groups(engine).borrow());
+    let group_property = reflection.name_id("CollisionGroup");
     let mut result = Vec::new();
     for id in state.dom.descendants(workspace) {
         let class = state.dom.at(id).class;
@@ -236,9 +246,25 @@ pub fn solids(engine: &Engine, filter: &Filter) -> Vec<Solid> {
         if !filter.admits(&state, id) {
             continue;
         }
+        if let (Some(groups), Some(ray_group)) = (&groups, &filter.collision_group) {
+            if !group_collides(groups, &state, group_property, ray_group, id) {
+                continue;
+            }
+        }
         result.push(solid(&state, engine, id));
     }
     result
+}
+
+/// Whether a ray cast in the group `ray_group` meets the part `part`: the two groups collide (a part with no CollisionGroup
+/// written is in Default; a ray's group not registered meets everything)
+fn group_collides(groups: &CollisionGroups, state: &State, property: Option<NameId>, ray_group: &[u8], part: InstanceId) -> bool {
+    let Some(ray) = groups.id(ray_group) else { return true };
+    let own = match property.and_then(|n| state.dom.raw_get(part, n)) {
+        Some(Value::String(group)) => groups.id(group.as_bytes()).unwrap_or(0),
+        _ => 0,
+    };
+    groups.collidable(ray, own)
 }
 
 /// The solids each filter admitted, kept while the dom is unchanged (no parent changed, no
@@ -419,13 +445,15 @@ struct QueryTraceCalls {
 pub struct CollisionGroups {
     names: [Option<Box<[u8]>>; 32],
     collides: [u32; 32],
+    /// The place's CollisionGroupData has been read (the first PhysicsService use or ray cast reads it)
+    loaded: bool,
 }
 
 impl Default for CollisionGroups {
     fn default() -> Self {
         let mut names: [Option<Box<[u8]>>; 32] = std::array::from_fn(|_| None);
         names[0] = Some(b"Default".as_slice().into());
-        Self { names, collides: [u32::MAX; 32] }
+        Self { names, collides: [u32::MAX; 32], loaded: false }
     }
 }
 
@@ -487,7 +515,109 @@ struct CollisionGroupsCell(RefCell<CollisionGroups>);
 impl crate::Extension for CollisionGroupsCell {}
 
 pub fn collision_groups(engine: &Engine) -> &RefCell<CollisionGroups> {
-    &engine.extension_or_insert_with(CollisionGroupsCell::default).0
+    let cell = &engine.extension_or_insert_with(CollisionGroupsCell::default).0;
+    if !cell.borrow().loaded {
+        load_collision_groups(engine, cell);
+    }
+    cell
+}
+
+/// The groups a place file defines: PhysicsService's CollisionGroupData, read once when the service exists (a game that
+/// registers only some of its groups in script still has the rest, and the masks Studio saved)
+fn load_collision_groups(engine: &Engine, cell: &RefCell<CollisionGroups>) {
+    let state = engine.state.borrow();
+    let Some(game) = state.dom.at(engine.world().workspace).parent else { return };
+    let Some(service) = state.dom.at(game).children.iter().copied().find(|&child| &*engine.reflection.class(state.dom.at(child).class).name == "PhysicsService") else { return };
+    let mut groups = cell.borrow_mut();
+    groups.loaded = true;
+    let data: Option<Vec<u8>> = engine.reflection.name_id("CollisionGroupData").and_then(|n| state.dom.raw_get(service, n)).and_then(|value| match value {
+        Value::String(text) => Some(text.as_bytes().to_vec()),
+        Value::Dom(variant) => match &**variant {
+            rbx_dom_weak::types::Variant::BinaryString(bytes) => Some(AsRef::<[u8]>::as_ref(bytes).to_vec()),
+            _ => None,
+        },
+        _ => None,
+    });
+    match data.as_deref().and_then(parse_collision_group_data) {
+        Some(found) => {
+            for (id, mask, name) in &found {
+                groups.names[*id] = Some(name.as_slice().into());
+                groups.collides[*id] = *mask;
+            }
+            crate::output::diagnostic(&format!("ree: {} collision groups read from the place's PhysicsService", found.len()));
+        }
+        None => {
+            let head: Vec<String> = data.iter().flatten().take(24).map(|byte| format!("{byte:02x}")).collect();
+            crate::output::diagnostic(&format!("ree: no collision groups read from the place's PhysicsService ({} bytes of CollisionGroupData: {})", data.as_ref().map_or(0, Vec::len), head.join(" ")));
+        }
+    }
+}
+
+/// CollisionGroupData: a version byte (1), the group count, then each group's id, mask and name. The layout is not
+/// documented; the widths of the count, id and name length and the order of the fields are tried until one consumes the
+/// bytes exactly, with ids below 32 and UTF-8 names.
+fn parse_collision_group_data(bytes: &[u8]) -> Option<Vec<(usize, u32, Vec<u8>)>> {
+    (0..2).flat_map(|count_wide| (0..4).map(move |layout| (count_wide, layout))).find_map(|(count_wide, layout)| parse_groups(bytes, count_wide == 1, layout))
+}
+
+struct Reader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        let part = self.bytes.get(self.at..self.at.checked_add(n)?)?;
+        self.at += n;
+        Some(part)
+    }
+
+    fn byte(&mut self) -> Option<usize> {
+        Some(self.take(1)?[0] as usize)
+    }
+
+    fn word(&mut self) -> Option<u32> {
+        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+}
+
+fn parse_groups(bytes: &[u8], count_wide: bool, layout: u8) -> Option<Vec<(usize, u32, Vec<u8>)>> {
+    let mut reader = Reader { bytes, at: 0 };
+    if reader.byte()? != 1 {
+        return None;
+    }
+    let count = if count_wide { reader.word()? as usize } else { reader.byte()? };
+    if count == 0 || count > 32 {
+        return None;
+    }
+    let mut groups: Vec<(usize, u32, Vec<u8>)> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let (id, mask, name) = match layout {
+            0 | 1 => {
+                let id = if layout == 0 { reader.byte()? } else { reader.word()? as usize };
+                let mask = reader.word()?;
+                let length = reader.byte()?;
+                (id, mask, reader.take(length)?.to_vec())
+            }
+            2 => {
+                let mask = reader.word()?;
+                let id = reader.byte()?;
+                let length = reader.byte()?;
+                (id, mask, reader.take(length)?.to_vec())
+            }
+            _ => {
+                let id = reader.byte()?;
+                let length = reader.byte()?;
+                let name = reader.take(length)?.to_vec();
+                (id, reader.word()?, name)
+            }
+        };
+        if id >= 32 || name.is_empty() || std::str::from_utf8(&name).is_err() || groups.iter().any(|(other, _, _)| *other == id) {
+            return None;
+        }
+        groups.push((id, mask, name));
+    }
+    (reader.at == bytes.len()).then_some(groups)
 }
 
 fn query_trace_enabled() -> bool {
@@ -565,7 +695,7 @@ fn same_value(a: &LuaValue, b: &LuaValue) -> bool {
     }
 }
 
-const PARAM_KEYS: [&str; 6] = ["FilterType", "MaxParts", "FilterDescendantsInstances", "ExcludeInstances", "IncludeInstances", "RespectCanCollide"];
+const PARAM_KEYS: [&str; 7] = ["FilterType", "MaxParts", "FilterDescendantsInstances", "ExcludeInstances", "IncludeInstances", "RespectCanCollide", "CollisionGroup"];
 
 fn take_filter(engine: &Engine, params: &LuaValue) -> Filter {
     let cache = query_cache(engine);
@@ -595,7 +725,7 @@ fn take_filter(engine: &Engine, params: &LuaValue) -> Filter {
                 return filter;
             }
         }
-        let mut now: Vec<LuaValue> = Vec::with_capacity(7);
+        let mut now: Vec<LuaValue> = Vec::with_capacity(8);
         now.push(LuaValue::Table(data.clone()));
         for key in PARAM_KEYS {
             now.push(data.raw_get::<LuaValue>(key).unwrap_or(LuaValue::Nil));
@@ -628,7 +758,13 @@ fn part_admitted(state: &State, engine: &Engine, filter: &Filter, id: InstanceId
     if filter.respect_can_collide && reflection.name_id("CanCollide").and_then(|n| state.dom.boolean(id, n)) == Some(false) {
         return false;
     }
-    filter.admits(state, id)
+    if !filter.admits(state, id) {
+        return false;
+    }
+    match &filter.collision_group {
+        Some(ray_group) => group_collides(&collision_groups(engine).borrow(), state, reflection.name_id("CollisionGroup"), ray_group, id),
+        None => true,
+    }
 }
 
 fn refresh(engine: &Engine, cached: &mut CachedSolids, stamp: (u64, u64)) -> bool {
@@ -1247,6 +1383,9 @@ pub(crate) fn raw_cast(engine: &Engine, origin: Vec3, direction: Vec3, params: O
     let (best, crossed) = {
         let state = engine.state.borrow();
         let collide = if filter.respect_can_collide { engine.reflection.name_id("CanCollide") } else { None };
+        let groups = collision_groups(engine).borrow();
+        let group_property = engine.reflection.name_id("CollisionGroup");
+        let ray_group: &[u8] = filter.collision_group.as_deref().unwrap_or(b"Default");
         let mut crossed = 0usize;
         let mut best: Option<(usize, f32, Vec3)> = None;
         let mut test = |i: usize| {
@@ -1263,7 +1402,7 @@ pub(crate) fn raw_cast(engine: &Engine, origin: Vec3, direction: Vec3, params: O
                     return;
                 }
             }
-            if filter.admits(&state, solid.part) {
+            if filter.admits(&state, solid.part) && group_collides(&groups, &state, group_property, ray_group, solid.part) {
                 best = Some((i, t, local));
             }
         };
