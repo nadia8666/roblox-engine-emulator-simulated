@@ -54,6 +54,57 @@ fn instance_of(value: &LuaValue) -> LuaResult<crate::InstanceId> {
     }
 }
 
+/// Where data stores are kept as files: REE_DATASTORE_DIR, unless REE_DATASTORE_FRESH=1 (a run that starts empty and saves nothing)
+fn datastore_root() -> Option<std::path::PathBuf> {
+    if std::env::var("REE_DATASTORE_FRESH").as_deref() == Ok("1") {
+        return None;
+    }
+    std::env::var_os("REE_DATASTORE_DIR").map(Into::into)
+}
+
+/// A store's folder: its name (an ordered store's with `.ordered` after it)
+fn store_directory(kind: &str, name: &str) -> String {
+    let name = path_component(name);
+    if kind == "Ordered" { format!("{name}.ordered") } else { name }
+}
+
+/// A name as one folder name: letters, digits, `_` and `-` as they are (and `.` inside a name), the rest as `%XX` bytes
+fn path_component(text: &str) -> String {
+    let last = text.chars().count().saturating_sub(1);
+    let mut out = String::new();
+    for (index, character) in text.chars().enumerate() {
+        if character.is_ascii_alphanumeric() || character == '_' || character == '-' || (character == '.' && index != 0 && index != last) {
+            out.push(character);
+        } else {
+            let mut buffer = [0u8; 4];
+            for byte in character.encode_utf8(&mut buffer).bytes() {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    out
+}
+
+fn path_component_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let hex = (bytes[at] == b'%').then(|| bytes.get(at + 1..at + 3)).flatten().and_then(|pair| std::str::from_utf8(pair).ok()).and_then(|pair| u8::from_str_radix(pair, 16).ok());
+        match hex {
+            Some(byte) => {
+                out.push(byte);
+                at += 3;
+            }
+            None => {
+                out.push(bytes[at]);
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 pub fn load(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
     let r = lua.create_table()?;
     let e = engine.clone();
@@ -442,6 +493,46 @@ pub fn load(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
             }
         })?,
     )?;
+    // Data stores kept as files (REE_DATASTORE_DIR/<store>/<scope>/<key>/data.json); REE_DATASTORE_FRESH=1 reads and writes none
+    if let Some(root) = datastore_root() {
+        let load_root = root.clone();
+        r.set(
+            "DataStoreLoad",
+            lua.create_function(move |lua, (kind, name, scope): (String, String, String)| {
+                let directory = load_root.join(store_directory(&kind, &name)).join(path_component(&scope));
+                let list = lua.create_table()?;
+                if let Ok(read) = std::fs::read_dir(&directory) {
+                    for entry in read.flatten() {
+                        if let Ok(text) = std::fs::read_to_string(entry.path().join("data.json")) {
+                            let item = lua.create_table()?;
+                            item.set("key", path_component_decoded(&entry.file_name().to_string_lossy()))?;
+                            item.set("json", text)?;
+                            list.push(item)?;
+                        }
+                    }
+                }
+                Ok(list)
+            })?,
+        )?;
+        r.set(
+            "DataStoreSave",
+            lua.create_function(move |_, (kind, name, scope, key, json): (String, String, String, String, Option<String>)| {
+                let directory = root.join(store_directory(&kind, &name)).join(path_component(&scope)).join(path_component(&key));
+                match json {
+                    Some(text) => {
+                        let pretty = serde_json::from_str::<serde_json::Value>(&text).and_then(|value| serde_json::to_string_pretty(&value)).unwrap_or(text);
+                        if let Err(error) = std::fs::create_dir_all(&directory).and_then(|_| std::fs::write(directory.join("data.json"), pretty)) {
+                            eprintln!("ree: could not save data store key {}: {error}", directory.display());
+                        }
+                    }
+                    None => {
+                        let _ = std::fs::remove_dir_all(&directory);
+                    }
+                }
+                Ok(())
+            })?,
+        )?;
+    }
     let options = lua.create_table()?;
     options.set("TopbarInset", engine.options.topbar_inset)?;
     options.set("ViewportWidth", engine.options.viewport_width)?;

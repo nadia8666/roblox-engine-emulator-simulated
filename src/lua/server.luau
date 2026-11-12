@@ -240,6 +240,63 @@ local function StoreName(Name, Label, Default, At)
 	return Name
 end
 
+-- Persistence: with REE_DATASTORE_DIR set (and REE_DATASTORE_FRESH unset) Rust gives R.DataStoreLoad / R.DataStoreSave, and a
+-- store's keys live as <dir>/<store>/<scope>/<key>/data.json (the key's whole record: every version, its metadata and user ids)
+local function Encode(Value)
+	if type(Value) == "buffer" then
+		return { ["$buffer"] = (string.gsub(buffer.tostring(Value), ".", function(Char)
+			return string.format("%02x", string.byte(Char))
+		end)) }
+	elseif type(Value) == "table" then
+		local Copy = {}
+		for Key, Item in next, Value do
+			Copy[Key] = Encode(Item)
+		end
+		return Copy
+	end
+	return Value
+end
+
+local function Decode(Value)
+	if type(Value) ~= "table" then
+		return Value
+	end
+	local Hex = rawget(Value, "$buffer")
+	if type(Hex) == "string" then
+		return buffer.fromstring((string.gsub(Hex, "%x%x", function(Pair)
+			return string.char(tonumber(Pair, 16))
+		end)))
+	end
+	local Copy = {}
+	for Key, Item in next, Value do
+		Copy[Key] = Decode(Item)
+	end
+	return Copy
+end
+
+local function Persist(Store, Key)
+	if R.DataStoreSave then
+		local Record = Store.Keys[Key]
+		R.DataStoreSave(Store.Kind, Store.Name, Store.Scope, Key, if Record then R.JsonEncode(Encode(Record)) else nil)
+	end
+end
+
+local function LoadStore(Store)
+	if not R.DataStoreLoad then
+		return
+	end
+	for _, Entry in R.DataStoreLoad(Store.Kind, Store.Name, Store.Scope) do
+		local Ok, Record = R.JsonDecode(Entry.json)
+		if Ok and type(Record) == "table" and type(Record.Versions) == "table" then
+			Record = Decode(Record)
+			Store.Keys[Entry.key] = Record
+			for _, Version in Record.Versions do
+				Serial = math.max(Serial, tonumber(string.sub(Version.Version or "", 18, 27)) or 0)
+			end
+		end
+	end
+end
+
 local function GetStore(Kind, Class, Name, Scope)
 	local Id = `{Kind}\0{Name}\0{Scope}`
 	local Store = Stores[Id]
@@ -249,6 +306,7 @@ local function GetStore(Kind, Class, Name, Scope)
 		Store = { Kind = Kind, Name = Name, Scope = Scope, Keys = {}, Instance = Instance_ }
 		Stores[Id] = Store
 		Handles[Instance_] = Store
+		LoadStore(Store)
 	end
 	return Store.Instance
 end
@@ -368,6 +426,7 @@ local function Write(Store, Key, Value, UserIds, Metadata, Deleted)
 	else
 		table.insert(Record.Versions, Version)
 	end
+	Persist(Store, Key)
 	return Record, Version
 end
 
@@ -486,6 +545,7 @@ Method("GlobalDataStore", "RemoveAsync", function(Self, Key)
 		return nil
 	elseif Store.Kind == "Ordered" then
 		Store.Keys[Key] = nil
+		Persist(Store, Key)
 		return Clone(Version.Value)
 	end
 	Write(Store, Key, nil, Version.UserIds, Version.Metadata, true)
@@ -541,6 +601,7 @@ Method("DataStore", "RemoveVersionAsync", function(Self, Key, Version)
 	for Index, Entry in if Record then Record.Versions else {} do
 		if Entry.Version == Version then
 			table.remove(Record.Versions, Index)
+			Persist(Store, Key)
 			break
 		end
 	end
