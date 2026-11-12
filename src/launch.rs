@@ -159,6 +159,8 @@ pub struct Args {
     pub repo: Option<String>,
     pub mounts: Vec<project::Mount>,
     pub loopback: bool,
+    pub datastore_dir: Option<String>,
+    pub fresh_datastore: bool,
 }
 
 fn size(key: &str, text: &str) -> Result<(f64, f64), String> {
@@ -178,6 +180,8 @@ impl Args {
             "--verbose" => self.verbose = true,
             "--no-snapshots" => self.no_snapshots = true,
             "--loopback" => self.loopback = true,
+            "--fresh-datastore" => self.fresh_datastore = true,
+            "--datastore-dir" => self.datastore_dir = Some(need()?),
             "--roots" => self.roots = need()?.split(';').filter(|r| !r.is_empty()).map(str::to_string).collect(),
             "--project" => self.project = Some(need()?),
             "--place" => self.place = Some(need()?),
@@ -205,7 +209,7 @@ impl Args {
             "--instance" => self.mounts.push(project::Mount::parse(&need()?, true)?),
             _ => return Ok(None),
         }
-        Ok(Some(if matches!(key, "--offline" | "--verbose" | "--no-snapshots" | "--loopback") { 1 } else { 2 }))
+        Ok(Some(if matches!(key, "--offline" | "--verbose" | "--no-snapshots" | "--loopback" | "--fresh-datastore") { 1 } else { 2 }))
     }
 }
 
@@ -332,6 +336,8 @@ pub fn prepare(args: &Args, default_repo: &Path) -> Result<Prepared, String> {
         loopback: args.loopback,
         clock_probe: None,
         device,
+        datastore_dir: args.datastore_dir.as_ref().map(|dir| PathBuf::from(absolute(dir))),
+        fresh_datastore: args.fresh_datastore,
         ..Options::default()
     };
     let mounts = args

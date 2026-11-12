@@ -54,12 +54,12 @@ fn instance_of(value: &LuaValue) -> LuaResult<crate::InstanceId> {
     }
 }
 
-/// Where data stores are kept as files: REE_DATASTORE_DIR, unless REE_DATASTORE_FRESH=1 (a run that starts empty and saves nothing)
-fn datastore_root() -> Option<std::path::PathBuf> {
-    if std::env::var("REE_DATASTORE_FRESH").as_deref() == Ok("1") {
+/// Where data stores are kept as files (`--datastore-dir`), unless `--fresh-datastore` (a run that starts empty and saves nothing)
+fn datastore_root(options: &crate::Options) -> Option<std::path::PathBuf> {
+    if options.fresh_datastore {
         return None;
     }
-    std::env::var_os("REE_DATASTORE_DIR").map(Into::into)
+    options.datastore_dir.clone()
 }
 
 /// A store's folder: its name (an ordered store's with `.ordered` after it)
@@ -493,8 +493,8 @@ pub fn load(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
             }
         })?,
     )?;
-    // Data stores kept as files (REE_DATASTORE_DIR/<store>/<scope>/<key>/data.json); REE_DATASTORE_FRESH=1 reads and writes none
-    if let Some(root) = datastore_root() {
+    // Data stores kept as files (--datastore-dir/<store>/<scope>/<key>/data.json); --fresh-datastore reads and writes none
+    if let Some(root) = datastore_root(&engine.options) {
         let load_root = root.clone();
         r.set(
             "DataStoreLoad",

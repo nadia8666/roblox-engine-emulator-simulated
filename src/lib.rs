@@ -140,6 +140,10 @@ pub struct Options {
     /// stays pinned), so a recording that changes with it hinges on when within a frame a script reads os.clock. None: the
     /// clock as modelled
     pub clock_probe: Option<f64>,
+    /// Where data stores are kept as files (`--datastore-dir`): `<dir>/<store>/<scope>/<key>/data.json`. None: in memory only
+    pub datastore_dir: Option<PathBuf>,
+    /// `--fresh-datastore`: data stores start empty and are not saved (whatever `datastore_dir` is)
+    pub fresh_datastore: bool,
 }
 
 impl Default for Options {
@@ -171,6 +175,8 @@ impl Default for Options {
             project: None,
             place_prices: cost::PlacePrices::default(),
             clock_probe: None,
+            datastore_dir: None,
+            fresh_datastore: false,
         }
     }
 }
