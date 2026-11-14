@@ -583,7 +583,7 @@ fn parse_collision_group_string(bytes: &[u8]) -> Option<Vec<(usize, u32, Vec<u8>
 /// documented; the widths of the count, id and name length and the order of the fields are tried until one consumes the
 /// bytes exactly, with ids below 32 and UTF-8 names.
 fn parse_collision_group_data(bytes: &[u8]) -> Option<Vec<(usize, u32, Vec<u8>)>> {
-    (0..2).flat_map(|count_wide| (0..4).map(move |layout| (count_wide, layout))).find_map(|(count_wide, layout)| parse_groups(bytes, count_wide == 1, layout))
+    (0..2).flat_map(|count_wide| (0..5).map(move |layout| (count_wide, layout))).find_map(|(count_wide, layout)| parse_groups(bytes, count_wide == 1, layout))
 }
 
 struct Reader<'a> {
@@ -607,6 +607,8 @@ impl<'a> Reader<'a> {
     }
 }
 
+const INT32_TAG: usize = 4;
+
 fn parse_groups(bytes: &[u8], count_wide: bool, layout: u8) -> Option<Vec<(usize, u32, Vec<u8>)>> {
     let mut reader = Reader { bytes, at: 0 };
     if reader.byte()? != 1 {
@@ -628,6 +630,15 @@ fn parse_groups(bytes: &[u8], count_wide: bool, layout: u8) -> Option<Vec<(usize
             2 => {
                 let mask = reader.word()?;
                 let id = reader.byte()?;
+                let length = reader.byte()?;
+                (id, mask, reader.take(length)?.to_vec())
+            }
+            4 => {
+                let id = reader.byte()?;
+                if reader.byte()? != INT32_TAG {
+                    return None;
+                }
+                let mask = reader.word()?;
                 let length = reader.byte()?;
                 (id, mask, reader.take(length)?.to_vec())
             }
