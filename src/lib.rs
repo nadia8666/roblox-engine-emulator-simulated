@@ -660,7 +660,7 @@ pub trait Extension: Any {
 }
 
 /// How many extension types one engine holds.
-const EXTENSIONS: usize = 6;
+const EXTENSIONS: usize = 8;
 
 pub struct Engine {
     pub reflection: Arc<Reflection>,
@@ -742,7 +742,7 @@ impl Engine {
         if let Some(found) = self.extension::<T>() {
             return found;
         }
-        let slot = self.extensions.iter().find(|slot| slot.get().is_none()).expect("an engine holds at most 6 extension types");
+        let slot = self.extensions.iter().find(|slot| slot.get().is_none()).expect("an engine holds at most EXTENSIONS extension types");
         let stored = slot.get_or_init(|| Box::new(make()));
         (stored.as_ref() as &dyn Any).downcast_ref::<T>().expect("the extension just stored")
     }

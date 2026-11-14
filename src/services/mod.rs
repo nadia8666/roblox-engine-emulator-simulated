@@ -765,40 +765,18 @@ pub fn install(engine: &Rc<Engine>) {
                 behaviors.add_getter(input, n, getter(move |_, _, _| Ok(LuaValue::Boolean(value))));
             }
         }
-        if let Some(n) = name(&reflection, "GetMouseLocation") {
-            behaviors.add_method(input, n, method(|lua, _, _, _| Ok(values([vector2(lua, -1000.0, -1000.0)?]))));
-        }
-        let edit = options.edit_mode();
-        if let Some(n) = name(&reflection, "GetLastInputType") {
-            behaviors.add_method(input, n, method(move |lua, engine, _, _| {
-                let item = if touch {
-                    "Touch"
-                } else if pad {
-                    "Gamepad1"
-                } else if edit {
-                    // Measured: Studio in edit mode reports Focus (the window focus event)
-                    "Focus"
-                } else {
-                    "MouseMovement"
-                };
-                Ok(values([enum_item(lua, engine, "UserInputType", item)?]))
-            }));
-        }
-        for member in ["IsKeyDown", "IsMouseButtonPressed", "IsGamepadButtonDown", "GetGamepadConnected", "GamepadSupports"] {
+        for member in ["GetGamepadConnected", "GamepadSupports"] {
             if let Some(n) = name(&reflection, member) {
                 behaviors.add_method(input, n, constant(|_| Ok(LuaValue::Boolean(false))));
             }
         }
-        for member in ["GetKeysPressed", "GetMouseButtonsPressed", "GetConnectedGamepads", "GetNavigationGamepads", "GetSupportedGamepadKeyCodes", "GetGamepadState"] {
+        for member in ["GetConnectedGamepads", "GetNavigationGamepads", "GetSupportedGamepadKeyCodes"] {
             if let Some(n) = name(&reflection, member) {
                 behaviors.add_method(input, n, constant(|lua| Ok(LuaValue::Table(lua.create_table()?))));
             }
         }
         if let Some(n) = name(&reflection, "GetFocusedTextBox") {
             behaviors.add_method(input, n, constant(|_| Ok(LuaValue::Nil)));
-        }
-        if let Some(n) = name(&reflection, "GetMouseDelta") {
-            behaviors.add_method(input, n, constant(|lua| vector2(lua, 0.0, 0.0)));
         }
         if let Some(n) = name(&reflection, "GetImageForKeyCode") {
             behaviors.add_method(input, n, constant(|lua| string_value(lua, "")));
@@ -834,7 +812,7 @@ pub fn install(engine: &Rc<Engine>) {
         }
     }
     if let Some(actions) = class(&reflection, "ContextActionService") {
-        for member in ["BindAction", "BindActionAtPriority", "UnbindAction", "UnbindAllActions", "SetTitle", "SetImage", "SetDescription", "SetPosition", "BindActivate", "UnbindActivate"] {
+        for member in ["SetTitle", "SetImage", "SetDescription", "SetPosition", "BindActivate", "UnbindActivate"] {
             if let Some(n) = name(&reflection, member) {
                 behaviors.add_method(actions, n, method(|_, _, _, _| Ok(none())));
             }

@@ -164,6 +164,8 @@ pub enum Phase {
     TweenStep,
     PreRender,
     Render,
+    /// Input processing: queued player input is delivered (world/input.rs), after Heartbeat and before the render-step bindings
+    Input,
 }
 
 pub type PhaseHook = Rc<dyn Fn(&Lua, &Rc<Engine>, f64) -> LuaResult<()>>;
@@ -1123,6 +1125,11 @@ pub fn error_message(error: &LuaError) -> String {
 /// Scheduler.Resume: resumes a suspended, uncancelled thread; errors go to the output with the
 /// thread's traceback. Returns whether it ran without error.
 pub fn resume(lua: &Lua, engine: &Rc<Engine>, thread: &LuaThread, args: LuaMultiValue) -> bool {
+    resume_thread(lua, engine, thread, args, true).is_some()
+}
+
+/// [`resume`] for a caller that reads what the thread returned (a bound action's Sink or Pass): None when the thread could not run or errored.
+pub(crate) fn resume_returning(lua: &Lua, engine: &Rc<Engine>, thread: &LuaThread, args: LuaMultiValue) -> Option<LuaMultiValue> {
     resume_thread(lua, engine, thread, args, true)
 }
 
@@ -1139,16 +1146,16 @@ fn thread_ready(scheduler: &Scheduler, thread: &LuaThread) -> bool {
 
 /// Resumes a thread [`can_resume`] has just said can run, with no Luau run in between that could have changed that.
 pub(crate) fn resume_ready(lua: &Lua, engine: &Rc<Engine>, thread: &LuaThread, args: LuaMultiValue) -> bool {
-    resume_thread(lua, engine, thread, args, false)
+    resume_thread(lua, engine, thread, args, false).is_some()
 }
 
 /// `check_ready`: look at the thread first (`resume`), or trust the caller's [`can_resume`] (`resume_ready`)
-fn resume_thread(lua: &Lua, engine: &Rc<Engine>, thread: &LuaThread, args: LuaMultiValue, check_ready: bool) -> bool {
+fn resume_thread(lua: &Lua, engine: &Rc<Engine>, thread: &LuaThread, args: LuaMultiValue, check_ready: bool) -> Option<LuaMultiValue> {
     let (top_level, _entered) = {
         let mut state = engine.state.borrow_mut();
         let sched = &mut state.sched;
         if check_ready && !thread_ready(sched, thread) {
-            return false;
+            return None;
         }
         // Build-time placement: a top-level resumption before the first Heartbeat is (part of) the
         // story build
@@ -1174,7 +1181,7 @@ fn resume_thread(lua: &Lua, engine: &Rc<Engine>, thread: &LuaThread, args: LuaMu
     };
     engine.state.borrow_mut().sched.resume_depth -= 1;
     let ok = match resumed {
-        Ok(Ok(_)) => true,
+        Ok(Ok(returned)) => Some(returned),
         Ok(Err(error)) => {
             let message = error_message(&error);
             let trace = super::lua::traceback(lua, thread);
@@ -1183,13 +1190,13 @@ fn resume_thread(lua: &Lua, engine: &Rc<Engine>, thread: &LuaThread, args: LuaMu
             } else {
                 engine.output("error", message, trace);
             }
-            false
+            None
         }
         // mlua's reference stack ran full under this thread (lua/refs.rs): its error, and the run goes on
         Err(panic) if super::lua::refs::is_exhaustion(&*panic) => {
             let trace = super::lua::traceback(lua, thread);
             engine.output("error", super::lua::refs::message(), trace);
-            false
+            None
         }
         Err(panic) => std::panic::resume_unwind(panic),
     };
@@ -1724,6 +1731,7 @@ fn render(lua: &Lua, engine: &Rc<Engine>, delta: f64) -> LuaResult<()> {
         start_cold_tracking(lua, engine);
     }
     flush_deferred(lua, engine)?;
+    run_hooks(lua, engine, Phase::Input, delta)?;
     run_phase(lua, engine, Phase::RenderStep, "renderBindings", delta)?;
     let server = engine.options.server();
     let edit_mode = engine.state.borrow().sched.edit_mode;

@@ -1294,6 +1294,7 @@ fn context_table(lua: &Lua, engine: &Rc<Engine>, checkpoint: &Rc<Checkpoint>, sp
             found.map(|id| instance_value(lua, &e, id)).transpose()
         })?,
     )?;
+    context.set("Input", crate::world::input::context_table(lua, engine)?)?;
     Ok(context)
 }
 

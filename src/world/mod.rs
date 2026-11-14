@@ -20,6 +20,7 @@
 pub mod camera;
 pub mod frame;
 pub mod gravity;
+pub mod input;
 pub mod joints;
 pub mod query;
 
@@ -558,6 +559,7 @@ pub fn install(engine: &Rc<Engine>) {
     camera::install(engine);
     joints::install(engine);
     gravity::install(engine);
+    input::install(engine);
     engine.clear_member_cache();
 }
 
