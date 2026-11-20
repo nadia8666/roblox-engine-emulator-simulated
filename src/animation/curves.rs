@@ -115,6 +115,8 @@ fn stored_bytes(engine: &Engine, id: InstanceId, property: NameId) -> Vec<u8> {
 
 fn store(engine: &Engine, id: InstanceId, property: NameId, bytes: Vec<u8>) {
     core::raw_set_silent(&mut engine.state.borrow_mut(), &engine.reflection, id, property, Value::String(Str::new(&bytes)));
+    // (an `active://` track follows the clip this curve is in)
+    super::keys_changed(engine, id);
 }
 
 /// How many keys a curve's stored form holds.
@@ -169,6 +171,9 @@ struct Channels {
     float_curve: ClassId,
     holders: [Option<ClassId>; 2],
     slots: RefCell<FxHashMap<InstanceId, [Option<InstanceId>; 3]>>,
+    /// The markers of MarkerCurves that hold a value with a zero byte in it: the stored form cannot give those back
+    /// (curve::encode_markers), the curve itself does
+    zeroed: RefCell<FxHashMap<InstanceId, Vec<MarkerKey>>>,
 }
 
 impl Channels {
@@ -213,8 +218,24 @@ impl Channels {
         }
     }
 
+    /// A FloatCurve is about to be renamed: the curve it is in takes its channels by the names its children still
+    /// have, if it has not yet. Studio gives a curve that arrives whole (a clone, a file's) its channels by the
+    /// names it arrives with (measured: a clone's X renamed before anything asked is still its X channel); here they
+    /// are taken when first needed, and a name changes only through this.
+    fn renaming(&self, state: &State, child: InstanceId) {
+        if let Some(curve) = self.holder(state, state.dom.parent_of(child)) {
+            self.slots.borrow_mut().entry(curve).or_insert_with(|| self.named(state, curve, None));
+        }
+    }
+
     /// An instance is freed: a curve's memory goes with it, and a channel that was it is empty.
     fn freed(&self, state: &State, id: InstanceId) {
+        {
+            let mut zeroed = self.zeroed.borrow_mut();
+            if !zeroed.is_empty() {
+                zeroed.remove(&id);
+            }
+        }
         let mut slots = self.slots.borrow_mut();
         if slots.is_empty() {
             return;
@@ -245,47 +266,10 @@ impl Channels {
     }
 }
 
-/// A number as a marker's value: up to 20 significant digits, as C's `%.20g` writes them.
-fn marker_number(number: f64) -> String {
-    if number.is_nan() {
-        return "NAN".into();
-    }
-    if number.is_infinite() {
-        return if number > 0.0 { "INF" } else { "-INF" }.into();
-    }
-    let scientific = format!("{number:.19e}");
-    let (mantissa, exponent) = scientific.split_once('e').expect("an exponent");
-    let exponent: i32 = exponent.parse().expect("a whole exponent");
-    let trimmed = |digits: &str| if digits.contains('.') { digits.trim_end_matches('0').trim_end_matches('.').to_string() } else { digits.to_string() };
-    if (-4..20).contains(&exponent) {
-        trimmed(&format!("{number:.*}", (19 - exponent) as usize))
-    } else {
-        format!("{}e{}{:02}", trimmed(mantissa), if exponent < 0 { '-' } else { '+' }, exponent.abs())
-    }
-}
-
-/// InsertMarkerAtTime's value as the text a marker holds (the module's notes).
+/// InsertMarkerAtTime's value as the text a marker holds (the module's notes): the engine's cast of a value to a
+/// string parameter (convert::cast_text), at most 64 bytes.
 fn marker_text(lua: &Lua, engine: &Engine, value: &LuaValue) -> Result<Vec<u8>, Flow> {
-    let text = match value {
-        LuaValue::String(text) => text.as_bytes().to_vec(),
-        LuaValue::Number(number) => marker_number(*number).into_bytes(),
-        LuaValue::Integer(number) => marker_number(*number as f64).into_bytes(),
-        LuaValue::Boolean(flag) => flag.to_string().into_bytes(),
-        LuaValue::Table(_) => b"{}".to_vec(),
-        LuaValue::Function(_) => b"function".to_vec(),
-        LuaValue::Thread(_) => b"nil".to_vec(),
-        LuaValue::Buffer(buffer) => format!("buffer {{ Size = {} }}", buffer.len()).into_bytes(),
-        other => {
-            let written = || -> LuaResult<Vec<u8>> { Ok(lua.globals().get::<LuaFunction>("tostring")?.call::<LuaString>(other.clone())?.as_bytes().to_vec()) };
-            match typeof_value(engine, other).as_str() {
-                "Instance" => b"Instance".to_vec(),
-                "Enum" | "userdata" => b"nil".to_vec(),
-                // (`Enum.Material.Plastic` is "Plastic")
-                "EnumItem" => written()?.rsplit(|&byte| byte == b'.').next().unwrap_or_default().to_vec(),
-                _ => written()?,
-            }
-        }
-    };
+    let text = convert::cast_text(lua, engine, value)?;
     if text.len() > 64 {
         return raise("Invalid marker passed to InsertMarkerAtTime, max string size is 64");
     }
@@ -316,7 +300,21 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
         float_curve,
         holders: [reflection.class_id("Vector3Curve"), reflection.class_id("EulerRotationCurve")],
         slots: RefCell::default(),
+        zeroed: RefCell::default(),
     });
+    {
+        // FloatCurve.Name: the write itself is the engine's own
+        let name = crate::K::Name as NameId;
+        let renaming = channels.clone();
+        behaviors.add_setter(float_curve, name, Rc::new(move |lua, engine, id, value| {
+            renaming.renaming(&engine.state.borrow(), id);
+            let class = engine.state.borrow().dom.at(id).class;
+            let Some(info) = engine.reflection.class_property(class, name).cloned() else { return Ok(()) };
+            let coerced = crate::lua::convert::coerce(lua, engine, &info, &value)?;
+            crate::lua::instance::script_set_property(engine, id, name, coerced);
+            Ok(())
+        }));
+    }
     {
         let mut hooks = engine.hooks.borrow_mut();
         let moved = channels.clone();
@@ -325,7 +323,7 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
         hooks.instance_freed.push(Box::new(move |state, id| freed.freed(state, id)));
     }
 
-    for class in ["FloatCurve", "RotationCurve", "MarkerCurve"] {
+    for class in ["FloatCurve", "RotationCurve"] {
         if let Some(class) = reflection.class_id(class) {
             behaviors.add_getter(class, length, getter(move |_, engine, id| Ok(LuaValue::Number(stored_count(&stored_bytes(engine, id, stored))))));
         }
@@ -454,18 +452,39 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
     }));
 
     // MarkerCurve
-    let markers = move |engine: &Engine, id: InstanceId| curve::decode_markers(&stored_bytes(engine, id, stored));
+    let zeroed = channels.clone();
+    let markers = move |engine: &Engine, id: InstanceId| match zeroed.zeroed.borrow().get(&id) {
+        Some(kept) => kept.clone(),
+        None => curve::decode_markers(&stored_bytes(engine, id, stored)),
+    };
+    let zeroed = channels.clone();
+    let keep = move |engine: &Engine, id: InstanceId, found: Vec<MarkerKey>| {
+        store(engine, id, stored, curve::encode_markers(&found));
+        let mut zeroed = zeroed.zeroed.borrow_mut();
+        if found.iter().any(|marker| marker.value.contains(&0)) {
+            zeroed.insert(id, found);
+        } else if !zeroed.is_empty() {
+            zeroed.remove(&id);
+        }
+    };
+    if let Some(class) = reflection.class_id("MarkerCurve") {
+        let markers = markers.clone();
+        behaviors.add_getter(class, length, getter(move |_, engine, id| Ok(LuaValue::Number(markers(engine, id).len() as f64))));
+    }
     fn marker_value(lua: &Lua, marker: &MarkerKey) -> LuaResult<LuaValue> {
         let table = lua.create_table()?;
         table.raw_set("Time", curve::time_of(marker.tick) as f64)?;
         table.raw_set("Value", lua.create_string(&marker.value)?)?;
         Ok(LuaValue::Table(table))
     }
+    let (at_index, all, insert, remove) = (markers.clone(), markers.clone(), (markers.clone(), keep.clone()), (markers, keep));
+    let markers = at_index;
     add(behaviors, "MarkerCurve", "GetMarkerAtIndex", method(move |lua, engine, id, args| {
         let index = index_arg(lua, engine, args, 1)?;
         let found = markers(engine, id);
         Ok(values([marker_value(lua, key_at(&found, index, "MarkerCurve")?)?]))
     }));
+    let markers = all;
     add(behaviors, "MarkerCurve", "GetMarkers", method(move |lua, engine, id, _| {
         let table = lua.create_table()?;
         for marker in markers(engine, id) {
@@ -473,6 +492,7 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
         }
         Ok(values([LuaValue::Table(table)]))
     }));
+    let (markers, keep) = insert;
     add(behaviors, "MarkerCurve", "InsertMarkerAtTime", method(move |lua, engine, id, args| {
         if args.get(2).is_nil() {
             return raise("Argument 2 missing or nil");
@@ -481,14 +501,15 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
         let value = marker_text(lua, engine, args.get(2))?;
         let mut found = markers(engine, id);
         let outcome = curve::insert(&mut found, MarkerKey { tick: curve::tick_of(time), value });
-        store(engine, id, stored, curve::encode_markers(&found));
+        keep(engine, id, found);
         Ok(inserted(lua, outcome)?)
     }));
+    let (markers, keep) = remove;
     add(behaviors, "MarkerCurve", "RemoveMarkerAtIndex", method(move |lua, engine, id, args| {
         let (start, count) = range_args(lua, engine, args)?;
         let mut found = markers(engine, id);
         let removed = curve::remove(&mut found, start, count);
-        store(engine, id, stored, curve::encode_markers(&found));
+        keep(engine, id, found);
         Ok(values([LuaValue::Number(removed as f64)]))
     }));
 

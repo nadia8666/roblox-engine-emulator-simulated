@@ -8,7 +8,7 @@
 # vector metatable.
 
 diff --git a/luau/VM/src/lvmutils.cpp b/luau/VM/src/lvmutils.cpp
-index 3ed95eb..aff347b 100644
+index 516282f..d04961c 100644
 --- a/luau/VM/src/lvmutils.cpp
 +++ b/luau/VM/src/lvmutils.cpp
 @@ -170,6 +170,48 @@ static LUAU_NOINLINE void callTM(lua_State* L, const TValue* f, const TValue* p1

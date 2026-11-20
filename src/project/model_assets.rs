@@ -217,6 +217,13 @@ pub fn warm(repo: &Path, roots: &[String], chosen: &ModelAssetsOverride, reflect
     (cached.iter().filter(|path| kept_plan(path).is_some()).count(), read)
 }
 
+impl ModelAssets {
+    /// Bundles wait to import below `id`
+    pub fn waits_at(&self, id: InstanceId) -> bool {
+        self.pending.contains_key(&id)
+    }
+}
+
 /// Before the children of `id` are looked at: the bundles waiting there import, the one `id` stands
 /// for first (it becomes that bundle's instance), then the loose ones whose members go into it.
 pub fn materialize(engine: &Engine, id: InstanceId) {

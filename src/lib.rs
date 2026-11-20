@@ -28,6 +28,7 @@ pub mod instance;
 pub mod launch;
 pub mod lua;
 pub mod luau_profile;
+pub mod loopback;
 pub mod meshes;
 pub mod lune_json;
 pub mod microprofile;
@@ -39,6 +40,7 @@ pub mod profiler;
 pub mod project;
 pub mod record;
 pub mod reflection;
+pub mod rojo;
 pub mod scheduler;
 #[cfg(feature = "cli")]
 pub mod serve;
@@ -59,6 +61,14 @@ mod path2d_tests;
 mod scheduler_tests;
 #[cfg(test)]
 mod server_tests;
+#[cfg(test)]
+mod loopback_tests;
+#[cfg(test)]
+mod loading_tests;
+#[cfg(test)]
+mod rojo_tests;
+#[cfg(test)]
+mod unemulated_tests;
 #[cfg(test)]
 mod luau_profile_tests;
 #[cfg(test)]
@@ -109,6 +119,11 @@ pub struct Options {
     /// RunService:IsStudio(): true for a Studio session (the default), false for a live game's
     /// server or client (`--studio false`), whose scripts then take their live branches
     pub studio: bool,
+    /// `debug.loadmodule` works (`--load-module`), as where Roblox's FFlagEnableLoadModule is on (a Studio whose
+    /// ClientAppSettings.json sets it); off, as in a live client and a plain Studio, it raises "debug.loadmodule is not enabled."
+    pub load_module: bool,
+    /// ServerScriptService.LoadStringEnabled is on, whatever the place holds (`--load-string`): a server's scripts have `loadstring`
+    pub load_string: bool,
     pub topbar_inset: f64,
     pub device: String,
     pub place_id: f64,
@@ -158,6 +173,8 @@ impl Default for Options {
             mode: "edit".into(),
             run_context: RunContext::Client,
             studio: true,
+            load_module: false,
+            load_string: false,
             topbar_inset: 0.0,
             device: "desktop".into(),
             place_id: 0.0,
@@ -312,6 +329,14 @@ pub enum RunContext {
     #[default]
     Client,
     Server,
+    /// Studio's edit DataModel, which is both sides at once (`--mode edit --run-context edit`): RunService:IsClient and
+    /// IsServer are both true, as Roblox's RunService documentation tabulates edit mode (not measured: a headless session
+    /// has no edit DataModel), so code that refuses to run off the server runs, as it does for a plugin or the command bar.
+    /// Everything else is the client's edit mode
+    Edit,
+    /// A server and its client in one run (`--run-context loopback`, src/loopback): only a command line and a run's key
+    /// name it; each of the pair's engines runs as `Server` or `Client`, so every rule of a side keeps its meaning
+    Loopback,
 }
 
 impl RunContext {
@@ -319,7 +344,9 @@ impl RunContext {
         match text {
             "client" => Ok(RunContext::Client),
             "server" => Ok(RunContext::Server),
-            other => Err(format!("--run-context must be client or server, not {other}")),
+            "edit" => Ok(RunContext::Edit),
+            "loopback" => Ok(RunContext::Loopback),
+            other => Err(format!("--run-context must be client, server, edit or loopback, not {other}")),
         }
     }
 
@@ -327,6 +354,8 @@ impl RunContext {
         match self {
             RunContext::Client => "client",
             RunContext::Server => "server",
+            RunContext::Edit => "edit",
+            RunContext::Loopback => "loopback",
         }
     }
 }
@@ -616,6 +645,11 @@ pub struct State {
     pub joints: world::joints::Joints,
     /// Free fall: the unanchored parts in the Workspace and their velocities (world::gravity)
     pub gravity: world::gravity::Gravity,
+    /// A loopback run's server: what changed this frame in the replicated containers, with its remote messages in their
+    /// places (loopback/replicate.rs; None in every other engine)
+    pub loopback_log: Option<Vec<loopback::replicate::Change>>,
+    /// A physics move is being stored (instance::raw_set_unsignalled): its property hooks see it as one
+    pub quiet_write: bool,
 }
 
 /// Rust-side hooks (the Luau runtime's InstanceModule.Hooks that engine subsystems install).
@@ -660,7 +694,7 @@ pub trait Extension: Any {
 }
 
 /// How many extension types one engine holds.
-const EXTENSIONS: usize = 8;
+const EXTENSIONS: usize = 12;
 
 pub struct Engine {
     pub reflection: Arc<Reflection>,
@@ -680,6 +714,10 @@ pub struct Engine {
     bundles: RefCell<Option<Box<dyn project::model_assets::BundleSource>>>,
     member_cache: RefCell<FxHashMap<(ClassId, NameId), instance::Member>>,
     world: Cell<Option<World>>,
+    /// A loopback run's side: its endpoint (src/loopback)
+    pub(crate) loopback: RefCell<Option<Rc<loopback::Endpoint>>>,
+    /// A loopback run's client: the server it is linked to, stepped with it ([`loopback::step_pair`])
+    pub(crate) peer: RefCell<Option<Box<loopback::Link>>>,
 }
 
 impl Engine {
@@ -708,6 +746,8 @@ impl Engine {
                 collection: Default::default(),
                 joints: Default::default(),
                 gravity: Default::default(),
+                loopback_log: None,
+                quiet_write: false,
             }),
             options,
             lua: RefCell::new(lua::LuaRefs::default()),
@@ -720,6 +760,8 @@ impl Engine {
             bundles: RefCell::new(None),
             member_cache: RefCell::new(FxHashMap::default()),
             world: Cell::new(None),
+            loopback: RefCell::new(None),
+            peer: RefCell::new(None),
         }))
     }
 
@@ -766,6 +808,11 @@ impl Engine {
     /// afterwards. Each part is moved out before it is dropped, so a Drop that reaches back into the
     /// engine finds it unborrowed.
     pub fn teardown(&self) {
+        // (a loopback client's server goes with it: its VM, then its engine)
+        let peer = self.peer.borrow_mut().take();
+        drop(peer);
+        let endpoint = self.loopback.borrow_mut().take();
+        drop(endpoint);
         drop(std::mem::take(&mut *self.lua.borrow_mut()));
         drop(std::mem::take(&mut *self.hooks.borrow_mut()));
         drop(std::mem::take(&mut *self.behaviors.borrow_mut()));
@@ -857,6 +904,20 @@ impl Engine {
 
     pub fn warn(&self, message: impl Into<String>) {
         self.output("warn", message, None);
+    }
+
+    /// A script used `class`.`member`, which the engine does not emulate: counted, and its first use written as an Output line
+    /// of kind `missing` with where the script used it, read from `lua`'s running stack ([`output::Output::missing`]). `lua`:
+    /// the VM of the callback the script called into (none for a use the engine itself makes, which names no position).
+    pub fn missing(&self, lua: Option<&mlua::Lua>, class: &str, member: &str) {
+        self.missing_where(class, member, || lua.and_then(crate::lua::script_position));
+    }
+
+    /// [`Engine::missing`] with the script's position found by `at` (asked for the member's first use only).
+    pub fn missing_where(&self, class: &str, member: &str, at: impl FnOnce() -> Option<String>) {
+        let mut state = self.state.borrow_mut();
+        let now = state.sched.now;
+        state.output.missing(class, member, now, at);
     }
 
     pub fn class_id(&self, name: &str) -> Option<ClassId> {

@@ -1,0 +1,98 @@
+{
+	"collision_groups": [
+		{
+			"line": "client: join 2 Default=-3 LoopEarly=-2",
+			"why": "a client gets its server's collision groups and collidable pairs, at its join and as they change; ree replicates none (services/physics.rs), so a loopback client keeps its own registry, Default alone"
+		},
+		{
+			"line": "client: late 3 Default=-3 LoopEarly=-6 LoopLate=-3",
+			"why": "a client gets its server's collision groups and collidable pairs, at its join and as they change; ree replicates none (services/physics.rs), so a loopback client keeps its own registry, Default alone"
+		},
+		{
+			"line": "client: late-collidable ok false",
+			"why": "a client gets its server's collision groups and collidable pairs, at its join and as they change; ree replicates none (services/physics.rs), so a loopback client keeps its own registry, Default alone"
+		},
+		{
+			"line": "client: changed 2 Default=-3 LoopRenamed=-2",
+			"why": "a client gets its server's collision groups and collidable pairs, at its join and as they change; ree replicates none (services/physics.rs), so a loopback client keeps its own registry, Default alone"
+		}
+	],
+	"remote_latency": [
+		{
+			"line": "client: InvokeServer round trip: 60 answered, fewest frames 1",
+			"why": "an InvokeServer from a Heartbeat:Wait() thread returns a frame later in a real session than ree's next-frame delivery gives (an event sent alongside it echoes in that frame too there); not explained by the measurements yet"
+		}
+	],
+	"remote_limits": [
+		{
+			"line": "server: unreliable buffer repeated: largest arrived 1010, smallest dropped none, controls 71 of 71",
+			"why": "a client compresses a buffer of repeated bytes under UnreliableRemoteEvent's ceiling; ree counts a buffer's bytes as they are (wire.rs encoded_size)"
+		},
+		{
+			"line": "client: unreliable buffer repeated: largest arrived 1010, smallest dropped none, controls 71 of 71",
+			"why": "a client compresses a buffer of repeated bytes under UnreliableRemoteEvent's ceiling; ree counts a buffer's bytes as they are (wire.rs encoded_size)"
+		}
+	],
+	"remote_values": [
+		{
+			"line": "server: from-player case 18 n=1 | CFrame 1 2 3 1 0 0 0 0.877587557 -0.47941637 0 0.47941637 0.877587557",
+			"why": "a real session rounds a CFrame's rotation when it sends it (by about 1e-5); ree sends it exactly"
+		},
+		{
+			"line": "server: from-player case 33 n=2 | Random equal | number 4",
+			"why": "a Random arrives with its state in both, but ree's Random == compares the objects, a real client's their state (a datatype rule outside the loopback)"
+		},
+		{
+			"line": "client: case 18 n=1 | CFrame 1 2 3 1 0 0 0 0.877587557 -0.47941637 0 0.47941637 0.877587557",
+			"why": "a real session rounds a CFrame's rotation when it sends it (by about 1e-5); ree sends it exactly"
+		},
+		{
+			"line": "client: case 33 n=2 | Random equal | number 4",
+			"why": "a Random arrives with its state in both, but ree's Random == compares the objects, a real client's their state (a datatype rule outside the loopback)"
+		}
+	],
+	"replicated_properties": [
+		{
+			"line": "server: Before cannot write Model.LevelOfDetail: The current thread cannot write 'LevelOfDetail' (lacking capability PluginOrOpenCloud)",
+			"why": "a game script may not write Model.LevelOfDetail or Script.RunContext (lacking capability PluginOrOpenCloud); ree has no LevelOfDetail and lets RunContext be written (rules outside the loopback)"
+		},
+		{
+			"line": "server: Before cannot write Script.RunContext: The current thread cannot write 'RunContext' (lacking capability PluginOrOpenCloud)",
+			"why": "a game script may not write Model.LevelOfDetail or Script.RunContext (lacking capability PluginOrOpenCloud); ree has no LevelOfDetail and lets RunContext be written (rules outside the loopback)"
+		},
+		{
+			"line": "server: Later cannot write Model.LevelOfDetail: The current thread cannot write 'LevelOfDetail' (lacking capability PluginOrOpenCloud)",
+			"why": "a game script may not write Model.LevelOfDetail or Script.RunContext (lacking capability PluginOrOpenCloud); ree has no LevelOfDetail and lets RunContext be written (rules outside the loopback)"
+		},
+		{
+			"line": "server: Later cannot write Script.RunContext: The current thread cannot write 'RunContext' (lacking capability PluginOrOpenCloud)",
+			"why": "a game script may not write Model.LevelOfDetail or Script.RunContext (lacking capability PluginOrOpenCloud); ree has no LevelOfDetail and lets RunContext be written (rules outside the loopback)"
+		},
+		{
+			"line": "client: Before Part arrived {Anchored Archivable CFrame~ CanCollide CanQuery CanTouch CastShadow CollisionGroup Color CustomPhysicalProperties EnableFluidForces Locked Massless Material Reflectance RootPriority Shape Size TopSurface Transparency} not {LocalTransparencyModifier=0} attributes 5 a tagged true",
+			"why": "a real session rounds a CFrame's rotation when it replicates (CFrame~: within 1e-4); ree sends it exactly"
+		},
+		{
+			"line": "client: Before Script arrived {Enabled} not {RunContext=EnumItem} attributes 5 a tagged true",
+			"why": "a game script may not write Model.LevelOfDetail or Script.RunContext (lacking capability PluginOrOpenCloud); ree has no LevelOfDetail and lets RunContext be written (rules outside the loopback)"
+		},
+		{
+			"line": "client: After Part arrived {Anchored Archivable CFrame~ CanCollide CanQuery CanTouch CastShadow CollisionGroup Color CustomPhysicalProperties EnableFluidForces Locked Massless Material Reflectance RootPriority Shape Size TopSurface Transparency} not {LocalTransparencyModifier=0} attributes 5 a tagged true",
+			"why": "a real session rounds a CFrame's rotation when it replicates (CFrame~: within 1e-4); ree sends it exactly"
+		},
+		{
+			"line": "client: After Script arrived {Enabled} not {RunContext=EnumItem} attributes 5 a tagged true",
+			"why": "a game script may not write Model.LevelOfDetail or Script.RunContext (lacking capability PluginOrOpenCloud); ree has no LevelOfDetail and lets RunContext be written (rules outside the loopback)"
+		}
+	],
+	"server_time": [
+		{
+			"line": "client: server time now: client minus server within a second true, not behind true",
+			"why": "ree's server and client start at the same virtual time and a message arrives in the client frame stepped after the server's, at the same frame time: the client's clocks are not later than the server's, as a real client's are"
+		},
+		{
+			"line": "client: time(): client below the server's true",
+			"why": "ree's server and client start at the same virtual time and a message arrives in the client frame stepped after the server's, at the same frame time: the client's clocks are not later than the server's, as a real client's are"
+		}
+	]
+}

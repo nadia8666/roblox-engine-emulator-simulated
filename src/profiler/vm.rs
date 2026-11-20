@@ -56,18 +56,19 @@ pub const ALLOC_STRINGS: i32 = 4;
 pub const ALLOC_PROTO: i32 = 5;
 
 /// lua.h `LUA_T*`: the type tags of the objects a heap walk or an allocation names. The value types are mlua-sys's (they
-/// bind the same lua.h); Luau 0.746 put LUA_TCLASS and LUA_TOBJECT after LUA_TBUFFER and LUA_TDEADKEY before the
-/// collector's own objects (profiler_tests.rs checks these against the vendored lua.h)
+/// bind the same lua.h: patches/mlua-sys.patch where the vendored release moved them); Luau 0.746 put LUA_TCLASS and
+/// LUA_TOBJECT after LUA_TBUFFER and LUA_TDEADKEY before the collector's own objects, and 0.747 removed LUA_TINTEGER,
+/// which moved every tag after LUA_TNUMBER down by one (profiler_tests.rs checks these against the vendored lua.h)
 pub const T_STRING: i32 = mlua::ffi::LUA_TSTRING;
 pub const T_TABLE: i32 = mlua::ffi::LUA_TTABLE;
 pub const T_FUNCTION: i32 = mlua::ffi::LUA_TFUNCTION;
 pub const T_USERDATA: i32 = mlua::ffi::LUA_TUSERDATA;
 pub const T_THREAD: i32 = mlua::ffi::LUA_TTHREAD;
 pub const T_BUFFER: i32 = mlua::ffi::LUA_TBUFFER;
-pub const T_CLASS: i32 = 12;
-pub const T_OBJECT: i32 = 13;
-pub const T_PROTO: i32 = 15;
-pub const T_UPVAL: i32 = 16;
+pub const T_CLASS: i32 = 11;
+pub const T_OBJECT: i32 = 12;
+pub const T_PROTO: i32 = 14;
+pub const T_UPVAL: i32 = 15;
 
 #[repr(C)]
 struct RawFunction {

@@ -1,0 +1,64 @@
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (loadstring in the server's bridge, script identity 4; Workspace.SignalBehavior Deferred; FFlagEnableLoadModule on)
+# captured: 2026-11-17
+type function
+library-env require ok function true true
+plain function nil function results=3 ReplicatedStorage.ParityLoad.Plain n=[] l=1
+plain call ok 1 two three
+empty function nil function results=3 ReplicatedStorage.ParityLoad.Empty n=[] l=1
+empty call ok 
+fresh function nil function results=3 ModuleScript n=[] l=1
+fresh call ok 
+fail function nil function results=3 ReplicatedStorage.ParityLoad.Fail n=[] l=1
+fail call error ReplicatedStorage.ParityLoad.Fail:2: boom
+index function nil function results=3 ReplicatedStorage.ParityLoad.Index n=[] l=1
+index call error ReplicatedStorage.ParityLoad.Index:2: attempt to index nil with 'Field'
+traceback function nil function results=3 ReplicatedStorage.ParityLoad.Trace n=[] l=1
+traceback call ok t
+odd-name function nil function results=3 ReplicatedStorage.ParityLoad.my module [1] n=[] l=1
+odd-name call error ReplicatedStorage.ParityLoad.my module [1]:1: boom
+directives function nil function results=3 ReplicatedStorage.ParityLoad.Directives n=[] l=1
+directives call ok 1
+no-return function nil function results=3 ReplicatedStorage.ParityLoad.NoReturn n=[] l=1
+no-return call ok 
+yields function nil function results=3 ReplicatedStorage.ParityLoad.Yields n=[] l=1
+yields call ok waited
+syntax nil ReplicatedStorage.ParityLoad.Syntax:1: Expected identifier when parsing variable name, got '=' nil results=2
+syntax-lines nil ReplicatedStorage.ParityLoad.SyntaxLines:3: Expected identifier when parsing expression, got 'return' nil results=2
+script raised Attempted to call loadmodule with invalid argument(s).
+local-script raised Attempted to call loadmodule with invalid argument(s).
+folder raised Attempted to call loadmodule with invalid argument(s).
+no-argument raised Attempted to call loadmodule with invalid argument(s).
+nil raised Attempted to call loadmodule with invalid argument(s).
+string raised Attempted to call loadmodule with invalid argument(s).
+number raised Attempted to call loadmodule with invalid argument(s).
+extra-arguments raised Attempted to call loadmodule with invalid argument(s).
+not-run function nil function results=3 ReplicatedStorage.ParityLoad.Counter n=[] l=1
+not-run before nil
+not-run calls 1 2 same-table false
+not-run require 3 again 3 then-call 4
+changing function nil function results=3 ReplicatedStorage.ParityLoad.Changing n=[] l=1
+changing function nil function results=3 ReplicatedStorage.ParityLoad.Changing n=[] l=1
+changing before call ok first
+changing after call ok second
+changing renamed ReplicatedStorage.ParityLoad.Changing n=[] l=1
+renamed function nil function results=3 ReplicatedStorage.ParityLoad.Renamed n=[] l=1
+renamed call ok second
+loose function nil function results=3 Loose n=[] l=1
+loose call error Loose:1: boom
+env function nil function results=3 ReplicatedStorage.ParityLoad.Reader n=[] l=1
+env keys [_G,script,shared] metatable string index nil frozen false
+env is-getfenv(f) true is-caller's false script true raw-script true thread-env-is-caller's true _G true shared true require true game true
+env-twin function nil function results=3 ReplicatedStorage.ParityLoad.Reader n=[] l=1
+env twin same-function false same-env false
+env require's same-env false
+env require ok dependency Dependency
+cleanup ok 
+cleanup again ok 
+cleanup then-call ok table
+setfenv function nil function results=3 ReplicatedStorage.ParityLoad.Fenced n=[] l=1
+setfenv ok true
+setfenv call ok replaced nil nil
+setfenv layered call ok layered function mocked
+setfenv getfenv true
+setfenv-other function nil function results=3 ReplicatedStorage.ParityLoad.Fenced n=[] l=1
+setfenv other-load call ok nil function Fenced

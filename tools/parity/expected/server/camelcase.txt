@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 read-method | ok true | ok true | ok true | ok true | ok true | ok function
 read-property | ok false 0 P Holder false | ok true true true | ok true
 read-event | ok true Signal Touched | ok true Signal Changed | ok Signal ChildRemoved Signal Destroying Signal AttributeChanged

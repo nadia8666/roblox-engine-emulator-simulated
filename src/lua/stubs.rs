@@ -298,8 +298,8 @@ pub fn load(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
     let e = engine.clone();
     r.set(
         "Missing",
-        lua.create_function(move |_, (class_name, member): (String, String)| {
-            e.state.borrow_mut().output.missing(&class_name, &member);
+        lua.create_function(move |lua, (class_name, member): (String, String)| {
+            e.missing(Some(lua), &class_name, &member);
             Ok(())
         })?,
     )?;
@@ -414,6 +414,8 @@ pub fn load(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
         "KeyframeSequence",
         lua.create_function(move |lua, uri: String| match crate::animation::source::sequence(&e, &uri) {
             Ok(sequence) => Ok((instance_value(lua, &e, sequence)?, None)),
+            // (an `active://` id's error is Studio's own text, measured, and the one for what is no clip)
+            Err(error) if uri.trim().starts_with("active://") || error == crate::animation::source::NOT_VALID => Ok((LuaValue::Nil, Some(error))),
             Err(error) => Ok((LuaValue::Nil, Some(format!("Failed to load animation {uri}: {error}")))),
         })?,
     )?;
@@ -424,6 +426,8 @@ pub fn load(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
         lua.create_function(move |lua, uri: String| match crate::animation::source::animation_clip(&e, &uri) {
             Ok(clip) => Ok((instance_value(lua, &e, clip)?, None)),
             Err(error) if error == crate::animation::source::NEVER => Ok((LuaValue::Boolean(false), None)),
+            // (an `active://` id's error is Studio's own text, measured)
+            Err(error) if uri.trim().starts_with("active://") => Ok((LuaValue::Nil, Some(error))),
             Err(error) => Ok((LuaValue::Nil, Some(format!("Failed to load animation {uri}: {error}")))),
         })?,
     )?;
@@ -457,6 +461,37 @@ pub fn load(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
         lua.create_function(move |_, (width, height, pixels): (u32, u32, mlua::Buffer)| match crate::images::save(&e, width, height, &pixels.to_vec()) {
             Ok(path) => Ok((Some(path.to_string_lossy().replace('\\', "/")), None)),
             Err(error) => Ok((None, Some(error))),
+        })?,
+    )?;
+    // AssetService:CreateDataModelContentAsync (lua/services.luau): a copy of an EditableMesh as it is now (its file URI,
+    // else nil and the error), and the Opaque Content that names a copy (each call's its own)
+    let e = engine.clone();
+    r.set(
+        "MeshCopy",
+        lua.create_function(move |_, mesh: LuaValue| match crate::meshes::data_model_copy(&e, instance_of(&mesh)?) {
+            Ok(uri) => Ok((Some(uri), None)),
+            Err(problem) => Ok((None, Some(problem))),
+        })?,
+    )?;
+    r.set(
+        "OpaqueContent",
+        lua.create_function(|lua, uri: LuaString| {
+            static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let content = crate::value::ContentValue::Opaque(serial, crate::value::Str::new(&uri.as_bytes()));
+            lua.create_any_userdata(types::LContent::new(lua, content))
+        })?,
+    )?;
+    // A method's int64 argument (convert::int64_argument) as its decimal text, which keeps every int64 apart (a number holds
+    // integers exactly to 2^53 only); else nil and the cast error, which the stub raises without a position
+    let e = engine.clone();
+    r.set(
+        "Int64Argument",
+        lua.create_function(move |_, (value, index): (LuaValue, usize)| {
+            Ok(match convert::int64_argument(&e, &value, index) {
+                Ok(number) => (Some(number.to_string()), None),
+                Err(message) => (None, Some(message)),
+            })
         })?,
     )?;
     // HttpService JSON: Lune's serde (sorted keys, empty tables as `{}`, integral numbers as integers)
@@ -543,11 +578,11 @@ pub fn load(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
     r.set("Loopback", engine.options.loopback)?;
 
     let shared = engine.lua.borrow().shared.clone().ok_or_else(|| LuaError::runtime("shared globals"))?;
-    let services = lua.load(SERVICES).set_name("=rur.services").set_environment(shared.clone()).set_compiler(modules::engine_compiler()).into_function()?;
+    let services = modules::load_engine_luau(lua, SERVICES, "=rur.services", Some(shared.clone()))?;
     crate::cost::engine_luau(lua, services)?.call::<()>(r.clone())?;
     // A server's own services (DataStores, MemoryStores, MessagingService, the server side of remotes)
     if engine.options.server_services() {
-        let server = lua.load(SERVER).set_name("=rur.server").set_environment(shared).set_compiler(modules::engine_compiler()).into_function()?;
+        let server = modules::load_engine_luau(lua, SERVER, "=rur.server", Some(shared))?;
         crate::cost::engine_luau(lua, server)?.call::<()>(r.clone())?;
         if let LuaValue::Function(set_join_data) = r.get::<LuaValue>("SetJoinData")? {
             lua.set_named_registry_value(SET_JOIN_DATA, set_join_data)?;

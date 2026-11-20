@@ -6,10 +6,10 @@
 # Why upstream lacks it: Roblox runs native code in safe environments, where the check never fails.
 
 diff --git a/luau/CodeGen/src/IrTranslation.cpp b/luau/CodeGen/src/IrTranslation.cpp
-index 1385200..27950e5 100644
+index 28d996a..8693892 100644
 --- a/luau/CodeGen/src/IrTranslation.cpp
 +++ b/luau/CodeGen/src/IrTranslation.cpp
-@@ -1433,8 +1433,10 @@ IrOp translateFastCallN(IrBuilder& build, const Instruction* pc, int pcpos, bool
+@@ -1375,8 +1375,10 @@ IrOp translateFastCallN(IrBuilder& build, const Instruction* pc, int pcpos, bool
  
      IrOp fallback = build.fallbackBlock(pcpos);
  
@@ -22,7 +22,7 @@ index 1385200..27950e5 100644
  
      BuiltinImplResult br = translateBuiltin(
          build, LuauBuiltinFunction(bfid), ra, arg, builtinArgs, builtinArg3, nparams, nresults, fallback, pcpos + getOpLength(opcode)
-@@ -1449,13 +1451,7 @@ IrOp translateFastCallN(IrBuilder& build, const Instruction* pc, int pcpos, bool
+@@ -1391,13 +1393,7 @@ IrOp translateFastCallN(IrBuilder& build, const Instruction* pc, int pcpos, bool
          else
              build.inst(IrCmd::MARK_DEAD, build.vmReg(ra + br.actualResultCount), build.constInt(-1));
  
@@ -37,7 +37,7 @@ index 1385200..27950e5 100644
      }
      else
      {
-@@ -1693,8 +1689,8 @@ void translateInstForGPrepNext(IrBuilder& build, const Instruction* pc, int pcpo
+@@ -1635,8 +1631,8 @@ void translateInstForGPrepNext(IrBuilder& build, const Instruction* pc, int pcpo
      IrOp target = build.blockAtInst(pcpos + 1 + LUAU_INSN_D(*pc));
      IrOp fallback = build.fallbackBlock(pcpos);
  
@@ -48,7 +48,7 @@ index 1385200..27950e5 100644
  
      IrOp tagB = build.inst(IrCmd::LOAD_TAG, build.vmReg(ra + 1));
      build.inst(IrCmd::CHECK_TAG, tagB, build.constTag(LUA_TTABLE), fallback);
-@@ -1722,8 +1718,8 @@ void translateInstForGPrepInext(IrBuilder& build, const Instruction* pc, int pcp
+@@ -1664,8 +1660,8 @@ void translateInstForGPrepInext(IrBuilder& build, const Instruction* pc, int pcp
      IrOp fallback = build.fallbackBlock(pcpos);
      IrOp finish = build.block(IrBlockKind::Internal);
  
@@ -59,7 +59,7 @@ index 1385200..27950e5 100644
  
      IrOp tagB = build.inst(IrCmd::LOAD_TAG, build.vmReg(ra + 1));
      build.inst(IrCmd::CHECK_TAG, tagB, build.constTag(LUA_TTABLE), fallback);
-@@ -1985,7 +1981,12 @@ void translateInstGetImport(IrBuilder& build, const Instruction* pc, int pcpos)
+@@ -1927,7 +1923,12 @@ void translateInstGetImport(IrBuilder& build, const Instruction* pc, int pcpos)
      int k = LUAU_INSN_D(*pc);
      uint32_t aux = pc[1];
  

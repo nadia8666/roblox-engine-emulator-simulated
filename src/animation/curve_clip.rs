@@ -17,7 +17,7 @@
 //!   are in one, RotationCurves and MarkerCurves too); a curve straight under the clip adds nothing.
 //! - Every MarkerCurve fires GetMarkerReachedSignal(its Name) with the marker's Value, under the
 //!   clip or inside a Folder. KeyframeReached fires "End" when a pass ends, looped or not, and a
-//!   clip of Length 0 has no end (the step: animation::advance_curve); GetTimeOfKeyframe raises
+//!   clip of Length 0 has no end (the step: animation::advance); GetTimeOfKeyframe raises
 //!   "Invalid operation for this animation format.".
 //! - **Tracks play samples, not the curves.** The pose at time `t` is the line between the curves'
 //!   values at the two nearest multiples of 1/30 s: a Constant step from 0 to 30 at 0.5 s climbs
@@ -26,8 +26,11 @@
 //!   first key's time, and the last one lies at or past Length (a clip of 0.26 s reads 25.4667 at
 //!   its end, on the way from 23.333 at 7/30 s to 26 at 8/30 s). Rotations go between samples as
 //!   the normalized mix of the two quaternions (measured 0.0249710 rad an eighth of the way to
-//!   0.2 rad; a slerp gives 0.025). Studio also stores the samples' rotations rounded (up to 1e-4
-//!   off the curve at a sample); this engine keeps them as computed.
+//!   0.2 rad; a slerp gives 0.025), and then through an angle and back, which leaves them up to
+//!   1e-4 off the curve. The samples' exact times and both forms are clip.rs `sampled` and
+//!   `through_angle`.
+//! - A Folder named `FaceControls`, anywhere in the clip, holds FloatCurves named after FaceControls
+//!   properties: they drive the rig's FaceControls instance and count for Length (`Clip::face`).
 //! - KeyframeSequenceProvider:GetKeyframeSequenceAsync of a CurveAnimation gives a KeyframeSequence
 //!   made of it ([`sequence`]): named "KeyframeSequence", Loop true and Priority Action whatever the
 //!   clip's are, a Keyframe "Keyframe" at each multiple of 1/30 s before Length and one at Length,
@@ -43,7 +46,7 @@ use rbx_dom_weak::{
     types::{Enum, Ref, Variant},
 };
 
-use super::clip::{Clip, JointTrack, Key, Marker, PRIORITY_ACTION, SAMPLED, Tree};
+use super::clip::{Clip, JointTrack, Key, Marker, PRIORITY_ACTION, SAMPLED, SAMPLED_COARSE, Tree, ValueKey, ValueTrack};
 use super::curve::{self, FloatKey, RotationKey};
 
 /// The samples a second a track plays a CurveAnimation from.
@@ -65,6 +68,8 @@ struct Folder {
     parent: Option<usize>,
     position: Option<[Vec<FloatKey>; 3]>,
     rotation: Option<Rotation>,
+    /// A Folder named FaceControls: its FloatCurves that have keys, by name (the first of a name)
+    face: Vec<(String, Vec<FloatKey>)>,
 }
 
 impl Folder {
@@ -93,6 +98,8 @@ impl Folder {
 struct Read {
     folders: Vec<Folder>,
     markers: Vec<Marker>,
+    /// MarkerCurves met so far
+    marker_curves: u32,
     length: f32,
 }
 
@@ -127,18 +134,20 @@ fn visit<T: Tree>(tree: &T, node: T::Node, folder: Option<usize>, read: &mut Rea
     for child in tree.children(node) {
         let class = tree.class(child);
         if class == "Folder" {
-            read.folders.push(Folder { name: tree.name(child), parent: folder, position: None, rotation: None });
+            read.folders.push(Folder { name: tree.name(child), parent: folder, position: None, rotation: None, face: Vec::new() });
             visit(tree, child, Some(read.folders.len() - 1), read);
             continue;
         }
         if class == "MarkerCurve" {
             let name = tree.name(child);
+            let curve = read.marker_curves;
+            read.marker_curves += 1;
             for marker in tree.bytes(child, "ValuesAndTimes").map_or_else(Vec::new, |bytes| curve::decode_markers(&bytes)) {
                 let time = curve::time_of(marker.tick);
                 if folder.is_some() {
                     read.length = read.length.max(time);
                 }
-                read.markers.push(Marker { time, name: name.clone(), value: String::from_utf8_lossy(&marker.value).into_owned() });
+                read.markers.push(Marker { time, name: name.clone(), value: marker.value, curve });
             }
             continue;
         }
@@ -147,8 +156,13 @@ fn visit<T: Tree>(tree: &T, node: T::Node, folder: Option<usize>, read: &mut Rea
         let name = tree.name(child);
         match class {
             "FloatCurve" => {
-                if let Some(last) = float_keys(tree, child).last() {
+                let keys = float_keys(tree, child);
+                if let Some(last) = keys.last() {
                     read.length = read.length.max(curve::time_of(last.tick));
+                }
+                let holder = &mut read.folders[folder];
+                if holder.name == "FaceControls" && !keys.is_empty() && !holder.face.iter().any(|(kept, _)| *kept == name) {
+                    holder.face.push((name, keys));
                 }
             }
             "RotationCurve" => {
@@ -217,19 +231,24 @@ pub fn validate<T: Tree>(tree: &T, clip: T::Node) -> Result<(), String> {
 pub fn clip<T: Tree>(tree: &T, node: T::Node) -> Clip {
     let read = read(tree, node);
     let length = read.length;
-    // The samples: every 1/30 s from 0 to the first one at or past the end
-    let steps = length * SAMPLE_RATE;
-    let last = if (steps - steps.round()).abs() < 1e-3 { steps.round() } else { steps.ceil() }.max(0.0) as usize;
+    // The samples (clip::sampled): number k at float32(k * float32(1/30)) s, held at the end, up to the one after the
+    // sample the end's own time falls in
+    let last = (length * SAMPLE_RATE).floor().max(0.0) as usize + 1;
+    let style = if last <= MAX_SAMPLES { SAMPLED } else { SAMPLED_COARSE };
     let times: Vec<f32> = if last <= MAX_SAMPLES {
-        (0..=last).map(|step| step as f32 / SAMPLE_RATE).collect()
+        (0..=last).map(|step| (step as f32 * (1.0 / SAMPLE_RATE)).min(length)).collect()
     } else {
         (0..=MAX_SAMPLES).map(|step| length * (step as f32 / MAX_SAMPLES as f32)).collect()
     };
     let parent_name = |folder: &Folder| folder.parent.map_or_else(String::new, |parent| read.folders[parent].name.clone());
+    // (measured: of two Folders of one name the first poses the joint, the other nothing)
+    let first = |index: usize| !read.folders[..index].iter().any(|earlier| earlier.posed() && earlier.name == read.folders[index].name);
     let joints = read
         .folders
         .iter()
-        .filter(|folder| folder.posed())
+        .enumerate()
+        .filter(|(index, folder)| folder.posed() && first(*index))
+        .map(|(_, folder)| folder)
         .map(|folder| JointTrack {
             parent: parent_name(folder),
             name: folder.name.clone(),
@@ -237,22 +256,33 @@ pub fn clip<T: Tree>(tree: &T, node: T::Node) -> Clip {
                 .iter()
                 .map(|&time| {
                     let (rotation, translation) = folder.pose(time);
-                    Key { time, translation, rotation, style: SAMPLED, direction: 0 }
+                    Key { time, translation, rotation, style, direction: 0 }
                 })
                 .collect(),
             rotation: folder.rotation.is_some(),
         })
         .collect();
+    // (of two FaceControls Folders with a curve of one name the first counts)
+    let mut face: Vec<ValueTrack> = Vec::new();
+    for (name, keys) in read.folders.iter().flat_map(|folder| &folder.face) {
+        if face.iter().any(|track| track.name == *name) {
+            continue;
+        }
+        let keys = times.iter().map(|&time| ValueKey { time, value: curve::float_at(keys, time).unwrap_or(0.0), style, direction: 0 }).collect();
+        face.push(ValueTrack { name: name.clone(), keys });
+    }
     Clip {
         length,
+        face,
         looped: tree.boolean(node, "Loop").unwrap_or(true),
         priority: tree.enumeration(node, "Priority").unwrap_or(PRIORITY_ACTION),
         joints,
-        // (KeyframeReached's "End" is no keyframe at a time: the step fires it when a pass ends, animation::advance_curve)
+        // (KeyframeReached's "End" is no keyframe at a time: the step fires it when a pass ends, animation::advance)
         keyframes: Vec::new(),
         names: Vec::new(),
         markers: read.markers,
         curve: true,
+        even: false,
     }
 }
 
@@ -265,6 +295,14 @@ pub fn sequence<T: Tree>(tree: &T, node: T::Node) -> (WeakDom, Ref) {
     times.push(length);
     fn pose(folders: &[Folder], index: usize, time: f32) -> InstanceBuilder {
         let folder = &folders[index];
+        // (measured: a Folder named FaceControls becomes a Folder of that name holding a NumberPose for each curve)
+        if folder.name == "FaceControls" {
+            return InstanceBuilder::new("Folder").with_name("FaceControls").with_children(folder.face.iter().map(|(name, keys)| {
+                InstanceBuilder::new("NumberPose")
+                    .with_name(name.as_str())
+                    .with_property("Value", Variant::Float64(curve::float_at(keys, time).unwrap_or(0.0) as f64))
+            }));
+        }
         let (rotation, translation) = folder.pose(time);
         let cframe = crate::world::frame::from_affine(&Affine3A::from_rotation_translation(rotation, translation.into()));
         InstanceBuilder::new("Pose")
@@ -277,7 +315,9 @@ pub fn sequence<T: Tree>(tree: &T, node: T::Node) -> (WeakDom, Ref) {
     }
     let keyframe = |time: f32| InstanceBuilder::new("Keyframe").with_name("Keyframe").with_property("Time", Variant::Float32(time));
     let marker = |marker: &Marker| {
-        InstanceBuilder::new("KeyframeMarker").with_name(marker.name.as_str()).with_property("Value", Variant::String(marker.value.clone()))
+        InstanceBuilder::new("KeyframeMarker")
+            .with_name(marker.name.as_str())
+            .with_property("Value", Variant::String(String::from_utf8_lossy(&marker.value).into_owned()))
     };
     let mut keyframes: Vec<(f32, InstanceBuilder)> = times
         .iter()

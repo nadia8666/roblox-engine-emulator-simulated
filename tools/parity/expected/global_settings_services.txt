@@ -1,0 +1,299 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 4; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-20
+AccountService nil | nil
+AchievementService nil | nil
+ActivityHistoryEventService nil | nil
+AdService error Not allowed to add that under settings | error Not allowed to add that under settings
+AnalyticsService error Not allowed to add that under settings | error Not allowed to add that under settings
+AnimationClipProvider nil | nil
+AnimationFromVideoCreatorService error Not allowed to add that under settings | error Not allowed to add that under settings
+AnimationFromVideoCreatorStudioService nil | nil
+AnnotationsService nil | nil
+AppLifecycleObserverService nil | nil
+AppRatingPromptService nil | nil
+AppStorageService nil | nil
+AppUpdateService nil | nil
+AssetCounterService nil | nil
+AssetDeliveryProxy error Not allowed to add that under settings | error Not allowed to add that under settings
+AssetImportService nil | nil
+AssetManagerService nil | nil
+AssetService nil | nil
+AudioFocusService nil | nil
+AuroraScriptService nil | nil
+AuroraService nil | nil
+AvatarChatService nil | nil
+AvatarCreationService error Not allowed to add that under settings | error Not allowed to add that under settings
+AvatarEditorService error Not allowed to add that under settings | error Not allowed to add that under settings
+AvatarImportService nil | nil
+AvatarSettings nil | nil
+BadgeService error Not allowed to add that under settings | error Not allowed to add that under settings
+BrowserService nil | nil
+BugReporterService nil | nil
+BulkImportService error 'BulkImportService' is not a valid Service name | error 'BulkImportService' is not a valid Service name
+CSGDictionaryService nil | nil
+CacheableContentProvider nil | nil
+CalloutService nil | nil
+CaptureService error Not allowed to add that under settings | error Not allowed to add that under settings
+ChangeHistoryService error Not allowed to add that under settings | error Not allowed to add that under settings
+ChangeHistoryStreamingService nil | nil
+Chat error Not allowed to add that under settings | error Not allowed to add that under settings
+ChatbotUIService error 'ChatbotUIService' is not a valid Service name | error 'ChatbotUIService' is not a valid Service name
+CloudCRUDService nil | nil
+ClusterPacketCache nil | nil
+CollaboratorsService nil | nil
+CollectionService nil | nil
+CommerceService error Not allowed to add that under settings | error Not allowed to add that under settings
+ConfigService error Not allowed to add that under settings | error Not allowed to add that under settings
+ConfigureServerService nil | nil
+ConnectivityService nil | nil
+ContentProvider nil | nil
+ContextActionService nil | nil
+ControllerService nil | nil
+ConversationalAIAcceptanceService error 'ConversationalAIAcceptanceService' is not a valid Service name | error 'ConversationalAIAcceptanceService' is not a valid Service name
+CookiesService nil | nil
+CoreGui nil | nil
+CorePackages nil | nil
+CoreScriptDebuggingManagerHelper nil | nil
+CoreScriptSyncService nil | nil
+CreationDBService nil | nil
+CreatorStoreService error Not allowed to add that under settings | error Not allowed to add that under settings
+CrossDMScriptChangeListener nil | nil
+DataModelPatchService error 'DataModelPatchService' is not a valid Service name | error 'DataModelPatchService' is not a valid Service name
+DataStoreService error Not allowed to add that under settings | error Not allowed to add that under settings
+Debris nil | nil
+DebugSettings DebugSettings:Diagnostics<Global Settings> | error Invalid parent for Service. DebugSettings cannot be parented to GlobalBasicSettings .
+DebuggablePluginWatcher nil | nil
+DebuggerConnectionManager nil | nil
+DebuggerManager nil | nil
+DebuggerUIService nil | nil
+DeviceIdService nil | nil
+DraftsService error Not allowed to add that under settings | error Not allowed to add that under settings
+DraggerService error Not allowed to add that under settings | error Not allowed to add that under settings
+EditableService nil | nil
+EncodingService error Not allowed to add that under settings | error Not allowed to add that under settings
+EventIngestService nil | nil
+ExampleV2Service nil | nil
+ExperienceAuthService nil | nil
+ExperienceNotificationService error Not allowed to add that under settings | error Not allowed to add that under settings
+ExperienceService nil | nil
+ExperienceStateCaptureService nil | nil
+ExperienceStateRecordingService nil | nil
+ExplorerServiceVisibilityService nil | nil
+FaceAnimatorService nil | nil
+FacialAgeEstimationService nil | nil
+FacialAnimationRecordingService nil | nil
+FacialAnimationStreamingServiceV2 nil | nil
+FeatureRestrictionManager error Not allowed to add that under settings | error Not allowed to add that under settings
+FlagStandService nil | nil
+FlyweightService nil | nil
+FriendService error Not allowed to add that under settings | error Not allowed to add that under settings
+GamePassService error Not allowed to add that under settings | error Not allowed to add that under settings
+GameSettings GameSettings:Game Options<Global Settings> | error Invalid parent for Service. GameSettings cannot be parented to GlobalBasicSettings .
+GamepadService error Not allowed to add that under settings | error Not allowed to add that under settings
+GenerationService error Not allowed to add that under settings | error Not allowed to add that under settings
+GenericChallengeService error Not allowed to add that under settings | error Not allowed to add that under settings
+Geometry error Not allowed to add that under settings | error Not allowed to add that under settings
+GeometryService error Not allowed to add that under settings | error Not allowed to add that under settings
+GroupService error Not allowed to add that under settings | error Not allowed to add that under settings
+GuiService nil | nil
+GuidRegistryService nil | nil
+HSRDataContentProvider nil | nil
+HapticService error Not allowed to add that under settings | error Not allowed to add that under settings
+HarmonyService nil | nil
+HeapProfilerService error Not allowed to add that under settings | error Not allowed to add that under settings
+HeatmapService nil | nil
+HeightmapImporterService error Not allowed to add that under settings | error Not allowed to add that under settings
+Hopper nil | nil
+HttpRbxApiService error Not allowed to add that under settings | error Not allowed to add that under settings
+HttpService error Not allowed to add that under settings | error Not allowed to add that under settings
+ILegacyStudioBridge nil | nil
+IXPService nil | nil
+IncrementalPatchBuilder error Not allowed to add that under settings | error Not allowed to add that under settings
+InsertService error Not allowed to add that under settings | error Not allowed to add that under settings
+InstanceExtensionsService error Not allowed to add that under settings | error Not allowed to add that under settings
+InternalSyncService nil | nil
+JointsService nil | nil
+KeyboardService nil | nil
+KeyframeSequenceProvider nil | nil
+LSPFileSyncService error 'LSPFileSyncService' is not a valid Service name | error 'LSPFileSyncService' is not a valid Service name
+LanguageService nil | nil
+LegacyStudioBridge nil | nil
+Lighting error Not allowed to add that under settings | error Not allowed to add that under settings
+LinkingService nil | nil
+LiveScriptingService nil | nil
+LiveSyncService nil | nil
+LocalStorageService nil | nil
+LocalizationService error Not allowed to add that under settings | error Not allowed to add that under settings
+LodDataService nil | nil
+LogReporterService nil | nil
+LogService error Not allowed to add that under settings | error Not allowed to add that under settings
+LoginService nil | nil
+LuaSettings LuaSettings:Lua<Global Settings> | error Invalid parent for Service. LuaSettings cannot be parented to GlobalBasicSettings .
+LuaWebService nil | nil
+LuauScriptAnalyzerService nil | nil
+MLModelDeliveryService nil | nil
+MLService error Not allowed to add that under settings | error Not allowed to add that under settings
+MarketplaceService error Not allowed to add that under settings | error Not allowed to add that under settings
+MatchmakingService error Not allowed to add that under settings | error Not allowed to add that under settings
+MaterialGenerationService nil | nil
+MaterialService error Not allowed to add that under settings | error Not allowed to add that under settings
+MemStorageService error Not allowed to add that under settings | error Not allowed to add that under settings
+MemoryStoreService error Not allowed to add that under settings | error Not allowed to add that under settings
+MeshContentProvider nil | nil
+MessageBusService nil | nil
+MessagingService error Not allowed to add that under settings | error Not allowed to add that under settings
+MetaBreakpointManager nil | nil
+MicroProfilerService error Not allowed to add that under settings | error Not allowed to add that under settings
+ModerationService error Not allowed to add that under settings | error Not allowed to add that under settings
+MouseService error Not allowed to add that under settings | error Not allowed to add that under settings
+NetworkClient error Not allowed to add that under settings | error Not allowed to add that under settings
+NetworkServer error The current thread cannot create 'NetworkServer' (lacking capability RobloxEngine) | error The current thread cannot create 'NetworkServer' (lacking capability RobloxEngine)
+NetworkSettings NetworkSettings:Network<Global Settings> | error Invalid parent for Service. NetworkSettings cannot be parented to GlobalBasicSettings .
+NonReplicatedCSGDictionaryService nil | nil
+NotificationService nil | nil
+OmniRecommendationsService nil | nil
+OpenCloudService error Not allowed to add that under settings | error Not allowed to add that under settings
+PackageService error Not allowed to add that under settings | error Not allowed to add that under settings
+PackageUIService nil | nil
+PartyEmulatorService nil | nil
+PatchBundlerFileWatch error Not allowed to add that under settings | error Not allowed to add that under settings
+PathfindingService error Not allowed to add that under settings | error Not allowed to add that under settings
+PerformanceControlService nil | nil
+PermissionsService nil | nil
+PhysicsService nil | nil
+PhysicsSettings PhysicsSettings:Physics<Global Settings> | error Invalid parent for Service. PhysicsSettings cannot be parented to GlobalBasicSettings .
+PlaceAssetIdsService nil | nil
+PlaceStatsService nil | nil
+PlacesService error Not allowed to add that under settings | error Not allowed to add that under settings
+PlatformCloudStorageService nil | nil
+PlatformFriendsService nil | nil
+PlayerDataService error Not allowed to add that under settings | error Not allowed to add that under settings
+PlayerEmulatorService nil | nil
+PlayerHydrationService nil | nil
+PlayerViewService error Not allowed to add that under settings | error Not allowed to add that under settings
+Players nil | nil
+PluginDebugService nil | nil
+PluginGuiService nil | nil
+PluginManagementService error Not allowed to add that under settings | error Not allowed to add that under settings
+PluginPolicyService nil | nil
+PointsService error Not allowed to add that under settings | error Not allowed to add that under settings
+PolicyService error Not allowed to add that under settings | error Not allowed to add that under settings
+ProcessInstancePhysicsService nil | nil
+ProximityPromptService error Not allowed to add that under settings | error Not allowed to add that under settings
+PublishService error Not allowed to add that under settings | error Not allowed to add that under settings
+RbxAnalyticsService nil | nil
+RecommendationService error Not allowed to add that under settings | error Not allowed to add that under settings
+ReflectionService error Not allowed to add that under settings | error Not allowed to add that under settings
+RemoteCommandService error Not allowed to add that under settings | error Not allowed to add that under settings
+RemoteCursorService nil | nil
+RemoteDebuggerServer nil | nil
+RenderSettings RenderSettings:Rendering<Global Settings> | error Invalid parent for Service. RenderSettings cannot be parented to GlobalBasicSettings .
+ReplicatedFirst error Not allowed to add that under settings | error Not allowed to add that under settings
+ReplicatedStorage error Not allowed to add that under settings | error Not allowed to add that under settings
+RibbonNotificationService nil | nil
+RobloxPluginGuiService nil | nil
+RobloxReplicatedStorage nil | nil
+RobloxServerStorage nil | nil
+RomarkRbxAnalyticsService nil | nil
+RomarkService nil | nil
+RtMessagingService nil | nil
+RunService nil | nil
+RuntimeContentService nil | nil
+RuntimeScriptService nil | nil
+SafetyService nil | nil
+ScriptChangeService nil | nil
+ScriptCloneWatcher nil | nil
+ScriptCloneWatcherHelper nil | nil
+ScriptCommitService nil | nil
+ScriptContext error Not allowed to add that under settings | error Not allowed to add that under settings
+ScriptEditorService error Not allowed to add that under settings | error Not allowed to add that under settings
+ScriptProfilerService error Not allowed to add that under settings | error Not allowed to add that under settings
+ScriptRegistrationService nil | nil
+ScriptService nil | nil
+Selection nil | nil
+SelectionHighlightManager error Not allowed to add that under settings | error Not allowed to add that under settings
+SerializationService error Not allowed to add that under settings | error Not allowed to add that under settings
+ServerScriptService error Not allowed to add that under settings | error Not allowed to add that under settings
+ServerStorage error Not allowed to add that under settings | error Not allowed to add that under settings
+ServiceVisibilityService error Not allowed to add that under settings | error Not allowed to add that under settings
+SessionCheckService error Not allowed to add that under settings | error Not allowed to add that under settings
+SessionService nil | nil
+SharedTableRegistry error Not allowed to add that under settings | error Not allowed to add that under settings
+SlimContentProvider error Not allowed to add that under settings | error Not allowed to add that under settings
+SlimService nil | nil
+SmoothVoxelsUpgraderService nil | nil
+SnippetService error 'SnippetService' is not a valid Service name | error 'SnippetService' is not a valid Service name
+SocialService error Not allowed to add that under settings | error Not allowed to add that under settings
+SolidModelContentProvider nil | nil
+SoundService error Not allowed to add that under settings | error Not allowed to add that under settings
+SoundShimService nil | nil
+SpawnerService nil | nil
+StartPageService nil | nil
+StarterGui nil | nil
+StarterPack nil | nil
+StarterPlayer error Not allowed to add that under settings | error Not allowed to add that under settings
+StartupMessageService error Not allowed to add that under settings | error Not allowed to add that under settings
+Stats nil | nil
+StopWatchReporter nil | nil
+StreamingService error 'StreamingService' is not a valid Service name | error 'StreamingService' is not a valid Service name
+Studio Studio:Studio<Global Settings> | error Invalid parent for Service. Studio cannot be parented to GlobalBasicSettings .
+StudioAssetService nil | nil
+StudioCameraService nil | nil
+StudioData nil | nil
+StudioDeviceEmulatorService nil | nil
+StudioPublishService nil | nil
+StudioScriptDebugEventListener nil | nil
+StudioSdkService nil | nil
+StudioService error Not allowed to add that under settings | error Not allowed to add that under settings
+StudioTestService error Not allowed to add that under settings | error Not allowed to add that under settings
+StudioUserService nil | nil
+StudioWidgetsService nil | nil
+StylingService error Not allowed to add that under settings | error Not allowed to add that under settings
+SystemThemeService nil | nil
+TaskScheduler TaskScheduler:Task Scheduler<Global Settings> | error Invalid parent for Service. TaskScheduler cannot be parented to GlobalBasicSettings .
+TeamCreateData error Not allowed to add that under settings | error Not allowed to add that under settings
+TeamCreatePublishService nil | nil
+TeamCreateService error Not allowed to add that under settings | error Not allowed to add that under settings
+Teams error Not allowed to add that under settings | error Not allowed to add that under settings
+TelemetryService nil | nil
+TeleportService nil | nil
+TemporaryCageMeshProvider nil | nil
+TemporaryScriptService nil | nil
+TestService error Not allowed to add that under settings | error Not allowed to add that under settings
+TextBoxService error Not allowed to add that under settings | error Not allowed to add that under settings
+TextChatService error Not allowed to add that under settings | error Not allowed to add that under settings
+TextService nil | nil
+TextureGenerationService nil | nil
+ThirdPartyUserService nil | nil
+TimerService error Not allowed to add that under settings | error Not allowed to add that under settings
+ToastNotificationService nil | nil
+TouchInputService nil | nil
+TracerService nil | nil
+TutorialService nil | nil
+TweenService nil | nil
+UGCAvatarService nil | nil
+UGCValidationService error Not allowed to add that under settings | error Not allowed to add that under settings
+UIDragDetectorService error Not allowed to add that under settings | error Not allowed to add that under settings
+UniqueIdLookupService error Not allowed to add that under settings | error Not allowed to add that under settings
+UnvalidatedAssetService nil | nil
+UserGameSettings error Invalid parent for Service. UserGameSettings cannot be parented to Global Settings . | UserGameSettings:GameSettings<GlobalBasicSettings>
+UserInputService error Not allowed to add that under settings | error Not allowed to add that under settings
+UserService error Not allowed to add that under settings | error Not allowed to add that under settings
+UserStorageService nil | nil
+VRService error Not allowed to add that under settings | error Not allowed to add that under settings
+VRStatusService error Not allowed to add that under settings | error Not allowed to add that under settings
+VersionControlService error Not allowed to add that under settings | error Not allowed to add that under settings
+VideoCaptureService error Not allowed to add that under settings | error Not allowed to add that under settings
+VideoScreenCaptureService error Not allowed to add that under settings | error Not allowed to add that under settings
+VideoService error Not allowed to add that under settings | error Not allowed to add that under settings
+VirtualInputManager error Not allowed to add that under settings | error Not allowed to add that under settings
+VirtualUser error Not allowed to add that under settings | error Not allowed to add that under settings
+VisibilityCheckDispatcher error Not allowed to add that under settings | error Not allowed to add that under settings
+Visit error Not allowed to add that under settings | error Not allowed to add that under settings
+VisualizationModeService error Not allowed to add that under settings | error Not allowed to add that under settings
+VoiceChatInternal error Not allowed to add that under settings | error Not allowed to add that under settings
+VoiceChatService error Not allowed to add that under settings | error Not allowed to add that under settings
+WebSocketService nil | nil
+WebViewService nil | nil
+Workspace nil | nil
+children 8 1

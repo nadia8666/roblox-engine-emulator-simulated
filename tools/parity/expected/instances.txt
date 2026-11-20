@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, a headless playing client (script identity 2 unless the probe asks for another; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 default Accessory AccessoryType=EnumItem(Enum.AccessoryType.Unknown)
 default AlignPosition MaxForce=10000 MaxVelocity=inf Responsiveness=10 Mode=EnumItem(Enum.PositionAlignmentMode.TwoAttachment) RigidityEnabled=boolean(false)
 default Animation AnimationId=string()

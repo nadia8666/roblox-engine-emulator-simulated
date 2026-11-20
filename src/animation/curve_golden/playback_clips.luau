@@ -1,7 +1,8 @@
 -- CurveAnimations at the edges: keys before 0 s, a clip of Length 0, markers of other values, an id registered for
 -- what is no clip, and what a registered id stands for. Stepped with Animator:StepAnimations. Runs unchanged in
 -- Studio (the command bar or a plugin, in an edit session) and here in edit mode; playback_clips.txt is what Studio
--- 0.747 returned (2026-11-11). Poses are printed to four decimals.
+-- 0.747 returned (2026-11-11) in a session that had not asked for a Folder's id before (the first request for the id
+-- of what is no clip raises, later ones do not).
 local out = {}
 local function S(v) if type(v) == "number" then return string.format("%.9g", v) elseif type(v) == "table" then local t = {} for i, x in v do t[#t+1] = S(x) end local n = 0 for _ in v do n += 1 end return "{" .. table.concat(t, ", ") .. "}" .. (n ~= #v and "#" .. n or "") else return tostring(v) end end
 local function P(...) local t = table.pack(...) for i = 1, t.n do t[i] = S(t[i]) end table.insert(out, table.concat(t, " ")) end
@@ -52,7 +53,7 @@ local function watch(track, names)
 	for _, n in names or {} do track:GetMarkerReachedSignal(n):Connect(function(v) table.insert(log, "M:" .. n .. "=" .. typeof(v) .. ":" .. tostring(v)) end) end
 	return function() task.wait() local s = table.concat(log, ",") table.clear(log) return "<" .. s .. ">" end
 end
-local function state(track, j) return S(track.TimePosition) .. " " .. tostring(track.IsPlaying) .. " x=" .. S(math.round(j.Transform.X * 1e4) / 1e4 + 0) end
+local function state(track, j) return S(track.TimePosition) .. " " .. tostring(track.IsPlaying) .. " x=" .. S(j.Transform.X) end
 local function marker(parent, name, list) local m = Instance.new("MarkerCurve") m.Name = name for _, e in list do m:InsertMarkerAtTime(e[1], e[2]) end m.Parent = parent return m end
 local function clip(loop, markers, keys)
 	local c = Instance.new("CurveAnimation") c.Loop = loop
@@ -111,7 +112,7 @@ for _, kind in {"curve"} do
 			t:Play(0, 1, speed) animator:StepAnimations(0) P("zero", kind, speed, "start", state(t, j1), ev())
 			for i = 1, 3 do animator:StepAnimations(0.1) P("zero", kind, speed, i, state(t, j1), ev()) end
 			t.TimePosition = 5 animator:StepAnimations(0.1) P("zero", kind, speed, "set 5", state(t, j1), ev())
-			t:Stop(0) animator:StepAnimations(0.1) P("zero", kind, speed, "stopped", S(t.TimePosition), t.IsPlaying, ev())
+			t:Stop(0) animator:StepAnimations(0.1) P("zero", kind, speed, "stopped", state(t, j1), ev())
 			t:Play(0, 1, speed) animator:StepAnimations(0.1) P("zero", kind, speed, "replay", state(t, j1), ev())
 		end)
 	end
@@ -180,12 +181,14 @@ scene("ids", function(animator, j1)
 	local a2 = Instance.new("Animation") a2.AnimationId = id2
 	local t2 = animator:LoadAnimation(a2) for i = 1, 10 do task.wait() end
 	t2:Play(0, 1, 0) t2.TimePosition = 0.5 animator:StepAnimations(0) P("ids id2", t2.Length, S(j1.Transform.X)) t2:Stop(0) animator:StepAnimations(0)
+	P("ids get id1", try(function() local got = ACP:GetAnimationClipAsync(id1) return got.Length, got == c end), "get id2", try(function() local got = ACP:GetAnimationClipAsync(id2) return got.Length end))
 	-- active
 	local live = clip(false, {})
 	local act = ACP:RegisterActiveAnimationClip(live)
 	local a3 = Instance.new("Animation") a3.AnimationId = act
 	local t3 = animator:LoadAnimation(a3) for i = 1, 10 do task.wait() end
 	live.Root.Arm.Position:X():SetKeys({FK(0, 0, L), FK(2, 40, L)})
+	t3:Play(0, 1, 0) t3.TimePosition = 0.5 animator:StepAnimations(0) P("ids active early track", t3.Length, S(j1.Transform.X)) t3:Stop(0) animator:StepAnimations(0)
 	local t4 = animator:LoadAnimation(a3) for i = 1, 10 do task.wait() end
 	t4:Play(0, 1, 0) t4.TimePosition = 0.5 animator:StepAnimations(0) P("ids active late track", t4.Length, S(j1.Transform.X)) t4:Stop(0) animator:StepAnimations(0)
 	local sq = Instance.new("KeyframeSequence")

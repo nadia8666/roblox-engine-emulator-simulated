@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 templates 19
   MessageInfo[L01 a=1 b=two] n=3 ctx={a:string=1,b:string="two"}
   MessageInfo[L02 Value = {result}: 42] n=3 ctx={val:string=42}

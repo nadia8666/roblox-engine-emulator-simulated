@@ -5,16 +5,31 @@
 //! sizes (8-100), `round(a x size + c)` summed over the string, reproduces 76 % of 3,744 sample strings exactly (mean error 0.66 px, 95th
 //! percentile 3). A line is `floor(ratio x size)` high (Legacy 1.5, every other font 1.0), a string wider than the frame wraps at spaces
 //! (and at newlines), and a word wider than the frame breaks between characters.
+//!
+//! TextService:GetTextBoundsAsync (a GetTextBoundsParams: Text, Font, Size, Width, RichText) is the same measurement of a Font face
+//! (measured in a playing client, Studio 0.747, tools/parity/probes/text_bounds.luau): the bounds of an Enum.Font face are what
+//! GetTextSize answers for it, with Width as the frame's width (none when not above 0), but for SourceSansItalic, which GetTextSize
+//! measures upright. A face no Enum.Font names measures as the one data/text-faces.json says (tools/text-faces.mjs: a family without the
+//! weight or style asked picks a face it has); a face of its own the tables lack, an unknown family and rich text markup are measured
+//! as the nearest face, SourceSans and plain text, and reported missing. A client loads a face on its first call, which yields (the
+//! faces it starts with do not); a server has no typesetting, so GetTextBoundsAsync raises and GetTextSize answers (0, 0).
 
-use std::{collections::HashMap, rc::Rc, sync::OnceLock};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+    sync::OnceLock,
+};
 
+use mlua::prelude::*;
 use serde::Deserialize;
 
 use crate::{
-    Engine, Value,
-    lua::convert,
-    lua::values,
+    Engine, K, NameId, Value,
+    lua::{Args, Flow, Ret, convert, raise, types::font_to_enum, values},
+    scheduler::JobTarget,
     services::{Behaviors, method},
+    value::FontValue,
 };
 
 #[derive(Deserialize)]
@@ -55,6 +70,72 @@ fn sized() -> &'static Sized {
         let kerns = file.kerns.iter().map(|row| row.iter().map(|&(a, b, kern)| ((a, b), kern)).collect()).collect();
         Sized { first: file.first, heights: file.heights, advances: file.advances, kerns }
     })
+}
+
+/// data/text-faces.json (tools/text-faces.mjs, a sweep of every weight and style of the families Enum.Font names, in a playing
+/// client): per family file, `"<FontWeight> <FontStyle>"` of a face no Enum.Font names and the Enum.Font face it measures as (`same`),
+/// or the one nearest in its widths when it measures as none (`near`, which also holds SourceSansItalic's face: the tables hold
+/// GetTextSize's upright answer for it).
+#[derive(Deserialize)]
+struct FaceFile {
+    same: HashMap<String, HashMap<String, String>>,
+    near: HashMap<String, HashMap<String, String>>,
+}
+
+fn face_file() -> &'static FaceFile {
+    static FACES: OnceLock<FaceFile> = OnceLock::new();
+    FACES.get_or_init(|| serde_json::from_slice(include_bytes!("../data/text-faces.json")).expect("data/text-faces.json"))
+}
+
+/// How GetTextBoundsAsync measures a Font face: with the tables of the Enum.Font face `table`; `exact` when the face measures as that
+/// one (else it is the nearest, or SourceSans for a family the tables do not know), and `load`, the face the client loads for it.
+pub struct Face {
+    pub table: String,
+    pub exact: bool,
+    pub load: String,
+}
+
+pub fn face(engine: &Engine, font: &FontValue) -> Face {
+    let reflection = &engine.reflection;
+    let family = font.family.to_str_lossy();
+    let key = format!("{} {}", reflection.enum_item_info(font.weight).name, reflection.enum_item_info(font.style).name);
+    let own = || format!("{family} {key}");
+    let file = face_file();
+    if let Some(name) = file.near.get(&*family).and_then(|faces| faces.get(&key)) {
+        return Face { table: name.clone(), exact: false, load: own() };
+    }
+    if let Some(item) = font_to_enum(engine, font) {
+        let name = &*reflection.enum_item_info(item).name;
+        if fonts().contains_key(name) {
+            return Face { table: name.to_string(), exact: true, load: own() };
+        }
+    }
+    if let Some(name) = file.same.get(&*family).and_then(|faces| faces.get(&key)) {
+        // (the client loads the face it measures as: FredokaOne Bold needs no load once FredokaOne has one)
+        let load = match reflection.font_enum_faces.get(name.as_str()) {
+            Some((family, weight, style)) => format!("{family} {weight} {style}"),
+            None => own(),
+        };
+        return Face { table: name.clone(), exact: true, load };
+    }
+    Face { table: "SourceSans".to_string(), exact: false, load: own() }
+}
+
+/// The faces a playing client has loaded: the Enum.Font faces it starts with (a call from a metamethod, which cannot yield, measured
+/// them; every other face raised "thread is not yieldable"), then those calls loaded.
+struct LoadedFaces(RefCell<HashSet<String>>);
+
+impl crate::Extension for LoadedFaces {}
+
+const LOADED_AT_START: &[&str] = &["SourceSans", "SourceSansBold", "SourceSansItalic", "SourceSansLight", "SourceSansSemibold", "Arial", "ArialBold", "Arimo", "ArimoBold"];
+
+/// Marks the face `load` loaded; whether it was already.
+fn loaded(engine: &Engine, load: &str) -> bool {
+    let faces = engine.extension_or_insert_with(|| {
+        let faces = &engine.reflection.font_enum_faces;
+        LoadedFaces(RefCell::new(LOADED_AT_START.iter().filter_map(|name| faces.get(*name)).map(|(family, weight, style)| format!("{family} {weight} {style}")).collect()))
+    });
+    !faces.0.borrow_mut().insert(load.to_string())
 }
 
 /// The column of FredokaOne's table for `size`, when the font is FredokaOne and the size is a whole number the table covers.
@@ -149,8 +230,16 @@ pub fn measure(font: &str, text: &str, size: f64, limit: f64) -> (f64, f64) {
 
 pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
     let reflection = engine.reflection.clone();
-    let (Some(class), Some(name)) = (reflection.class_id("TextService"), reflection.name_id("GetTextSize")) else { return };
+    let Some(class) = reflection.class_id("TextService") else { return };
+    if let Some(name) = reflection.name_id("GetTextBoundsAsync") {
+        behaviors.add_method(class, name, method(get_text_bounds));
+    }
+    let Some(name) = reflection.name_id("GetTextSize") else { return };
     behaviors.add_method(class, name, method(|lua, engine, _, args| {
+        if engine.options.server() {
+            // (a server has no typesetting: every size is (0, 0), measured)
+            return Ok(values([convert::to_lua(lua, engine, &Value::Vector2(rbx_dom_weak::types::Vector2::new(0.0, 0.0)))?]));
+        }
         let text = args.string(1).map(|text| text.to_string_lossy()).unwrap_or_default();
         let size = args.number(2).unwrap_or(14.0);
         let font = match convert::from_lua(args.get(3)) {
@@ -168,9 +257,94 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
     }));
 }
 
+/// TextService:GetTextBoundsAsync (measured in a playing client and a server, Studio 0.747: tools/parity/probes/text_bounds.luau).
+fn get_text_bounds(lua: &Lua, engine: &Rc<Engine>, service: crate::InstanceId, args: &Args) -> Ret {
+    // (`TextService.GetTextBoundsAsync(params)`: the params in the service's place)
+    if !engine.reflection.is_a(engine.state.borrow().dom.at(service).class, "TextService") {
+        return raise("Expected ':' not '.' calling member function GetTextBoundsAsync");
+    }
+    let params = match args.get(1) {
+        LuaValue::Nil => return raise("Argument 1 missing or nil"),
+        value => match crate::lua::instance_id(value) {
+            Some(params) => params,
+            None => return raise("Unable to cast value to Object"),
+        },
+    };
+    let class = engine.state.borrow().dom.at(params).class;
+    if !engine.reflection.is_a(class, "GetTextBoundsParams") {
+        return raise("Argument 1 is invalid: expected 'GetTextBoundsParams' instance type");
+    }
+    if engine.options.server() {
+        return raise("Typesetting is not enabled in this DataModel");
+    }
+    let (text, font, size, width, rich) = {
+        let state = engine.state.borrow();
+        let get = |name: NameId| state.dom.raw_get(params, name);
+        let text = get(K::Text as NameId).and_then(Value::as_str).map(|text| text.to_str_lossy().into_owned()).unwrap_or_default();
+        let font = match get(K::Font as NameId) {
+            Some(Value::Font(font)) => (**font).clone(),
+            _ => crate::lua::types::font_from_enum(engine, engine.reflection.enum_item("Font", "SourceSans").unwrap_or(0)),
+        };
+        let size = get(K::Size as NameId).and_then(Value::as_number).unwrap_or(20.0);
+        let width = engine.reflection.name_id("Width").and_then(get).and_then(Value::as_number).unwrap_or(0.0);
+        (text, font, size, width, matches!(get(K::RichText as NameId), Some(Value::Bool(true))))
+    };
+    if font.family.as_bytes().is_empty() {
+        return raise("Font with empty asset ID passed to TextService:GetTextBoundsAsync()");
+    }
+    let face = face(engine, &font);
+    if !face.exact {
+        let missing = format!("GetTextBoundsAsync of {} (a face the text tables lack; measured as {})", face.load, face.table);
+        engine.missing(Some(lua), "TextService", &missing);
+    }
+    if rich && text.contains(['<', '&']) {
+        // (rich text needs a host layer's parser: Studio reads the tags, entities and <br/>, and raises on markup that does not parse)
+        engine.missing(Some(lua), "TextService", "GetTextBoundsAsync of rich text markup (measured as plain text)");
+    }
+    engine.state.borrow().sched.charge(crate::cost::TEXT_MEASURED);
+    // (Size stores 1 to 100, whole: convert::number_for; a value from elsewhere measures within them)
+    let size = if size.is_nan() { 1.0 } else { size.trunc().clamp(1.0, 100.0) };
+    let limit = if width > 0.0 { width } else { f64::INFINITY };
+    let (x, y) = measure(&face.table, &text, size, limit);
+    let bounds = Value::Vector2(rbx_dom_weak::types::Vector2::new(x as f32, y as f32));
+    if loaded(engine, &face.load) {
+        return Ok(values([convert::to_lua(lua, engine, &bounds)?]));
+    }
+    // The first call of a face waits for it to load (a call that cannot yield raises, and the load goes on: a later call finds it
+    // loaded). The client resumes the call when the load is done, which depends on the machine; here at the next resumption point.
+    let thread = lua.current_thread();
+    if unsafe { mlua::ffi::lua_isyieldable(thread.state()) } == 0 {
+        return raise("thread is not yieldable");
+    }
+    engine.state.borrow_mut().sched.defer(JobTarget::Thread(thread), vec![bounds]);
+    Err(Flow::Yield)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::measure;
+    use super::{face_file, fonts, measure};
+
+    /// data/text-faces.json names only faces the tables hold, and no face twice; FredokaOne has one face (every weight and style
+    /// measures as it), GothamSSm's SemiBold is a face of its own (measured as no Enum.Font face).
+    #[test]
+    fn text_faces_measure_as_faces_the_tables_hold() {
+        let file = face_file();
+        for (family, faces) in file.same.iter().chain(&file.near) {
+            for (face, name) in faces {
+                assert!(fonts().contains_key(name), "{family} {face}: {name}");
+            }
+        }
+        for (family, faces) in &file.same {
+            for face in faces.keys() {
+                assert!(!file.near.get(family).is_some_and(|near| near.contains_key(face)), "{family} {face} is in both");
+            }
+        }
+        let fredoka = &file.same["rbxasset://fonts/families/FredokaOne.json"];
+        assert_eq!(fredoka.len(), 17);
+        assert!(fredoka.values().all(|name| name == "FredokaOne"));
+        assert_eq!(file.near["rbxasset://fonts/families/GothamSSm.json"]["SemiBold Normal"], "GothamBold");
+        assert_eq!(file.near["rbxasset://fonts/families/SourceSansPro.json"]["Regular Italic"], "SourceSansLight");
+    }
 
     /// Studio's answers (an empty test place, 2026-10-23, the text_advances probe): single lines at sizes 14 and 20 in an unbounded
     /// frame, and the 62 characters of "The quick brown fox jumps over the lazy dog and keeps running" in frames 40-220 px wide.

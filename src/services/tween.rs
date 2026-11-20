@@ -8,7 +8,7 @@
 //! Exponential and Elastic take 10 * (t - 1) and Bounce 1 - t in float32.
 //!
 //! Interpolation by property type: floats and float-backed components lerp as
-//! a + f32(f32(b - a) * t); doubles in double; integers and UDim offsets round the double lerp half
+//! a + f32(f32(b - a) * t), Color3 channels too; doubles in double; integers and UDim offsets round the double lerp half
 //! away from zero; booleans take the goal once the lerp of 0/1 is non-zero; CFrames slerp.
 
 use std::{cell::RefCell, rc::Rc};
@@ -25,7 +25,7 @@ use crate::{
         Flow, convert, instance::assign, instance::get, instance_value, none, raise_plain, typeof_value,
         types::LTweenInfo,
     },
-    reflection::{EngineType, Reflection, ScriptType},
+    reflection::{EngineType, EnumItemId, Reflection, ScriptType},
     scheduler::{Phase, f32r},
     value::Value,
 };
@@ -85,6 +85,17 @@ pub fn ease(alpha: f64, style: &str, direction: &str) -> f64 {
 fn lerp_float(a: f64, b: f64, t: f64) -> f64 {
     let from = f32r(a);
     f32r(from + f32r(f32r(f32r(b) - from) * t))
+}
+
+/// A Color3 channel as TweenService blends it: a + (b - a) * eased in float32, as every float component, so an
+/// overshooting style's alpha outside 0..1 takes a channel past its ends (below 0 too). Measured on every Color3 property
+/// (GUI objects, parts, lights, Color3Value, ...) and every style and direction in roblox-sim's 0.747.0.7471481 client
+/// and server with live flags, 2026-11-14 (tools/parity/probes/tween_color.luau: 1,485 channels bit-exact, captured
+/// twice on each side). Roblox switches this with the dynamic flag DFFlagStyleTransitionColorSpace: on, a channel is
+/// sqrt(a^2 + (b^2 - a^2) * eased) in float32, 0 where the mix is below 0 (what clients did until Roblox turned the
+/// flag off at 2026-11-13 22:02 UTC; the same probe with the flag forced on reads that, 1,485 of 1,485).
+fn lerp_color(a: f32, b: f32, t: f64) -> f32 {
+    lerp_float(a as f64, b as f64, t) as f32
 }
 
 fn round_half_away(value: f64) -> f64 {
@@ -192,9 +203,9 @@ fn lerp(_lua: &Lua, kind: Kind, number: NumberKind, a: &LuaValue, b: &LuaValue, 
             Value::Bool(from + (to - from) * t != 0.0)
         }
         (Kind::Color3, Value::Color3(a), Value::Color3(b)) => Value::Color3(dom::Color3::new(
-            lerp_float(a.r as f64, b.r as f64, t) as f32,
-            lerp_float(a.g as f64, b.g as f64, t) as f32,
-            lerp_float(a.b as f64, b.b as f64, t) as f32,
+            lerp_color(a.r, b.r, t),
+            lerp_color(a.g, b.g, t),
+            lerp_color(a.b, b.b, t),
         )),
         (Kind::Vector2, Value::Vector2(a), Value::Vector2(b)) => Value::Vector2(dom::Vector2::new(
             lerp_float(a.x as f64, b.x as f64, t) as f32,
@@ -261,11 +272,54 @@ fn owns(shared: &Tweens, tween: InstanceId, data: &TweenData, name: NameId) -> b
     shared.owners.get(&(data.target, name)) == Some(&tween)
 }
 
-fn cast_name(engine: &Engine, value: &LuaValue) -> String {
+pub(crate) fn cast_name(engine: &Engine, value: &LuaValue) -> String {
     match typeof_value(engine, value).as_str() {
         "number" => "double".into(),
         "boolean" => "bool".into(),
         other => other.into(),
+    }
+}
+
+/// The message TweenService:GetValue and GuiObject's Tween methods raise for the two easing styles they do not play
+/// (Studio 0.747: `Enum.EasingStyle` lists Bezier = 11 and Spring = 12; TweenInfo.new refuses them in the same words).
+pub(crate) fn unsupported_style(engine: &Engine, style: EnumItemId, function: &str) -> Option<String> {
+    matches!(&*engine.reflection.enum_item_info(style).name, "Spring" | "Bezier")
+        .then(|| format!("{function} does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier"))
+}
+
+/// A method's enum argument at `at` (1 is the first after self), as Studio 0.747 casts it: an item of the enum, an item's
+/// name or value; nil raises "Argument 2 missing or nil" and anything else names what it was ("Unable to cast double to
+/// EasingStyle" for 13, "... string to EasingDirection" for a name no item has, "... EasingDirection to EasingStyle" for
+/// another enum's item).
+pub(crate) fn enum_arg(lua: &Lua, engine: &Engine, args: &super::Args, at: usize, enum_name: &str) -> Result<EnumItemId, Flow> {
+    let value = args.get(at);
+    if value.is_nil() {
+        return raise_plain(format!("Argument {at} missing or nil"));
+    }
+    let item = engine.reflection.enum_id(enum_name).and_then(|id| convert::coerce_enum(lua, engine, id, value));
+    match item {
+        Some(item) => Ok(item),
+        None => {
+            let other = match value {
+                LuaValue::UserData(ud) => ud.borrow::<crate::lua::types::LEnumItem>().ok().map(|item| engine.reflection.enum_item_type_name(item.0).to_string()),
+                _ => None,
+            };
+            raise_plain(format!("Unable to cast {} to {enum_name}", other.unwrap_or_else(|| cast_name(engine, value))))
+        }
+    }
+}
+
+/// A method's float argument at `at`: a number, or a string that reads as one ("Unable to cast string to float" otherwise).
+pub(crate) fn float_arg(lua: &Lua, engine: &Engine, args: &super::Args, at: usize) -> Result<f64, Flow> {
+    match args.get(at) {
+        LuaValue::Nil => raise_plain(format!("Argument {at} missing or nil")),
+        LuaValue::Number(number) => Ok(*number),
+        LuaValue::Integer(number) => Ok(*number as f64),
+        value @ LuaValue::String(_) => match lua.coerce_number(value.clone())? {
+            Some(number) => Ok(number),
+            None => raise_plain("Unable to cast string to float"),
+        },
+        other => raise_plain(format!("Unable to cast {} to float", cast_name(engine, other))),
     }
 }
 
@@ -633,12 +687,16 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
         behaviors.add_method(service, name, method(move |lua, engine, _, args| create(lua, engine, &shared, args)));
     }
     if let Some(name) = n("GetValue") {
+        // The arguments are cast in order, then Spring and Bezier are refused (Studio 0.747: every alpha and direction,
+        // by item, name or value, raises "TweenService:GetValue does not support Enum.EasingStyle.Spring or
+        // Enum.EasingStyle.Bezier"; a direction that casts to nothing raises first)
         behaviors.add_method(service, name, method(|lua, engine, _, args| {
-            let style = engine.reflection.enum_id("EasingStyle").and_then(|id| convert::coerce_enum(lua, engine, id, args.get(2)));
-            let direction = engine.reflection.enum_id("EasingDirection").and_then(|id| convert::coerce_enum(lua, engine, id, args.get(3)));
-            let Some(alpha) = args.number(1) else { return raise_plain("Argument 1 missing or nil") };
-            let Some(style) = style else { return raise_plain("Unable to cast value to EasingStyle") };
-            let Some(direction) = direction else { return raise_plain("Unable to cast value to EasingDirection") };
+            let alpha = float_arg(lua, engine, args, 1)?;
+            let style = enum_arg(lua, engine, args, 2, "EasingStyle")?;
+            let direction = enum_arg(lua, engine, args, 3, "EasingDirection")?;
+            if let Some(message) = unsupported_style(engine, style, "TweenService:GetValue") {
+                return raise_plain(message);
+            }
             let reflection = &engine.reflection;
             let value = ease(alpha, &reflection.enum_item_info(style).name, &reflection.enum_item_info(direction).name);
             Ok(values([LuaValue::Number(value)]))

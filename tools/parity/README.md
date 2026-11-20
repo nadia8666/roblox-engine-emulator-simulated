@@ -1,52 +1,50 @@
-# Parity probes: ree against the real engine
+# Parity probes (`tools/parity`)
 
-Differential tests of what scripts see. Each probe in `probes/` is a Luau body that runs unchanged in ree and in a
-Roblox client and prints canonical lines; `expected/` holds what the real engine printed, and the runner compares.
+Differential tests comparing `ree` directly against a real Roblox client or server. Each script in `probes/` runs unmodified on both engines and prints canonical output lines; `expected/` stores the real engine's output, and the runner diffs them.
+
+## Commands
 
 ```sh
-node tools/parity/run.mjs                 # every probe through target/release/ree: a pass/diff table
-node tools/parity/run.mjs task_order --diff   # one probe, with its differing lines (- real engine, + ree)
-node tools/parity/run.mjs --write-known   # record the current differences in known.json (keeps their reasons)
-REE_PARITY_CAPTURE="<command>" node tools/parity/run.mjs --capture [probe ...]   # re-capture after a Roblox update
-node tools/parity/run.mjs ui_signals --rur <rur checkout>   # a probe that needs a GUI layout, through rur
-node tools/parity/run.mjs --server        # the probes as a server's script: expected/server, known-server.json
+node tools/parity/run.mjs                                # Run all client probes and print pass/diff table
+node tools/parity/run.mjs task_order --diff              # Show line-by-line diff (- real engine, + ree)
+node tools/parity/run.mjs --write-known                  # Update known.json with current diffs (preserves reasons)
+node tools/parity/run.mjs ui_signals --rur <rur-dir>     # Run probes requiring GUI layout via rur
+node tools/parity/run.mjs --server                       # Run server-side probes (expected/server, known-server.json)
+node tools/parity/run.mjs --loopback                     # Run paired client+server probes (expected/loopback, known-loopback.json)
+
+# Re-capture expected outputs after a Roblox update
+REE_PARITY_CAPTURE="<command>" node tools/parity/run.mjs --capture [probe ...]
 ```
 
-`cargo test --release --test parity` runs the same comparison: every expected line ree does not print must be listed in
-`known.json`, so a change that breaks a matching line fails the tests. The table's columns are the expected lines, the
-ones ree printed the same, the known differences and the new ones; it also names `known.json` entries that now match
-(remove them).
+`cargo test --release --test parity` enforces the exact same checks across client, server, and loopback sets: any line that previously matched must keep matching, any remaining discrepancy must be recorded in `known*.json`, and newly matching entries are flagged so you can remove them from `known*.json`.
 
-`--server` runs the same probes as a server's script would: ree with `--run-context server` against
-`expected/server` (what the probes printed as a Script in a play session's server) and `known-server.json`; a probe
-that asks for a device or a renderer is left out. `cargo test --release --test parity` checks both sets.
+- **`--server`:** Runs eligible probes with `--run-context server` (skipping device/renderer probes).
+- **`--loopback`:** Runs paired probes (`probes/loopback/`) with `--run-context loopback`, testing server+client interaction in one session.
 
-## Writing a probe
+## Paired loopback probes
 
-- `prelude.luau` comes first: `P.num` / `P.f32` print numbers the same in every engine, `P.err` takes the probe's own
-  chunk name and line offset out of an error (`@12:` is the probe's line 12), `P.try` prints a call's outcome, `P.rng`
-  draws cases from a generator of its own (Random and math.random are under test), `P.sync` starts at a scheduler
-  resumption point. `print` escapes invalid UTF-8 and control bytes.
-- Print nothing that varies between runs of the real engine: addresses, timings, frame-time sums. Count frames for
-  waits, and keep durations off frame boundaries (0.05 s is exactly three 60 Hz frames; use 0.04 or 0.06).
-- A headless client runs its render step on its own cadence (none, or two, between simulation steps): keep
-  PreRender-relative order out of lines that must be stable.
-- A probe that needs another script identity says so in a line `-- parity: identity=4` (writing `Source` and
-  requiring the module needs 4 in a client).
-- A probe that needs a screen says `-- parity: device=desktop rendered`, and the capture runs it in a rendered client
-  on that device. Plain ree has no GUI layout, so `known.json` lists such a probe's lines. `--rur <checkout>` runs it
-  through rur (roblox-ui-renderer), which adds one, on the capture client's screen (1920x1080 under a 58 px top-bar
-  inset); there every line must match. `RUR_NATIVE_ENGINE` names a rur-native build, as for rur itself.
-- Capture twice and compare the two before trusting a new probe: a line that changes between real runs is a probe bug.
+Each `probes/loopback/<name>.luau` file contains shared code at the top, followed by `--- server` and `--- client` sections. Each side executes the file with the other section blanked out (preserving line numbers in `@line:` errors) after `prelude.luau` and `loopback.luau`:
+- Server code boots before the player joins; client code runs once client scripts start.
+- `P.player()` returns the local player on the client, or waits for the first player to join on the server.
+- `P.meet(Tag)` synchronizes both sides at a barrier and yields to a scheduler resumption point. Frame counts are tracked per side and never compared across processes.
+- At completion, the server forwards its collected lines to the client, which outputs `server: <line>` followed by `client: <line>`.
+- Always capture loopback probes 3 times and keep only lines identical across all 3 runs—cross-process frame phase jitter makes single-send frame counts noisy.
 
-## Capturing
+## Authoring a probe
 
-The expected files name the engine and date in their `# ` header lines. `--capture` runs the bodies through the
-command `REE_PARITY_CAPTURE` names, called as `<command> <bodies.json> <outputs.json>`: the input is
-`[{"name", "body"}]`, and the command writes `{"engine", "date", "probes": {"<name>": {"ok", "lines", "error"}}}`
-with each body's printed lines (a probe's own `"engine"` text, when given, replaces the shared one in its header).
-It must run each body as a function body in a playing client whose `Workspace.SignalBehavior` is Deferred (ree's
-model), at script identity 2 unless the probe asks for another, on the device and with the rendering it asks for.
-With `--capture --server` each entry also has `"server": true`: run it as a server's game script (a Script in
-ServerScriptService, identity 2) in a play session, and return the lines it printed.
+- **`prelude.luau` helpers:** `P.num` / `P.f32` (portable number formatting), `P.err` (strips chunk names and normalizes line numbers to `@12:`), `P.try` (prints call outcome), `P.rng` (isolated RNG so `Random` / `math.random` can be tested), `P.sync` (aligns to a scheduler resumption point). `print` escapes invalid UTF-8 and control bytes.
+- **Avoid nondeterminism:** Never print table addresses, wall timings, or raw frame-time sums. Count frames instead of relying on exact boundary durations (use `0.04` or `0.06` s rather than `0.05` s, which falls on 3 x 60 Hz frames). Headless clients tick `PreRender` independently of simulation steps, so don't rely on `PreRender`-relative ordering.
+- **Directive comments:**
+  - `-- parity: identity=4` — run at script identity 4 (needed to write `ModuleScript.Source`).
+  - `context=edit` — run `ree` in its edit run context (`--mode edit --run-context edit`, a plugin's code) for a probe captured at identity 4, whose Plugin capability a game script lacks (`settings()`). Such a probe has no server capture.
+  - `flag=<name>` — enable an engine flag (e.g., `flag=FFlagEnableLoadModule` passes `--load-module` to `ree`). Server runs automatically pass `--load-string` to match server captures.
+  - `-- parity: device=desktop rendered` — capture on a rendered 1920x1080 desktop client (58 px top-bar inset). Plain `ree` lacks GUI layout, so these lines sit in `known.json` and must match 100% when run with `--rur <checkout>` (`RUR_NATIVE_ENGINE` overrides the `rur-native` binary).
+- Capture new probes twice and verify identical output before checking them in.
+
+## Capture harness contract
+
+`expected/*.txt` headers record the Roblox engine version and date. `--capture` executes `<REE_PARITY_CAPTURE> <bodies.json> <outputs.json>`:
+- Input: `[{"name", "body", "server"?}]`.
+- Output: `{"engine", "date", "probes": {"<name>": {"ok", "lines", "error", "engine"?}}}`.
+- Run client bodies at identity 2 (unless overridden) in a play client with `Workspace.SignalBehavior = Deferred`; run `"server": true` bodies as a server `Script` in `ServerScriptService` at identity 2.
 

@@ -14,7 +14,7 @@ use serde_json::{Value as Json, json};
 
 use crate::{
     Engine, InstanceId,
-    value::{ContentValue, Value},
+    value::Value,
     world::frame,
 };
 
@@ -33,6 +33,47 @@ pub fn cframe_json(transform: &Affine3A) -> Json {
     let cframe = frame::from_affine(transform);
     let (p, o) = (cframe.position, cframe.orientation);
     Json::Array([p.x, p.y, p.z, o.x.x, o.x.y, o.x.z, o.y.x, o.y.y, o.y.z, o.z.x, o.z.y, o.z.z].iter().map(|&v| number(v as f64)).collect())
+}
+
+/// A content URI naming a relative local file (`checker.png` the project holds, `./x.png`, `output/x.mesh`,
+/// `file://output/x.mesh`), as the absolute `file://` URI of the file the engine read for it (`Options::local_file`: the
+/// project's folder), `%` escaped as ror's file URIs are read, a `#` fragment kept; None for anything else (an asset, an
+/// absolute path or file URI, nothing). A recording names the file so: ror reads a relative path from the folder it runs
+/// in, which is not the project's.
+pub fn local_uri(engine: &Engine, uri: &str) -> Option<String> {
+    let text = uri.trim();
+    let (path, fragment) = match text.split_once('#') {
+        Some((path, fragment)) => (path, Some(fragment)),
+        None => (text, None),
+    };
+    let named = if path.get(..7).is_some_and(|head| head.eq_ignore_ascii_case("file://")) { &path[7..] } else { path };
+    let bytes = named.as_bytes();
+    let drive = |b: &[u8]| b.len() > 1 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    if named.is_empty() || drive(bytes) || named.starts_with(['/', '\\']) || std::path::Path::new(named).is_absolute() {
+        return None;
+    }
+    let file = engine.options.local_file(path)?;
+    let mut resolved = format!("file://{}", file.display().to_string().replace('%', "%25"));
+    if let Some(fragment) = fragment {
+        resolved.push('#');
+        resolved.push_str(fragment);
+    }
+    Some(resolved)
+}
+
+/// A Content or content ID `variant` naming a relative local file, made to name it by [`local_uri`].
+pub fn localize(engine: &Engine, variant: &mut Variant) {
+    let resolved = match &*variant {
+        Variant::Content(content) => match content.value() {
+            dom::ContentType::Uri(uri) => local_uri(engine, uri).map(|uri| Variant::Content(dom::Content::from_uri(uri))),
+            _ => None,
+        },
+        Variant::ContentId(id) => local_uri(engine, id.as_str()).map(|uri| Variant::ContentId(uri.into())),
+        _ => None,
+    };
+    if let Some(resolved) = resolved {
+        *variant = resolved;
+    }
 }
 
 /// `value` as a playback value; None when playback cannot set it (instances, fonts, script values)
@@ -54,9 +95,9 @@ pub fn to_json(engine: &Engine, value: &Value) -> Option<Json> {
         Value::ColorSequence(s) => {
             Json::Array(s.keypoints.iter().map(|k| json!([round(k.time as f64), round(k.color.r as f64), round(k.color.g as f64), round(k.color.b as f64)])).collect())
         }
-        Value::Content(content) => match &**content {
-            ContentValue::Uri(uri) => json!(uri.to_str_lossy()),
-            _ => json!(""),
+        Value::Content(content) => match content.location() {
+            Some(uri) => json!(uri.to_str_lossy()),
+            None => json!(""),
         },
         Value::Dom(variant) => match &**variant {
             Variant::CFrame(cframe) => cframe_json(&frame::to_affine(cframe)),
@@ -130,7 +171,7 @@ pub fn to_variant(engine: &Engine, value: &Value, data_type: &DataType, refs: &d
         (VariantType::BinaryString, Value::String(s)) => Variant::BinaryString(s.as_bytes().to_vec().into()),
         (VariantType::ContentId, Value::String(s)) => Variant::ContentId(s.to_str_lossy().as_ref().into()),
         (VariantType::ContentId, Value::Content(c)) => Variant::ContentId(c.uri().map(|u| u.to_str_lossy().into_owned()).unwrap_or_default().into()),
-        (VariantType::Content, Value::Content(c)) => Variant::Content(match c.uri() {
+        (VariantType::Content, Value::Content(c)) => Variant::Content(match c.location() {
             Some(uri) if !uri.is_empty() => dom::Content::from_uri(uri.to_str_lossy().into_owned()),
             _ => dom::Content::none(),
         }),
@@ -195,7 +236,7 @@ pub fn untyped_variant(engine: &Engine, value: &Value, engine_type: crate::refle
         Value::NumberRange(r) => Variant::NumberRange(*r),
         Value::NumberSequence(s) => Variant::NumberSequence((**s).clone()),
         Value::ColorSequence(s) => Variant::ColorSequence((**s).clone()),
-        Value::Content(c) => Variant::Content(match c.uri() {
+        Value::Content(c) => Variant::Content(match c.location() {
             Some(uri) if !uri.is_empty() => dom::Content::from_uri(uri.to_str_lossy().into_owned()),
             _ => dom::Content::none(),
         }),

@@ -1,0 +1,198 @@
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-19
+name-from-integer ok  | "5" | registered ok true
+name-from-fraction ok  | "2.5" | registered ok true
+name-from-negative-zero ok  | "-0" | registered ok true
+name-from-large ok  | "1e+20" | registered ok true
+name-from-2^53 ok  | "9007199254740992" | registered ok true
+name-from-nan ok  | "NAN" | registered ok true
+name-from-inf ok  | "INF" | registered ok true
+name-from-true ok  | "true" | registered ok true
+name-from-false ok  | "false" | registered ok true
+name-from-empty-table ok  | "{}" | registered ok true
+name-from-array ok  | "{}" | registered ok true
+name-from-dictionary ok  | "{}" | registered ok true
+name-from-Vector3 ok  | "1, 2, 3" | registered ok true
+name-from-Instance ok  | "Instance" | registered ok true
+name-from-EnumItem ok  | "Plastic" | registered ok true
+name-from-function ok  | "function" | registered ok true
+name-from-minus-inf ok  | "-INF" | registered ok true
+name-from-tenth ok  | "0.10000000000000000555" | registered ok true
+name-from-third ok  | "0.33333333333333331483" | registered ok true
+name-from-buffer ok  | "buffer { Size = 2 }" | registered ok true
+name-from-thread ok  | "nil" | registered ok true
+name-from-Enum ok  | "nil" | registered ok true
+name-from-userdata ok  | "nil" | registered ok true
+name-from-Color3 ok  | "1, 0, 0" | registered ok true
+name-from-UDim2 ok  | "{1, 2}, {3, 4}" | registered ok true
+name-from-BrickColor ok  | "Bright red" | registered ok true
+collidable-from-0 ok  | ok false
+collidable-from-1 ok  | ok true
+collidable-from-half ok  | ok true
+collidable-from-minus-one ok  | ok true
+collidable-from-nan ok  | ok true
+collidable-from-true-string ok  | ok true
+collidable-from-empty-string error Unable to cast string to bool | ok true
+collidable-from-table error Unable to cast Array to bool | ok true
+collidable-from-Instance error Unable to cast Instance to bool | ok true
+collidable-from-Vector3 error Unable to cast Vector3 to bool | ok true
+collidable-from-EnumItem error Unable to cast Material to bool | ok true
+collidable-from-false-string ok  | ok false
+collidable-from-one-string error Unable to cast string to bool | ok true
+collidable-from-zero-string error Unable to cast string to bool | ok true
+collidable-from-TRUE-string ok  | ok true
+collidable-from-True-string ok  | ok true
+collidable-from-spaced-string error Unable to cast string to bool | ok true
+collidable-from-yes-string error Unable to cast string to bool | ok true
+collidable-from-function error Unable to cast Function to bool | ok true
+collidable-from-buffer error Unable to cast buffer to bool | ok true
+collidable-from-false ok  | ok false
+name-of-nil error Argument 1 missing or nil
+name-of-string-1 ok ArgA
+name-of-string-x error Unable to cast string to int
+name-of-fraction ok 
+name-of-almost-32 error The Collision group Id must be between 0 and 32
+name-of-minus-half error The Collision group Id must be between 0 and 32
+name-of-nan error The Collision group Id must be between 0 and 32
+name-of-table error Unable to cast Array to int
+name-of-true ok ArgA
+name-of-0.4 ok Default
+name-of-0.5 ok ArgA
+name-of--0.4 ok Default
+name-of-30.5 ok 
+name-of-31.4 ok 
+name-of-31.5 error The Collision group Id must be between 0 and 32
+name-of-inf error The Collision group Id must be between 0 and 32
+name-of--inf error The Collision group Id must be between 0 and 32
+name-of-2^31 error The Collision group Id must be between 0 and 32
+name-of-2^32 error The Collision group Id must be between 0 and 32
+name-of-2^32+1 error The Collision group Id must be between 0 and 32
+name-of--2^32 error The Collision group Id must be between 0 and 32
+name-of-string-1.5 ok 
+name-of-string-spaced ok ArgA
+name-of-string-hex ok ArgA
+name-of-false ok Default
+name-of-Vector3 error Unable to cast Vector3 to int
+name-of-Instance error Unable to cast Instance to int
+register-default-lower ok 
+register-DEFAULT ok 
+edge-names Default,ArgA,default,DEFAULT
+register-100-bytes ok 
+register-102-bytes error Collision group name length cannot exceed 100 chars
+register-nul ok 
+registered-nul ok true
+registered-nul-prefix ok false
+byte-names 3
+id-empty error Collision group not found.
+id-long error Collision group not found.
+collidable-empty ok true
+collidable-long ok true
+set-Default-Default ok 
+default-mask ok -2
+collidable-Default-Default ok false
+set-Default-Default-back ok 
+collidable-known-unknown ok true
+collidable-unknown-known ok true
+collidable-unknown-unknown ok true
+set-empty-known error Both collision groups must be registered.
+set-known-empty error Both collision groups must be registered.
+set-long-known error Both collision groups must be registered.
+set-unknown-bad-bool error Unable to cast string to bool
+set-nil-nil error Argument 3 missing or nil
+set-known-nil-bool error Unable to cast string to bool
+rename-unknown-empty error Collision group requires a valid name.
+rename-unknown-long error Collision group name length cannot exceed 100 chars
+rename-empty-x error Collision group requires a valid name.
+rename-long-x error Collision group name length cannot exceed 100 chars
+rename-Default-empty error Can not use/change the Default collision group.
+rename-empty-Default error Collision group requires a valid name.
+rename-nil-nil error Argument 2 missing or nil
+rename-nil-empty error Argument 1 missing or nil
+rename-empty-nil error Argument 2 missing or nil
+unregister-long error Collision group name length cannot exceed 100 chars
+create-existing error Could not register collision group, the name already exists.
+create-Default error Can not use/change the Default collision group.
+create-empty error Collision group requires a valid name.
+create-long error Collision group name length cannot exceed 100 chars
+create-nil error Argument 1 missing or nil
+remove-Default error Can not use/change the Default collision group.
+remove-empty error Collision group requires a valid name.
+remove-long error Collision group name length cannot exceed 100 chars
+remove-nil error Argument 1 missing or nil
+after-errors Default,ArgA
+full 32
+full-existing error Cannot register more than 32 collision groups in this world.
+full-Default error Can not use/change the Default collision group.
+full-empty error Collision group requires a valid name.
+full-long error Collision group name length cannot exceed 100 chars
+full-new error Cannot register more than 32 collision groups in this world.
+full-create-existing error Cannot register more than 32 collision groups.
+full-rename ok 
+full-names ArgLimit29,ArgLimit30,ArgRenamed
+full-name-31 ok ArgRenamed
+full-id-renamed ok 31
+contains-nil error Parameter 2 must be BasePart in CollisionGroupContainsPart.
+contains-folder error Parameter 2 must be BasePart in CollisionGroupContainsPart.
+contains-string error Unable to cast value to Object
+contains-default ok true
+contains-unknown-name ok false
+contains-nil-name error Argument 1 missing or nil
+contains-nil-nil error Argument 1 missing or nil
+contains-number-name ok false
+set-part-nil-nil error Argument 2 missing or nil
+set-part-string error Unable to cast value to Object
+set-part-unknown ok 
+part-after-unknown ok Nope 0
+set-part-empty ok 
+set-part-long ok 
+set-part-nil-name error Argument 2 missing or nil
+set-part-nil error Parameter 1 must be BasePart in SetPartCollisionGroup.
+set-part-folder error Parameter 1 must be BasePart in SetPartCollisionGroup.
+part-after-edges ok LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL 0
+part-long-name ok 100
+part-unicode-cut ok 100
+part-number-name ok 2.5
+part-nil-name error Unable to assign property CollisionGroup. string expected, got nil
+part-bool-name error Unable to assign property CollisionGroup. string expected, got boolean
+placed-default ok Default 0
+placed-set-B ok ArgB 2
+placed-set-B-later ok ArgB 2
+placed-set-id-1 ok ArgB 1
+placed-set-id-1-later ok ArgB 1
+placed-set-unknown ok Nope -1
+placed-set-unknown-later ok Nope -1
+placed-contains-Nope ok true
+placed-unregister ok ArgB -1
+placed-rename ok ArgA -1
+outside ok 0 0
+entered ok 2 2
+entered-later ok 2 2
+left ok 2
+left-set ok ArgA 2
+entered-with-id ok ArgA 1
+placed-unknown ok -1
+register-late ok 
+placed-registered-late ok 3
+placed-registered-late-later ok 3
+register-other ok 
+placed-id-after-register ok ArgLate 3
+set-collidable ok 
+placed-id-after-collidable ok ArgLate 3
+unregister-other ok 
+placed-id-after-unregister ok ArgLate 3
+placed-empty ok ArgLate 3
+placed-same ok ArgLate 11
+placed-set-part ok ArgA 1
+changed-name-outside ok  | CollisionGroup | ArgA 4 0
+changed-enter ok  | CollisionGroupId | ArgA 4 1
+changed-name-placed ok  | CollisionGroup,CollisionGroupId | ArgNope 7 -1
+changed-empty ok  |  | ArgNope 7 -1
+changed-same ok  |  | ArgNope 7 -1
+changed-register ok  | CollisionGroupId | ArgNope 7 2
+changed-id ok  | CollisionGroupId | ArgNope 7 5
+changed-collidable ok  |  | ArgNope 7 5
+changed-unregister ok  | CollisionGroupId | ArgNope 7 2
+changed-long ok  | CollisionGroup,CollisionGroupId | LLLLLLLL 100 -1
+changed-long-again ok  |  | LLLLLLLL 100 -1
+changed-leave ok  |  | LLLLLLLL 100 -1
+end Default

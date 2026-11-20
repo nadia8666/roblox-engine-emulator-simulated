@@ -137,8 +137,8 @@ fn unimplemented_function(lua: &Lua, engine: &Rc<Engine>, class: ClassId, name: 
     let e = engine.clone();
     let class_label = engine.reflection.class(class).name.to_string();
     let member = engine.reflection.name(name).to_string();
-    let function = lua.create_function(move |_, _: LuaMultiValue| {
-        e.state.borrow_mut().output.missing(&class_label, &member);
+    let function = lua.create_function(move |lua, _: LuaMultiValue| {
+        e.missing(Some(lua), &class_label, &member);
         Ok(())
     })?;
     engine.lua.borrow_mut().unimplemented.insert((class, name), function.clone());
@@ -147,10 +147,17 @@ fn unimplemented_function(lua: &Lua, engine: &Rc<Engine>, class: ClassId, name: 
 
 /// Hooks.Materialize (Studio-only children, once per instance) before children are looked up.
 pub fn materialize(engine: &Engine, id: InstanceId) {
+    // (a loopback pair's two sides make the same Studio-only instances and pair them: loopback/lazy.rs)
+    let before = if engine.loopback.borrow().is_some() { engine.state.borrow().dom.get(id).map(|instance| instance.children.len()) } else { None };
     #[cfg(feature = "bundles")]
     project::model_assets::materialize(engine, id);
-    let mut state = engine.state.borrow_mut();
-    project::materialize(&mut state, &engine.reflection, id);
+    {
+        let mut state = engine.state.borrow_mut();
+        project::materialize(&mut state, &engine.reflection, id);
+    }
+    if let Some(before) = before {
+        crate::loopback::lazy::materialized(engine, id, before);
+    }
 }
 
 /// A manifest bundle's placeholder ([`flags::BUNDLE_ROOT`]) a script is about to find, test or touch
@@ -356,11 +363,18 @@ pub fn assign(lua: &Lua, engine: &Rc<Engine>, id: InstanceId, key: &LuaValue, va
     };
     match member {
         Member::Callback => {
-            let mut state = engine.state.borrow_mut();
-            let callbacks = state.dom.at_mut(id).callbacks.vec_mut();
-            match callbacks.iter_mut().find(|(n, _)| *n == name) {
-                Some(entry) => entry.1 = value.clone(),
-                None => callbacks.push((name, value.clone())),
+            // (a loopback run refuses the other side's callback, and runs the invokes that waited for this one)
+            crate::loopback::remotes::setting_callback(engine, name)?;
+            {
+                let mut state = engine.state.borrow_mut();
+                let callbacks = state.dom.at_mut(id).callbacks.vec_mut();
+                match callbacks.iter_mut().find(|(n, _)| *n == name) {
+                    Some(entry) => entry.1 = value.clone(),
+                    None => callbacks.push((name, value.clone())),
+                }
+            }
+            if engine.loopback.borrow().is_some() && matches!(value, LuaValue::Function(_)) {
+                crate::loopback::remotes::callback_set(lua, engine, id)?;
             }
             return Ok(());
         }
@@ -386,10 +400,42 @@ pub fn assign(lua: &Lua, engine: &Rc<Engine>, id: InstanceId, key: &LuaValue, va
                 return raise(format!("Unable to assign property {}. Property is read only", key_text(key)));
             }
             let coerced = convert::coerce(lua, engine, &info, value)?;
-            script_set_property(engine, id, name, coerced);
+            if script_set_property(engine, id, name, coerced) && unemulated_write(engine, class, name) {
+                report_unemulated_write(engine, id, name, || super::script_position(lua));
+            }
             Ok(())
         }
         _ => Err(not_a_member(engine, id, key)),
+    }
+}
+
+/// Whether a write of `class`'s property `name` does more in a client than store the value, in a way the engine does not
+/// emulate, so that a script's write that changes it reports itself ([`report_unemulated_write`]; lua/raw.rs Write::Watched):
+/// a Humanoid's Health. Roblox's Humanoid documentation: a change of Health fires HealthChanged, the Humanoid dies (Died, the
+/// Dead state, its joints broken) when Health reaches 0, and Health stays between 0 and MaxHealth; ree has no Humanoid
+/// simulation, so none of that happens here and the value is stored as written.
+pub fn unemulated_write(engine: &Engine, class: ClassId, name: NameId) -> bool {
+    engine.reflection.name(name) == "Health" && engine.reflection.is_a(class, "Humanoid")
+}
+
+/// A script's write of an [`unemulated_write`] property changed it (stored as written): what a client does beside it is
+/// reported (Output `missing`), at the script's position `at` gives. A Humanoid's Health: HealthChanged for any change, Died at
+/// 0 or below, and a value outside 0..MaxHealth (which a client keeps within them) as such.
+pub fn report_unemulated_write(engine: &Engine, id: InstanceId, name: NameId, at: impl Fn() -> Option<String>) {
+    let (health, max) = {
+        let state = engine.state.borrow();
+        let number = |name: Option<NameId>| match name.and_then(|name| state.dom.raw_get(id, name)) {
+            Some(Value::Number(number)) => *number,
+            _ => f64::NAN,
+        };
+        (number(Some(name)), number(engine.reflection.name_id("MaxHealth")))
+    };
+    engine.missing_where("Humanoid", "HealthChanged", &at);
+    if health <= 0.0 {
+        engine.missing_where("Humanoid", "Died", &at);
+    }
+    if health < 0.0 || health > max {
+        engine.missing_where("Humanoid", "Health outside 0..MaxHealth", &at);
     }
 }
 
@@ -1246,13 +1292,14 @@ fn install_base(behaviors: &mut Behaviors, reflection: &crate::Reflection) {
         Ok(values([LuaValue::String(lua.create_string(full_name(engine, id))?)]))
     }));
     let clone_method = method(|lua, engine, id, _| {
-        // A service cannot be cloned (measured likewise: `Lighting cannot be cloned`, `Players cannot be cloned`)
+        // A service cannot be cloned (measured likewise: `Lighting cannot be cloned`, `Players cannot be cloned`), nor a settings
+        // root (`Global Settings cannot be cloned`, `GlobalBasicSettings cannot be cloned`: services/settings.rs)
         let (class, name) = {
             let state = engine.state.borrow();
             let instance = state.dom.at(id);
             (instance.class, instance.name.to_str_lossy().into_owned())
         };
-        if engine.reflection.class(class).service {
+        if engine.reflection.class(class).service || crate::services::settings::is_root(&engine.reflection, class) {
             return raise(format!("{name} cannot be cloned"));
         }
         optional_instance(lua, engine, clone(engine, id))

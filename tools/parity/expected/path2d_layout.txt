@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, a rendered desktop playing client (script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-11
+# engine: Roblox Studio 0.747.0.7471481, a rendered desktop playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 screen Vector2(1920 1080) frame Vector2(50 -28) Vector2(200 100)
 frame length -> 256.431
 frame rect -> Rect(49 29 251 111)

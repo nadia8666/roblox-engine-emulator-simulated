@@ -9,7 +9,7 @@
 #include <endian.h>
 #endif
 
-LUAU_FASTFLAG(LuauIntegerLibrary)
+LUAU_FASTFLAGVARIABLE(DebugLuauBufferVectorLibrary)
 
 #include <string.h>
 
@@ -107,44 +107,6 @@ static int buffer_writeinteger(lua_State* L)
     return 0;
 }
 
-static int buffer_readlong(lua_State* L)
-{
-    size_t len = 0;
-    void* buf = luaL_checkbuffer(L, 1, &len);
-    int offset = luaL_checkinteger(L, 2);
-
-    if (isoutofbounds(offset, len, sizeof(uint64_t)))
-        luaL_error(L, "buffer access out of bounds");
-
-    int64_t val;
-    memcpy(&val, (char*)buf + offset, sizeof(int64_t));
-
-#if defined(LUAU_BIG_ENDIAN)
-    val = buffer_swapbe(val);
-#endif
-
-    lua_pushinteger64(L, val);
-    return 1;
-}
-
-static int buffer_writelong(lua_State* L)
-{
-    size_t len = 0;
-    void* buf = luaL_checkbuffer(L, 1, &len);
-    int offset = luaL_checkinteger(L, 2);
-    int64_t value = luaL_checkinteger64(L, 3);
-
-    if (isoutofbounds(offset, len, sizeof(int64_t)))
-        luaL_error(L, "buffer access out of bounds");
-
-#if defined(LUAU_BIG_ENDIAN)
-    value = buffer_swapbe(value);
-#endif
-
-    memcpy((char*)buf + offset, &value, sizeof(int64_t));
-    return 0;
-}
-
 template<typename T, typename StorageType>
 static int buffer_readfp(lua_State* L)
 {
@@ -194,6 +156,71 @@ static int buffer_writefp(lua_State* L)
     memcpy((char*)buf + offset, &tmp, sizeof(tmp));
 #else
     memcpy((char*)buf + offset, &val, sizeof(T));
+#endif
+
+    return 0;
+}
+
+// Vector components are always serialized as 'N' contiguous little-endian 32-bit floats, independent of the VM's
+// in-memory 'vector' representation (see the 'f32' suffix on the exposed names). LUA_VECTOR_DOUBLE builds narrow to f32.
+template<int N>
+static int buffer_readvector(lua_State* L)
+{
+    size_t len = 0;
+    void* buf = luaL_checkbuffer(L, 1, &len);
+    int offset = luaL_checkinteger(L, 2);
+
+    if (isoutofbounds(offset, len, N * sizeof(float)))
+        luaL_error(L, "buffer access out of bounds");
+
+    float components[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+#if defined(LUAU_BIG_ENDIAN)
+    for (int i = 0; i < N; i++)
+    {
+        uint32_t raw;
+        memcpy(&raw, (char*)buf + offset + i * sizeof(float), sizeof(raw));
+        raw = buffer_swapbe(raw);
+        memcpy(&components[i], &raw, sizeof(raw));
+    }
+#else
+    memcpy(components, (char*)buf + offset, N * sizeof(float));
+#endif
+
+#if LUA_VECTOR_SIZE == 4
+    lua_pushvector(L, components[0], components[1], components[2], components[3]);
+#else
+    lua_pushvector(L, components[0], components[1], components[2]);
+#endif
+
+    return 1;
+}
+
+template<int N>
+static int buffer_writevector(lua_State* L)
+{
+    size_t len = 0;
+    void* buf = luaL_checkbuffer(L, 1, &len);
+    int offset = luaL_checkinteger(L, 2);
+    const LUA_VECTOR_TYPE* vec = luaL_checkvector(L, 3);
+
+    if (isoutofbounds(offset, len, N * sizeof(float)))
+        luaL_error(L, "buffer access out of bounds");
+
+    float components[4];
+    for (int i = 0; i < N; i++)
+        components[i] = float(vec[i]);
+
+#if defined(LUAU_BIG_ENDIAN)
+    for (int i = 0; i < N; i++)
+    {
+        uint32_t raw;
+        memcpy(&raw, &components[i], sizeof(raw));
+        raw = buffer_swapbe(raw);
+        memcpy((char*)buf + offset + i * sizeof(float), &raw, sizeof(raw));
+    }
+#else
+    memcpy((char*)buf + offset, components, N * sizeof(float));
 #endif
 
     return 0;
@@ -373,68 +400,6 @@ static int buffer_writebits(lua_State* L)
     return 0;
 }
 
-// buffer.readvectorf32x2/x3: N contiguous binary32 values as a vector's first N components, the rest zero
-template<int N>
-static int buffer_readvectorf32(lua_State* L)
-{
-    size_t len = 0;
-    void* buf = luaL_checkbuffer(L, 1, &len);
-    int offset = luaL_checkinteger(L, 2);
-
-    if (isoutofbounds(offset, len, N * sizeof(float)))
-        luaL_error(L, "buffer access out of bounds");
-
-    float v[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-
-    for (int i = 0; i < N; i++)
-    {
-#if defined(LUAU_BIG_ENDIAN)
-        uint32_t tmp;
-        memcpy(&tmp, (char*)buf + offset + i * sizeof(float), sizeof(tmp));
-        tmp = buffer_swapbe(tmp);
-        memcpy(&v[i], &tmp, sizeof(tmp));
-#else
-        memcpy(&v[i], (char*)buf + offset + i * sizeof(float), sizeof(float));
-#endif
-    }
-
-#if LUA_VECTOR_SIZE == 4
-    lua_pushvector(L, v[0], v[1], v[2], v[3]);
-#else
-    lua_pushvector(L, v[0], v[1], v[2]);
-#endif
-    return 1;
-}
-
-// buffer.writevectorf32x2/x3: a vector's first N components as contiguous binary32 values
-template<int N>
-static int buffer_writevectorf32(lua_State* L)
-{
-    size_t len = 0;
-    void* buf = luaL_checkbuffer(L, 1, &len);
-    int offset = luaL_checkinteger(L, 2);
-    const LUA_VECTOR_TYPE* value = luaL_checkvector(L, 3);
-
-    if (isoutofbounds(offset, len, N * sizeof(float)))
-        luaL_error(L, "buffer access out of bounds");
-
-    for (int i = 0; i < N; i++)
-    {
-        float val = float(value[i]);
-
-#if defined(LUAU_BIG_ENDIAN)
-        uint32_t tmp;
-        memcpy(&tmp, &val, sizeof(tmp));
-        tmp = buffer_swapbe(tmp);
-        memcpy((char*)buf + offset + i * sizeof(float), &tmp, sizeof(tmp));
-#else
-        memcpy((char*)buf + offset + i * sizeof(float), &val, sizeof(float));
-#endif
-    }
-
-    return 0;
-}
-
 static const luaL_Reg bufferlib[] = {
     {"create", buffer_create},
     {"fromstring", buffer_fromstring},
@@ -462,55 +427,28 @@ static const luaL_Reg bufferlib[] = {
     {"fill", buffer_fill},
     {"readbits", buffer_readbits},
     {"writebits", buffer_writebits},
-    {"readinteger", buffer_readlong},
-    {"writeinteger", buffer_writelong},
-    {"readvectorf32x2", buffer_readvectorf32<2>},
-    {"readvectorf32x3", buffer_readvectorf32<3>},
-    {"writevectorf32x2", buffer_writevectorf32<2>},
-    {"writevectorf32x3", buffer_writevectorf32<3>},
     {NULL, NULL},
 };
 
-static const luaL_Reg bufferlib_NOINTEGER[] = {
-    {"create", buffer_create},
-    {"fromstring", buffer_fromstring},
-    {"tostring", buffer_tostring},
-    {"readi8", buffer_readinteger<int8_t>},
-    {"readu8", buffer_readinteger<uint8_t>},
-    {"readi16", buffer_readinteger<int16_t>},
-    {"readu16", buffer_readinteger<uint16_t>},
-    {"readi32", buffer_readinteger<int32_t>},
-    {"readu32", buffer_readinteger<uint32_t>},
-    {"readf32", buffer_readfp<float, uint32_t>},
-    {"readf64", buffer_readfp<double, uint64_t>},
-    {"writei8", buffer_writeinteger<int8_t>},
-    {"writeu8", buffer_writeinteger<uint8_t>},
-    {"writei16", buffer_writeinteger<int16_t>},
-    {"writeu16", buffer_writeinteger<uint16_t>},
-    {"writei32", buffer_writeinteger<int32_t>},
-    {"writeu32", buffer_writeinteger<uint32_t>},
-    {"writef32", buffer_writefp<float, uint32_t>},
-    {"writef64", buffer_writefp<double, uint64_t>},
-    {"readstring", buffer_readstring},
-    {"writestring", buffer_writestring},
-    {"len", buffer_len},
-    {"copy", buffer_copy},
-    {"fill", buffer_fill},
-    {"readbits", buffer_readbits},
-    {"writebits", buffer_writebits},
-    {"readvectorf32x2", buffer_readvectorf32<2>},
-    {"readvectorf32x3", buffer_readvectorf32<3>},
-    {"writevectorf32x2", buffer_writevectorf32<2>},
-    {"writevectorf32x3", buffer_writevectorf32<3>},
+static const luaL_Reg buffervectorlib[] = {
+    {"readvectorf32x2", buffer_readvector<2>},
+    {"readvectorf32x3", buffer_readvector<3>},
+    {"writevectorf32x2", buffer_writevector<2>},
+    {"writevectorf32x3", buffer_writevector<3>},
+#if LUA_VECTOR_SIZE == 4
+    {"readvectorf32x4", buffer_readvector<4>},
+    {"writevectorf32x4", buffer_writevector<4>},
+#endif
     {NULL, NULL},
 };
 
 int luaopen_buffer(lua_State* L)
 {
-    if (FFlag::LuauIntegerLibrary)
-        luaL_register(L, LUA_BUFFERLIBNAME, bufferlib);
-    else
-        luaL_register(L, LUA_BUFFERLIBNAME, bufferlib_NOINTEGER);
+    luaL_register(L, LUA_BUFFERLIBNAME, bufferlib);
+
+    // register into the buffer table left on the stack by the call above
+    if (FFlag::DebugLuauBufferVectorLibrary)
+        luaL_register(L, NULL, buffervectorlib);
 
     return 1;
 }

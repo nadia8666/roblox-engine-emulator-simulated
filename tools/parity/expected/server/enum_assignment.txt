@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 enum nil | error Unable to assign property Material. EnumItem, number, or string expected, got nil | error Unable to assign property Font. EnumItem, number, or string expected, got nil
 enum boolean | error Unable to assign property Material. EnumItem, number, or string expected, got boolean | error Unable to assign property Font. EnumItem, number, or string expected, got boolean
 enum table | error Unable to assign property Material. EnumItem, number, or string expected, got table | error Unable to assign property Font. EnumItem, number, or string expected, got table

@@ -1,0 +1,9 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless play session of one server and one client in processes of their own (the server's half a server Script from the server's start, the client's half a job in the client; script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-19
+# repeated: 3 captures, the same lines
+server: server deepest send 298, one more: error Max lua stack size reached
+server: server got heights up to 299 of 4
+client: client got heights up to 298 of 4
+client: client deepest send 299, one more: error Max lua stack size reached
+client: invoke returning 100 deep ok 100
+client: invoke returning 1000 deep error Max lua stack size reached

@@ -1,0 +1,158 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-19
+empty nfc - nfd -
+ascii nfc 0061 0062 0063 nfd 0061 0062 0063
+nul-then-mark nfc 0061 0000 0301 nfd 0061 0000 0301
+e-acute nfc 00E9 nfd 0065 0301
+e+acute nfc 00E9 nfd 0065 0301
+A-ring nfc 00C5 nfd 0041 030A
+A+ring nfc 00C5 nfd 0041 030A
+A-ring+acute nfc 01FA nfd 0041 030A 0301
+u-diaeresis-macron nfc 01D6 nfd 0075 0308 0304
+u+diaeresis+macron nfc 01D6 nfd 0075 0308 0304
+u-diaeresis+macron nfc 01D6 nfd 0075 0308 0304
+e-dotbelow-circumflex nfc 1EC7 nfd 0065 0323 0302
+two-letters nfc 00E9 00E9 nfd 0065 0301 0065 0301
+mark-first nfc 0301 0065 nfd 0301 0065
+acute+acute nfc 00E1 0301 nfd 0061 0301 0301
+a+dotbelow+circumflex nfc 1EAD nfd 0061 0323 0302
+a+circumflex+dotbelow nfc 00E2 0323 nfd 0061 0302 0323
+a-dotbelow+circumflex nfc 1EAD nfd 0061 0323 0302
+a-circumflex+dotbelow nfc 00E2 0323 nfd 0061 0302 0323
+a-dotbelow-circumflex nfc 1EAD nfd 0061 0323 0302
+a+acute+dotbelow nfc 00E1 0323 nfd 0061 0301 0323
+o+horn+acute nfc 1EDB nfd 006F 031B 0301
+o+acute+horn nfc 00F3 031B nfd 006F 0301 031B
+a+gravebelow+acute nfc 0061 0316 0301 nfd 0061 0316 0301
+a+diaeresis+acute nfc 00E4 0301 nfd 0061 0308 0301
+a+diaeresis+macron nfc 01DF nfd 0061 0308 0304
+e+cedilla+breve nfc 1E1D nfd 0065 0327 0306
+e+breve+cedilla nfc 0115 0327 nfd 0065 0306 0327
+alpha+psili+varia+ypogegrammeni nfc 1F82 nfd 03B1 0313 0300 0345
+alpha+ypogegrammeni+psili+varia nfc 1FB3 0313 0300 nfd 03B1 0345 0313 0300
+alpha-psili-varia-ypogegrammeni nfc 1F82 nfd 03B1 0313 0300 0345
+iota-dialytika-tonos nfc 0390 nfd 03B9 0308 0301
+alpha-oxia nfc 1F71 nfd 03B1 0301 0000
+alpha-oxia+ypogegrammeni nfc 1F71 0345 nfd 03B1 0301 0000 0345
+angstrom nfc 212B nfd 0041 030A 0000
+angstrom+acute nfc 212B 0301 nfd 0041 030A 0000 0301
+ohm nfc 2126 nfd 03A9 0000
+kelvin nfc 212A nfd 004B 0000
+en-quad nfc 2000 nfd 2002 0000
+em-quad nfc 2001 nfd 2003 0000
+grave-tone-mark nfc 0340 nfd 0300 0000
+acute-tone-mark nfc 0341 nfd 0301 0000
+koronis nfc 0343 nfd 0313 0000
+greek-question-mark nfc 037E nfd 003B 0000
+ano-teleia nfc 0387 nfd 00B7 0000
+singleton-then-letter nfc 212B 0062 nfd 0041 030A 0000 0062
+letter-then-singleton nfc 0062 212B nfd 0062 0041 030A 0000
+two-singletons nfc 2126 2126 nfd 03A9 0000 03A9 0000
+singleton+mark nfc 2126 0301 nfd 03A9 0000 0301
+cjk-compat-F900 nfc F900 nfd 8C48 0000
+cjk-compat-FA10 nfc FA10 nfd 585A 0000
+cjk-compat-2F800 nfc 2F800 nfd 4E3D 0000
+cjk-compat-2FA1D nfc 2FA1D nfd 2A600 0000
+fi-ligature nfc FB01 nfd FB01
+circled-one nfc 2460 nfd 2460
+one-half nfc 00BD nfd 00BD
+superscript-two nfc 00B2 nfd 00B2
+fullwidth-A nfc FF21 nfd FF21
+fullwidth-A+ring nfc FF21 030A nfd FF21 030A
+no-break-space nfc 00A0 nfd 00A0
+long-s-dot nfc 1E9B nfd 017F 0307
+long-s+dot nfc 1E9B nfd 017F 0307
+hangul-ga nfc AC00 nfd 1100 1161
+hangul-gak nfc AC01 nfd 1100 1161 11A8
+hangul-last nfc D7A3 nfd 1112 1175 11C2
+jamo-L+V nfc AC00 nfd 1100 1161
+jamo-L+V+T nfc AC01 nfd 1100 1161 11A8
+jamo-last-L+V+T nfc D7A3 nfd 1112 1175 11C2
+syllable-LV+T nfc AC01 nfd 1100 1161 11A8
+syllable-LVT+T nfc AC02 nfd 1100 1161 11A8 11A8
+syllable-LV+T-base nfc AC00 nfd 1100 1161 11A7
+syllable-LV+T-last nfc AC1B nfd 1100 1161 11C2
+jamo-L+old-V nfc 1100 1176 nfd 1100 1176
+jamo-old-L+V nfc 1113 1161 nfd 1113 1161
+jamo-L+L+V nfc 1100 AC00 nfd 1100 1100 1161
+jamo-L+mark+V nfc 1100 0301 1161 nfd 1100 0301 1161
+jamo-V+T nfc 1161 11A8 nfd 1161 11A8
+jamo-L+V+T+T nfc AC02 nfd 1100 1161 11A8 11A8
+jamo-L+V+T-base+T nfc AC01 nfd 1100 1161 11A7 11A8
+syllable-LVT+T-base nfc AC01 nfd 1100 1161 11A8 11A7
+syllable-T27+T nfc AC1C nfd 1100 1161 11C2 11A8
+syllable-last+T nfc D7A4 nfd 1112 1175 11C2 11A8
+syllable-last+T+T nfc D7A4 11A8 nfd 1112 1175 11C2 11A8 11A8
+syllable-LV+old-T nfc AC00 11C3 nfd 1100 1161 11C3
+syllable-LV+V nfc AC00 1161 nfd 1100 1161 1161
+jamo-L+filler-V nfc 1100 1160 nfd 1100 1160
+jamo-filler-L+V nfc 115F 1161 nfd 115F 1161
+compat-jamo nfc 3131 314F nfd 3131 314F
+devanagari-qa nfc 0958 nfd 0915 093C
+devanagari-ka+nukta nfc 0915 093C nfd 0915 093C
+hebrew-yod-hiriq nfc FB1D nfd 05D9 05B4
+hebrew-yod+hiriq nfc 05D9 05B4 nfd 05D9 05B4
+forking nfc 2ADC nfd 2ADD 0338
+forking-parts nfc 2ADD 0338 nfd 2ADD 0338
+dialytika-tonos-mark nfc 0344 nfd 0308 0301
+diaeresis+acute-marks nfc 0308 0301 nfd 0308 0301
+tibetan-F73 nfc 0F73 nfd 0F71 0F72
+tibetan-F71+F72 nfc 0F71 0F72 nfd 0F71 0F72
+musical-1D15E nfc 1D15E nfd 1D157 1D165
+musical-1D157+1D165 nfc 1D157 1D165 nfd 1D157 1D165
+oriya-B47+B3E nfc 0B4B nfd 0B47 0B3E
+kannada-CC6+CC2 nfc 0CCA nfd 0CC6 0CC2
+kannada-CC6+CC2+CD5 nfc 0CCB nfd 0CC6 0CC2 0CD5
+u5.2-kaithi-11099+110BA nfc 1109A nfd 11099 110BA
+u6.1-chakma-11131+11127 nfc 1112E nfd 11131 11127
+u7.0-grantha-11347+1133E nfc 1134B nfd 11347 1133E
+u7.0-tirhuta-114B9+114BA nfc 114BB nfd 114B9 114BA
+u13.0-dives-akuru-11935+11930 nfc 11935 11930 nfd 11935 11930
+u13.0-dives-akuru-11938 nfc 11938 nfd 11938
+u16.0-todhri-105D2+307 nfc 105D2 0307 nfd 105D2 0307
+u16.0-todhri-105C9 nfc 105C9 nfd 105C9
+u16.0-gurung-khema-16D67+16D67 nfc 16D67 16D67 nfd 16D67 16D67
+private-use nfc E000 nfd E000
+noncharacter nfc FFFF nfd FFFF
+last-code-point nfc 10FFFF nfd 10FFFF
+emoji+mark nfc 1F600 0301 nfd 1F600 0301
+nfd-angstrom-written nfc 00C5 0000 nfd 0041 030A 0000
+nul+acute nfc 0000 0301 nfd 0000 0301
+A+ring+nul+acute nfc 00C5 0000 0301 nfd 0041 030A 0000 0301
+bad-FF nfc error String contains invalid UTF-8 nfd error String contains invalid UTF-8
+bad-continuation nfc error String contains invalid UTF-8 nfd error String contains invalid UTF-8
+bad-truncated nfc error End of string is invalid UTF-8 nfd error End of string is invalid UTF-8
+bad-truncated-mark nfc error End of string is invalid UTF-8 nfd error End of string is invalid UTF-8
+bad-overlong nfc error String contains invalid UTF-8 nfd error String contains invalid UTF-8
+bad-surrogate nfc error String contains invalid UTF-8 nfd error String contains invalid UTF-8
+bad-above-max nfc error String contains invalid UTF-8 nfd error String contains invalid UTF-8
+bad-after-letter+mark nfc error String contains invalid UTF-8 nfd error String contains invalid UTF-8
+bad-between-letter-and-mark nfc error String contains invalid UTF-8 nfd error String contains invalid UTF-8
+bad-after-angstrom nfc error String contains invalid UTF-8 nfd error String contains invalid UTF-8
+nfc-of-nfd 212B -> 00C5 0000 nfd-of-nfc -> 0041 030A 0000
+nfc-of-nfd 1F71 -> 03AC 0000 nfd-of-nfc -> 03B1 0301 0000
+nfc-of-nfd F900 -> 8C48 0000 nfd-of-nfc -> 8C48 0000
+nfc-of-nfd 0061 0302 0323 -> 00E2 0323 nfd-of-nfc -> 0061 0302 0323
+nfc-of-nfd AC01 -> AC01 nfd-of-nfc -> 1100 1161 11A8
+nfc-of-nfd 0958 -> 0915 093C nfd-of-nfc -> 0915 093C
+nfc-of-nfd 0344 -> 0308 0301 nfd-of-nfc -> 0308 0301
+arg-none nfc error missing argument #1 to 'nfcnormalize' (string expected) nfd error missing argument #1 to 'nfdnormalize' (string expected)
+arg-nil nfc error invalid argument #1 to 'nfcnormalize' (string expected, got nil) nfd error invalid argument #1 to 'nfdnormalize' (string expected, got nil)
+arg-integer nfc 0031 0032 0033 nfd 0031 0032 0033
+arg-float nfc 002D 0030 002E 0035 nfd 002D 0030 002E 0035
+arg-boolean nfc error invalid argument #1 to 'nfcnormalize' (string expected, got boolean) nfd error invalid argument #1 to 'nfdnormalize' (string expected, got boolean)
+arg-table nfc error invalid argument #1 to 'nfcnormalize' (string expected, got table) nfd error invalid argument #1 to 'nfdnormalize' (string expected, got table)
+arg-function nfc error invalid argument #1 to 'nfcnormalize' (string expected, got function) nfd error invalid argument #1 to 'nfdnormalize' (string expected, got function)
+arg-buffer nfc error invalid argument #1 to 'nfcnormalize' (string expected, got buffer) nfd error invalid argument #1 to 'nfdnormalize' (string expected, got buffer)
+arg-thread nfc error invalid argument #1 to 'nfcnormalize' (string expected, got thread) nfd error invalid argument #1 to 'nfdnormalize' (string expected, got thread)
+arg-vector3 nfc error invalid argument #1 to 'nfcnormalize' (string expected, got Vector3) nfd error invalid argument #1 to 'nfdnormalize' (string expected, got Vector3)
+arg-color3 nfc error invalid argument #1 to 'nfcnormalize' (string expected, got Color3) nfd error invalid argument #1 to 'nfdnormalize' (string expected, got Color3)
+arg-instance nfc error invalid argument #1 to 'nfcnormalize' (string expected, got Instance) nfd error invalid argument #1 to 'nfdnormalize' (string expected, got Instance)
+arg-extra nfc 00E9 nfd 0065 0301
+arg-direct error @210: invalid argument #1 to 'nfcnormalize' (string expected, got nil) / error @212: invalid argument #1 to 'nfdnormalize' (string expected, got table)
+bad-direct error @215: String contains invalid UTF-8 / error @217: End of string is invalid UTF-8
+type function function false
+long-nfc bytes 40000 codes 20000 same true
+long-nfd bytes 80000 codes 60000 same true
+scan nfd changes 13232 (hangul 11172) hash BAB26028; nfc changes 0
+scan nfc of nfd gives back 12112 hash DDA27138

@@ -49,13 +49,20 @@ pub fn to_lua(lua: &Lua, engine: &Engine, value: &Value) -> LuaResult<LuaValue> 
             LuaValue::UserData(lua.create_userdata(lune::ColorSequence::from((**v).clone()))?)
         }
         Value::Font(font) => LuaValue::UserData(lua.create_any_userdata(LFont(std::cell::RefCell::new((**font).clone())))?),
-        Value::Content(content) => LuaValue::UserData(lua.create_any_userdata(LContent((**content).clone()))?),
+        Value::Content(content) => LuaValue::UserData(lua.create_any_userdata(LContent::new(lua, (**content).clone()))?),
         Value::Dom(variant) => dom_to_lua(lua, variant)?,
         Value::Lua(value) => {
             // (a table or buffer BindableEvent:Fire sent: every receiver gets a copy of its own, lua/bindable.rs)
             if let LuaValue::UserData(userdata) = &**value {
                 if let Ok(copied) = userdata.borrow::<super::bindable::Copied>() {
                     return super::bindable::rebuild(lua, &copied.0);
+                }
+                // (a loopback run's received table or buffer: each handler rebuilds its own, loopback/copier.rs)
+                if let Ok(delivered) = userdata.borrow::<crate::loopback::wire::Delivered>() {
+                    return match &*delivered.0 {
+                        crate::loopback::wire::Wire::Buffer(bytes) => lua.create_buffer(&bytes[..]).map(LuaValue::Buffer),
+                        wire => crate::loopback::copier::rebuild_table(lua, engine, wire, &|id| Some(id)),
+                    };
                 }
             }
             (**value).clone()
@@ -216,8 +223,49 @@ fn int64_for(number: f64) -> f64 {
     if rounded >= -9.223372036854775808e18 && rounded < 9.223372036854775808e18 { rounded } else { 0.0 }
 }
 
+/// A method's `int64` argument at `index` (1 is the first after self), as a playing client and a server cast it (Studio 0.747,
+/// Player's group methods: tools/parity/probes/loopback/player_groups.luau). A number rounds half away from zero, as an
+/// `int64` property's does, but a finite one out of range is the least int64 (2^63, 1e20 and -1e20 name one group) and NaN
+/// and the infinities are 0; true is 1 and false 0; a string must be a whole decimal number in range, read exactly
+/// ("9007199254740993" is not 2^53): an optional "-" and leading zeros, spaces around it ("+43", "47.0", "4.8e1", "0x3d"
+/// and "9223372036854775808" raise; other whitespace than a space is C's isspace, not measured). Err: the message, without
+/// a position ("Argument 1 missing or nil", "Unable to cast string to int64", "... Array to int64", "... KeyCode to int64"
+/// for an enum item, "... Function to int64").
+pub fn int64_argument(engine: &Engine, value: &LuaValue, index: usize) -> Result<i64, String> {
+    let number = match value {
+        LuaValue::Nil => return Err(format!("Argument {index} missing or nil")),
+        LuaValue::Boolean(on) => return Ok(*on as i64),
+        LuaValue::Integer(number) => *number as f64,
+        LuaValue::Number(number) => *number,
+        LuaValue::String(text) => {
+            let bytes = text.as_bytes();
+            let space = |byte: &u8| matches!(byte, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r');
+            let start = bytes.iter().position(|byte| !space(byte)).unwrap_or(bytes.len());
+            let end = bytes.iter().rposition(|byte| !space(byte)).map_or(start, |last| last + 1);
+            let trimmed = &bytes[start..end];
+            let digits = trimmed.strip_prefix(b"-").unwrap_or(trimmed);
+            let whole = !digits.is_empty() && digits.iter().all(u8::is_ascii_digit);
+            return std::str::from_utf8(trimmed).ok().filter(|_| whole).and_then(|text| text.parse::<i64>().ok()).ok_or_else(|| "Unable to cast string to int64".to_string());
+        }
+        LuaValue::Table(table) => return Err(format!("Unable to cast {} to int64", if table.raw_len() > 0 || table.is_empty() { "Array" } else { "Dictionary" })),
+        LuaValue::Function(_) => return Err("Unable to cast Function to int64".into()),
+        LuaValue::UserData(ud) if ud.is::<LEnumItem>() => {
+            let item = ud.borrow::<LEnumItem>().map_err(|error| error.to_string())?.0;
+            return Err(format!("Unable to cast {} to int64", engine.reflection.enum_item_type_name(item)));
+        }
+        other => return Err(format!("Unable to cast {} to int64", typeof_value(engine, other))),
+    };
+    if !number.is_finite() {
+        return Ok(0);
+    }
+    let rounded = number.round();
+    // (-2^63 and 2^63 are doubles exactly)
+    let least = i64::MIN as f64;
+    Ok(if (least..-least).contains(&rounded) { rounded as i64 } else { i64::MIN })
+}
+
 /// The number a numeric property stores for an assigned number (`int` properties truncate, `int64` ones round,
-/// float properties round to float32, TextSize of text objects is whole and clamped, BorderSizePixel clamped,
+/// float properties round to float32, TextSize of text objects and GetTextBoundsParams.Size are whole and clamped, BorderSizePixel clamped,
 /// UIScale.Scale clamped).
 #[inline]
 pub fn number_for(engine: &Engine, info: &PropertyInfo, number: f64) -> f64 {
@@ -231,6 +279,10 @@ pub fn number_for(engine: &Engine, info: &PropertyInfo, number: f64) -> f64 {
         if info.name == crate::K::TextSize as crate::NameId && whole_text_size_owner(engine, info) {
             // a whole number as an int property takes it, then 1 to 100 (2^31 and NaN read 1)
             int32_for(number).clamp(1.0, 100.0)
+        } else if info.name == crate::K::Size as crate::NameId && &*engine.reflection.class(info.owner).name == "GetTextBoundsParams" {
+            // 1 to 100 first, then a whole number as an int property takes it (measured, tools/parity/probes/text_bounds.luau: 14.99
+            // reads 14, 0.2 and -inf 1, 2^31 and inf 100, and NaN -2^31)
+            int32_for(number.clamp(1.0, 100.0))
         } else if info.name == crate::K::Scale as crate::NameId
             && !number.is_nan()
             && &*engine.reflection.class(info.owner).name == "UIScale"
@@ -398,6 +450,53 @@ pub fn coerce(lua: &Lua, engine: &Engine, info: &PropertyInfo, value: &LuaValue)
             Ok(converted)
         }
     }
+}
+
+/// A number as a method's string parameter reads it: up to 20 significant digits, as C's `%.20g` writes them (`0.1` is
+/// `0.10000000000000000555`, `1e20` is `1e+20`), and `NAN`, `INF`, `-INF`.
+pub fn cast_number_text(number: f64) -> String {
+    if number.is_nan() {
+        return "NAN".into();
+    }
+    if number.is_infinite() {
+        return if number > 0.0 { "INF" } else { "-INF" }.into();
+    }
+    let scientific = format!("{number:.19e}");
+    let (mantissa, exponent) = scientific.split_once('e').expect("an exponent");
+    let exponent: i32 = exponent.parse().expect("a whole exponent");
+    let trimmed = |digits: &str| if digits.contains('.') { digits.trim_end_matches('0').trim_end_matches('.').to_string() } else { digits.to_string() };
+    if (-4..20).contains(&exponent) {
+        trimmed(&format!("{number:.*}", (19 - exponent) as usize))
+    } else {
+        format!("{}e{}{:02}", trimmed(mantissa), if exponent < 0 { '-' } else { '+' }, exponent.abs())
+    }
+}
+
+/// A value as a method's string parameter casts it (measured, Studio 0.747: MarkerCurve:InsertMarkerAtTime's value and
+/// PhysicsService's group names): a string as it is, a number by [`cast_number_text`], a boolean's name, an EnumItem's
+/// name, "Instance" for an instance, "{}" for a table, "function", "nil" for an Enum, a thread or a plain userdata,
+/// "buffer { Size = 2 }", and a datatype as `tostring` writes it. (nil is the caller's: "Argument n missing or nil".)
+pub fn cast_text(lua: &Lua, engine: &Engine, value: &LuaValue) -> LuaResult<Vec<u8>> {
+    Ok(match value {
+        LuaValue::String(text) => text.as_bytes().to_vec(),
+        LuaValue::Number(number) => cast_number_text(*number).into_bytes(),
+        LuaValue::Integer(number) => cast_number_text(*number as f64).into_bytes(),
+        LuaValue::Boolean(flag) => flag.to_string().into_bytes(),
+        LuaValue::Table(_) => b"{}".to_vec(),
+        LuaValue::Function(_) => b"function".to_vec(),
+        LuaValue::Thread(_) => b"nil".to_vec(),
+        LuaValue::Buffer(buffer) => format!("buffer {{ Size = {} }}", buffer.len()).into_bytes(),
+        other => {
+            let written = || -> LuaResult<Vec<u8>> { Ok(lua.globals().get::<LuaFunction>("tostring")?.call::<LuaString>(other.clone())?.as_bytes().to_vec()) };
+            match typeof_value(engine, other).as_str() {
+                "Instance" => b"Instance".to_vec(),
+                "Enum" | "userdata" => b"nil".to_vec(),
+                // (`Enum.Material.Plastic` is "Plastic")
+                "EnumItem" => written()?.rsplit(|&byte| byte == b'.').next().unwrap_or_default().to_vec(),
+                _ => written()?,
+            }
+        }
+    })
 }
 
 /// Enums.Coerce: an EnumItem of the type, an item name or an item value.

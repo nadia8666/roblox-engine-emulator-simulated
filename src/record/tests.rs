@@ -31,11 +31,16 @@ fn record_with(source: &str, frames: u32, walk_always: bool) -> (Json, Json, rbx
 
 /// [`record_with`] in a place whose Lighting holds `own` (class, name) before the run.
 fn record_in(source: &str, frames: u32, walk_always: bool, own: &[(&str, &str)]) -> (Json, Json, rbx_dom_weak::WeakDom, Json, Vec<u8>) {
-    let engine = Engine::new(Options { mode: "play".into(), ..Options::default() }).expect("engine");
-    let lua = Lua::new();
-    engine_lua::start(&lua, &engine).expect("start");
-    if !own.is_empty() {
-        let lighting = crate::services::find_service(&engine, engine.world().game, "Lighting").expect("Lighting");
+    record_options(Options { mode: "play".into(), ..Options::default() }, source, frames, walk_always, own)
+}
+
+/// [`record_in`] with the engine's options.
+fn record_options(options: Options, source: &str, frames: u32, walk_always: bool, own: &[(&str, &str)]) -> (Json, Json, rbx_dom_weak::WeakDom, Json, Vec<u8>) {
+    record_prepared(options, source, frames, walk_always, |engine| {
+        if own.is_empty() {
+            return;
+        }
+        let lighting = crate::services::find_service(engine, engine.world().game, "Lighting").expect("Lighting");
         let hooks = engine.hooks.borrow();
         let mut state = engine.state.borrow_mut();
         for (class, name) in own {
@@ -43,7 +48,15 @@ fn record_in(source: &str, frames: u32, walk_always: bool, own: &[(&str, &str)])
             let id = crate::instance::create_named(&mut state, &engine.reflection, class, name);
             crate::instance::set_parent(&mut state, &engine.reflection, &hooks, id, Some(lighting)).expect("parent");
         }
-    }
+    })
+}
+
+/// [`record_options`] with `prepare` run on the started engine before the harness (a mount, say).
+fn record_prepared(options: Options, source: &str, frames: u32, walk_always: bool, prepare: impl FnOnce(&Engine)) -> (Json, Json, rbx_dom_weak::WeakDom, Json, Vec<u8>) {
+    let engine = Engine::new(options).expect("engine");
+    let lua = Lua::new();
+    engine_lua::start(&lua, &engine).expect("start");
+    prepare(&engine);
     let recorder = Recorder::install(&engine, 60.0);
     if walk_always {
         recorder.walk_every_frame();
@@ -736,12 +749,12 @@ fn a_timing_check_probes_faster_and_slower_clients() {
     let faster = threshold("faster", 0.9);
     let _ = std::fs::remove_dir_all(&root);
     let probes = |done: &super::run::Done| -> Vec<(f64, bool)> { done.summary["timing"]["probes"].as_array().unwrap().iter().map(|probe| (probe["factor"].as_f64().unwrap(), probe["hinges"] == true)).collect() };
-    // Current calibration: inverse fidelity endpoints (1/1.34, 1/0.55), then the slowest phone (4.16/0.55).
-    assert_eq!(probes(&slower).iter().map(|probe| probe.0).collect::<Vec<_>>(), vec![0.746, 1.818, 7.564]);
+    // Current calibration: inverse fidelity endpoints (1/1.38, 1/0.60), then the slowest phone (4.16/0.60).
+    assert_eq!(probes(&slower).iter().map(|probe| probe.0).collect::<Vec<_>>(), vec![0.725, 1.667, 6.933]);
     assert_eq!(probes(&slower).iter().map(|probe| probe.1).collect::<Vec<_>>(), vec![false, true, true], "{}", slower.summary["timing"]);
     assert_eq!(probes(&faster).iter().map(|probe| probe.1).collect::<Vec<_>>(), vec![true, false, false], "{}", faster.summary["timing"]);
-    assert!(faster.line.contains("hinges on sub-frame timing under 0.75x (the fastest desktop client)") && faster.line.contains("no change at 1.82x, 7.56x"), "{}", faster.line);
-    assert_eq!(slower.summary["timing"]["range"]["factors"], serde_json::json!([0.746, 7.564]));
+    assert!(faster.line.contains("hinges on sub-frame timing under 0.72x (the fastest desktop client)") && faster.line.contains("no change at 1.67x, 6.93x"), "{}", faster.line);
+    assert_eq!(slower.summary["timing"]["range"]["factors"], serde_json::json!([0.725, 6.933]));
     assert_eq!(faster.summary["timing"]["first"]["list"], "actions");
 }
 
@@ -796,7 +809,7 @@ fn a_timing_check_says_whether_a_recording_hinges_on_sub_frame_timing() {
     };
     let steady = check(&steady, "steady");
     assert_eq!(steady.summary["timing"]["hinges"], Json::Bool(false), "{}", steady.summary["timing"]);
-    assert!(steady.line.contains("sub-frame timing: no change (tested 0.75x to 7.56x the modelled clock"), "{}", steady.line);
+    assert!(steady.line.contains("sub-frame timing: no change (tested 0.72x to 6.93x the modelled clock"), "{}", steady.line);
     let budgeted = check(&budgeted, "budgeted");
     let _ = std::fs::remove_dir_all(&root);
     assert_eq!(budgeted.summary["timing"]["hinges"], Json::Bool(true), "{}", budgeted.summary["timing"]);
@@ -906,6 +919,8 @@ fn a_harness_requires_its_own_modules() {
             script_timeouts: None,
             timing_check: false,
             clock_probe: None,
+            latency: None,
+            record_server: false,
         };
         let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
         assert_eq!(ran.status, "ok", "{harness}: {:?}", ran.failure);
@@ -1230,6 +1245,176 @@ fn a_texture_content_swap_is_recorded() {
     assert!(values.len() == 1 && (values[0].0 - 0.1).abs() < 0.03 && values[0].1 == "rbxassetid://2", "{values:?}");
 }
 
+/// A MeshPart whose texture a script clears mid-run (TextureID = "" or TextureContent = Content.none)
+/// draws untextured from that frame: a part in the world gets a set of the empty texture then, and a
+/// textured part that enters the world after the clear is in the scene with none. The parts loaded
+/// from a model file keep the file's TextureContent too, which the scene once wrote back over the
+/// cleared TextureID.
+#[test]
+fn a_cleared_mesh_part_texture_is_recorded_as_none() {
+    let dir = std::env::temp_dir().join(format!("ree-cleared-texture-{}-{}", std::process::id(), TEST_DIRS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut model = rbx_dom_weak::WeakDom::new(rbx_dom_weak::InstanceBuilder::new("DataModel"));
+    let textured = |name: &str, uri: &str| {
+        rbx_dom_weak::InstanceBuilder::new("MeshPart")
+            .with_name(name)
+            .with_property("TextureContent", rbx_dom_weak::types::Content::from_uri(uri))
+    };
+    let top = model.insert(model.root_ref(), rbx_dom_weak::InstanceBuilder::new("Folder").with_name("Parts").with_children([textured("ById", "rbxassetid://2"), textured("ByContent", "rbxassetid://3")]));
+    let mut file = Vec::new();
+    rbx_binary::to_writer(&mut file, &model, &[top]).unwrap();
+    std::fs::write(dir.join("Parts.rbxm"), file).unwrap();
+    let mount = crate::project::Mount::parse(&format!("ReplicatedStorage/Fixture={}", dir.to_string_lossy()), false).unwrap();
+    let (playback, _, scene, _, _) = record_prepared(
+        Options { mode: "play".into(), ..Options::default() },
+        r#"
+        local Parts = game:GetService("ReplicatedStorage").Fixture.Parts
+        local Shown = Instance.new("MeshPart")
+        Shown.Name = "Shown"
+        Shown.TextureID = "rbxassetid://1"
+        Shown.Parent = workspace
+        task.delay(0.1, function()
+            Shown.TextureID = ""
+            local ById = Parts.ById:Clone()
+            ById.TextureID = ""
+            ById.Parent = workspace
+            local ByContent = Parts.ByContent:Clone()
+            ByContent.TextureContent = Content.none
+            ByContent.Parent = workspace
+        end)
+        "#,
+        12,
+        false,
+        |engine| {
+            crate::project::mount_at(engine, &mount).unwrap();
+        },
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let textures = |name: &str| -> Vec<String> {
+        instance(&scene, &[name]).properties.iter().filter_map(|(property, value)| match value {
+            Variant::Content(content) => match content.value() {
+                rbx_dom_weak::types::ContentType::Uri(uri) => Some(format!("{property}={uri}")),
+                _ => None,
+            },
+            Variant::ContentId(id) => Some(format!("{property}={}", id.as_str())),
+            Variant::String(text) if property.as_str() == "TextureID" => Some(format!("{property}={text}")),
+            _ => None,
+        }).filter(|text| text.contains("rbxassetid://")).collect()
+    };
+    assert!(textures("Shown").iter().any(|text| text.ends_with("rbxassetid://1")), "{:?}", textures("Shown"));
+    assert!(textures("ById").is_empty(), "{:?}", textures("ById"));
+    assert!(textures("ByContent").is_empty(), "{:?}", textures("ByContent"));
+    let sets: Vec<(f64, &str)> = find(&playback["actions"], |a| a["target"] == "Shown" && a["set"]["TextureContent"].is_string())
+        .iter()
+        .map(|a| (a["at"].as_f64().unwrap(), a["set"]["TextureContent"].as_str().unwrap()))
+        .collect();
+    assert!(sets.len() == 1 && (sets[0].0 - 0.1).abs() < 0.03 && sets[0].1.is_empty(), "{sets:?}");
+}
+
+/// ParticleEmitter, Beam and Trail keep TextureContent in Studio's dump outside rbx-dom's older
+/// database; snapshot() must write TextureContent from the Texture sibling so the default sparkles
+/// TextureContent does not shadow a script-assigned Texture (or a cleared empty Texture) in scene.rbxm.
+#[test]
+fn particle_beam_and_trail_texture_reaches_scene_texture_content() {
+    let (_, _, scene, _) = record(
+        r#"
+        local Host = Instance.new("Part")
+        Host.Name = "Host"
+        Host.Parent = workspace
+
+        local ByString = Instance.new("ParticleEmitter")
+        ByString.Name = "ByString"
+        ByString.Texture = "rbxassetid://111"
+        ByString.Parent = Host
+
+        local ByContent = Instance.new("ParticleEmitter")
+        ByContent.Name = "ByContent"
+        ByContent.TextureContent = Content.fromUri("rbxassetid://222")
+        ByContent.Parent = Host
+
+        local Cleared = Instance.new("ParticleEmitter")
+        Cleared.Name = "Cleared"
+        Cleared.Texture = ""
+        Cleared.Parent = Host
+
+        local Beam = Instance.new("Beam")
+        Beam.Name = "Arc"
+        Beam.Texture = "rbxassetid://333"
+        Beam.Parent = Host
+
+        local Trail = Instance.new("Trail")
+        Trail.Name = "Ribbon"
+        Trail.Texture = "rbxassetid://444"
+        Trail.Parent = Host
+        "#,
+        4,
+    );
+    let content_uri = |name: &str| match instance(&scene, &["Host", name]).properties.get(&rbx_dom_weak::ustr("TextureContent")) {
+        Some(Variant::Content(content)) => match content.value() {
+            rbx_dom_weak::types::ContentType::Uri(uri) => Some(uri.as_str()),
+            rbx_dom_weak::types::ContentType::None => None,
+            other => panic!("{name}: unexpected TextureContent {other:?}"),
+        },
+        other => panic!("{name}: missing TextureContent {other:?}"),
+    };
+    assert_eq!(content_uri("ByString"), Some("rbxassetid://111"));
+    assert_eq!(content_uri("ByContent"), Some("rbxassetid://222"));
+    assert_eq!(content_uri("Cleared"), None);
+    assert_eq!(content_uri("Arc"), Some("rbxassetid://333"));
+    assert_eq!(content_uri("Ribbon"), Some("rbxassetid://444"));
+}
+
+/// A texture naming a relative local file the engine read from the project's folder (`checker.png`, `./maps/other.png`)
+/// is recorded as that file's absolute `file://` URI, in the scene and in a later set, since ror reads a relative path from
+/// where it runs; an asset id stays as it is. Before, `checker.png` went into the scene unchanged and ror refused it.
+#[test]
+fn a_relative_local_texture_is_recorded_as_the_file_read() {
+    let project = std::env::temp_dir().join(format!("ree-local-texture-{}-{}", std::process::id(), TEST_DIRS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    std::fs::create_dir_all(project.join("maps")).unwrap();
+    std::fs::write(project.join("checker.png"), b"png").unwrap();
+    std::fs::write(project.join("maps/other.png"), b"png").unwrap();
+    let options = Options { mode: "play".into(), project: Some(project.clone()), ..Options::default() };
+    let (playback, _, scene, _, _) = record_options(
+        options,
+        r#"
+        local Part = Instance.new("MeshPart")
+        Part.Name = "Skin"
+        Part.TextureID = "checker.png"
+        Part.Parent = workspace
+        local Asset = Instance.new("MeshPart")
+        Asset.Name = "Asset"
+        Asset.TextureID = "rbxassetid://5"
+        Asset.Parent = workspace
+        task.delay(0.1, function()
+            Part.TextureID = "./maps/other.png"
+        end)
+        "#,
+        12,
+        false,
+        &[],
+    );
+    let file = |relative: &str| format!("file://{}", std::path::absolute(project.join(relative)).unwrap().display());
+    let texts = |path: &[&str]| -> Vec<String> {
+        instance(&scene, path).properties.values().filter_map(|value| match value {
+            Variant::Content(content) => match content.value() {
+                rbx_dom_weak::types::ContentType::Uri(uri) => Some(uri.clone()),
+                _ => None,
+            },
+            Variant::ContentId(id) => Some(id.as_str().to_string()),
+            _ => None,
+        }).filter(|uri| !uri.is_empty()).collect()
+    };
+    let skin = texts(&["Skin"]);
+    assert!(!skin.is_empty() && skin.iter().all(|uri| *uri == file("checker.png")), "{skin:?}");
+    assert!(texts(&["Asset"]).iter().all(|uri| uri == "rbxassetid://5"), "{:?}", texts(&["Asset"]));
+    let sets: Vec<String> = find(&playback["actions"], |a| a["target"] == "Skin" && a["set"].is_object())
+        .iter()
+        .flat_map(|a| a["set"].as_object().unwrap().values().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>())
+        .collect();
+    assert!(!sets.is_empty() && sets.iter().all(|uri| *uri == file("maps/other.png")), "{sets:?}");
+    let _ = std::fs::remove_dir_all(&project);
+}
+
 /// A SurfaceAppearance AssetService builds from images loaded from assets draws those assets: its
 /// maps are recorded as their ids, and an image drawn into first stays out of the file.
 #[test]
@@ -1355,6 +1540,66 @@ fn a_surface_appearance_swap_is_recorded() {
     let strength = find(&playback["tweens"], |t| t["target"] == "Skin.New" && t["property"] == "EmissiveStrength").len()
         + find(&playback["actions"], |a| a["target"] == "Skin.New" && a["set"]["EmissiveStrength"].is_number()).len();
     assert!(strength > 0, "the emissive ramp is recorded");
+}
+
+/// A mesh, a UI component or clothing draws nothing itself but changes how its parent draws, so one parented in
+/// mid-run stays out of the world until then, and one a ClearAllChildren takes leaves it: a pooled part used bare,
+/// freed (ClearAllChildren) and taken again with a SpecialMesh otherwise drew that mesh from the start of the run,
+/// while it was still bare.
+#[test]
+fn a_mesh_parented_in_mid_run_draws_only_while_it_is_there() {
+    let (playback, _, scene, _) = record(
+        r#"
+        local Pool = Instance.new("Folder")
+        Pool.Name = "Pool"
+        Pool.Parent = workspace
+        local Piece = Instance.new("Part")
+        Piece.Name = "Piece"
+        Piece.Transparency = 1
+        Piece.Parent = Pool
+        local Shaped = Instance.new("Part")
+        Shaped.Name = "Shaped"
+        local Held = Instance.new("BlockMesh")
+        Held.Name = "Held"
+        Held.Parent = Shaped
+        Shaped.Parent = Pool
+        task.delay(0.1, function()
+            Piece.Transparency = 0
+            Shaped:ClearAllChildren()
+            task.delay(0.1, function()
+                Piece:ClearAllChildren()
+                local Mesh = Instance.new("SpecialMesh")
+                Mesh.Name = "Mesh"
+                Mesh.MeshType = Enum.MeshType.Sphere
+                Mesh.Parent = Piece
+                local Corner = Instance.new("UICorner")
+                Corner.Name = "Corner"
+                Corner.Parent = Piece
+                task.delay(0.1, function()
+                    Piece:ClearAllChildren()
+                    Piece.Transparency = 1
+                end)
+            end)
+        end)
+        "#,
+        30,
+    );
+    let parents = |target: &str| -> Vec<(f64, String)> {
+        find(&playback["actions"], |a| a["target"] == target && a["parent"].is_string())
+            .iter()
+            .map(|a| (a["at"].as_f64().unwrap(), a["parent"].as_str().unwrap().to_string()))
+            .collect()
+    };
+    assert_eq!(instance(&scene, &["Pool", "Piece", "Mesh"]).class, "SpecialMesh", "the file keeps the mesh under its part");
+    for target in ["Pool.Piece.Mesh", "Pool.Piece.Corner"] {
+        let moves = parents(target);
+        assert_eq!(moves.len(), 3, "{target}: out at the start, in when parented, out when cleared: {moves:?}");
+        assert!(moves[0] == (0.0, String::new()), "{target}: {moves:?}");
+        assert!((moves[1].0 - 0.2).abs() < 0.03 && moves[1].1 == "Pool.Piece", "{target}: {moves:?}");
+        assert!((moves[2].0 - 0.3).abs() < 0.04 && moves[2].1.is_empty(), "{target}: {moves:?}");
+    }
+    let held = parents("Pool.Shaped.Held");
+    assert!(held.len() == 1 && (held[0].0 - 0.1).abs() < 0.03 && held[0].1.is_empty(), "a mesh there from the start leaves when cleared: {held:?}");
 }
 
 /// DrawImage and DrawRectangle combine as Roblox's ImageCombineType says: a crossfade of two images
@@ -1685,6 +1930,8 @@ fn frame_times_replay_a_take_then_go_on_at_the_frame_rate() {
         script_timeouts: None,
         timing_check: false,
         clock_probe: None,
+        latency: None,
+        record_server: false,
     };
     let round = |times: Vec<f64>| times.into_iter().map(|t| (t * 1e4).round() / 1e4).collect::<Vec<_>>();
     assert_eq!(round(args(Some(vec![0.03, 0.05])).frame_schedule()), vec![0.03, 0.05, 0.0667, 0.0833, 0.1]);
@@ -1947,6 +2194,8 @@ fn trace_writes_names_the_line_of_each_write() {
         script_timeouts: None,
         timing_check: false,
         clock_probe: None,
+        latency: None,
+        record_server: false,
     };
     let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
     let _ = std::fs::remove_dir_all(&root);
@@ -2008,6 +2257,8 @@ fn trace_writes_star_names_every_property_and_attribute_write() {
         script_timeouts: None,
         timing_check: false,
         clock_probe: None,
+        latency: None,
+        record_server: false,
     };
     let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
     let _ = std::fs::remove_dir_all(&root);
@@ -2068,6 +2319,8 @@ fn profile_phase_splits_the_allocation_profile() {
         script_timeouts: None,
         timing_check: false,
         clock_probe: None,
+        latency: None,
+        record_server: false,
     };
     let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
     drop(guard);
@@ -2134,6 +2387,8 @@ fn census_names_the_line_behind_what_accumulates() {
         script_timeouts: None,
         timing_check: false,
         clock_probe: None,
+        latency: None,
+        record_server: false,
     };
     let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
     let _ = std::fs::remove_dir_all(&root);
@@ -2214,6 +2469,8 @@ fn holders_name_what_keeps_an_orphan_tree_alive() {
         script_timeouts: None,
         timing_check: false,
         clock_probe: None,
+        latency: None,
+        record_server: false,
     };
     let ran = super::run::run(&emulator.lua, &emulator.engine, &args, None).expect("run");
     let _ = std::fs::remove_dir_all(&root);
@@ -2342,6 +2599,43 @@ fn a_harness_fires_an_engine_event_to_its_connections() {
     let line = printed.iter().find(|line| line.starts_with("speeds ")).unwrap_or_else(|| panic!("{printed:?}"));
     assert!(line.starts_with("speeds 22.5,0 "), "{line}");
     assert!(line.contains("no event named NoSuchEventAnywhere") && line.contains("arguments are nil, booleans"), "{line}");
+}
+
+/// A server run's harness delivers a client's remote message with Context.FireEvent: a buffer argument arrives as a remote
+/// carries one, a copy of what was fired (writing the harness's buffer afterwards does not reach the handler's).
+#[test]
+fn a_harness_fires_a_remote_with_a_buffer() {
+    let root = std::env::temp_dir().join(format!("ree-fire-buffer-test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(root.join("place")).unwrap();
+    std::fs::write(
+        root.join("Harness.luau"),
+        "return function(Context)\n\
+         local Remote = Instance.new('RemoteEvent')\n\
+         Remote.Parent = game:GetService('ReplicatedStorage')\n\
+         local Player = Instance.new('Player')\n\
+         Player.Parent = game:GetService('Players')\n\
+         local Heard = {}\n\
+         Remote.OnServerEvent:Connect(function(From, Data, Tag) table.insert(Heard, `{From == Player} {typeof(Data)} {buffer.tostring(Data)} {Tag}`) end)\n\
+         local Data = buffer.fromstring('abc')\n\
+         Context.FireEvent(Remote, 'OnServerEvent', Player, Data, 7)\n\
+         buffer.writestring(Data, 0, 'xyz')\n\
+         task.wait()\n\
+         print('heard', table.concat(Heard, ';'))\n\
+         end",
+    )
+    .unwrap();
+    let place = root.join("place").to_string_lossy().into_owned();
+    let harness = root.join("Harness.luau").to_string_lossy().into_owned();
+    let args: Vec<String> = ["--harness", &harness, "--roots", &place, "--seconds", "0.1", "--mode", "play", "--run-context", "server"].iter().map(|s| s.to_string()).collect();
+    let parsed = super::run::parse(&args, false).expect("arguments");
+    let (done, emulator) = super::run::execute_with(&parsed, &crate::launch::Host::default(), false, false).expect("run");
+    let mut bytes = Vec::new();
+    done.print(&mut bytes).expect("printed");
+    drop(emulator);
+    let _ = std::fs::remove_dir_all(&root);
+    let summary: Json = serde_json::from_str(&String::from_utf8(bytes).expect("UTF-8")).expect("one line of JSON");
+    let printed: Vec<String> = summary["output"].as_array().expect("output").iter().map(|line| line["message"].as_str().unwrap_or_default().to_string()).collect();
+    assert!(printed.iter().any(|line| line == "heard true buffer abc 7"), "{printed:?}");
 }
 
 /// A Studio-only placeholder (the place's hierarchy snapshot gives it a class and a name and no values) is built when a script

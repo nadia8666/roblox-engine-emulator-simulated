@@ -7,10 +7,6 @@
 	],
 	"buffer_vector_f32": [
 		{
-			"line": "vector-f32-native false",
-			"why": "the capture's engine (Studio 0.744) has no buffer.readvectorf32x2/x3 or writevectorf32x2/x3 (release 747 lists them as pending): it ran the probe's float32 reference, ree runs the functions"
-		},
-		{
 			"line": "read-unaligned ok 1 0 -1.36468614e-12 -3123882.5 | ok 1 2.52437386e-29 -3.03172418e-13 0",
 			"why": "subnormal float32s: a server reads and writes zero for a float32 below the smallest normal one (buffer.readf32 and writef32 alike, and a vector's components); ree keeps them. A float mode of the engine, not of these functions"
 		},
@@ -21,10 +17,6 @@
 		{
 			"line": "write-subnormal ok 0 000000000000008000000000 | ok 0000000000000000",
 			"why": "subnormal float32s: a server reads and writes zero for a float32 below the smallest normal one (buffer.readf32 and writef32 alike, and a vector's components); ree keeps them. A float mode of the engine, not of these functions"
-		},
-		{
-			"line": "arguments (the functions are not in this engine)",
-			"why": "the argument errors name the function and the vector type, which the float32 reference cannot say: printed only by an engine that has the functions (not checked against one)"
 		}
 	],
 	"buffer_vector_time": [
@@ -61,6 +53,88 @@
 		{
 			"line": "datatype-unknown | error nextNumber is not a valid member of Random | error 'time' is not a valid member of TweenInfo | error 'min' is not a valid member of NumberRange | error 'width' is not a valid member of Rect | error 'top' is not a valid member of Faces",
 			"why": "an unknown datatype member: a client raises '<key> is not a valid member of <Type>' (some types quote the key); ree reads nil where a Lune type has fields and methods (mlua's __index), else raises mlua's 'attempt to get an unknown field'"
+		}
+	],
+	"cframe_angle_between": [
+		{
+			"line": "args dot other error @92: invalid argument #2 to 'AngleBetween' (CFrame expected, got string)",
+			"why": "a '.' call names the method in argument #2's error ('to 'AngleBetween''), a ':' call does not; ree's AngleBetween is a C function found through __index (CFrame has no __namecall), which cannot tell the two apart, and gives the ':' call's text, as FuzzyEq does"
+		},
+		{
+			"line": "args stored error @96: invalid argument #2 to 'AngleBetween' (CFrame expected, got Vector3)",
+			"why": "a '.' call names the method in argument #2's error ('to 'AngleBetween''), a ':' call does not; ree's AngleBetween is a C function found through __index (CFrame has no __namecall), which cannot tell the two apart, and gives the ':' call's text, as FuzzyEq does"
+		},
+		{
+			"line": "args lowercase error angleBetween is not a valid member of CFrame",
+			"why": "an unknown datatype member: a client raises '<key> is not a valid member of <Type>' (some types quote the key); ree reads nil where a Lune type has fields and methods (mlua's __index), else raises mlua's 'attempt to get an unknown field'"
+		}
+	],
+	"cframe_new_quat": [
+		{
+			"line": "scale 9.9999999999999995e-21 1 |",
+			"why": "subnormal float32s: a server flushes subnormal intermediate results to zero (the squares of components near 1e-20), where a client and ree keep them. A float mode of the engine, not of this constructor"
+		},
+		{
+			"line": "scale 9.9999999999999995e-21 2 |",
+			"why": "subnormal float32s: a server flushes subnormal intermediate results to zero (the squares of components near 1e-20), where a client and ree keep them. A float mode of the engine, not of this constructor"
+		}
+	],
+	"cframe_rotation_between": [
+		{
+			"line": "args none error @123: missing argument #1 to 'fromRotationBetweenVectors' (Vector3 expected)",
+			"why": "a CFrame constructor's argument error: a client raises it at the calling line and says 'missing argument' for one not given (and names a Vector2); ree's constructor wrapper raises without the position and reads a missing argument as nil, as for every constructor"
+		},
+		{
+			"line": "args one error @126: missing argument #2 to 'fromRotationBetweenVectors' (Vector3 expected)",
+			"why": "a CFrame constructor's argument error: a client raises it at the calling line and says 'missing argument' for one not given (and names a Vector2); ree's constructor wrapper raises without the position and reads a missing argument as nil, as for every constructor"
+		},
+		{
+			"line": "args string error @129: invalid argument #1 to 'fromRotationBetweenVectors' (Vector3 expected, got string)",
+			"why": "a CFrame constructor's argument error: a client raises it at the calling line and says 'missing argument' for one not given (and names a Vector2); ree's constructor wrapper raises without the position and reads a missing argument as nil, as for every constructor"
+		},
+		{
+			"line": "args nil error @132: invalid argument #2 to 'fromRotationBetweenVectors' (Vector3 expected, got nil)",
+			"why": "a CFrame constructor's argument error: a client raises it at the calling line and says 'missing argument' for one not given (and names a Vector2); ree's constructor wrapper raises without the position and reads a missing argument as nil, as for every constructor"
+		},
+		{
+			"line": "args vector2 error @135: invalid argument #2 to 'fromRotationBetweenVectors' (Vector3 expected, got Vector2)",
+			"why": "a CFrame constructor's argument error: a client raises it at the calling line and says 'missing argument' for one not given (and names a Vector2); ree's constructor wrapper raises without the position and reads a missing argument as nil, as for every constructor"
+		},
+		{
+			"line": "scaled -66 1 |",
+			"why": "subnormal float32s: a server flushes subnormal intermediate results to zero (squared lengths near 1e-38 and below), where a client and ree keep them. A float mode of the engine, not of this function"
+		},
+		{
+			"line": "scaled-both -66 1 |",
+			"why": "subnormal float32s: a server flushes subnormal intermediate results to zero (squared lengths near 1e-38 and below), where a client and ree keep them. A float mode of the engine, not of this function"
+		},
+		{
+			"line": "scaled -66 2 |",
+			"why": "subnormal float32s: a server flushes subnormal intermediate results to zero (squared lengths near 1e-38 and below), where a client and ree keep them. A float mode of the engine, not of this function"
+		},
+		{
+			"line": "scaled-both -66 2 |",
+			"why": "subnormal float32s: a server flushes subnormal intermediate results to zero (squared lengths near 1e-38 and below), where a client and ree keep them. A float mode of the engine, not of this function"
+		},
+		{
+			"line": "scaled -66 3 |",
+			"why": "subnormal float32s: a server flushes subnormal intermediate results to zero (squared lengths near 1e-38 and below), where a client and ree keep them. A float mode of the engine, not of this function"
+		},
+		{
+			"line": "scaled-both -66 3 |",
+			"why": "subnormal float32s: a server flushes subnormal intermediate results to zero (squared lengths near 1e-38 and below), where a client and ree keep them. A float mode of the engine, not of this function"
+		},
+		{
+			"line": "scaled-both -40 1 |",
+			"why": "subnormal float32s: a server flushes subnormal intermediate results to zero (squared lengths near 1e-38 and below), where a client and ree keep them. A float mode of the engine, not of this function"
+		},
+		{
+			"line": "scaled-both -40 2 |",
+			"why": "subnormal float32s: a server flushes subnormal intermediate results to zero (squared lengths near 1e-38 and below), where a client and ree keep them. A float mode of the engine, not of this function"
+		},
+		{
+			"line": "scaled-both -40 3 |",
+			"why": "subnormal float32s: a server flushes subnormal intermediate results to zero (squared lengths near 1e-38 and below), where a client and ree keep them. A float mode of the engine, not of this function"
 		}
 	],
 	"chunknames": [
@@ -129,6 +203,28 @@
 			"why": "require by a string path: the client's text names the prefixes a path must start with (./, ../, @); ree's differs"
 		}
 	],
+	"core_services": [
+		{
+			"line": "CoreGui get nil",
+			"why": "ree answers a service a plugin or the command bar may use (identity 4 gets it in the same capture), since edit-mode code that Studio runs as a plugin parents its previews to CoreGui; a game script (identity 2) gets nil"
+		},
+		{
+			"line": "StudioService get nil",
+			"why": "ree answers a service a plugin or the command bar may use (identity 4 gets it in the same capture), since edit-mode code that Studio runs as a plugin parents its previews to CoreGui; a game script (identity 2) gets nil"
+		},
+		{
+			"line": "ScriptEditorService get nil",
+			"why": "ree answers a service a plugin or the command bar may use (identity 4 gets it in the same capture), since edit-mode code that Studio runs as a plugin parents its previews to CoreGui; a game script (identity 2) gets nil"
+		},
+		{
+			"line": "NetworkClient get-error The current thread cannot create 'NetworkClient' (lacking capability Plugin)",
+			"why": "a server has no NetworkClient and a game script may not make one; ree makes the service on either side"
+		},
+		{
+			"line": "NetworkClient find ok nil",
+			"why": "a server has no NetworkClient; ree's probe line is the service it made"
+		}
+	],
 	"datatypes": [
 		{
 			"line": "v3-precision 0.100000001 0.200000003 0.300000012 0.333333343 16777216 0 true",
@@ -179,16 +275,8 @@
 			"why": "require(assetId) on a server downloads the asset and names it when that fails (Downloading asset failed for asset id 5 ...); ree runs offline and refuses with its own message"
 		},
 		{
-			"line": "loadstring ok function ok function: ADDR",
-			"why": "capture setup: the server capture's place copy turns on ServerScriptService.LoadStringEnabled for the sim's bridge; a game place leaves it off, as ree does"
-		},
-		{
 			"line": "collectgarbage ok number | error missing argument #1 to 'collectgarbage' (string expected) | error collectgarbage must be called with 'count'; use gcinfo() instead | error collectgarbage must be called with 'count'; use gcinfo() instead",
 			"why": "collectgarbage's argument checks: the client's texts are not emulated"
-		},
-		{
-			"line": "settings error The current thread cannot call 'settings' (lacking capability Plugin) | ok Instance",
-			"why": "settings() is refused to a client's game script (lacking capability Plugin); ree answers it"
 		}
 	],
 	"instances": [
@@ -215,6 +303,16 @@
 		{
 			"line": "weak-values-left Closure,DelayedThread,EnumItem,HeldByHandler,HeldByOther,InWorld,String,Vector3",
 			"why": "garbage collection: ree keeps a table and a signal a script dropped one collection longer than a client"
+		}
+	],
+	"loadmodule": [
+		{
+			"line": "env keys [_G,script,shared] metatable string index nil frozen false",
+			"why": "a script's environment: Roblox's holds script, _G and shared under a locked metatable and its require is one global; ree's holds script and a require of the script's own over a plain metatable"
+		},
+		{
+			"line": "env is-getfenv(f) true is-caller's false script true raw-script true thread-env-is-caller's true _G true shared true require true game true",
+			"why": "require: Roblox's is one global function that finds the calling script; ree gives each script a require of its own, so a loaded module's is not the caller's"
 		}
 	],
 	"logservice": [
@@ -272,10 +370,6 @@
 		}
 	],
 	"reflection": [
-		{
-			"line": "count 656 633",
-			"why": "the class list follows the compiled-in API dump, Studio 0.740 (640 classes); the capture's client is 0.744 (656)"
-		},
 		{
 			"line": "Permits held true true nil",
 			"why": "ree emulates no SecurityCapabilities: Permits holds none and reports itself as not emulated (Output missing)"
@@ -343,36 +437,14 @@
 	],
 	"tween": [
 		{
-			"line": "ease Bezier In E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier)",
-			"why": "TweenService:GetValue of Bezier: a client answers from its own curve; ree raises (the curve is not measured)"
-		},
-		{
-			"line": "ease Bezier Out E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier)",
-			"why": "TweenService:GetValue of Bezier: a client answers from its own curve; ree raises (the curve is not measured)"
-		},
-		{
-			"line": "ease Bezier InOut E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier)",
-			"why": "TweenService:GetValue of Bezier: a client answers from its own curve; ree raises (the curve is not measured)"
-		},
-		{
-			"line": "ease Spring In E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier)",
-			"why": "TweenService:GetValue of Spring: a client answers from its own spring; ree raises (the spring is not measured)"
-		},
-		{
-			"line": "ease Spring Out E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier)",
-			"why": "TweenService:GetValue of Spring: a client answers from its own spring; ree raises (the spring is not measured)"
-		},
-		{
-			"line": "ease Spring InOut E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier) E(TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier)",
-			"why": "TweenService:GetValue of Spring: a client answers from its own spring; ree raises (the spring is not measured)"
-		},
-		{
-			"line": "getvalue-errors error Unable to cast string to float | ok 0.5",
-			"why": "GetValue's argument casts: a client raises `Unable to cast string to float` for an alpha string; ree reads it"
-		},
-		{
 			"line": "tween-errors error TweenService:Create property named 'Value' cannot be tweened due to type mismatch (property is a 'double', but given type is 'string') | ok Tween | ok Tween",
 			"why": "TweenService:Create's type-mismatch text names the property's and the value's types as the client does not here"
+		}
+	],
+	"tween_color": [
+		{
+			"line": "class Part.Color floor(lin),floor(lin),floor(lin)",
+			"why": "a part keeps its Color in whole 1/255 steps (a client reads the tween's blend cut down, floor, to one); ree's BasePart.Color holds the float32 the write gave. The blend itself is the same (every other class's line)"
 		}
 	],
 	"values": [

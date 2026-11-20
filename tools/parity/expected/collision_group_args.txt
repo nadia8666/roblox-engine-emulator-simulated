@@ -1,0 +1,198 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-19
+name-from-integer error This API can only be used on the server! | none | registered ok false
+name-from-fraction error This API can only be used on the server! | none | registered ok false
+name-from-negative-zero error This API can only be used on the server! | none | registered ok false
+name-from-large error This API can only be used on the server! | none | registered ok false
+name-from-2^53 error This API can only be used on the server! | none | registered ok false
+name-from-nan error This API can only be used on the server! | none | registered ok false
+name-from-inf error This API can only be used on the server! | none | registered ok false
+name-from-true error This API can only be used on the server! | none | registered ok false
+name-from-false error This API can only be used on the server! | none | registered ok false
+name-from-empty-table error This API can only be used on the server! | none | registered ok false
+name-from-array error This API can only be used on the server! | none | registered ok false
+name-from-dictionary error This API can only be used on the server! | none | registered ok false
+name-from-Vector3 error This API can only be used on the server! | none | registered ok false
+name-from-Instance error This API can only be used on the server! | none | registered ok false
+name-from-EnumItem error This API can only be used on the server! | none | registered ok false
+name-from-function error This API can only be used on the server! | none | registered ok false
+name-from-minus-inf error This API can only be used on the server! | none | registered ok false
+name-from-tenth error This API can only be used on the server! | none | registered ok false
+name-from-third error This API can only be used on the server! | none | registered ok false
+name-from-buffer error This API can only be used on the server! | none | registered ok false
+name-from-thread error This API can only be used on the server! | none | registered ok false
+name-from-Enum error This API can only be used on the server! | none | registered ok false
+name-from-userdata error This API can only be used on the server! | none | registered ok false
+name-from-Color3 error This API can only be used on the server! | none | registered ok false
+name-from-UDim2 error This API can only be used on the server! | none | registered ok false
+name-from-BrickColor error This API can only be used on the server! | none | registered ok false
+collidable-from-0 error This API can only be used on the server! | ok true
+collidable-from-1 error This API can only be used on the server! | ok true
+collidable-from-half error This API can only be used on the server! | ok true
+collidable-from-minus-one error This API can only be used on the server! | ok true
+collidable-from-nan error This API can only be used on the server! | ok true
+collidable-from-true-string error This API can only be used on the server! | ok true
+collidable-from-empty-string error Unable to cast string to bool | ok true
+collidable-from-table error Unable to cast Array to bool | ok true
+collidable-from-Instance error Unable to cast Instance to bool | ok true
+collidable-from-Vector3 error Unable to cast Vector3 to bool | ok true
+collidable-from-EnumItem error Unable to cast Material to bool | ok true
+collidable-from-false-string error This API can only be used on the server! | ok true
+collidable-from-one-string error Unable to cast string to bool | ok true
+collidable-from-zero-string error Unable to cast string to bool | ok true
+collidable-from-TRUE-string error This API can only be used on the server! | ok true
+collidable-from-True-string error This API can only be used on the server! | ok true
+collidable-from-spaced-string error Unable to cast string to bool | ok true
+collidable-from-yes-string error Unable to cast string to bool | ok true
+collidable-from-function error Unable to cast Function to bool | ok true
+collidable-from-buffer error Unable to cast buffer to bool | ok true
+collidable-from-false error This API can only be used on the server! | ok true
+name-of-nil error Argument 1 missing or nil
+name-of-string-1 ok 
+name-of-string-x error Unable to cast string to int
+name-of-fraction ok 
+name-of-almost-32 error The Collision group Id must be between 0 and 32
+name-of-minus-half error The Collision group Id must be between 0 and 32
+name-of-nan error The Collision group Id must be between 0 and 32
+name-of-table error Unable to cast Array to int
+name-of-true ok 
+name-of-0.4 ok Default
+name-of-0.5 ok 
+name-of--0.4 ok Default
+name-of-30.5 ok 
+name-of-31.4 ok 
+name-of-31.5 error The Collision group Id must be between 0 and 32
+name-of-inf error The Collision group Id must be between 0 and 32
+name-of--inf error The Collision group Id must be between 0 and 32
+name-of-2^31 error The Collision group Id must be between 0 and 32
+name-of-2^32 error The Collision group Id must be between 0 and 32
+name-of-2^32+1 error The Collision group Id must be between 0 and 32
+name-of--2^32 error The Collision group Id must be between 0 and 32
+name-of-string-1.5 ok 
+name-of-string-spaced ok 
+name-of-string-hex ok 
+name-of-false ok Default
+name-of-Vector3 error Unable to cast Vector3 to int
+name-of-Instance error Unable to cast Instance to int
+register-default-lower error This API can only be used on the server!
+register-DEFAULT error This API can only be used on the server!
+edge-names Default
+register-100-bytes error This API can only be used on the server!
+register-102-bytes error This API can only be used on the server!
+register-nul error This API can only be used on the server!
+registered-nul ok false
+registered-nul-prefix ok false
+byte-names 1
+id-empty error Collision group not found.
+id-long error Collision group not found.
+collidable-empty ok true
+collidable-long ok true
+set-Default-Default error This API can only be used on the server!
+default-mask ok -1
+collidable-Default-Default ok true
+set-Default-Default-back error This API can only be used on the server!
+collidable-known-unknown ok true
+collidable-unknown-known ok true
+collidable-unknown-unknown ok true
+set-empty-known error This API can only be used on the server!
+set-known-empty error This API can only be used on the server!
+set-long-known error This API can only be used on the server!
+set-unknown-bad-bool error Unable to cast string to bool
+set-nil-nil error Argument 3 missing or nil
+set-known-nil-bool error Unable to cast string to bool
+rename-unknown-empty error This API can only be used on the server!
+rename-unknown-long error This API can only be used on the server!
+rename-empty-x error This API can only be used on the server!
+rename-long-x error This API can only be used on the server!
+rename-Default-empty error This API can only be used on the server!
+rename-empty-Default error This API can only be used on the server!
+rename-nil-nil error Argument 2 missing or nil
+rename-nil-empty error Argument 1 missing or nil
+rename-empty-nil error Argument 2 missing or nil
+unregister-long error This API can only be used on the server!
+create-existing error This API can only be used on the server!
+create-Default error Can not use/change the Default collision group.
+create-empty error Collision group requires a valid name.
+create-long error Collision group name length cannot exceed 100 chars
+create-nil error Argument 1 missing or nil
+remove-Default error Can not use/change the Default collision group.
+remove-empty error Collision group requires a valid name.
+remove-long error Collision group name length cannot exceed 100 chars
+remove-nil error Argument 1 missing or nil
+after-errors Default
+full 1
+full-existing error This API can only be used on the server!
+full-Default error This API can only be used on the server!
+full-empty error This API can only be used on the server!
+full-long error This API can only be used on the server!
+full-new error This API can only be used on the server!
+full-create-existing error This API can only be used on the server!
+full-rename error This API can only be used on the server!
+full-names 
+full-name-31 ok 
+full-id-renamed error Collision group not found.
+contains-nil error Parameter 2 must be BasePart in CollisionGroupContainsPart.
+contains-folder error Parameter 2 must be BasePart in CollisionGroupContainsPart.
+contains-string error Unable to cast value to Object
+contains-default ok true
+contains-unknown-name ok false
+contains-nil-name error Argument 1 missing or nil
+contains-nil-nil error Argument 1 missing or nil
+contains-number-name ok false
+set-part-nil-nil error Argument 2 missing or nil
+set-part-string error Unable to cast value to Object
+set-part-unknown ok 
+part-after-unknown ok Nope 0
+set-part-empty ok 
+set-part-long ok 
+set-part-nil-name error Argument 2 missing or nil
+set-part-nil error Parameter 1 must be BasePart in SetPartCollisionGroup.
+set-part-folder error Parameter 1 must be BasePart in SetPartCollisionGroup.
+part-after-edges ok LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL 0
+part-long-name ok 100
+part-unicode-cut ok 100
+part-number-name ok 2.5
+part-nil-name error Unable to assign property CollisionGroup. string expected, got nil
+part-bool-name error Unable to assign property CollisionGroup. string expected, got boolean
+placed-default ok Default 0
+placed-set-B ok ArgB -1
+placed-set-B-later ok ArgB -1
+placed-set-id-1 ok ArgB 1
+placed-set-id-1-later ok ArgB 1
+placed-set-unknown ok Nope -1
+placed-set-unknown-later ok Nope -1
+placed-contains-Nope ok true
+placed-unregister error This API can only be used on the server!
+placed-rename error This API can only be used on the server!
+outside ok 0 0
+entered ok -1 -1
+entered-later ok -1 -1
+left ok -1
+left-set ok ArgA -1
+entered-with-id ok ArgA -1
+placed-unknown ok -1
+register-late error This API can only be used on the server!
+placed-registered-late ok -1
+placed-registered-late-later ok -1
+register-other error This API can only be used on the server!
+placed-id-after-register ok ArgLate 9
+set-collidable error This API can only be used on the server!
+placed-id-after-collidable ok ArgLate 9
+unregister-other error This API can only be used on the server!
+placed-id-after-unregister ok ArgLate 9
+placed-empty ok ArgLate 9
+placed-same ok ArgLate 11
+placed-set-part ok ArgA -1
+changed-name-outside ok  | CollisionGroup | ArgA 4 0
+changed-enter ok  | CollisionGroupId | ArgA 4 -1
+changed-name-placed ok  | CollisionGroup | ArgNope 7 -1
+changed-empty ok  |  | ArgNope 7 -1
+changed-same ok  |  | ArgNope 7 -1
+changed-register error This API can only be used on the server! |  | ArgNope 7 -1
+changed-id ok  | CollisionGroupId | ArgNope 7 5
+changed-collidable error This API can only be used on the server! |  | ArgNope 7 5
+changed-unregister error This API can only be used on the server! |  | ArgNope 7 5
+changed-long ok  | CollisionGroup,CollisionGroupId | LLLLLLLL 100 -1
+changed-long-again ok  |  | LLLLLLLL 100 -1
+changed-leave ok  |  | LLLLLLLL 100 -1
+end Default

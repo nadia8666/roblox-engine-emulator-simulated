@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (loadstring in the server's bridge, script identity 4; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (loadstring in the server's bridge, script identity 4; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 pcall-broken error Requested module experienced an error while loading
 pcall-broken-log MessageError:ReplicatedStorage.ParityRequireLog.Broken:2: parity-req failed
 pcall-broken-again error Requested module experienced an error while loading

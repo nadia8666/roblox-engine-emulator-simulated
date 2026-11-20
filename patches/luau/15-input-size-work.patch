@@ -17,10 +17,10 @@
 # call reads a 100,000-element table.find or a 1 MB gsub as a short one. Roblox's VM runs on the real clock and needs no counts.
 
 diff --git a/luau/VM/include/lua.h b/luau/VM/include/lua.h
-index 17e14e8..a4a77f9 100644
+index 607eddb..6cfaec0 100644
 --- a/luau/VM/include/lua.h
 +++ b/luau/VM/include/lua.h
-@@ -409,6 +409,34 @@ LUA_API void lua_coldframe(lua_State* L);
+@@ -417,6 +417,34 @@ LUA_API void lua_coldframe(lua_State* L);
  #define LUA_WORK_COLDHOSTFUNCS 254
  // and of those functions a script's work ran first in a frame (coldprotos), the ones whose code did not run in the frame before
  #define LUA_WORK_RAREPROTOS 253
@@ -56,7 +56,7 @@ index 17e14e8..a4a77f9 100644
  // the names a host's typeof gives its own values, for the builtin typeof (a script's fast call) to give them too: the table at
  // `idx` maps a table or a userdata to its name, looked up before the value's own type name, and `vectorname` (NULL: none) names
 diff --git a/luau/VM/src/lapi.cpp b/luau/VM/src/lapi.cpp
-index a99f723..14ba4d1 100644
+index b521aad..0f9e211 100644
 --- a/luau/VM/src/lapi.cpp
 +++ b/luau/VM/src/lapi.cpp
 @@ -2,6 +2,10 @@
@@ -70,7 +70,7 @@ index a99f723..14ba4d1 100644
  #include "lbytecode.h"
  #include "lobject.h"
  #include "lstate.h"
-@@ -1425,6 +1429,106 @@ void lua_setthreaddata(lua_State* L, void* data)
+@@ -1401,6 +1405,106 @@ void lua_setthreaddata(lua_State* L, void* data)
  ** Garbage-collection function
  */
  
@@ -208,7 +208,7 @@ index adeb47b..3d6691a 100644
          return b;
      }
 diff --git a/luau/VM/src/lbuflib.cpp b/luau/VM/src/lbuflib.cpp
-index ee67cb9..f13915a 100644
+index 07b63d5..8f14824 100644
 --- a/luau/VM/src/lbuflib.cpp
 +++ b/luau/VM/src/lbuflib.cpp
 @@ -3,6 +3,7 @@
@@ -227,7 +227,7 @@ index ee67cb9..f13915a 100644
      memcpy(data, val, len);
      return 1;
  }
-@@ -231,6 +233,7 @@ static int buffer_writestring(lua_State* L)
+@@ -258,6 +260,7 @@ static int buffer_writestring(lua_State* L)
      if (isoutofbounds(offset, len, unsigned(count)))
          luaL_error(L, "buffer access out of bounds");
  
@@ -235,7 +235,7 @@ index ee67cb9..f13915a 100644
      memcpy((char*)buf + offset, val, count);
      return 0;
  }
-@@ -265,6 +268,7 @@ static int buffer_copy(lua_State* L)
+@@ -292,6 +295,7 @@ static int buffer_copy(lua_State* L)
      if (isoutofbounds(toffset, tlen, unsigned(size)))
          luaL_error(L, "buffer access out of bounds");
  
@@ -243,7 +243,7 @@ index ee67cb9..f13915a 100644
      memmove((char*)tbuf + toffset, (char*)sbuf + soffset, size);
      return 0;
  }
-@@ -283,6 +287,7 @@ static int buffer_fill(lua_State* L)
+@@ -310,6 +314,7 @@ static int buffer_fill(lua_State* L)
      if (isoutofbounds(offset, len, unsigned(size)))
          luaL_error(L, "buffer access out of bounds");
  
@@ -252,7 +252,7 @@ index ee67cb9..f13915a 100644
      return 0;
  }
 diff --git a/luau/VM/src/lbuiltins.cpp b/luau/VM/src/lbuiltins.cpp
-index d64b3c5..f3edc89 100644
+index 2f70681..35c2285 100644
 --- a/luau/VM/src/lbuiltins.cpp
 +++ b/luau/VM/src/lbuiltins.cpp
 @@ -864,6 +864,8 @@ static int luauF_char(lua_State* L, StkId res, TValue* arg0, int nresults, StkId
@@ -337,10 +337,10 @@ index a3bff68..f3d93c0 100644
      if (LUAU_UNLIKELY(!!g->cb.onallocate))
      {
 diff --git a/luau/VM/src/lprofile.cpp b/luau/VM/src/lprofile.cpp
-index a88b50a..2e26928 100644
+index 8cbf613..ec0c8fb 100644
 --- a/luau/VM/src/lprofile.cpp
 +++ b/luau/VM/src/lprofile.cpp
-@@ -446,6 +446,8 @@ struct lua_ProfileState
+@@ -416,6 +416,8 @@ struct lua_ProfileState
      const double* hostwork = NULL;
      const double* hostdrained = NULL;
      double lasthost = 0;
@@ -349,7 +349,7 @@ index a88b50a..2e26928 100644
      lua_WorkCounters last;
      // the instruction dispatched last, and the counts its dispatch is in: ops for a script's function, nativeops for one a code
      // generator would compile (LUAU_PROTO_WORK_NATIVE), hostops for a host's own
-@@ -463,10 +465,6 @@ struct lua_ProfileState
+@@ -433,10 +435,6 @@ struct lua_ProfileState
      // none), and what its first touch in the frame was charged since the last booking (luaP_coldtouch): its site's firsttouch
      LuaTable* owntable = NULL;
      double owntouch = 0;
@@ -360,7 +360,7 @@ index a88b50a..2e26928 100644
      double enginework = 0;
      // the frame the last step ran in
      lua_State* lastL = NULL;
-@@ -1010,6 +1008,18 @@ static lua_ProfileBuiltinSite* fallbacksite(ProfFunction& f, int at, int node, i
+@@ -980,6 +978,18 @@ static lua_ProfileBuiltinSite* fallbacksite(ProfFunction& f, int at, int node, i
  // books what the work counters and the host's charges moved since the last booking: the instruction dispatched since
  // (one count in its function's instruction array) and what it did (allocations, calls, the host's charges); while a C
  // function's node is the target, what it did past the instruction's own dispatch is that function's
@@ -379,7 +379,7 @@ index a88b50a..2e26928 100644
  static void book(lua_ProfileState* s, lua_State* L)
  {
      if (!s->pricing)
-@@ -1049,20 +1059,17 @@ static void book(lua_ProfileState* s, lua_State* L)
+@@ -1019,20 +1029,17 @@ static void book(lua_ProfileState* s, lua_State* L)
              last[slot] = now[slot];
          }
      }
@@ -404,7 +404,7 @@ index a88b50a..2e26928 100644
                  fastwork += charge;
              last[slot] = now[slot];
          }
-@@ -2369,7 +2376,12 @@ void luaP_rehash(lua_State* L, LuaTable* t, int oldarray, int oldnodes, int keys
+@@ -2334,7 +2341,12 @@ void luaP_rehash(lua_State* L, LuaTable* t, int oldarray, int oldnodes, int keys
          {
              int nodes = t->node == &luaH_dummynode ? 0 : sizenode(t);
              double bytes = double(std::max(0, t->sizearray - oldarray)) * sizeof(TValue) + double(std::max(0, nodes - oldnodes)) * sizeof(LuaNode);
@@ -418,7 +418,7 @@ index a88b50a..2e26928 100644
          }
      }
      if (!s->rehash)
-@@ -2378,14 +2390,11 @@ void luaP_rehash(lua_State* L, LuaTable* t, int oldarray, int oldnodes, int keys
+@@ -2343,14 +2355,11 @@ void luaP_rehash(lua_State* L, LuaTable* t, int oldarray, int oldnodes, int keys
      s->rehash(s->rehashud, L, t, oldarray, oldnodes, t->sizearray, nodes, keys, luaE_scriptinsn(L) ? 1 : 0);
  }
  
@@ -528,7 +528,7 @@ index 43731ec..31bc484 100644
      {
          global_State* g = L->global;
 diff --git a/luau/VM/src/lstrlib.cpp b/luau/VM/src/lstrlib.cpp
-index e618e4a..4169e44 100644
+index 7dc6d32..d2f8932 100644
 --- a/luau/VM/src/lstrlib.cpp
 +++ b/luau/VM/src/lstrlib.cpp
 @@ -67,6 +67,7 @@ static int str_lower(lua_State* L)
@@ -680,10 +680,10 @@ index e618e4a..4169e44 100644
      lua_pushinteger(L, n); // number of substitutions
      return 2;
 diff --git a/luau/VM/src/ltable.cpp b/luau/VM/src/ltable.cpp
-index 535e37e..4f641a1 100644
+index 9a3860d..bc368a1 100644
 --- a/luau/VM/src/ltable.cpp
 +++ b/luau/VM/src/ltable.cpp
-@@ -729,7 +729,15 @@ static void countstored(lua_State* L, size_t bytes)
+@@ -677,7 +677,15 @@ static void countstored(lua_State* L, size_t bytes)
      if (luaE_scriptinsn(L))
          L->global->work.stored += bytes;
      else if (luaP_state)
@@ -700,7 +700,7 @@ index 535e37e..4f641a1 100644
  }
  
  static void setarrayvector(lua_State* L, LuaTable* t, int size)
-@@ -1009,9 +1017,10 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
+@@ -895,9 +903,10 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
          int nh = hashslotsused(t) + 1;
          // (the keys this rehash moves: the hash part's and the new one; the array part stays)
          if (luaE_scriptinsn(L))
@@ -713,7 +713,7 @@ index 535e37e..4f641a1 100644
          // (the hash part's size before, for a profile's rehash hook)
          int oldnodes = t->node == dummynode ? 0 : sizenode(t);
          resize(L, t, t->sizearray, nh);
-@@ -1070,9 +1079,11 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
+@@ -956,9 +965,11 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
      }
  
      if (luaE_scriptinsn(L))

@@ -9,10 +9,10 @@
 # Why upstream lacks it: a real CPU pays those misses itself; an emulator on a warm host has to count them.
 
 diff --git a/luau/VM/include/lua.h b/luau/VM/include/lua.h
-index 37ee051..17e14e8 100644
+index 44d61ec..607eddb 100644
 --- a/luau/VM/include/lua.h
 +++ b/luau/VM/include/lua.h
-@@ -395,6 +395,21 @@ LUA_API void lua_workmute(lua_State* L, int on);
+@@ -403,6 +403,21 @@ LUA_API void lua_workmute(lua_State* L, int on);
  // that must collect at the same points in every run gives it a clock of the work done instead. NULL restores the wall clock.
  LUA_API void lua_setgcclock(lua_State* L, double (*clock)(void* ud), void* ud);
  
@@ -35,10 +35,10 @@ index 37ee051..17e14e8 100644
  // `idx` maps a table or a userdata to its name, looked up before the value's own type name, and `vectorname` (NULL: none) names
  // every vector. The table is held for the collector (a weak-keyed one keeps its weak keys).
 diff --git a/luau/VM/src/lfunc.cpp b/luau/VM/src/lfunc.cpp
-index 0379f8a..22aaced 100644
+index 0ea4c8d..3f7ddfe 100644
 --- a/luau/VM/src/lfunc.cpp
 +++ b/luau/VM/src/lfunc.cpp
-@@ -13,6 +13,7 @@ Proto* luaF_newproto(lua_State* L)
+@@ -14,6 +14,7 @@ Proto* luaF_newproto(lua_State* L)
      Proto* f = luaM_newgco(L, Proto, sizeof(Proto), L->activememcat, LUA_TPROTO);
  
      luaC_init(L, f, LUA_TPROTO);
@@ -46,7 +46,7 @@ index 0379f8a..22aaced 100644
  
      f->nups = 0;
      f->numparams = 0;
-@@ -146,6 +147,7 @@ Closure* luaF_newLclosure(lua_State* L, int nelems, LuaTable* e, Proto* p)
+@@ -148,6 +149,7 @@ Closure* luaF_newLclosure(lua_State* L, int nelems, LuaTable* e, Proto* p)
  {
      Closure* c = luaM_newgco(L, Closure, sizeLclosure(nelems), L->activememcat, LUA_TFUNCTION);
      luaC_init(L, c, LUA_TFUNCTION);
@@ -54,7 +54,7 @@ index 0379f8a..22aaced 100644
      c->isC = 0;
      c->env = e;
      c->nupvalues = cast_byte(nelems);
-@@ -162,6 +164,8 @@ Closure* luaF_newCclosure(lua_State* L, int nelems, LuaTable* e)
+@@ -164,6 +166,8 @@ Closure* luaF_newCclosure(lua_State* L, int nelems, LuaTable* e)
  {
      Closure* c = luaM_newgco(L, Closure, sizeCclosure(nelems), L->activememcat, LUA_TFUNCTION);
      luaC_init(L, c, LUA_TFUNCTION);
@@ -64,7 +64,7 @@ index 0379f8a..22aaced 100644
      c->env = e;
      c->nupvalues = cast_byte(nelems);
 diff --git a/luau/VM/src/lgc.cpp b/luau/VM/src/lgc.cpp
-index 1e0d5a0..53dfa35 100644
+index e3f9176..9066a4d 100644
 --- a/luau/VM/src/lgc.cpp
 +++ b/luau/VM/src/lgc.cpp
 @@ -2,6 +2,12 @@
@@ -80,7 +80,7 @@ index 1e0d5a0..53dfa35 100644
  #include "lobject.h"
  #include "lstate.h"
  #include "ltable.h"
-@@ -1721,3 +1727,237 @@ const char* luaC_statename(int state)
+@@ -1726,3 +1732,239 @@ const char* luaC_statename(int state)
          return NULL;
      }
  }
@@ -115,12 +115,14 @@ index 1e0d5a0..53dfa35 100644
 +
 +// coldon and coldslot sit in padding: the state's size (counted in totalbytes) is the stock one, whatever the release's layout
 +#define LUAI_COLDALIGNUP(x, a) (((x) + (a) - 1) / (a) * (a))
++#if UINTPTR_MAX > 0xffffffffu
 +static_assert(offsetof(global_State, coldon) == offsetof(global_State, gcdisabled) + 1 &&
 +                  offsetof(global_State, gray) == LUAI_COLDALIGNUP(offsetof(global_State, gcdisabled) + 1, alignof(GCObject*)),
 +    "coldon must sit in the padding before gray");
 +static_assert(offsetof(global_State, coldslot) == offsetof(global_State, gcstepsize) + sizeof(int) &&
 +                  offsetof(global_State, freepages) == LUAI_COLDALIGNUP(offsetof(global_State, gcstepsize) + sizeof(int), alignof(lua_Page*)),
 +    "coldslot must sit in the padding before freepages");
++#endif
 +#undef LUAI_COLDALIGNUP
 +
 +static bool coldgrow(void** items, size_t* capacity, size_t itemsize)
@@ -388,7 +390,7 @@ index f0c2e58..02f1c32 100644
 +// gives a page that freepage kept back (lgc.cpp luaC_colddefer) to the allocator
 +LUAI_FUNC void luaM_releasepage(lua_State* L, lua_Page* page);
 diff --git a/luau/VM/src/lstate.cpp b/luau/VM/src/lstate.cpp
-index 3280270..9222fe8 100644
+index 4c64113..6cb4917 100644
 --- a/luau/VM/src/lstate.cpp
 +++ b/luau/VM/src/lstate.cpp
 @@ -92,6 +92,7 @@ static void close_state(lua_State* L)
@@ -420,10 +422,10 @@ index 47a8125..cbaaf5e 100644
      struct lua_Page* freepages[LUA_SIZECLASSES]; // free page linked list for each size class for non-collectable objects
      struct lua_Page* freegcopages[LUA_SIZECLASSES]; // free page linked list for each size class for collectable objects
 diff --git a/luau/VM/src/ltable.cpp b/luau/VM/src/ltable.cpp
-index 9256015..535e37e 100644
+index 8200a9f..9a3860d 100644
 --- a/luau/VM/src/ltable.cpp
 +++ b/luau/VM/src/ltable.cpp
-@@ -1093,6 +1093,7 @@ LuaTable* luaH_new(lua_State* L, int narray, int nhash)
+@@ -979,6 +979,7 @@ LuaTable* luaH_new(lua_State* L, int narray, int nhash)
  {
      LuaTable* t = luaM_newgco(L, LuaTable, sizeof(LuaTable), L->activememcat, LUA_TTABLE);
      luaC_init(L, t, LUA_TTABLE);
@@ -431,7 +433,7 @@ index 9256015..535e37e 100644
      t->metatable = NULL;
      t->tmcache = cast_byte(~0);
      t->array = NULL;
-@@ -1545,6 +1546,7 @@ LuaTable* luaH_clone(lua_State* L, LuaTable* tt)
+@@ -1425,6 +1426,7 @@ LuaTable* luaH_clone(lua_State* L, LuaTable* tt)
  {
      LuaTable* t = luaM_newgco(L, LuaTable, sizeof(LuaTable), L->activememcat, LUA_TTABLE);
      luaC_init(L, t, LUA_TTABLE);
@@ -440,10 +442,10 @@ index 9256015..535e37e 100644
      t->tmcache = tt->tmcache;
      t->array = NULL;
 diff --git a/luau/VM/src/lvmexecute.cpp b/luau/VM/src/lvmexecute.cpp
-index 9d57eef..7a252d4 100644
+index b606ee4..51474bb 100644
 --- a/luau/VM/src/lvmexecute.cpp
 +++ b/luau/VM/src/lvmexecute.cpp
-@@ -291,7 +291,10 @@ static void luau_execute(lua_State* L)
+@@ -293,7 +293,10 @@ static void luau_execute(lua_State* L)
      // (a frame that starts here: luau_execute also continues a frame once a call it made returns, as the yieldable pcall and
      // the fast pcall continue their caller, which is not a call)
      if ((clvalue(L->ci->func)->l.p->flags & LUAU_PROTO_WORK_EXEMPT) && L->ci->savedpc == L->ci->p->code && luaE_scriptframe(L, L->ci - 1))
@@ -454,7 +456,7 @@ index 9d57eef..7a252d4 100644
  
  #if VM_HAS_NATIVE
      // (native code runs natively while a profile steps the rest)
-@@ -315,6 +318,8 @@ reentry:
+@@ -317,6 +320,8 @@ reentry:
      pc = L->ci->savedpc;
      cl = clvalue(L->ci->func);
      workops = luaE_workops(L, cl);
@@ -463,7 +465,7 @@ index 9d57eef..7a252d4 100644
      base = L->base;
      k = L->ci->p->k;
  
-@@ -548,6 +553,7 @@ reentry:
+@@ -550,6 +555,7 @@ reentry:
                  if (LUAU_LIKELY(ttistable(rb)))
                  {
                      LuaTable* h = hvalue(rb);
@@ -471,7 +473,7 @@ index 9d57eef..7a252d4 100644
  
                      int slot = LUAU_INSN_C(insn) & h->nodemask8;
                      LuaNode* n = &h->node[slot];
-@@ -725,6 +731,7 @@ reentry:
+@@ -727,6 +733,7 @@ reentry:
                  if (LUAU_LIKELY(ttistable(rb)))
                  {
                      LuaTable* h = hvalue(rb);
@@ -479,7 +481,7 @@ index 9d57eef..7a252d4 100644
  
                      int slot = LUAU_INSN_C(insn) & h->nodemask8;
                      LuaNode* n = &h->node[slot];
-@@ -799,6 +806,7 @@ reentry:
+@@ -801,6 +808,7 @@ reentry:
                  if (ttistable(rb) && ttisnumber(rc))
                  {
                      LuaTable* h = hvalue(rb);
@@ -487,7 +489,7 @@ index 9d57eef..7a252d4 100644
  
                      double indexd = nvalue(rc);
                      int index = int(indexd);
-@@ -829,6 +837,7 @@ reentry:
+@@ -831,6 +839,7 @@ reentry:
                  if (ttistable(rb) && ttisnumber(rc))
                  {
                      LuaTable* h = hvalue(rb);
@@ -495,7 +497,7 @@ index 9d57eef..7a252d4 100644
  
                      double indexd = nvalue(rc);
                      int index = int(indexd);
-@@ -860,6 +869,7 @@ reentry:
+@@ -862,6 +871,7 @@ reentry:
                  if (ttistable(rb))
                  {
                      LuaTable* h = hvalue(rb);
@@ -503,7 +505,7 @@ index 9d57eef..7a252d4 100644
  
                      if (LUAU_LIKELY(unsigned(c) < unsigned(h->sizearray) && !h->metatable))
                      {
-@@ -888,6 +898,7 @@ reentry:
+@@ -890,6 +900,7 @@ reentry:
                  if (ttistable(rb))
                  {
                      LuaTable* h = hvalue(rb);
@@ -511,7 +513,7 @@ index 9d57eef..7a252d4 100644
  
                      if (LUAU_LIKELY(unsigned(c) < unsigned(h->sizearray) && !h->metatable && !h->readonly))
                      {
-@@ -961,6 +972,7 @@ reentry:
+@@ -963,6 +974,7 @@ reentry:
                  if (LUAU_LIKELY(ttistable(rb)))
                  {
                      LuaTable* h = hvalue(rb);
@@ -519,7 +521,7 @@ index 9d57eef..7a252d4 100644
                      // note: we can't use nodemask8 here because we need to query the main position of the table, and 8-bit nodemask8 only works
                      // for predictive lookups
                      LuaNode* n = &h->node[tsvalue(kv)->hash & (sizenode(h) - 1)];
-@@ -1142,9 +1154,14 @@ reentry:
+@@ -1144,9 +1156,14 @@ reentry:
                      // note that p->codeentry may point *outside* of p->code..p->code+p->sizecode, but that pointer never gets saved to savedpc.
                      pc = (SingleStep && !luaP_native(L)) ? p->code : p->codeentry;
                      if ((ccl->l.p->flags & LUAU_PROTO_WORK_EXEMPT) && !(cl->l.p->flags & LUAU_PROTO_WORK_EXEMPT))
@@ -534,7 +536,7 @@ index 9d57eef..7a252d4 100644
                      base = L->base;
                      k = p->k;
                      VM_NEXT();
-@@ -1153,7 +1170,10 @@ reentry:
+@@ -1155,7 +1172,10 @@ reentry:
                  {
                      lua_CFunction func = ccl->c.f;
                      if ((cl->l.p->flags & LUAU_PROTO_WORK_EXEMPT) == 0)
@@ -545,7 +547,7 @@ index 9d57eef..7a252d4 100644
                      int n = func(L);
  
                      // yield
-@@ -1259,9 +1279,14 @@ reentry:
+@@ -1261,9 +1281,14 @@ reentry:
                      // note that p->codeentry may point *outside* of p->code..p->code+p->sizecode, but that pointer never gets saved to savedpc.
                      pc = (SingleStep && !luaP_native(L)) ? p->code : p->codeentry;
                      if ((ccl->l.p->flags & LUAU_PROTO_WORK_EXEMPT) && !(cl->l.p->flags & LUAU_PROTO_WORK_EXEMPT))
@@ -560,7 +562,7 @@ index 9d57eef..7a252d4 100644
                      base = L->base;
                      k = p->k;
                      VM_NEXT();
-@@ -1273,7 +1298,10 @@ reentry:
+@@ -1275,7 +1300,10 @@ reentry:
  
                      lua_CFunction func = ccl->c.f;
                      if ((cl->l.p->flags & LUAU_PROTO_WORK_EXEMPT) == 0)
@@ -571,7 +573,7 @@ index 9d57eef..7a252d4 100644
                      int n = func(L);
  
                      // yield
-@@ -2471,6 +2499,7 @@ reentry:
+@@ -2463,6 +2491,7 @@ reentry:
                  if (LUAU_LIKELY(ttistable(rb)))
                  {
                      LuaTable* h = hvalue(rb);
@@ -579,7 +581,7 @@ index 9d57eef..7a252d4 100644
  
                      if (fastnotm(h->metatable, TM_LEN))
                      {
-@@ -2768,6 +2797,7 @@ reentry:
+@@ -2760,6 +2789,7 @@ reentry:
                  if (ttisnil(ra) && ttistable(ra + 1))
                  {
                      LuaTable* h = hvalue(ra + 1);
@@ -587,7 +589,7 @@ index 9d57eef..7a252d4 100644
                      int index = int(reinterpret_cast<uintptr_t>(pvalue(ra + 2)));
  
                      int sizearray = h->sizearray;
-@@ -3823,9 +3853,14 @@ reentry:
+@@ -3826,9 +3856,14 @@ reentry:
                      // reentry into the call (see LOP_CALL for description of how native calls are handled with 'codeentry')
                      pc = (SingleStep && !luaP_native(L)) ? p->code : p->codeentry;
                      if ((fcl->l.p->flags & LUAU_PROTO_WORK_EXEMPT) && !(cl->l.p->flags & LUAU_PROTO_WORK_EXEMPT))
@@ -602,7 +604,7 @@ index 9d57eef..7a252d4 100644
                      base = L->base;
                      k = p->k;
                      VM_NEXT();
-@@ -4133,7 +4168,10 @@ int luau_precall(lua_State* L, StkId func, int nresults)
+@@ -4136,7 +4171,10 @@ int luau_precall(lua_State* L, StkId func, int nresults)
      {
          lua_CFunction func = ccl->c.f;
          if (luaE_scriptwork(L))
@@ -614,7 +616,7 @@ index 9d57eef..7a252d4 100644
  
          // yield
 diff --git a/luau/VM/src/lvmutils.cpp b/luau/VM/src/lvmutils.cpp
-index aff347b..9c3ac18 100644
+index d04961c..5b1b357 100644
 --- a/luau/VM/src/lvmutils.cpp
 +++ b/luau/VM/src/lvmutils.cpp
 @@ -221,6 +221,7 @@ void luaV_gettable(lua_State* L, const TValue* t, TValue* key, StkId val)

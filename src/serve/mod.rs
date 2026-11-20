@@ -942,6 +942,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A served job's summary lists the unemulated members its harness used, as the command's does, and its status line
+    /// counts them; a run and a recording alike (`ree run --service`, `ree record --service`).
+    #[test]
+    fn a_served_job_lists_the_unemulated_members() {
+        let root = std::env::temp_dir().join(format!("ree-serve-unemulated-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        let harness = root.join("Hurt.luau");
+        std::fs::write(&harness, "return function(Context)\n\tlocal Humanoid = Instance.new(\"Humanoid\")\n\tHumanoid:TakeDamage(5)\n\tHumanoid:TakeDamage(5)\nend\n").unwrap();
+        let expected = serde_json::json!([{ "member": "Humanoid.TakeDamage", "count": 2, "first": "ReplicatedStorage.RURFixtures.Hurt:3" }]);
+        for command in ["run", "record"] {
+            let mut args: Vec<String> = ["--harness", &harness.to_string_lossy(), "--roots", &root.join("none").to_string_lossy(), "--seconds", "0.2"].iter().map(|s| s.to_string()).collect();
+            if command == "record" {
+                args.extend(["--out".to_string(), root.join("out").to_string_lossy().into_owned()]);
+            }
+            let (reply, emulator) = job(command, &args);
+            drop(emulator);
+            assert_eq!(reply["code"], 0, "{reply}");
+            let summary: serde_json::Value = serde_json::from_str(reply["stdout"].as_str().unwrap().trim()).unwrap();
+            assert_eq!(summary["unemulated"], expected, "{command}: {summary}");
+            assert!(reply["stderr"].as_str().unwrap().contains(" errors; 1 unemulated; "), "{reply}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A job whose harness fails replies exit 1 with the summary the command prints (the client exits with the reply's
+    /// code), a run and a recording alike; a clean job of the same worker still replies 0.
+    #[test]
+    fn a_failed_job_replies_exit_1_and_its_whole_summary() {
+        let root = std::env::temp_dir().join(format!("ree-serve-failed-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        let fails = root.join("Fails.luau");
+        std::fs::write(&fails, "return function() print('before') task.wait(0.1) error('boom') end").unwrap();
+        let clean = root.join("Clean.luau");
+        std::fs::write(&clean, "return function() print('fine') end").unwrap();
+        let args = |harness: &Path, out: Option<&str>| -> Vec<String> {
+            let mut args: Vec<String> = ["--harness", &harness.to_string_lossy(), "--roots", &root.join("none").to_string_lossy(), "--seconds", "0.5"].iter().map(|s| s.to_string()).collect();
+            if let Some(out) = out {
+                args.extend(["--out".to_string(), root.join(out).to_string_lossy().into_owned()]);
+            }
+            args
+        };
+        for (command, out) in [("run", None), ("record", Some("out"))] {
+            let (reply, emulator) = job(command, &args(&fails, out));
+            drop(emulator);
+            assert_eq!(reply["code"], 1, "{reply}");
+            assert!(reply["stderr"].as_str().unwrap().contains(&format!("ree: {command} error; 31 frames;")), "{reply}");
+            let summary: serde_json::Value = serde_json::from_str(reply["stdout"].as_str().unwrap().trim()).unwrap();
+            assert_eq!(summary["status"], "error", "{summary}");
+            assert!(summary["failure"].as_str().unwrap().contains("boom"), "{summary}");
+            assert_eq!(summary["frames"], 31, "{summary}");
+            let (reply, emulator) = job(command, &args(&clean, out.map(|_| "clean")));
+            drop(emulator);
+            assert_eq!(reply["code"], 0, "{reply}");
+        }
+        assert!(root.join("out").join("playback.json").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A warm-up job reads in what a recording of the project reads and records nothing: its reply is a
     /// summary, and the recording after it is what it is without it.
     #[test]
@@ -1230,6 +1288,57 @@ mod tests {
         drop(emulator);
         let summary: serde_json::Value = serde_json::from_str(reply["stdout"].as_str().unwrap().trim()).unwrap();
         assert_eq!((summary["done"].as_bool(), summary["frames"].as_u64()), (Some(true), alone["frames"].as_u64()), "{summary}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A loopback job (a server and its client, `--run-context loopback`) runs cold: nothing is prepared ahead of it, even
+    /// where its harness calls Context.Checkpoint, and it prints what a run of it from the command line prints
+    #[test]
+    fn a_loopback_job_runs_cold_as_a_direct_run_does() {
+        modules::reuse_compiled_modules();
+        let root = std::env::temp_dir().join(format!("ree-serve-loopback-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(root.join("game")).unwrap();
+        let harness = root.join("Pair.luau");
+        std::fs::write(
+            &harness,
+            r#"local Storage = game:GetService("ReplicatedStorage")
+            return {
+                Server = function(Context)
+                    Context.Checkpoint()
+                    local Remote = Instance.new("RemoteEvent")
+                    Remote.Name = "Ping"
+                    Remote.Parent = Storage
+                    Remote.OnServerEvent:Connect(function(Player, Text)
+                        print("server got", Text, Player.Name)
+                        Remote:FireClient(Player, Text .. "!")
+                    end)
+                end,
+                Client = function(Context)
+                    local Remote = Storage:WaitForChild("Ping")
+                    Remote.OnClientEvent:Connect(function(Text)
+                        print("client got", Text)
+                        print("@done")
+                    end)
+                    Remote:FireServer("hi")
+                end,
+            }"#,
+        )
+        .unwrap();
+        let roots = root.join("game").to_string_lossy().into_owned();
+        let args: Vec<String> = ["--harness", &harness.to_string_lossy(), "--roots", &roots, "--seconds", "1", "--run-context", "loopback"].iter().map(|s| s.to_string()).collect();
+        let counts = PreparedCounts::default();
+        let (reply, emulator, next) = run_job("run", &args, &mut None, &counts);
+        drop(emulator);
+        assert_eq!(reply["code"], 0, "{reply}");
+        assert!(next.is_none(), "a loopback job is not prepared ahead");
+        let served: serde_json::Value = serde_json::from_str(reply["stdout"].as_str().unwrap().trim()).unwrap();
+        let direct = crate::record::run::run_only(&crate::record::run::parse(&args, false).unwrap(), &launch::Host::default()).unwrap();
+        let lines = |summary: &serde_json::Value| -> Vec<String> {
+            summary["output"].as_array().unwrap().iter().map(|line| format!("{} {}", line["side"].as_str().unwrap_or("-"), line["message"].as_str().unwrap_or(""))).collect()
+        };
+        assert_eq!(lines(&served), ["server server got hi Player", "client client got hi!", "client @done"]);
+        assert_eq!(lines(&served), lines(&direct));
+        assert_eq!((served["frames"].clone(), served["runContext"].clone()), (direct["frames"].clone(), direct["runContext"].clone()));
         let _ = std::fs::remove_dir_all(&root);
     }
 

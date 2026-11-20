@@ -639,20 +639,7 @@ impl Scheduler {
     /// Virtual seconds since the engine started plus the script work charged (and the busy-loop
     /// drift of the current phase); during a recorded clock's build placement, the build's progress.
     pub fn elapsed(&mut self) -> f64 {
-        let work = self.take_work();
-        let now = if self.build_clock {
-            self.build_now()
-        } else if self.recorded.is_some() || !self.charging || self.frozen_clock {
-            self.now
-        } else {
-            let base = self.now + self.stretch;
-            if self.carry > base {
-                self.stretch += self.carry - base;
-            }
-            self.carry = f64::NEG_INFINITY;
-            self.cpu = (self.cpu + work).max(self.now + self.stretch);
-            self.cpu
-        };
+        let now = self.work_clock();
         // Only a clock that stands still drifts (a loop that reads it and nothing else, or a clock that
         // takes no charges): a read that finds it moved is a read of real work, however many a phase
         // holds. Every read past 256 billed 10 us, which made a spawn replay's os.clock brackets cost
@@ -667,6 +654,35 @@ impl Scheduler {
             }
         }
         now + self.clock_drift
+    }
+
+    /// [`Self::elapsed`] without the drift of a clock read: the virtual time plus the script work charged.
+    fn work_clock(&mut self) -> f64 {
+        let work = self.take_work();
+        if self.build_clock {
+            self.build_now()
+        } else if self.recorded.is_some() || !self.charging || self.frozen_clock {
+            self.now
+        } else {
+            let base = self.now + self.stretch;
+            if self.carry > base {
+                self.stretch += self.carry - base;
+            }
+            self.carry = f64::NEG_INFINITY;
+            self.cpu = (self.cpu + work).max(self.now + self.stretch);
+            self.cpu
+        }
+    }
+
+    /// When a call made now is made, on the frames' time: the frame's time plus the script work charged in it so far
+    /// (what os.clock has moved on since the frame's first read, less a stretch an overrun before it left). A clock that
+    /// takes no charges (recorded, frozen, before the first frame, a placed build) gives the frame's time.
+    fn call_time(&mut self) -> f64 {
+        if self.build_clock {
+            return self.now;
+        }
+        let clock = self.work_clock();
+        self.now + (clock - (self.now + self.stretch)).max(0.0)
     }
 
     /// A frozen clock also stops the wall clock at the hour the run began (tick(), os.time(), DateTime.now(), GetServerTimeNow): two
@@ -871,16 +887,16 @@ impl Scheduler {
 
     // Timers
 
-    fn schedule(&mut self, legacy: bool, kind: TimerKind, delay: f64, thread: LuaThread, args: Vec<Value>) {
+    fn schedule(&mut self, legacy: bool, kind: TimerKind, delay: f64, thread: LuaThread, args: Vec<Value>, started: f64) {
         self.timer_sequence += 1;
         // NaN and negative delays resume at the next Heartbeat
         let wait = if delay.is_nan() { 0.0 } else { delay.max(0.0) };
         let timer = Timer {
-            due: self.now + wait,
+            due: started + wait,
             sequence: self.timer_sequence,
             thread,
             args,
-            started: self.now,
+            started,
             kind,
             created_work: (self.track_build && self.heartbeat_count == 0).then_some(self.build_work),
         };
@@ -891,9 +907,20 @@ impl Scheduler {
         }
     }
 
-    /// task.delay / task.wait
+    /// A timer of the task queue counted from the frame's time (the engine's own: Debris, WaitForChild's warning, ...)
     pub fn schedule_task(&mut self, kind: TimerKind, delay: f64, thread: LuaThread, args: Vec<Value>) {
-        self.schedule(false, kind, delay, thread, args);
+        let started = self.now;
+        self.schedule(false, kind, delay, thread, args, started);
+    }
+
+    /// A script's task.delay / task.wait: it counts from the moment of the call and resumes at the first resumption
+    /// phase at least that far on (measured in roblox-sim's Studio 0.746 client and server,
+    /// tools/parity/probes/task_delay_time.luau: 5,000 delays and waits from Heartbeat and RenderStepped handlers and
+    /// resumed threads; the phase's time is read just before its first thread). A delay of whole frames started after
+    /// any script work in a frame so takes one frame more, and task.wait returns a little less than whole frames.
+    pub fn schedule_call(&mut self, kind: TimerKind, delay: f64, thread: LuaThread, args: Vec<Value>) {
+        let started = self.call_time();
+        self.schedule(false, kind, delay, thread, args, started);
     }
 
     fn legacy_delay(&self, duration: Option<f64>) -> f64 {
@@ -905,7 +932,8 @@ impl Scheduler {
     /// wait() / spawn() / delay(): resume at the first Heartbeat at least 0.03 s after the call
     pub fn schedule_legacy(&mut self, kind: TimerKind, duration: Option<f64>, thread: LuaThread) {
         let delay = self.legacy_delay(duration);
-        self.schedule(true, kind, delay, thread, Vec::new());
+        let started = self.now;
+        self.schedule(true, kind, delay, thread, Vec::new(), started);
     }
 
     pub fn next_timer_due(&self) -> Option<f64> {
@@ -1472,15 +1500,19 @@ fn run_timers(lua: &Lua, engine: &Rc<Engine>, legacy: bool, limit: Option<f64>, 
 }
 
 fn run_timers_in(lua: &Lua, engine: &Rc<Engine>, legacy: bool, limit: Option<f64>, flush: TimerFlush) -> LuaResult<()> {
-    let (cutoff, until) = {
-        let state = engine.state.borrow();
-        let mut until = state.sched.now + 1e-9;
+    let (cutoff, until, phase) = {
+        let mut state = engine.state.borrow_mut();
+        // The task queue's phase reads its time once, just before its first thread (measured with the task.delay
+        // calls, [`Scheduler::schedule_call`]): the frame's time plus the work run in the frame before it (a thread the
+        // legacy phase resumed that calls task.delay(0) is resumed in this frame's phase, tools/parity frame_phases)
+        let phase = if legacy { state.sched.now } else { state.sched.call_time() };
+        let mut until = phase + 1e-9;
         if let Some(limit) = limit {
             if limit + 1e-9 < until {
                 until = limit + 1e-9;
             }
         }
-        (state.sched.timer_sequence, until)
+        (state.sched.timer_sequence, until, phase)
     };
     loop {
         let timer = {
@@ -1493,7 +1525,7 @@ fn run_timers_in(lua: &Lua, engine: &Rc<Engine>, legacy: bool, limit: Option<f64
         };
         // (cancelled entries count too: they are popped and discarded by resume)
         profile::count("timerEntries", 1);
-        let elapsed = engine.state.borrow().sched.now - timer.started;
+        let elapsed = phase - timer.started;
         // (a client resumes a parked thread at a price of its own, booked to the line it waited on: cost.rs RESUMED_WAIT, RESUMED_DELAY)
         let resumable = can_resume(engine, &timer.thread);
         if resumable {
@@ -1582,6 +1614,10 @@ fn heartbeat_timers(lua: &Lua, engine: &Rc<Engine>, at: f64, delta: f64, limit: 
         state.sched.edit_mode
     };
     flush_deferred(lua, engine)?;
+    // A loopback run's receive point (loopback.rs): what the other side sent last frame applies before the legacy
+    // resumptions, its events queued for their flush (measured: a remote's handlers run after the legacy wait() resumptions
+    // and before PreAnimation; a RemoteFunction's callback and an answered call before those resumptions)
+    crate::loopback::receive(lua, engine)?;
     if !edit_mode {
         // A playing client (measured, Studio 0.744: tools/parity/probes/deferred_points.luau and a wait / spawn
         // chain probe) resumes wait / delay / spawn threads after the render step's PreRender handlers and before
@@ -1887,6 +1923,15 @@ fn step_recorded(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<bool> {
 /// recorded clock replays its next frame instead while it has one; after its capture nothing
 /// runs.
 pub fn step(lua: &Lua, engine: &Rc<Engine>, duration: Option<f64>) -> LuaResult<()> {
+    // (a loopback run's client steps its server first: loopback.rs)
+    if engine.peer.borrow().is_some() {
+        return crate::loopback::step_pair(lua, engine, duration);
+    }
+    step_one(lua, engine, duration)
+}
+
+/// [`step`] of this engine alone (a loopback pair steps each of its engines this way)
+pub fn step_one(lua: &Lua, engine: &Rc<Engine>, duration: Option<f64>) -> LuaResult<()> {
     // (the boundary profile's step guard; a recorded clock's `step_recorded` below opens a nested one, which does nothing)
     let _boundary_frame = crate::boundary::Frame::begin();
     // (a profile's timeline: one row a frame; off, one thread-local read)

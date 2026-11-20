@@ -1,5 +1,6 @@
 //! A `ree run` cannot outlive its job (src/watchdog.rs): the wall-clock cap, the stop after repeated script timeouts and
-//! the exit when the parent process is gone; and what a script exhausts (the held values of src/lua/refs.rs, the run's
+//! the exit when the parent process is gone; a failed run exits 1 with its summary, while a run's exit follows its status,
+//! not its scripts' errors; and what a script exhausts (the held values of src/lua/refs.rs, the run's
 //! stack) is its error, not the end of the run; and a profile it cannot take (a kind the profiling suite does not know)
 //! stops a run before it starts, while the hardware counters' readings leave a recording as it was; through the built
 //! `ree`.
@@ -67,6 +68,53 @@ fn repeated_script_timeouts_stop_the_run_with_126_and_its_output() {
     assert_eq!(summary["status"], "error");
     assert!(summary["failure"].as_str().unwrap().contains("2 script timeouts: the run stops"), "{summary}");
     assert!(summary["frames"].as_u64().unwrap() < 10, "{summary}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_run_whose_harness_fails_exits_1_with_its_whole_summary() {
+    // it exited 0 with status `error` in its summary, which a caller that checks the exit code first read as a pass
+    let root = scratch("failed");
+    let fails = harness(&root, "return function() print('before') task.wait(0.1) assert(false, 'boom') end");
+    let done = ree(&root, &fails, &["--seconds", "0.5"]).output().unwrap();
+    let (stdout, stderr) = (String::from_utf8_lossy(&done.stdout), String::from_utf8_lossy(&done.stderr));
+    assert_eq!(done.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("ree: run error; 31 frames; 2 output lines; 1 errors;"), "{stderr}");
+    let summary: serde_json::Value = serde_json::from_str(stdout.trim()).expect("the summary on stdout");
+    assert_eq!(summary["status"], "error", "{summary}");
+    assert!(summary["failure"].as_str().unwrap().contains("boom"), "{summary}");
+    assert_eq!((summary["frames"].as_u64(), summary["errors"].as_u64()), (Some(31), Some(1)), "{summary}");
+    let output = summary["output"].as_array().unwrap();
+    assert_eq!(output[0]["message"], "before", "{summary}");
+    assert_eq!(output[1]["kind"], "error", "{summary}");
+    // a recording exits the same way, its files written and its summary printed as they were
+    let out = root.join("out");
+    let mut record = Command::new(env!("CARGO_BIN_EXE_ree"));
+    record.args(["record", "--harness", &fails, "--roots", &root.join("empty").to_string_lossy(), "--out", &out.to_string_lossy(), "--seconds", "0.5"]);
+    for name in ["REE_SCRIPT_TIMEOUT", "REE_MAX_WALL_SECONDS", "REE_MAX_SCRIPT_TIMEOUTS", "REE_PARENT_WATCH"] {
+        record.env_remove(name);
+    }
+    let recorded = record.output().unwrap();
+    assert_eq!(recorded.status.code(), Some(1), "{}", String::from_utf8_lossy(&recorded.stderr));
+    let summary: serde_json::Value = serde_json::from_slice(&recorded.stdout).expect("the summary on stdout");
+    assert_eq!(summary["status"], "error", "{summary}");
+    assert!(summary["failure"].as_str().unwrap().contains("boom"), "{summary}");
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(out.join("summary.json")).unwrap()).unwrap();
+    assert_eq!(saved, summary);
+    assert!(out.join("playback.json").is_file() && out.join("events.json").is_file());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_run_exits_by_its_status_not_by_its_script_errors() {
+    // a spawned thread's error is the script's (counted in `errors`): the run goes on and ends `ok`, ended by `@done` here
+    let root = scratch("clean");
+    let spawned = harness(&root, "return function() task.spawn(function() error('a spawned thread fails') end) task.wait(0.1) print('@done') end");
+    let done = ree(&root, &spawned, &["--seconds", "1"]).output().unwrap();
+    let (stdout, stderr) = (String::from_utf8_lossy(&done.stdout), String::from_utf8_lossy(&done.stderr));
+    assert_eq!(done.status.code(), Some(0), "{stderr}");
+    let summary: serde_json::Value = serde_json::from_str(stdout.trim()).expect("the summary on stdout");
+    assert_eq!((summary["status"].as_str(), summary["errors"].as_u64(), summary["done"].as_bool()), (Some("ok"), Some(1), Some(true)), "{summary}");
     let _ = std::fs::remove_dir_all(&root);
 }
 

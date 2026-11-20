@@ -8,6 +8,9 @@
 //   node tools/parity/run.mjs ui_signals --rur <checkout>    # through rur, a host that adds a GUI layout
 //   node tools/parity/run.mjs --server [...]                 # the probes as a server's script: expected/server and
 //                                                            # known-server.json, ree with --run-context server
+//   node tools/parity/run.mjs --loopback [...]               # the paired probes (probes/loopback): a server and its client
+//                                                            # in one play session, expected/loopback and known-loopback.json,
+//                                                            # ree with --run-context loopback
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -22,6 +25,11 @@ const KNOWN = path.join(HERE, "known.json");
 // The server's set: each probe run as a server Script (capture_sim.py), and ree with --run-context server
 const EXPECTED_SERVER = path.join(EXPECTED, "server");
 const KNOWN_SERVER = path.join(HERE, "known-server.json");
+// The paired set: each probe a server's half and a client's half of one play session (loopback.luau), ree with
+// --run-context loopback
+const PROBES_LOOPBACK = path.join(PROBES, "loopback");
+const EXPECTED_LOOPBACK = path.join(EXPECTED, "loopback");
+const KNOWN_LOOPBACK = path.join(HERE, "known-loopback.json");
 
 export function probeNames() {
 	return fs.readdirSync(PROBES).filter(name => name.endsWith(".luau")).map(name => name.slice(0, -5)).sort();
@@ -37,9 +45,45 @@ export function body(name) {
 	return `${prelude}\nP.base = debug.info(1, "l") local __ParityOk, __ParityError = pcall(function()\n${probe}\nend)\nif not __ParityOk then\n\tprint("probe-error " .. P.err(__ParityError))\nend\n`;
 }
 
+export function loopbackProbeNames() {
+	if (!fs.existsSync(PROBES_LOOPBACK)) return [];
+	return fs.readdirSync(PROBES_LOOPBACK).filter(name => name.endsWith(".luau")).map(name => name.slice(0, -5)).sort();
+}
+
+// One side of a paired probe (probes/loopback/<name>.luau: lines both sides run, then `--- server` and the server's lines,
+// then `--- client` and the client's): the whole file with the other side's lines blanked, so an error's "@<n>:" is the
+// file's own line n on either side. Its print collects the lines, and loopback.luau's __LoopbackFinish sends the server's
+// to the client, which prints both sides' (`server: ...`, then `client: ...`) with the engine's print. tests/parity.rs
+// builds the same text.
+export function loopbackText(name, side) {
+	const prelude = fs.readFileSync(path.join(HERE, "prelude.luau"), "utf8");
+	const helpers = fs.readFileSync(path.join(HERE, "loopback.luau"), "utf8");
+	const lines = fs.readFileSync(path.join(PROBES_LOOPBACK, `${name}.luau`), "utf8").replace(/\r\n/g, "\n").split("\n");
+	let section = "both";
+	const kept = lines.map(line => {
+		const marker = line.match(/^--- (server|client)\s*$/);
+		if (marker) {
+			section = marker[1];
+			return line;
+		}
+		return section === "both" || section === side ? line : "";
+	});
+	return `${LOOPBACK_COLLECT}\n${prelude}\n${helpers}\nP.base = debug.info(1, "l") local __ParityOk, __ParityError = pcall(function()\n${kept.join("\n")}\nend)\nif not __ParityOk then\n\tprint("probe-error " .. P.err(__ParityError))\nend\n__LoopbackFinish(__LoopbackLines, __LoopbackRealPrint)\n`;
+}
+
+// Each side's print collects its lines (loopback.luau prints them when both sides are done)
+export const LOOPBACK_COLLECT = `local __LoopbackLines, __LoopbackRealPrint = {}, print
+local function print(...)
+	local Parts = table.pack(...)
+	for Index = 1, Parts.n do
+		Parts[Index] = tostring(Parts[Index])
+	end
+	table.insert(__LoopbackLines, table.concat(Parts, " ", 1, Parts.n))
+end`;
+
 // Header lines of an expected file start with "# ".
-export function readExpected(name, server = false) {
-	const file = path.join(server ? EXPECTED_SERVER : EXPECTED, `${name}.txt`);
+export function readExpected(name, server = false, loopback = false) {
+	const file = path.join(loopback ? EXPECTED_LOOPBACK : server ? EXPECTED_SERVER : EXPECTED, `${name}.txt`);
 	if (!fs.existsSync(file)) return null;
 	const text = fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
 	const lines = text.split("\n");
@@ -47,7 +91,8 @@ export function readExpected(name, server = false) {
 	return { header: lines.filter(line => line.startsWith("# ")), lines: lines.filter(line => !line.startsWith("# ")) };
 }
 
-// A probe's options, from a line "-- parity: identity=4 device=desktop rendered" (capture_sim.py reads the same line).
+// A probe's options, from a line "-- parity: identity=4 device=desktop rendered flag=FFlagEnableLoadModule" (capture_sim.py
+// reads the same line; "flag" names one engine flag the capture turns on).
 export function probeOptions(name) {
 	const probe = fs.readFileSync(path.join(PROBES, `${name}.luau`), "utf8");
 	const match = probe.match(/--\s*parity:([^\r\n]*)/);
@@ -59,16 +104,17 @@ export function probeOptions(name) {
 	return options;
 }
 
-export function readKnown(server = false) {
-	const file = server ? KNOWN_SERVER : KNOWN;
+export function readKnown(server = false, loopback = false) {
+	const file = loopback ? KNOWN_LOOPBACK : server ? KNOWN_SERVER : KNOWN;
 	if (!fs.existsSync(file)) return {};
 	return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
-// Whether a probe runs on a server too: not one that needs a client's screen (a device or a renderer)
+// Whether a probe runs on a server too: not one that needs a client's screen (a device or a renderer), nor one ree runs as a
+// plugin's code ("context=edit")
 export function serverProbe(name) {
 	const options = probeOptions(name);
-	return !options.device && !options.rendered;
+	return !options.device && !options.rendered && !options.context;
 }
 
 function defaultRee() {
@@ -99,10 +145,20 @@ export function runInRee(name, ree, scratch, server = false) {
 	fs.writeFileSync(harness, `return function(Context)\n${HARNESS_PRINT}\n${body(name)}\n${HARNESS_FLUSH}\nend\n`);
 	const empty = path.join(scratch, "empty");
 	fs.mkdirSync(empty, { recursive: true });
-	const context = server ? ["--run-context", "server"] : [];
+	// (the server capture's place has ServerScriptService.LoadStringEnabled on; a probe's "flag=" names an engine flag it needs on;
+	// "context=edit" runs it as a plugin's code, in ree's edit run context: a probe captured at identity 4, which has the
+	// Plugin capability a game script lacks)
+	const options = probeOptions(name);
+	const context = server ? ["--run-context", "server", "--load-string"] : options.context === "edit" ? ["--mode", "edit", "--run-context", "edit"] : [];
+	if (options.flag === "FFlagEnableLoadModule") context.push("--load-module");
 	const result = spawnSync(ree, ["run", "--harness", harness, "--roots", empty, "--seconds", "120", ...context], {
 		encoding: "utf8", maxBuffer: 256 * 1024 * 1024, windowsHide: true,
 	});
+	return readRun(result);
+}
+
+// A `ree run`'s printed lines (its `@done` dropped), the other output lines, and why it failed if it did
+function readRun(result) {
 	let summary;
 	try {
 		summary = JSON.parse(result.stdout.trim().split("\n").at(-1));
@@ -114,10 +170,23 @@ export function runInRee(name, ree, scratch, server = false) {
 	const messages = [];
 	for (const entry of summary.output || []) {
 		if (entry.kind === "print" && entry.message !== "@done") lines.push(...String(entry.message).split("\n"));
-		else if (entry.kind !== "print") messages.push(`${entry.kind}: ${String(entry.message).split("\n")[0]}`);
+		else if (entry.kind !== "print") messages.push(`${entry.side ? `${entry.side} ` : ""}${entry.kind}: ${String(entry.message).split("\n")[0]}`);
 	}
 	if (!summary.done) errors.push(`the probe did not finish (status ${summary.status}${summary.failure ? `: ${summary.failure}` : ""})`);
 	return { lines, messages, errors };
+}
+
+// One paired probe through `ree run --run-context loopback`: the harness's Server and Client run the probe's two sides; the
+// client prints both sides' lines (loopback.luau), then `@done`.
+export function runInReeLoopback(name, ree, scratch) {
+	const harness = path.join(scratch, `${name}.luau`);
+	fs.writeFileSync(harness, `return {\n\tServer = function(Context)\n${loopbackText(name, "server")}\nend,\n\tClient = function(Context)\n${loopbackText(name, "client")}\n__LoopbackRealPrint("@done")\nend,\n}\n`);
+	const empty = path.join(scratch, "empty");
+	fs.mkdirSync(empty, { recursive: true });
+	const result = spawnSync(ree, ["run", "--harness", harness, "--roots", empty, "--seconds", "120", "--run-context", "loopback"], {
+		encoding: "utf8", maxBuffer: 256 * 1024 * 1024, windowsHide: true,
+	});
+	return readRun(result);
 }
 
 // One probe through rur (roblox-ui-renderer), which adds a GUI layout and a renderer to ree: `rur render` of the body as
@@ -194,7 +263,7 @@ function pad(text, width) {
 	return text.length >= width ? text : text + " ".repeat(width - text.length);
 }
 
-function capture(names, server = false) {
+function capture(names, server = false, loopback = false) {
 	const command = process.env.REE_PARITY_CAPTURE;
 	if (!command) {
 		console.error("parity: --capture runs the probes in the real engine through the command REE_PARITY_CAPTURE names; README.md says what it is given and must write");
@@ -203,14 +272,17 @@ function capture(names, server = false) {
 	const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ree-parity-"));
 	const input = path.join(scratch, "bodies.json");
 	const output = path.join(scratch, "outputs.json");
-	fs.writeFileSync(input, JSON.stringify(names.map(name => (server ? { name, body: body(name), server: true } : { name, body: body(name) }))));
+	// (a paired probe gives each side's whole text: the server's runs as a server Script, the client's as the client's job)
+	const entry = name => loopback ? { name, loopback: true, server: loopbackText(name, "server"), client: loopbackText(name, "client") }
+		: server ? { name, body: body(name), server: true } : { name, body: body(name) };
+	fs.writeFileSync(input, JSON.stringify(names.map(entry)));
 	const result = spawnSync(`${command} "${input}" "${output}"`, { stdio: "inherit", shell: true, windowsHide: true, cwd: REPO });
 	if (result.status !== 0 || !fs.existsSync(output)) {
 		console.error(`parity: the capture command failed (exit ${result.status})`);
 		process.exit(1);
 	}
 	const captured = JSON.parse(fs.readFileSync(output, "utf8"));
-	const folder = server ? EXPECTED_SERVER : EXPECTED;
+	const folder = loopback ? EXPECTED_LOOPBACK : server ? EXPECTED_SERVER : EXPECTED;
 	fs.mkdirSync(folder, { recursive: true });
 	for (const name of names) {
 		const entry = captured.probes?.[name];
@@ -227,7 +299,7 @@ function capture(names, server = false) {
 
 function main() {
 	const args = process.argv.slice(2);
-	const options = { ree: defaultRee(), rur: null, diff: false, json: null, capture: false, writeKnown: false, server: false, names: [] };
+	const options = { ree: defaultRee(), rur: null, diff: false, json: null, capture: false, writeKnown: false, server: false, loopback: false, names: [] };
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
 		if (arg === "--ree") options.ree = args[++index];
@@ -237,23 +309,26 @@ function main() {
 		else if (arg === "--capture") options.capture = true;
 		else if (arg === "--write-known") options.writeKnown = true;
 		else if (arg === "--server") options.server = true;
+		else if (arg === "--loopback") options.loopback = true;
 		else if (arg.startsWith("-")) throw new Error(`unknown option ${arg}`);
 		else options.names.push(arg);
 	}
-	const names = options.names.length ? options.names : probeNames().filter(name => !options.server || serverProbe(name));
-	if (options.capture) return capture(names, options.server);
+	if (options.server && options.loopback) throw new Error("--loopback runs both sides; leave out --server");
+	const names = options.names.length ? options.names : options.loopback ? loopbackProbeNames() : probeNames().filter(name => !options.server || serverProbe(name));
+	if (options.capture) return capture(names, options.server, options.loopback);
 	if (!options.ree && !options.rur) throw new Error("no ree: build it (cargo build --release) or pass --ree <exe>");
 	if (options.rur && options.writeKnown) throw new Error("--write-known records ree's differences, not rur's");
 	if (options.rur && options.server) throw new Error("--server runs ree as a server; rur hosts a client");
+	if (options.rur && options.loopback) throw new Error("--loopback runs ree's own loopback");
 	// (known.json lists ree's differences: through rur every line must match)
-	const known = options.rur ? {} : readKnown(options.server);
+	const known = options.rur ? {} : readKnown(options.server, options.loopback);
 	const host = options.rur ? "rur" : "ree";
 	const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ree-parity-"));
 	const rows = [];
 	let failed = 0;
 	for (const name of names) {
-		const expected = readExpected(name, options.server);
-		const ran = options.rur ? runInRur(name, options.rur, scratch) : runInRee(name, options.ree, scratch, options.server);
+		const expected = readExpected(name, options.server, options.loopback);
+		const ran = options.rur ? runInRur(name, options.rur, scratch) : options.loopback ? runInReeLoopback(name, options.ree, scratch) : runInRee(name, options.ree, scratch, options.server);
 		if (!expected) {
 			rows.push({ name, status: "no expected output", ran });
 			continue;
@@ -286,7 +361,7 @@ function main() {
 			if (!row.result || (!row.result.unknown.length && !row.result.known.length)) continue;
 			console.log(`\n--- ${row.name} (expected: real engine, -; ${host}, +)`);
 			const { diff } = row.result;
-			const expected = readExpected(row.name, options.server).lines;
+			const expected = readExpected(row.name, options.server, options.loopback).lines;
 			for (const [kind, i, j] of diff) {
 				if (kind === "-") console.log(`- ${expected[i]}`);
 				else if (kind === "+") console.log(`+ ${row.ran.lines[j]}`);
@@ -306,8 +381,9 @@ function main() {
 			});
 		}
 		const sorted = Object.fromEntries(Object.keys(next).sort().map(name => [name, next[name]]));
-		fs.writeFileSync(options.server ? KNOWN_SERVER : KNOWN, JSON.stringify(sorted, null, "\t") + "\n");
-		console.log(`parity: wrote ${Object.values(next).reduce((sum, list) => sum + list.length, 0)} known differences to ${options.server ? "known-server.json" : "known.json"}`);
+		const knownFile = options.loopback ? KNOWN_LOOPBACK : options.server ? KNOWN_SERVER : KNOWN;
+		fs.writeFileSync(knownFile, JSON.stringify(sorted, null, "\t") + "\n");
+		console.log(`parity: wrote ${Object.values(next).reduce((sum, list) => sum + list.length, 0)} known differences to ${path.basename(knownFile)}`);
 	}
 	if (options.json) {
 		fs.writeFileSync(options.json, JSON.stringify(rows.map(row => ({ name: row.name, status: row.status, errors: row.ran.errors, total: row.result?.total, same: row.result?.same, known: row.result?.known, unknown: row.result?.unknown, extra: row.result?.extra })), null, "\t"));

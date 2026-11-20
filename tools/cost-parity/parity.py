@@ -110,9 +110,14 @@ def run_ree(args):
         command = [str(ree), "run", "--harness", str(harness), "--roots", str(empty), "--seconds", "3600"]
         started = time.time()
         done = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", env=env)
-    if done.returncode != 0:
+    try:
+        summary = json.loads(done.stdout)
+    except ValueError:
+        summary = None
+    # (a run whose status is "error" exits 1 with its summary: its output says what failed)
+    ended = done.returncode == 0 or (done.returncode == 1 and isinstance(summary, dict) and summary.get("status") == "error")
+    if not ended or not isinstance(summary, dict):
         sys.exit(f"parity: ree exited {done.returncode}\n{done.stderr[-3000:]}")
-    summary = json.loads(done.stdout)
     result = None
     for line in summary.get("output", []):
         message = line.get("message", "")

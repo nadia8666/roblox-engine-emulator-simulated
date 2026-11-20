@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 encode-numbers 0 -0 1 -1 0.5 0.1 0.3333333333333333 100 1000000000000000 10000000000000000 100000000000000000 100000000000000000000 1e21 9007199254740992 9007199254740994 9223372036854776000 1e300 1e-7 5e-324 123456789.125 0.30000000000000007 -1e-10 4294967296 {"m":null,"t":"numeric","v":"inf"} {"m":null,"t":"numeric","v":"-inf"} {"m":null,"t":"numeric","v":"nan"}
 encode-number-arrays [0] [-0] [1] [-1] [0.5] [0.1] [0.3333333333333333] [100] [1000000000000000] [10000000000000000] [100000000000000000] [100000000000000000000] [1e21] [9007199254740992] [9007199254740994] [9223372036854776000] [1e300] [1e-7] [5e-324] [123456789.125] [0.30000000000000007] [-1e-10] [4294967296] [{"m":null,"t":"numeric","v":"inf"}] [{"m":null,"t":"numeric","v":"-inf"}] [{"m":null,"t":"numeric","v":"nan"}]
 encode-strings "" "plain" "quote\"" "back\\slash" "slash/" "new\nline" "tab\t" "cr\r" "nul\u0000byte" "\u0001\u0002\u001F" "\x7F" "é" "€" "😀" E(Can't convert to JSON) E(Can't convert to JSON) "<>&'" "  "

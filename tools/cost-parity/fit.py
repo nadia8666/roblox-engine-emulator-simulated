@@ -58,7 +58,7 @@ INTERPRETED = {"c_simple": 0.48, "c_mod": 5.46, "c_tablek": 2.45, "c_tabledyn": 
 NATIVE = {"c_simple": 0.43, "c_mod": 0.65, "c_tablek": 0.42, "c_tabledyn": 0.75, "c_alloc": 1.74, "c_call": 3.25, "c_iter": 1.93,
           "c_fastcall": 0.19, "c_global": 0.27, "c_namecall": 3.25}
 LIBRARY = {"numtostr": 18.0, "newstring": 171.0, "sortcompare": 1.06, "sortcall": 9.7, "createitem": 1.95, "cloneitem": 4.3,
-           "concatitem": 5.0, "splitpart": 25.4, "format": 102.0, "formatspec": 0.0}
+           "concatitem": 5.0, "splitpart": 11.7, "format": 102.0, "formatspec": 0.0}
 # work by the size of a call's input (src/cost.rs LUAU_SCANNED and below, and json's prices)
 SIZES = {
     # table elements compared and moved, bytes of string and of pattern text scanned, pattern steps, buffer bytes

@@ -296,9 +296,9 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
     let stem = options.file.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_else(|| "variants".into());
     let out = out.map(PathBuf::from).unwrap_or_else(|| crate::default_output_path(Path::new("what-if").join(&stem)));
     options.out = std::path::absolute(&out).map_err(|error| format!("{}: {error}", out.display()))?;
-    // without a project (no roots, project, place or mount), the runs have none: a folder of the harness's own stops the
-    // implicit project a checkout may have
-    if engine.roots.is_empty() && engine.mounts.is_empty() && engine.project.is_none() && engine.place.is_none() {
+    // without a project (no roots, Rojo project file, project, place or mount), the runs have none: a folder of the
+    // harness's own stops the implicit project a checkout may have
+    if engine.roots.is_empty() && engine.mounts.is_empty() && engine.rojo.is_none() && engine.project.is_none() && engine.place.is_none() {
         options.passed.extend(["--instance".to_string(), format!("ReplicatedStorage/{HARNESS_MODULE}=Folder")]);
     }
     Ok(options)

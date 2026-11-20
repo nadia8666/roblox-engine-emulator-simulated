@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 escapes "\b\f\u000B\u0000\u001B\x7F￿􏿿"
 dict-values function={"a":null} instance={"a":null} vector3={"a":null} enum={"a":null} buffer={"a":{"m":null,"t":"buffer","base64":"AA=="}} thread={"a":null} color3={"a":null} inf={"a":{"m":null,"t":"numeric","v":"inf"}} nan={"a":{"m":null,"t":"numeric","v":"nan"}} cframe={"a":null} udim2={"a":null} empty={"a":[]}
 array-values function=[1,null,3] instance=[1,null,3] vector3=[1,null,3] enum=[1,null,3] buffer=[1,{"m":null,"t":"buffer","base64":"AA=="},3] thread=[1,null,3] color3=[1,null,3] inf=[1,{"m":null,"t":"numeric","v":"inf"},3] nan=[1,{"m":null,"t":"numeric","v":"nan"},3] cframe=[1,null,3] udim2=[1,null,3] empty=[1,[],3]

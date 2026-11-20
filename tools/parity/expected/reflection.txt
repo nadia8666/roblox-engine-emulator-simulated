@@ -1,7 +1,7 @@
-# engine: Roblox Studio 0.744.0.7441077, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 list true true true true true Accessory
-count 656 633
+count 660 637
 class Part Display,Name,Permits,Serialized,Subclasses,Superclass FormFactorPart true FlagStand,Platform,Seat,SkateboardPlatform,SpawnLocation true Category General nil true
 class Accessory Display,Name,Permits,Serialized,Superclass Accoutrement true - Category General nil true
 class BasePlayerGui Display,Name,Permits,Serialized,Subclasses,Superclass Instance true CoreGui,PlayerGui,StarterGui true Category General nil true

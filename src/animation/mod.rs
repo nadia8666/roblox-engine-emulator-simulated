@@ -2,22 +2,29 @@
 //! track's playback members and events, and the Animator's step, which writes the blended pose into
 //! the rig's Motor6D.Transform and Bone.Transform each frame. A track plays a KeyframeSequence
 //! ([`clip`]) or a CurveAnimation ([`curve_clip`], measured in Studio; the curve instances' own
-//! members are in `curves`). The playback below is Roblox's documentation, not measured in Studio
-//! (docs/engine.md "Animation" lists the assumptions):
+//! members are in `curves`). A track of either steps as Studio 0.747 steps one (measured with
+//! Animator:StepAnimations in an edit session, docs/engine.md "Animation curves", Stepping; golden scripts in
+//! `curve_golden/`):
 //!
 //! - The step runs after RunService.PreAnimation and before Stepped (the task scheduler's order), in
-//!   play mode only (an Animator does not run in edit mode); the Motor6D batch after PreSimulation
-//!   then poses the parts in the same frame.
-//! - A track's weight moves linearly from WeightCurrent to WeightTarget over the fade time (Play,
-//!   Stop, AdjustWeight). Per joint, priorities from the highest down each take their tracks' summed
-//!   weight (at most 1) of what is left; tracks of one priority blend by their weights; whatever no
-//!   track takes stays at the rest pose (Transform identity).
-//! - Stop() makes IsPlaying false and fires Stopped; Ended fires once the fade-out reached weight 0.
-//!   A non-looped track reaching its end does the same with a 0.1 s fade-out, holding its last pose.
-//!   A looped one fires DidLoop on each wrap. KeyframeReached (keyframes not named "Keyframe") and
-//!   GetMarkerReachedSignal(name) (KeyframeMarkers, with their Value) fire for the keyframes the
-//!   step passed, the start included on the first step after Play. Events are deferred.
+//!   play mode only (an Animator does not run in edit mode; Animator:StepAnimations steps one there); the
+//!   Motor6D batch after PreSimulation then poses the parts in the same frame. That order is Roblox's
+//!   documentation.
+//! - TimePosition, WeightCurrent and the fade are float32 ([`advance`], [`fade_step`]). A fade (Play, Stop,
+//!   AdjustWeight) starts from the weight the track has and takes effect with the next step, a fade of 0 too.
+//!   A track whose fade is over and that is stopped, or whose target weight is 0, ends with the next step:
+//!   Stopped if it was playing, then Ended, and it is stepped no more (its WeightCurrent stays as it was).
+//! - Per joint, priorities from the highest down each take the smaller of their tracks' summed weight and
+//!   what is left; tracks of one priority blend by their weights; whatever no track takes stays at the rest
+//!   pose. A clip's FaceControls values blend the same way into the rig's FaceControls instance ([`pose`]).
+//!   A weight below 0.001 poses nothing. While an animator has a track that is stepped it writes every joint
+//!   of its rig each step (the rest pose into those no track poses); with none it writes nothing, so the
+//!   pose of a track stopped with a fade of 0 stays.
+//! - A track that reaches its end without looping fires Stopped and fades out over 0.3 s. KeyframeReached
+//!   (a KeyframeSequence's keyframes not named "Keyframe"; "End" for a CurveAnimation) and
+//!   GetMarkerReachedSignal(name) fire for what the step passed. Events are deferred.
 //! - Translations scale with the rig model's Scale (Model:ScaleTo scales the animations it plays).
+//! - A track of an `active://` id follows its clip instance as scripts change it ([`clip_changed`]).
 
 pub mod clip;
 pub mod curve;
@@ -43,15 +50,21 @@ use crate::{
     signal::SignalId,
     value::{Str, Value},
 };
-use clip::{Clip, priority_rank};
+use clip::{Clip, Tree, priority_rank};
 pub use source::{Loading, enable};
 
 /// Roblox's default fade time (Play, Stop, AdjustWeight): 0.100000001.
 pub const DEFAULT_FADE: f64 = 0.1;
 
-/// How long a CurveAnimation's track that reached its end fades out (measured, Studio 0.747: a sixth of the pose is
-/// left 0.25 s after the end, none after 0.3 s).
-const CURVE_END_FADE: f64 = 0.3;
+/// How long a track that reached its end fades out (measured, Studio 0.747: a sixth of the pose is left 0.25 s after
+/// the end, none after 0.3 s; a KeyframeSequence's the same).
+const END_FADE: f64 = 0.3;
+
+/// The weight below which a track poses nothing (measured: 0.00099 leaves the joint at rest, 0.00101 poses).
+const POSING_WEIGHT: f32 = 0.001;
+
+/// A target weight this near 0 ends the track once its fade is over (measured: 1e-5 does, 2e-5 does not, -1 does not).
+const IDLE_WEIGHT: f32 = 1e-5;
 
 struct Track {
     animator: InstanceId,
@@ -60,16 +73,14 @@ struct Track {
     playing: bool,
     /// Stepped and posing: playing, or fading out after it stopped
     active: bool,
-    /// TimePosition as the step last wrote it (a different stored value was set by a script)
+    /// TimePosition as the step last wrote it, a float32 (a different stored value was set by a script)
     time: f64,
     speed: f64,
-    weight: f64,
-    weight_from: f64,
-    weight_target: f64,
-    fade: f64,
-    fade_elapsed: f64,
-    /// The first step since Play: keyframes at the start time fire
-    fresh: bool,
+    /// WeightCurrent
+    weight: f32,
+    weight_target: f32,
+    /// What is left of the fade to `weight_target`, in seconds
+    fade_left: f32,
     /// When it was last played (GetPlayingAnimationTracks' order)
     order: u64,
     markers: Vec<(String, SignalId)>,
@@ -78,6 +89,10 @@ struct Track {
     /// Looped / Priority written by a script (the asset's own do not replace them when it arrives)
     set_looped: bool,
     set_priority: bool,
+    /// The clip instance an `active://` track follows ([`clip_changed`])
+    live: Option<InstanceId>,
+    /// The instance changed since `clip` was read from it
+    stale: bool,
 }
 
 #[derive(Default)]
@@ -87,8 +102,10 @@ struct Animations {
     active: Vec<InstanceId>,
     /// Tracks whose asset is on the way
     pending: Vec<InstanceId>,
-    /// The joints each animator posed last step (put back at rest when no track poses them)
-    posed: FxHashMap<InstanceId, Vec<InstanceId>>,
+    /// The tracks of `active://` ids by the clip instance they follow
+    live: FxHashMap<InstanceId, Vec<InstanceId>>,
+    /// Whether the hooks that tell of a followed clip's changes are in
+    following: bool,
     /// Each animator's rig maps with the model and the version they were built for (dom.watch_rig): rebuilt only when
     /// something inside the model changed, not every step
     rigs: FxHashMap<InstanceId, (InstanceId, u32, Rc<Rig>)>,
@@ -127,6 +144,7 @@ struct Names {
     model: ClassId,
     humanoid: ClassId,
     animation_controller: ClassId,
+    face_controls: Option<ClassId>,
     /// Enum.AnimationPriority items by value
     priorities: Vec<(u32, crate::reflection::EnumItemId)>,
 }
@@ -169,6 +187,7 @@ impl Names {
             model: c("Model")?,
             humanoid: c("Humanoid")?,
             animation_controller: c("AnimationController")?,
+            face_controls: c("FaceControls"),
             priorities,
         })
     }
@@ -262,6 +281,11 @@ fn load(lua: &Lua, engine: &Rc<Engine>, shared: &Shared, names: &Names, owner: I
         let state = engine.state.borrow();
         (animation_uri(&state, names, animation), state.dom.at(animation).name.clone())
     };
+    // (measured: an `active://` id that is none, or names no registered clip, raises here)
+    let live = match source::active_clip(engine, &uri) {
+        Some(found) => Some(found.map_err(|problem| Flow::Error(ScriptError::plain(problem)))?),
+        None => None,
+    };
     let clip = match source::resolve(engine, &uri) {
         Ok(clip) => clip,
         Err(error) => {
@@ -272,7 +296,7 @@ fn load(lua: &Lua, engine: &Rc<Engine>, shared: &Shared, names: &Names, owner: I
         }
     };
     // An asset not fetched yet arrives later (cost::ANIMATION_FETCH); a registered sequence is here
-    let registered = source::loader(engine).borrow().registered.contains_key(uri.trim());
+    let registered = source::is_registered(engine, &uri);
     let mut pending = None;
     let clip = match clip {
         Some(found) if !registered => {
@@ -301,18 +325,27 @@ fn load(lua: &Lua, engine: &Rc<Engine>, shared: &Shared, names: &Names, owner: I
         set(&mut state, reflection, track, names.is_playing, Value::Bool(false));
         set(&mut state, reflection, track, names.speed, Value::Number(1.0));
         set(&mut state, reflection, track, names.time_position, Value::Number(0.0));
+        // (measured: WeightTarget is 0 until the track is played)
         set(&mut state, reflection, track, names.weight_current, Value::Number(0.0));
-        set(&mut state, reflection, track, names.weight_target, Value::Number(1.0));
+        set(&mut state, reflection, track, names.weight_target, Value::Number(0.0));
         track
     };
+    if live.is_some() {
+        follow(engine, shared, names);
+    }
     let mut animations = shared.borrow_mut();
     if pending.is_some() {
         animations.pending.push(track);
+    }
+    if let Some(live) = live {
+        animations.live.entry(live).or_default().push(track);
     }
     animations.tracks.insert(track, Track {
         animator,
         clip,
         pending,
+        live,
+        stale: false,
         set_looped: false,
         set_priority: false,
         playing: false,
@@ -320,11 +353,8 @@ fn load(lua: &Lua, engine: &Rc<Engine>, shared: &Shared, names: &Names, owner: I
         time: 0.0,
         speed: 1.0,
         weight: 0.0,
-        weight_from: 0.0,
-        weight_target: 1.0,
-        fade: 0.0,
-        fade_elapsed: 0.0,
-        fresh: false,
+        weight_target: 0.0,
+        fade_left: 0.0,
         order: 0,
         markers: Vec::new(),
     });
@@ -350,40 +380,136 @@ fn playing_tracks(lua: &Lua, engine: &Rc<Engine>, shared: &Shared, names: &Names
     Ok(values([LuaValue::Table(table)]))
 }
 
-/// Starts a fade of `track`'s weight to `target`.
-fn fade_to(track: &mut Track, target: f64, fade: f64) {
-    track.weight_from = track.weight;
-    track.weight_target = target;
-    track.fade = fade.max(0.0);
-    track.fade_elapsed = 0.0;
-    if track.fade <= 0.0 {
-        track.weight = target;
+/// A followed clip changed: `changed` is the clip instance or something inside it (anything else is nothing to
+/// this). Its tracks take the clip's Length now, and its Loop and Priority unless a script wrote the track's own,
+/// without a Changed event (measured in Studio 0.747 for a track of AnimationClipProvider:RegisterActiveAnimationClip's
+/// id: after a key is inserted at 2 s the track's Length reads 2 before any step, and a signal on its Length did not
+/// fire); the poses, joints and markers are read again with the next step ([`refresh`]).
+fn clip_changed(animations: &mut Animations, names: &Names, reflection: &Reflection, state: &mut State, changed: InstanceId) {
+    let mut at = Some(changed);
+    while let Some(id) = at {
+        if let Some(tracks) = animations.live.get(&id) {
+            let header = {
+                let tree = clip::EngineTree { state, reflection };
+                let curve = tree.class(id) == "CurveAnimation";
+                (state.dom.get(id).is_some() && (curve || tree.class(id) == "KeyframeSequence")).then(|| clip::header(&tree, id, curve))
+            };
+            let (length, looped, priority) = header.unwrap_or((0.0, false, clip::PRIORITY_ACTION));
+            for &track in tracks {
+                let Some(kept) = animations.tracks.get_mut(&track) else { continue };
+                kept.stale = true;
+                if state.dom.get(track).is_none() {
+                    continue;
+                }
+                set(state, reflection, track, names.length, Value::Number(length as f64));
+                if header.is_some() && !kept.set_looped {
+                    set(state, reflection, track, names.looped, Value::Bool(looped));
+                }
+                if let Some(item) = names.priority_item(priority).filter(|_| header.is_some() && !kept.set_priority) {
+                    set(state, reflection, track, names.priority, Value::EnumItem(item));
+                }
+            }
+        }
+        at = state.dom.get(id).and_then(|instance| instance.parent);
     }
+}
+
+/// A curve's keys were written (curves.rs stores them without a hook): [`clip_changed`] for it.
+pub(super) fn keys_changed(engine: &Engine, curve: InstanceId) {
+    let Some((shared, names)) = engine.extension::<AnimationExtension>().and_then(|found| found.state.borrow().clone()) else { return };
+    if shared.borrow().live.is_empty() {
+        return;
+    }
+    clip_changed(&mut shared.borrow_mut(), &names, &engine.reflection, &mut engine.state.borrow_mut(), curve);
+}
+
+/// Puts in the hooks that tell [`clip_changed`] of property and hierarchy changes, with the first `active://` track
+/// of an engine (an engine without one runs none of this).
+fn follow(engine: &Engine, shared: &Shared, names: &Names) {
+    if std::mem::replace(&mut shared.borrow_mut().following, true) {
+        return;
+    }
+    let mut hooks = engine.hooks.borrow_mut();
+    // (the engine and the names are reached through the extension: a hook that held them would keep the engine alive)
+    let told = |shared: &Shared, names: &Rc<Names>, reflection: &Arc<Reflection>, state: &mut State, id: InstanceId| {
+        if let Ok(mut animations) = shared.try_borrow_mut() {
+            if !animations.live.is_empty() {
+                clip_changed(&mut animations, names, reflection, state, id);
+            }
+        }
+    };
+    let Some((_, names_rc)) = extension(engine).state.borrow().clone() else { return };
+    let _ = names;
+    let reflection = engine.reflection.clone();
+    let (s, n, r) = (Rc::downgrade(shared), names_rc.clone(), reflection.clone());
+    hooks.property_changed.push(Box::new(move |state, id, _| {
+        if let Some(shared) = s.upgrade() {
+            told(&shared, &n, &r, state, id);
+        }
+    }));
+    let (s, n, r) = (Rc::downgrade(shared), names_rc, reflection);
+    hooks.hierarchy_changed.push(Box::new(move |state, id, old, new| {
+        if let Some(shared) = s.upgrade() {
+            for changed in [old, new.or(Some(id))].into_iter().flatten() {
+                told(&shared, &n, &r, state, changed);
+            }
+        }
+    }));
+}
+
+/// Reads a followed clip again for the track that plays it, when it changed since.
+fn refresh(engine: &Engine, shared: &Shared, id: InstanceId) {
+    let live = match shared.borrow().tracks.get(&id) {
+        Some(track) if track.stale => track.live,
+        _ => return,
+    };
+    let Some(live) = live else { return };
+    let clip = {
+        let state = engine.state.borrow();
+        let tree = clip::EngineTree { state: &state, reflection: &engine.reflection };
+        match tree.class(live) {
+            "CurveAnimation" => Clip::of(&tree, live, true),
+            "KeyframeSequence" => Clip::of(&tree, live, false),
+            // (the instance is gone)
+            _ => Clip::default(),
+        }
+    };
+    if let Some(track) = shared.borrow_mut().tracks.get_mut(&id) {
+        track.clip = Some(Arc::new(clip));
+        track.stale = false;
+    }
+}
+
+/// Starts a fade of `track`'s weight to `target` over `fade` seconds (one below 0 is 0). The weight itself moves with
+/// the next step, also for a fade of 0 (measured: AdjustWeight(0.5, 0) leaves WeightCurrent at 1 until a step, of 0 s
+/// even, and Play(0) leaves a new track's at 0).
+fn fade_to(track: &mut Track, target: f64, fade: f64) {
+    track.weight_target = target as f32;
+    track.fade_left = fade.max(0.0) as f32;
 }
 
 fn play(engine: &Engine, shared: &Shared, names: &Names, id: InstanceId, args: &Args) {
     let fade = number_arg(args, 1, DEFAULT_FADE);
     let weight = number_arg(args, 2, 1.0);
     let speed = number_arg(args, 3, 1.0);
+    refresh(engine, shared, id);
     let animator = {
         let mut guard = shared.borrow_mut();
         let animations = &mut *guard;
         animations.played += 1;
         let order = animations.played;
         let Some(track) = animations.tracks.get_mut(&id) else { return };
-        if !track.active {
-            track.weight = 0.0;
-        }
+        // (the fade starts from the weight the track has: 0 for a new one or one that faded out, and whatever a track
+        // stopped with a fade of 0 was left with, measured 1)
         fade_to(track, weight, fade);
         if track.pending.is_some() {
             // (its fade starts when the asset arrives)
             track.weight = 0.0;
         }
         track.playing = true;
-        // (measured for a CurveAnimation's track: one played backwards starts at the last key)
-        track.time = track.clip.as_ref().filter(|clip| clip.curve && speed < 0.0).map_or(0.0, |clip| clip.length as f64);
+        // (measured: a track played backwards starts at the last key)
+        track.time = track.clip.as_ref().filter(|_| speed < 0.0).map_or(0.0, |clip| clip.length as f64);
         track.speed = speed;
-        track.fresh = true;
         track.order = order;
         let animator = track.animator;
         if !track.active {
@@ -400,9 +526,7 @@ fn play(engine: &Engine, shared: &Shared, names: &Names, id: InstanceId, args: &
     set(&mut state, reflection, id, names.is_playing, Value::Bool(true));
     set(&mut state, reflection, id, names.time_position, Value::Number(time));
     set(&mut state, reflection, id, names.speed, Value::Number(speed));
-    set(&mut state, reflection, id, names.weight_target, Value::Number(weight));
-    let current = shared.borrow().tracks[&id].weight;
-    set(&mut state, reflection, id, names.weight_current, Value::Number(current));
+    set(&mut state, reflection, id, names.weight_target, Value::Number(weight as f32 as f64));
     if state.dom.get(animator).is_some() {
         core::fire_event(&mut state, animator, names.animation_played, vec![Value::Instance(id)]);
     }
@@ -441,8 +565,15 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
             }
             animations.active.retain(|&active| active != id);
             animations.pending.retain(|&pending| pending != id);
+            if let Some(live) = track.live {
+                if let Some(tracks) = animations.live.get_mut(&live) {
+                    tracks.retain(|&kept| kept != id);
+                    if tracks.is_empty() {
+                        animations.live.remove(&live);
+                    }
+                }
+            }
         }
-        animations.posed.remove(&id);
     }));
 
     // Looped and Priority a script writes hold when the asset arrives (measured)
@@ -481,10 +612,10 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
     let edit = engine.options.edit_mode();
     add(behaviors, "Animator", "StepAnimations", method(move |_, engine, id, args| {
         if !edit {
-            return Err(Flow::Error(ScriptError::plain("The current thread cannot call 'StepAnimations' (lacking capability Plugin)")));
+            return Err(Flow::Error(ScriptError::plain("The current thread cannot call 'StepAnimations' (lacking capability PluginOrOpenCloud)")));
         }
-        // (measured: a number, or a string of one; a delta below 0 or not a number is taken as 0 here, where Studio
-        // leaves its tracks at times that follow no rule found)
+        // (measured: a number, or a string of one. A delta below 0, or one that is no number, steps like any other:
+        // `advance` and `fade_step` say what comes of it)
         let delta = match args.get(1) {
             LuaValue::Nil => return Err(Flow::Error(ScriptError::plain("Argument 1 missing or nil"))),
             LuaValue::Number(n) => *n,
@@ -497,7 +628,7 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
             LuaValue::Table(_) => return Err(Flow::Error(ScriptError::plain("Unable to cast Array to float"))),
             other => return Err(Flow::Error(ScriptError::plain(format!("Unable to cast {} to float", crate::lua::typeof_value(engine, other))))),
         };
-        step_of(engine, if delta.is_finite() { delta.max(0.0) } else { 0.0 }, Some(id));
+        step_of(engine, delta, Some(id));
         Ok(none())
     }));
 
@@ -526,15 +657,17 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
         let id = track_of(args)?;
         let weight = number_arg(args, 1, 1.0);
         let fade = number_arg(args, 2, DEFAULT_FADE);
-        let current = {
+        {
             let mut animations = s.borrow_mut();
             let Some(track) = animations.tracks.get_mut(&id) else { return Ok(none()) };
+            // (measured: a track that is not playing takes no weight: after Stop(0.3), AdjustWeight(0.5, 0) leaves
+            // WeightTarget at 0 and the fade-out as it was)
+            if !track.playing {
+                return Ok(none());
+            }
             fade_to(track, weight, fade);
-            track.weight
-        };
-        let mut state = engine.state.borrow_mut();
-        set(&mut state, &engine.reflection, id, n.weight_target, Value::Number(weight));
-        set(&mut state, &engine.reflection, id, n.weight_current, Value::Number(current));
+        }
+        set(&mut engine.state.borrow_mut(), &engine.reflection, id, n.weight_target, Value::Number(weight as f32 as f64));
         Ok(none())
     }));
     let s = shared.clone();
@@ -580,8 +713,8 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
     // not look inside it; it takes any other instance too, a Folder say, whose id plays nothing (source::register).
     // AnimationClipProvider's two refuse a CurveAnimation whose Position or Rotation child is of another class
     // (curve_clip::validate) and anything that is not a clip; the Active ones give "active://N", counted from 0 across
-    // both services, and KeyframeSequenceProvider's takes a KeyframeSequence only. The two that are not Active keep
-    // the clip as it is when registered and give the id that content has (source::register).
+    // each service (source::active_clip), and KeyframeSequenceProvider's takes a KeyframeSequence only. The two that
+    // are not Active keep the clip as it is when registered and give the id that content has (source::register).
     let register = |active: bool, curves: bool, checked: bool, refusal: &'static str| {
         method(move |lua, engine, _, args| {
             if args.get(1).is_nil() {
@@ -605,9 +738,10 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
             }
             let uri = if active {
                 let mut loader = source::loader(engine).borrow_mut();
-                loader.next_active += 1;
-                let uri = format!("active://{}", loader.next_active - 1);
-                loader.registered.insert(uri.clone(), instance);
+                // (AnimationClipProvider's list is the one that checks its clips)
+                let list = if checked { &mut loader.active_clips } else { &mut loader.active_sequences };
+                list.push(instance);
+                let uri = format!("active://{}", list.len() - 1);
                 drop(loader);
                 engine.state.borrow_mut().dom.pin(instance);
                 uri
@@ -648,184 +782,128 @@ pub(crate) fn extension(engine: &Engine) -> &AnimationExtension {
 /// Events a track's step fires, in order.
 enum Fire {
     Keyframe(String),
-    Marker(String, String),
+    Marker(String, Vec<u8>),
     DidLoop,
     Stopped,
     Ended,
 }
 
-/// The keyframes and markers of `clip` from `from` to `to` (forward), the start included when
-/// `inclusive`.
-fn crossings(clip: &Clip, from: f64, to: f64, inclusive: bool, out: &mut Vec<Fire>) {
-    let passed = |time: f32| {
-        let time = time as f64;
-        (time > from || inclusive && time >= from) && time <= to
+/// A stretch of a clip a step passes: from the lower time to the higher, each end counting when its flag says so.
+type Stretch = (f32, f32, bool, bool);
+
+/// The markers, then the named keyframes, of `clip` inside `stretches`, a stretch after the other, each from its low
+/// end up or (`back`) from its high end down. Within a stretch a CurveAnimation's MarkerCurves fire one after the
+/// other in the clip's order, each its own markers in the step's direction (measured: curves a, b, c with one
+/// marker each at 0, 0.25 and 0.5 s fire b then c going backwards from 0.7 to 0.2 s, where one curve holding both
+/// fires the later first).
+fn passed(clip: &Clip, stretches: &[Stretch], back: bool, out: &mut Vec<Fire>) {
+    let inside = |time: f32, &(low, high, low_counts, high_counts): &Stretch| {
+        (time > low || low_counts && time == low) && (time < high || high_counts && time == high)
     };
-    let mut events: Vec<(f32, Fire)> = Vec::new();
-    for (time, name) in &clip.keyframes {
-        if passed(*time) {
-            events.push((*time, Fire::Keyframe(name.clone())));
+    if !clip.markers.is_empty() {
+        for stretch in stretches {
+            let mut found: Vec<&clip::Marker> = clip.markers.iter().filter(|marker| inside(marker.time, stretch)).collect();
+            if back {
+                found.reverse();
+            }
+            found.sort_by_key(|marker| marker.curve);
+            out.extend(found.into_iter().map(|marker| Fire::Marker(marker.name.clone(), marker.value.clone())));
         }
     }
-    for marker in &clip.markers {
-        if passed(marker.time) {
-            events.push((marker.time, Fire::Marker(marker.name.clone(), marker.value.clone())));
+    if !clip.keyframes.is_empty() {
+        for stretch in stretches {
+            let found = clip.keyframes.iter().filter(|(time, _)| inside(*time, stretch)).map(|(_, name)| Fire::Keyframe(name.clone()));
+            if back { out.extend(found.rev()) } else { out.extend(found) }
         }
-    }
-    events.sort_by(|a, b| a.0.total_cmp(&b.0));
-    out.extend(events.into_iter().map(|(_, fire)| fire));
-}
-
-/// The same backwards (negative speed): from `from` down to `to`.
-fn crossings_back(clip: &Clip, from: f64, to: f64, inclusive: bool, out: &mut Vec<Fire>) {
-    let mut forward = Vec::new();
-    crossings(clip, to, from, true, &mut forward);
-    let mut events: Vec<Fire> = forward.into_iter().rev().collect();
-    if !inclusive {
-        // (the start itself was reached by the step before)
-        let start = clip.keyframes.iter().map(|k| k.0).chain(clip.markers.iter().map(|m| m.time)).filter(|&t| t as f64 == from).count();
-        events.drain(..start.min(events.len()));
-    }
-    out.extend(events);
-}
-
-/// Advances a playing track by `delta` seconds of the clock: its new time and what it fired.
-/// `looped` is the track's Looped. Ends the track (playing false, a fade-out) at a non-looped end.
-fn advance(track: &mut Track, delta: f64, looped: bool, out: &mut Vec<Fire>) {
-    let Some(clip) = track.clip.clone() else { return };
-    if clip.curve {
-        return advance_curve(track, &clip, delta, looped, out);
-    }
-    let length = clip.length as f64;
-    let inclusive = std::mem::take(&mut track.fresh);
-    if length <= 0.0 {
-        if inclusive {
-            crossings(&clip, 0.0, 0.0, true, out);
-        }
-        if !looped {
-            end(track, 0.0, out);
-        }
-        return;
-    }
-    let from = track.time;
-    let to = from + delta * track.speed;
-    if track.speed >= 0.0 {
-        if to < length {
-            crossings(&clip, from, to, inclusive, out);
-            track.time = to;
-        } else if looped {
-            crossings(&clip, from, length, inclusive, out);
-            let wrapped = to.rem_euclid(length);
-            crossings(&clip, 0.0, wrapped, true, out);
-            out.push(Fire::DidLoop);
-            track.time = wrapped;
-        } else {
-            crossings(&clip, from, length, inclusive, out);
-            end(track, length, out);
-        }
-    } else if to > 0.0 {
-        crossings_back(&clip, from, to, inclusive, out);
-        track.time = to;
-    } else if looped {
-        // Negative speed: past the first keyframe it restarts at the last
-        crossings_back(&clip, from, 0.0, inclusive, out);
-        let wrapped = to.rem_euclid(length);
-        crossings_back(&clip, length, wrapped, true, out);
-        out.push(Fire::DidLoop);
-        track.time = wrapped;
-    } else {
-        crossings_back(&clip, from, 0.0, inclusive, out);
-        end(track, 0.0, out);
     }
 }
 
-/// A curve clip's markers a step passes, in the order it passes them: forwards those from `low` up to
-/// `high`, backwards those from `high` down to `low`; each end counts when its flag says so.
-fn curve_markers(clip: &Clip, low: f32, high: f32, ends: (bool, bool), back: bool, out: &mut Vec<Fire>) {
-    let passed = |time: f32| (time > low || ends.0 && time == low) && (time < high || ends.1 && time == high);
-    let mut found: Vec<&clip::Marker> = clip.markers.iter().filter(|marker| passed(marker.time)).collect();
-    found.sort_by(|a, b| a.time.total_cmp(&b.time));
-    if back {
-        found.reverse();
-    }
-    out.extend(found.into_iter().map(|marker| Fire::Marker(marker.name.clone(), marker.value.clone())));
-}
-
-/// [`advance`] for a track of a CurveAnimation, as Studio 0.747 steps one (Animator:StepAnimations in an edit session,
-/// docs/engine.md "Animation curves"). The time is a float32 that each step adds `delta * speed` to. A step fires
-/// the markers from where it starts up to, but not at, where it stops, so a marker at the time a step lands on fires
-/// with the next step that moves, and one at the start time with the first; at an end of the clip the end's own
-/// marker counts too. Reaching the last key forwards, or 0 s backwards, is the end of a pass: KeyframeReached("End")
-/// after the step's markers, then Stopped for a track that does not loop, then DidLoop when the step went past the
-/// end (looped or not; landing on it exactly fires none). A looped track goes on from the other end; one that does
-/// not loop fades out over 0.3 s. A clip of Length 0 has no end: its time runs on, below 0 too, and passes markers
-/// wherever they are.
-fn advance_curve(track: &mut Track, clip: &Clip, delta: f64, looped: bool, out: &mut Vec<Fire>) {
-    track.fresh = false;
+/// Advances a playing track by `delta` seconds of the clock, as Studio 0.747 steps one (Animator:StepAnimations in
+/// an edit session; docs/engine.md "Animation curves", Stepping): its new time and what it fired. `looped` is the
+/// track's Looped.
+///
+/// The time is a float32 that each step adds `delta * speed` to; the direction is the speed's sign, whatever the
+/// delta's. A looped track's new time is taken into the clip (the last key's time is 0 s); one that does not loop
+/// is held inside it and ends when it reaches the last key forwards or 0 s backwards: Stopped, and a fade-out over
+/// 0.3 s. DidLoop fires whenever the sum left the clip, looped or not (landing on an end exactly fires none).
+///
+/// A step fires the markers and named keyframes from where it starts up to, but not at, where it stops, so one at
+/// the time a step lands on fires with the next step that moves and one at the start time with the first. When the
+/// new time lies behind the old one in the track's direction, the track is taken to have gone round: the rest of
+/// the clip to its end, the end's own, and from the other end to the new time. A CurveAnimation's track does so
+/// looped or not and fires KeyframeReached("End") after the markers; a KeyframeSequence's does so only when
+/// looped (not looping, such a step fires nothing) and has no "End". A step of several rounds lands where the
+/// remainder puts it and fires only what lies between the old time and the new. That covers a delta below 0 (a
+/// track at 0.35 s stepped by -0.2 s is at 0.15 s having fired everything from 0.35 s round to 0.15 s) and one
+/// that is no number (the time is no number from then on; a KeyframeSequence's track fires the rest of the clip
+/// once, a CurveAnimation's nothing).
+///
+/// A clip of Length 0 has no end: its time runs on, below 0 too; a CurveAnimation's markers fire as it passes
+/// their times, a KeyframeSequence's never.
+fn advance(track: &mut Track, clip: &Clip, delta: f64, looped: bool, out: &mut Vec<Fire>) {
     let length = clip.length;
     let from = track.time as f32;
     let raw = from + (delta * track.speed) as f32;
     let back = track.speed < 0.0;
-    let end = Fire::Keyframe("End".to_string());
     if length <= 0.0 {
-        if back {
-            curve_markers(clip, raw, from, (false, true), true, out);
-        } else {
-            curve_markers(clip, from, raw, (true, false), false, out);
+        if clip.curve {
+            passed(clip, &[if back { (raw, from, false, true) } else { (from, raw, true, false) }], back, out);
         }
         track.time = raw as f64;
-    } else if !back {
-        if raw < length {
-            curve_markers(clip, from, raw, (true, false), false, out);
-            track.time = raw as f64;
-        } else if looped {
-            curve_markers(clip, from, length, (true, true), false, out);
-            let wrapped = if raw - length < length { raw - length } else { raw.rem_euclid(length) };
-            curve_markers(clip, 0.0, wrapped, (true, false), false, out);
-            out.push(end);
-            if raw > length {
-                out.push(Fire::DidLoop);
-            }
-            track.time = wrapped as f64;
-        } else {
-            curve_markers(clip, from, length, (true, true), false, out);
-            out.push(end);
-            self::end(track, length as f64, out);
-            fade_to(track, 0.0, CURVE_END_FADE);
-            if raw > length {
-                out.push(Fire::DidLoop);
-            }
-        }
-    } else if looped && raw >= 0.0 {
-        // (a looped track at the last key, where Play leaves a backwards one, is at 0 s: the step passes the whole clip)
-        let to = if raw >= length { raw - length } else { raw };
-        curve_markers(clip, to, from, (false, true), true, out);
-        track.time = to as f64;
-    } else if looped {
-        curve_markers(clip, 0.0, from, (true, true), true, out);
-        let wrapped = if raw + length > 0.0 { raw + length } else { raw.rem_euclid(length) };
-        curve_markers(clip, wrapped, length, (false, true), true, out);
-        out.push(end);
-        out.push(Fire::DidLoop);
-        track.time = wrapped as f64;
-    } else if raw > 0.0 {
-        curve_markers(clip, raw, from, (false, true), true, out);
-        track.time = raw as f64;
+        return;
+    }
+    let beyond = raw > length || raw < 0.0;
+    let ends = !looped && if back { raw <= 0.0 } else { raw >= length };
+    let to = if ends {
+        if back { 0.0 } else { length }
+    } else if !looped {
+        raw.clamp(0.0, length)
+    } else if raw == length {
+        0.0
     } else {
-        curve_markers(clip, 0.0, from, (true, true), true, out);
-        out.push(end);
-        self::end(track, 0.0, out);
-        fade_to(track, 0.0, CURVE_END_FADE);
-        if raw < 0.0 {
-            out.push(Fire::DidLoop);
+        raw.rem_euclid(length)
+    };
+    // (a time that is no number compares as neither: a CurveAnimation then fires nothing, a looped KeyframeSequence goes round)
+    let behind = if back { to > from } else { to < from };
+    let ahead = if back { to <= from } else { to >= from };
+    let round = !ends && if clip.curve { behind } else { looped && !ahead && !from.is_nan() };
+    let mut stretches: [Stretch; 3] = [(0.0, 0.0, false, false); 3];
+    let count = if ends || round {
+        if back {
+            stretches[0] = (0.0, from, false, true);
+            stretches[1] = (0.0, 0.0, true, true);
+            stretches[2] = (to, length, false, true);
+        } else {
+            stretches[0] = (from, length, true, false);
+            stretches[1] = (length, length, true, true);
+            stretches[2] = (0.0, to, true, false);
         }
+        if ends { 2 } else { 3 }
+    } else if ahead {
+        stretches[0] = if back { (to, from, false, true) } else { (from, to, true, false) };
+        1
+    } else {
+        0
+    };
+    passed(clip, &stretches[..count], back, out);
+    if clip.curve && (ends || round) {
+        out.push(Fire::Keyframe("End".to_string()));
+    }
+    track.time = to as f64;
+    if ends {
+        track.playing = false;
+        fade_to(track, 0.0, END_FADE);
+        out.push(Fire::Stopped);
+    }
+    if beyond {
+        out.push(Fire::DidLoop);
     }
 }
 
-/// A CurveAnimation's track that stopped and is fading out still moves (measured: one set to 0.25 s after its end
-/// is at 0.375 s after a step of 0.125 s, backwards at 0.125 s), firing nothing. It is held inside the clip, or
-/// goes round a looped one (not measured).
-fn drift_curve(track: &mut Track, clip: &Clip, delta: f64, looped: bool) {
+/// A track that stopped and is fading out still moves (measured: one set to 0.25 s after its end is at 0.375 s
+/// after a step of 0.125 s, backwards at 0.125 s), firing nothing. It is held inside the clip, or goes round a
+/// looped one (not measured).
+fn drift(track: &mut Track, clip: &Clip, delta: f64, looped: bool) {
     let length = clip.length;
     let raw = track.time as f32 + (delta * track.speed) as f32;
     track.time = if length <= 0.0 {
@@ -837,22 +915,19 @@ fn drift_curve(track: &mut Track, clip: &Clip, delta: f64, looped: bool) {
     } as f64;
 }
 
-fn end(track: &mut Track, at: f64, out: &mut Vec<Fire>) {
-    track.time = at;
-    track.playing = false;
-    fade_to(track, 0.0, DEFAULT_FADE);
-    out.push(Fire::Stopped);
-}
-
-/// Moves the weight `delta` seconds along its fade.
+/// Moves the weight `delta` seconds along its fade, in float32 as Studio does (62 measured weights of seven fades
+/// agree to the last digit): what is left of the fade shrinks by `delta`, and the distance to the target shrinks
+/// by the same ratio; with nothing left the weight is the target. So Play(0.3) stepped by 0.05 s reads 0.166666687,
+/// 0.333333313, 0.5, and a delta below 0 on a finished fade divides by 0: the weight is no number from then on.
 fn fade_step(track: &mut Track, delta: f64) {
-    if track.fade <= 0.0 || track.fade_elapsed >= track.fade {
+    let left = track.fade_left - delta as f32;
+    if left > 0.0 {
+        track.weight = track.weight_target + (track.weight - track.weight_target) * (left / track.fade_left);
+        track.fade_left = left;
+    } else {
         track.weight = track.weight_target;
-        return;
+        track.fade_left = 0.0;
     }
-    track.fade_elapsed += delta;
-    let progress = (track.fade_elapsed / track.fade).min(1.0);
-    track.weight = track.weight_from + (track.weight_target - track.weight_from) * progress;
 }
 
 /// Tracks whose asset has arrived take its clip: Length, and Looped / Priority unless a script set
@@ -868,9 +943,7 @@ fn arrive(engine: &Rc<Engine>, shared: &Shared, names: &Names) {
             let Some((_, clip)) = track.pending.take_if(|(at, _)| *at <= now + 1e-9) else { return track.pending.is_some() };
             track.clip = Some(clip.clone());
             if track.playing {
-                let (target, fade) = (track.weight_target, track.fade);
                 track.weight = 0.0;
-                fade_to(track, target, fade);
             }
             arrived.push((*id, clip, track.set_looped, track.set_priority));
             false
@@ -913,81 +986,72 @@ fn step_of(engine: &Rc<Engine>, delta: f64, only: Option<InstanceId>) {
     if !shared.borrow().pending.is_empty() {
         arrive(engine, &shared, &names);
     }
-    if shared.borrow().active.is_empty() && shared.borrow().posed.is_empty() {
+    if shared.borrow().active.is_empty() {
         return;
     }
     let active: Vec<InstanceId> = {
         let animations = shared.borrow();
         animations.active.iter().copied().filter(|id| only.is_none_or(|only| animations.tracks[id].animator == only)).collect()
     };
-    // (posed animators in creation order, not the map's: a joint two animators pose is written by the later one, and a slot is
-    // reused when the collector frees an instance, so slot order differs between two runs of one scene)
-    let mut animators: Vec<InstanceId> = shared.borrow().posed.keys().copied().filter(|&id| only.is_none_or(|only| id == only)).collect();
-    {
-        let state = engine.state.borrow();
-        animators.sort_by_key(|&id| state.dom.get(id).map_or(0, |instance| instance.serial));
-    }
-    let mut seen: rustc_hash::FxHashSet<InstanceId> = animators.iter().copied().collect();
     for id in active {
+        refresh(engine, &shared, id);
         let mut fired = Vec::new();
         let (alive, looped, set_time) = {
             let state = engine.state.borrow();
             let track = &shared.borrow().tracks[&id];
-            // (a destroyed rig or track stops playing)
-            let alive = |id| state.dom.get(id).is_some_and(|instance| !instance.has(crate::dom::flags::DESTROYED));
-            let alive = alive(track.animator) && alive(id);
+            // (a destroyed rig stops its tracks; a destroyed track plays on, measured: its pose stays and moves)
+            let alive = state.dom.get(track.animator).is_some_and(|instance| !instance.has(crate::dom::flags::DESTROYED)) && state.dom.get(id).is_some();
             let looped = state.dom.boolean(id, names.looped).unwrap_or(false);
-            let set_time = state.dom.number(id, names.time_position).filter(|&t| t != track.time);
+            let set_time = state.dom.number(id, names.time_position).filter(|&t| t != track.time && !(t.is_nan() && track.time.is_nan()));
             (alive, looped, set_time)
         };
-        let (animator, finished, time, weight, playing, waiting) = {
+        let (finished, time, weight, playing, waiting) = {
             let mut animations = shared.borrow_mut();
             let track = animations.tracks.get_mut(&id).expect("active track");
             // (a track whose asset is on the way holds: TimePosition as set, weight 0)
             let waiting = track.pending.is_some();
-            // (a CurveAnimation's track, measured: Ended comes with the first step that begins at weight 0, one step
-            // after the fade got there)
-            let faded = track.clip.as_ref().filter(|clip| clip.curve).map(|_| track.weight <= 0.0);
-            if !waiting {
-                if let Some(time) = set_time {
-                    // A script set TimePosition: play on from there (the keyframes skipped do not fire)
-                    let length = track.clip.as_ref().map_or(0.0, |clip| clip.length as f64);
-                    track.time = match track.clip.as_ref().filter(|clip| clip.curve) {
-                        None => time.clamp(0.0, length),
-                        // A CurveAnimation's (measured): a clip of Length 0 takes any time; a looped track is at 0 s for
-                        // the last key's time or later, and for a time before 0 s (-1 s of a 1 s clip measured) it ends
-                        // a pass; one that does not loop is held inside the clip
-                        Some(_) if length <= 0.0 => time as f32 as f64,
-                        Some(_) if looped && time >= length => 0.0,
-                        Some(_) if looped && time < 0.0 => {
-                            fired.push(Fire::Keyframe("End".to_string()));
-                            (time as f32).rem_euclid(length as f32) as f64
-                        }
-                        Some(_) => (time as f32 as f64).clamp(0.0, length),
-                    };
-                }
-                let curve = track.clip.clone().filter(|clip| clip.curve);
-                fade_step(track, delta);
-                if track.playing && alive {
-                    advance(track, delta, looped, &mut fired);
-                } else if let Some(clip) = curve.as_ref().filter(|_| faded != Some(true)) {
-                    drift_curve(track, clip, delta, looped);
+            let mut finished = !alive;
+            // (measured: a track whose weight is no number, after a delta below 0 on a finished fade, is stepped no
+            // more: its time, weight and IsPlaying stay)
+            if alive && !waiting && track.weight.is_finite() {
+                if track.fade_left <= 0.0 && (!track.playing || track.weight_target.abs() <= IDLE_WEIGHT) {
+                    // Its fade is over and it is stopped or was faded to nothing: it ends before anything else moves
+                    finished = true;
+                } else {
+                    let clip = track.clip.clone();
+                    if let (Some(time), Some(clip)) = (set_time, clip.as_ref()) {
+                        // A script set TimePosition: play on from there (what was skipped does not fire). Measured: a clip of
+                        // Length 0 takes any time; a looped track takes the time into the clip (5 or 1 of a 1 s clip read
+                        // 0, 7.25 reads 0.25, -0.3 reads 0.7, -2.5 reads 0.5), and a CurveAnimation's that lands on 0 s from
+                        // below ends a pass (-1 fires "End"); one that does not loop is held inside the clip
+                        let (time, length) = (time as f32, clip.length);
+                        track.time = if length <= 0.0 {
+                            time
+                        } else if looped {
+                            let inside = time.rem_euclid(length);
+                            if clip.curve && time < 0.0 && inside == 0.0 {
+                                fired.push(Fire::Keyframe("End".to_string()));
+                            }
+                            inside
+                        } else {
+                            time.clamp(0.0, length)
+                        } as f64;
+                    }
+                    fade_step(track, delta);
+                    if let Some(clip) = clip {
+                        if track.playing { advance(track, &clip, delta, looped, &mut fired) } else { drift(track, &clip, delta, looped) }
+                    }
                 }
             }
-            let finished = !alive || !track.playing && faded.unwrap_or(track.weight <= 0.0);
-            (track.animator, finished, track.time, track.weight, track.playing, waiting)
+            (finished, track.time, track.weight, track.playing, waiting)
         };
-        if seen.insert(animator) {
-            animators.push(animator);
-        }
         if finished {
             {
                 let mut animations = shared.borrow_mut();
                 let track = animations.tracks.get_mut(&id).expect("active track");
                 track.active = false;
-                track.weight = 0.0;
                 if track.playing {
-                    // (it or its rig was destroyed)
+                    // (it was faded to nothing, or its rig was destroyed)
                     track.playing = false;
                     fired.push(Fire::Stopped);
                 }
@@ -1001,17 +1065,19 @@ fn step_of(engine: &Rc<Engine>, delta: f64, only: Option<InstanceId>) {
         if state.dom.get(id).is_none() {
             continue;
         }
-        if !waiting {
-            set(&mut state, reflection, id, names.time_position, Value::Number(time));
+        if !finished {
+            if !waiting {
+                set(&mut state, reflection, id, names.time_position, Value::Number(time));
+            }
+            set(&mut state, reflection, id, names.weight_current, Value::Number(weight as f64));
         }
-        set(&mut state, reflection, id, names.weight_current, Value::Number(if finished { 0.0 } else { weight }));
         set(&mut state, reflection, id, names.is_playing, Value::Bool(playing && !finished));
         for fire in fired {
             match fire {
                 Fire::Keyframe(name) => core::fire_event(&mut state, id, names.keyframe_reached, vec![Value::String(Str::from(name.as_str()))]),
                 Fire::Marker(name, value) => {
                     if let Some((_, signal)) = markers.iter().find(|(n, _)| *n == name) {
-                        core::fire(&mut state, *signal, vec![Value::String(Str::from(value.as_str()))]);
+                        core::fire(&mut state, *signal, vec![Value::String(Str::new(&value))]);
                     }
                 }
                 Fire::DidLoop => core::fire_event(&mut state, id, names.did_loop, Vec::new()),
@@ -1026,27 +1092,36 @@ fn step_of(engine: &Rc<Engine>, delta: f64, only: Option<InstanceId>) {
             state.dom.unpin(id);
         }
     }
-    // Each animator's playing tracks, gathered in one pass over the active ones (every animator looked through all of them: with 60
-    // enemies of two tracks each 7,000 track lookups and clip clones a step)
-    let mut tracks: FxHashMap<InstanceId, Vec<PosingTrack>> = FxHashMap::default();
+    // Each animator's tracks that are still stepped, gathered in one pass over the active ones (every animator looked through
+    // all of them: with 60 enemies of two tracks each 7,000 track lookups and clip clones a step), the animators in
+    // creation order, not the map's: a joint two animators pose is written by the later one, and a slot is reused when
+    // the collector frees an instance, so slot order differs between two runs of one scene
+    let mut animators: Vec<(InstanceId, Vec<PosingTrack>)> = Vec::new();
     {
         let animations = shared.borrow();
         let state = engine.state.borrow();
+        let mut at: FxHashMap<InstanceId, usize> = FxHashMap::default();
         for id in &animations.active {
             let track = &animations.tracks[id];
             if only.is_some_and(|only| track.animator != only) {
                 continue;
             }
+            let index = *at.entry(track.animator).or_insert_with(|| {
+                animators.push((track.animator, Vec::new()));
+                animators.len() - 1
+            });
             let Some(clip) = track.clip.clone() else { continue };
-            if track.weight <= 0.0 {
+            // (a weight that is no number poses nothing either, nor does a CurveAnimation at a time that is none)
+            if !(track.weight >= POSING_WEIGHT) || clip.curve && track.time.is_nan() {
                 continue;
             }
             let priority = state.dom.raw_get(*id, names.priority).and_then(Value::as_enum).map_or(clip::PRIORITY_ACTION, |item| engine.reflection.enum_item_info(item).value as u32);
-            tracks.entry(track.animator).or_default().push((clip, track.time as f32, track.weight as f32, priority_rank(priority)));
+            animators[index].1.push((clip, track.time as f32, track.weight, priority_rank(priority)));
         }
+        animators.sort_by_key(|(id, _)| state.dom.get(*id).map_or(0, |instance| instance.serial));
     }
-    for animator in animators {
-        pose(engine, &shared, &names, animator, tracks.remove(&animator).unwrap_or_default());
+    for (animator, tracks) in animators {
+        pose(engine, &shared, &names, animator, tracks);
     }
 }
 
@@ -1059,6 +1134,10 @@ struct Rig {
     bones: FxHashMap<(Str, Str), InstanceId>,
     /// The joints by the one name a CurveAnimation gives them: a Motor6D by its Part1's name, else a Bone by its own
     named: FxHashMap<Str, InstanceId>,
+    /// Every Motor6D and Bone of the rig, in the model's order
+    all: Vec<InstanceId>,
+    /// The rig's FaceControls: the first instance of that class and name in the model
+    face: Option<InstanceId>,
     scale: f32,
 }
 
@@ -1099,7 +1178,7 @@ fn rig_of(state: &State, reflection: &Reflection, names: &Names, animator: Insta
     } else {
         1.0
     };
-    let mut rig = Rig { motors: FxHashMap::default(), bones: FxHashMap::default(), named: FxHashMap::default(), scale };
+    let mut rig = Rig { motors: FxHashMap::default(), bones: FxHashMap::default(), named: FxHashMap::default(), all: Vec::new(), face: None, scale };
     let mut named_bones: Vec<(Str, InstanceId)> = Vec::new();
     let descendants = state.dom.descendants(model);
     // A model inside this one with its own Humanoid or AnimationController is a rig of its own: its joints are not this rig's,
@@ -1125,9 +1204,13 @@ fn rig_of(state: &State, reflection: &Reflection, names: &Names, animator: Insta
     };
     for id in descendants {
         let class = reflection.class(state.dom.at(id).class);
+        if rig.face.is_none() && Some(state.dom.at(id).class) == names.face_controls && state.dom.at(id).name.as_bytes() == b"FaceControls" && !in_carried_rig(id) {
+            rig.face = Some(id);
+        }
         if !(class.is_a(names.motor6d) || class.is_a(names.bone)) || in_carried_rig(id) {
             continue;
         }
+        rig.all.push(id);
         if class.is_a(names.motor6d) {
             let part = |name| state.dom.raw_get(id, name).and_then(Value::as_instance).and_then(|part| state.dom.get(part)).map(|part| part.name.clone());
             if let (Some(part0), Some(part1)) = (part(names.part0), part(names.part1)) {
@@ -1150,8 +1233,11 @@ fn rig_of(state: &State, reflection: &Reflection, names: &Names, animator: Insta
 /// One track's sample of a joint: (priority rank, weight, rotation, translation).
 pub type Layer = (u32, f32, Quat, Vec3A);
 
-/// The blended offset of a joint: priorities from the highest down each take their summed weight
-/// (at most 1) of what is left, blending their tracks by weight; the rest stays at the rest pose.
+/// The blended offset of a joint: priorities from the highest down each take their summed weight, at most what is
+/// left of 1, blending their tracks by weight; the rest stays at the rest pose. Measured in Studio 0.747 (13 mixes of
+/// five tracks at four priorities, a KeyframeSequence's and a CurveAnimation's alike): two Action tracks of weight
+/// 0.25 at 8 and 2 studs under an Action2 track of weight 0.5 at 4 studs give 4.5, the lower level taking all of the
+/// half that is left, not half of it.
 pub fn blend(layers: &mut [Layer]) -> (Quat, Vec3A) {
     layers.sort_by(|a, b| b.0.cmp(&a.0));
     let align = |q: Quat| if q.w < 0.0 { -q } else { q };
@@ -1170,14 +1256,16 @@ pub fn blend(layers: &mut [Layer]) -> (Quat, Vec3A) {
         }
         let mut level_rotation = Vec4::ZERO;
         let mut level_translation = Vec3A::ZERO;
+        // (in float32 as measured: the weighted sum, over the level's weight, times its share: 8 studs at 0.4 with 2 at
+        // 0.8 give 4, and with 2 at 0.2 give 3.60000014)
         for &(_, weight, q, t) in group {
-            let weight = weight.max(0.0) / total;
+            let weight = weight.max(0.0);
             level_rotation += Vec4::from(align(q)) * weight;
             level_translation += t * weight;
         }
-        let share = remaining * total.min(1.0);
+        let share = total.min(remaining);
         rotation += level_rotation.normalize_or_zero() * share;
-        translation += level_translation * share;
+        translation += level_translation / total * share;
         remaining -= share;
     }
     rotation += Vec4::from(Quat::IDENTITY) * remaining.max(0.0);
@@ -1185,8 +1273,9 @@ pub fn blend(layers: &mut [Layer]) -> (Quat, Vec3A) {
     (if rotation.length_squared() > 0.0 { rotation } else { Quat::IDENTITY }, translation)
 }
 
-/// Writes `animator`'s blended pose into its rig's joints; joints it posed before that no track
-/// poses now go back to rest.
+/// Writes `animator`'s blended pose into its rig's joints, and the rest pose into every other joint of the rig
+/// (measured: while a track of the animator is stepped, a Transform a script wrote to a joint no track poses is back
+/// at the identity after the step, a Bone's too; `tracks` are the ones that pose, possibly none).
 fn pose(engine: &Rc<Engine>, shared: &Shared, names: &Names, animator: InstanceId, tracks: Vec<PosingTrack>) {
     let reflection = &engine.reflection;
     // (joints in the order the tracks first pose them: hash order follows slots, which differ between two runs of one scene)
@@ -1196,55 +1285,93 @@ fn pose(engine: &Rc<Engine>, shared: &Shared, names: &Names, animator: InstanceI
     let mut joint_at: FxHashMap<InstanceId, usize> = FxHashMap::default();
     let hooks = engine.hooks.borrow();
     let mut state = engine.state.borrow_mut();
-    let rig = if tracks.is_empty() { None } else { cached_rig(shared, &mut state, reflection, names, animator) };
-    let mut scale = 1.0;
-    if let Some(rig) = &rig {
-        scale = rig.scale;
-        for &(ref clip, time, weight, rank) in &tracks {
-            for joint in &clip.joints {
-                let target = if clip.curve {
-                    rig.named.get(&Str::from(joint.name.as_str())).copied()
-                } else {
-                    let key = (Str::from(joint.parent.as_str()), Str::from(joint.name.as_str()));
-                    rig.motors.get(&key).or_else(|| rig.bones.get(&key)).copied()
-                };
-                if let Some(target) = target {
-                    let (q, t) = clip::sample(&joint.keys, time);
-                    let at = *joint_at.entry(target).or_insert_with(|| {
-                        joints.push((target, Vec::new(), None));
-                        joints.len() - 1
-                    });
-                    let (_, layers, turning) = &mut joints[at];
-                    if !joint.rotation && turning.is_none() {
-                        *turning = Some(layers.clone());
-                    }
-                    if let Some(turning) = turning.as_mut().filter(|_| joint.rotation) {
-                        turning.push((rank, weight, q, t));
-                    }
-                    layers.push((rank, weight, q, t));
+    let Some(rig) = cached_rig(shared, &mut state, reflection, names, animator) else { return };
+    let scale = rig.scale;
+    for &(ref clip, time, weight, rank) in &tracks {
+        for joint in &clip.joints {
+            let target = if clip.curve {
+                rig.named.get(&Str::from(joint.name.as_str())).copied()
+            } else {
+                let key = (Str::from(joint.parent.as_str()), Str::from(joint.name.as_str()));
+                rig.motors.get(&key).or_else(|| rig.bones.get(&key)).copied()
+            };
+            if let Some(target) = target {
+                let (q, t) = clip::sample(&joint.keys, time, clip.even);
+                let at = *joint_at.entry(target).or_insert_with(|| {
+                    joints.push((target, Vec::new(), None));
+                    joints.len() - 1
+                });
+                let (_, layers, turning) = &mut joints[at];
+                if !joint.rotation && turning.is_none() {
+                    *turning = Some(layers.clone());
                 }
+                if let Some(turning) = turning.as_mut().filter(|_| joint.rotation) {
+                    turning.push((rank, weight, q, t));
+                }
+                layers.push((rank, weight, q, t));
             }
         }
     }
-    let before = shared.borrow_mut().posed.remove(&animator).unwrap_or_default();
-    let mut posed: Vec<InstanceId> = Vec::with_capacity(joints.len());
     for (joint, mut layers, turning) in joints {
         let (mut rotation, translation) = blend(&mut layers);
         if let Some(mut turning) = turning {
             rotation = blend(&mut turning).0;
         }
         write_transform(&mut state, reflection, &hooks, names, joint, Affine3A::from_rotation_translation(rotation, (translation * scale).into()));
-        posed.push(joint);
     }
-    for joint in before {
-        if !posed.contains(&joint) && state.dom.get(joint).is_some() {
+    for &joint in &rig.all {
+        if !joint_at.contains_key(&joint) && state.dom.get(joint).is_some() {
             write_transform(&mut state, reflection, &hooks, names, joint, Affine3A::IDENTITY);
         }
     }
-    if !posed.is_empty() {
-        posed.sort();
-        shared.borrow_mut().posed.insert(animator, posed);
+    // The rig's FaceControls: each property a posing track has a channel for takes the tracks' blend, held in 0 to 1.
+    // A property no posing track has is not written, so unlike a joint it keeps what it last had (measured: 0.9
+    // fading out over 0.3 s reads 0.6, 0.3 and then stays 0.3).
+    let Some(face) = rig.face.filter(|&face| state.dom.get(face).is_some()) else { return };
+    let class = state.dom.at(face).class;
+    let mut values: Vec<(NameId, Vec<(u32, f32, f32)>)> = Vec::new();
+    for &(ref clip, time, weight, rank) in &tracks {
+        for channel in &clip.face {
+            let Some(name) = reflection.name_id(&channel.name) else { continue };
+            // (the class's own properties, all numbers: a curve named Name or after nothing drives nothing)
+            if !reflection.class_property(class, name).is_some_and(|info| info.owner == class && !info.read_only) {
+                continue;
+            }
+            let value = clip::sample_value(&channel.keys, time, clip.even);
+            match values.iter_mut().find(|(kept, _)| *kept == name) {
+                Some((_, layers)) => layers.push((rank, weight, value)),
+                None => values.push((name, vec![(rank, weight, value)])),
+            }
+        }
     }
+    for (name, mut layers) in values {
+        let value = blend_values(&mut layers).clamp(0.0, 1.0);
+        core::raw_set_unsignalled(&mut state, reflection, &hooks, face, name, Value::Number(value as f64));
+    }
+}
+
+/// [`blend`] for a number whose rest is 0 (a FaceControls property; measured with the same mixes: 0.8 and 0.2 at
+/// weight 0.25 each under a higher 0.4 at weight 0.5 give 0.45).
+pub fn blend_values(layers: &mut [(u32, f32, f32)]) -> f32 {
+    layers.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut remaining = 1.0f32;
+    let mut value = 0.0f32;
+    let mut start = 0;
+    while start < layers.len() && remaining > 0.0 {
+        let rank = layers[start].0;
+        let end = start + layers[start..].iter().take_while(|layer| layer.0 == rank).count();
+        let group = &layers[start..end];
+        start = end;
+        let total: f32 = group.iter().map(|layer| layer.1.max(0.0)).sum();
+        if total <= 0.0 {
+            continue;
+        }
+        let level: f32 = group.iter().map(|&(_, weight, value)| value * weight.max(0.0)).sum();
+        let share = total.min(remaining);
+        value += level / total * share;
+        remaining -= share;
+    }
+    value
 }
 
 /// Sets a joint's Transform as an Animator does: no Changed event (not measured), a Motor6D's

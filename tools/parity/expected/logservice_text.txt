@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 nested-functions out MessageError[@41: parity-text named /     Stack Begin /     Script '<probe>', Line @41 - function Named /     Script '<probe>', Line @44 - function Outer /     Stack End] trace [=ParticleSim, line 316 - function Named / =ParticleSim, line 319 - function Outer / ]
 direct out MessageError[parity-text direct /     Stack Begin /     Stack End] trace []
 level0 out MessageError[parity-text level0 /     Stack Begin /     Script '<probe>', Line @51 /     Stack End] trace [=ParticleSim, line 326 / ]

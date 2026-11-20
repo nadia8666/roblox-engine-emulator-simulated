@@ -321,9 +321,11 @@ pub fn raw_set_unsignalled(
 ) -> bool {
     let (changed, _) = store(state, reflection, id, name, value);
     if changed {
+        state.quiet_write = true;
         for hook in &hooks.property_changed {
             hook(state, id, name);
         }
+        state.quiet_write = false;
     }
     changed
 }
@@ -476,6 +478,12 @@ pub fn set_parent(
         if is_service(state, reflection, id) {
             return Err(ScriptError::plain(format!("Cannot change Parent of type {}", reflection.class(state.dom.at(id).class).name)));
         }
+        // a settings root (settings(), UserSettings(): services/settings.rs) refuses its own way, measured
+        let class = state.dom.at(id).class;
+        if state.dom.at(id).parent.is_none() && super::services::settings::is_root(reflection, class) {
+            let label = super::services::settings::parent_label(reflection, class);
+            return Err(ScriptError::plain(format!("The current thread cannot set '{label} parent' (lacking capability RobloxScript)")));
+        }
         let new_name = match new_parent {
             Some(parent) => state.dom.at(parent).name.to_string(),
             None => "NULL".into(),
@@ -490,6 +498,16 @@ pub fn set_parent(
         return Ok(());
     }
     if let Some(parent) = new_parent {
+        // nothing goes under a settings root or one of its services (services/settings.rs; measured: "Not allowed to add that
+        // under settings", for settings() and UserSettings() alike)
+        let top = match state.dom.at(parent).parent {
+            None => Some(parent),
+            Some(up) if state.dom.at(up).parent.is_none() => Some(up),
+            Some(_) => None,
+        };
+        if top.is_some_and(|top| super::services::settings::is_root(reflection, state.dom.at(top).class)) {
+            return Err(ScriptError::plain("Not allowed to add that under settings"));
+        }
         if parent == id {
             return Err(ScriptError::plain(format!("Attempt to set {} as its own parent", state.dom.full_name(reflection, id))));
         }
@@ -698,6 +716,95 @@ fn copy_tree(
     Some(copy)
 }
 
+/// An instance tree kept as data: what [`clone_instance`] would copy of it now, without making an instance (a clip
+/// as it was when registered: animation/source.rs). Descendants that are not Archivable are left out, as a clone
+/// leaves them out; a property that refers to an instance keeps referring to it; scripts' sources and callbacks are
+/// not kept.
+pub struct KeptTree {
+    nodes: Vec<KeptNode>,
+}
+
+pub struct KeptNode {
+    pub class: ClassId,
+    pub name: crate::value::Str,
+    pub props: crate::dom::Props,
+    /// The node's children, as indexes into the tree
+    pub children: Vec<u32>,
+    parent: Option<u32>,
+    attributes: crate::dom::Attributes,
+    tags: crate::dom::ThinVec<crate::value::Str>,
+    flags: u16,
+    studio_node: crate::dom::StudioNode,
+    unmodeled: Option<crate::project::Unmodeled>,
+}
+
+impl KeptTree {
+    /// `root` and what is below it, as it is now; None when it is not Archivable.
+    pub fn of(state: &State, root: InstanceId) -> Option<KeptTree> {
+        if !archivable(state, root) {
+            return None;
+        }
+        let mut nodes: Vec<KeptNode> = Vec::new();
+        let mut stack: Vec<(InstanceId, Option<u32>)> = vec![(root, None)];
+        while let Some((id, parent)) = stack.pop() {
+            let source = state.dom.at(id);
+            let index = nodes.len() as u32;
+            if let Some(parent) = parent {
+                nodes[parent as usize].children.push(index);
+            }
+            nodes.push(KeptNode {
+                class: source.class,
+                name: source.name.clone(),
+                props: source.props.copied_without(K::Parent as NameId),
+                children: Vec::new(),
+                parent,
+                attributes: source.attributes.copied(),
+                tags: source.tags.clone(),
+                flags: source.flags & (flags::SCRIPT_CREATED | flags::STUDIO_ONLY | flags::MATERIALIZED | flags::JSON_MODULE | flags::HOLDS_REFS),
+                studio_node: source.studio_node,
+                unmodeled: source.unmodeled.clone(),
+            });
+            stack.extend(source.children.iter().rev().filter(|&&child| archivable(state, child)).map(|&child| (child, Some(index))));
+        }
+        Some(KeptTree { nodes })
+    }
+
+    pub fn nodes(&self) -> &[KeptNode] {
+        &self.nodes
+    }
+
+    /// The tree as new instances, unparented: its root. `bare`: the root without its Name, attributes and tags.
+    pub fn make(&self, state: &mut State, reflection: &Reflection, bare: bool) -> InstanceId {
+        let mut made: Vec<InstanceId> = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            let copy = create(state, reflection, node.class);
+            let bare = bare && made.is_empty();
+            {
+                let target = state.dom.at_mut(copy);
+                target.props = node.props.copied_without(if bare { K::Name as NameId } else { K::Parent as NameId });
+                if !bare {
+                    target.attributes = node.attributes.copied();
+                    target.tags = node.tags.clone();
+                }
+                target.flags |= node.flags;
+                target.studio_node = node.studio_node;
+                target.unmodeled = node.unmodeled.clone();
+            }
+            state.dom.refresh_name(reflection, copy);
+            if let Some(parent) = node.parent {
+                state.dom.attach(copy, made[parent as usize]);
+            }
+            made.push(copy);
+        }
+        for (node, &copy) in self.nodes.iter().zip(&made).skip(bare as usize) {
+            for tag in node.tags.clone() {
+                super::services::tag_added(state, copy, &tag);
+            }
+        }
+        made[0]
+    }
+}
+
 // Attributes and tags
 
 /// SetAttribute after type validation: stores (or removes) and fires AttributeChanged plus the
@@ -735,6 +842,16 @@ pub fn add_tag(state: &mut State, id: InstanceId, tag: Str) {
     state.dom.at_mut(id).tags.push(tag.clone());
     state.dom.bump_version(id);
     super::services::tag_added(state, id, &tag);
+    log_tag(state, id, &tag);
+}
+
+/// A loopback run's server logs a replicated instance's tag change (loopback/replicate.rs)
+fn log_tag(state: &mut State, id: InstanceId, tag: &Str) {
+    if state.dom.at(id).flags & flags::REPLICATED != 0
+        && let Some(log) = state.loopback_log.as_mut()
+    {
+        log.push(crate::loopback::replicate::Change::Tag(id, tag.clone()));
+    }
 }
 
 pub fn remove_tag(state: &mut State, id: InstanceId, tag: &Str) {
@@ -745,14 +862,18 @@ pub fn remove_tag(state: &mut State, id: InstanceId, tag: &Str) {
     tags.remove(index);
     state.dom.bump_version(id);
     super::services::tag_removed(state, id, tag);
+    log_tag(state, id, tag);
 }
 
-/// A service: a parent-locked instance of a service class under the DataModel.
+/// A service: a parent-locked instance of a service class under a service provider (the DataModel, a settings root).
 fn is_service(state: &State, reflection: &Reflection, id: InstanceId) -> bool {
     let instance = state.dom.at(id);
     instance.has(flags::PARENT_LOCKED)
         && reflection.class(instance.class).service
-        && instance.parent.is_some_and(|parent| Some(state.dom.at(parent).class) == reflection.class_id("DataModel"))
+        && instance.parent.is_some_and(|parent| {
+            let class = state.dom.at(parent).class;
+            Some(class) == reflection.class_id("DataModel") || super::services::settings::is_root(reflection, class)
+        })
 }
 
 /// The first half of Destroy (after its Destroying handlers were queued): marks the instance destroyed,
@@ -763,9 +884,19 @@ pub fn begin_destroy(
     hooks: &Hooks,
     id: InstanceId,
 ) -> ScriptResult<Vec<InstanceId>> {
-    // a service stays as it was: "The Parent property of Lighting is locked" (measured, tools/parity/probes/hierarchy.luau)
-    if is_service(state, reflection, id) {
-        return Err(ScriptError::plain(format!("The Parent property of {} is locked", state.dom.at(id).name)));
+    // a service stays as it was: "The Parent property of Lighting is locked" (measured, tools/parity/probes/hierarchy.luau); a
+    // settings root too, naming its first service (settings(): "The Parent property of Game Options is locked", measured)
+    if state.dom.at(id).has(flags::PARENT_LOCKED) {
+        if is_service(state, reflection, id) {
+            return Err(ScriptError::plain(format!("The Parent property of {} is locked", state.dom.at(id).name)));
+        }
+        let instance = state.dom.at(id);
+        if instance.parent.is_none()
+            && let Some(&first) = instance.children.first()
+            && super::services::settings::is_root(reflection, instance.class)
+        {
+            return Err(ScriptError::plain(format!("The Parent property of {} is locked", state.dom.at(first).name)));
+        }
     }
     state.dom.at_mut(id).set_flag(flags::DESTROYED, true);
     if state.dom.at(id).parent.is_some() {

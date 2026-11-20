@@ -861,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "luau0-src"
-version = "0.22.0+luau746"
+version = "0.22.0+luau747"
 dependencies = [
  "cc",
 ]
@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "ree-profile-view"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "fontdue",
  "mimalloc",
@@ -1504,7 +1504,7 @@ dependencies = [
 
 [[package]]
 name = "roblox-engine-emulator"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "base64",
  "chrono",
@@ -1531,8 +1531,8 @@ dependencies = [
 
 [[package]]
 name = "ror-mesh"
-version = "0.1.0"
-source = "git+https://github.com/Anime-Vanguards/roblox-object-renderer?rev=60c69c9821e245f74181467bdc58ca0a8babf04c#60c69c9821e245f74181467bdc58ca0a8babf04c"
+version = "0.5.0"
+source = "git+https://github.com/Anime-Vanguards/roblox-object-renderer?rev=b01540fd6551f562e77128be3697f64cb60fba4d#b01540fd6551f562e77128be3697f64cb60fba4d"
 dependencies = [
  "draco-core",
  "lz4_flex 0.13.1",

@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, a headless playing client (script identity 2 unless the probe asks for another; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 value nil typeof=nil type=nil tostring=nil
 value bool typeof=boolean type=boolean tostring=true
 value number typeof=number type=number tostring=1.5

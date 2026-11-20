@@ -1,0 +1,3 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
+delay-frames heartbeat-long-1-wait=2 heartbeat-long-1=2 heartbeat-long-2-wait=3 heartbeat-long-2=3 heartbeat-long-3-wait=4 heartbeat-long-3=4 heartbeat-short-1-wait=1 heartbeat-short-1=1 heartbeat-short-2-wait=2 heartbeat-short-2=2 heartbeat-short-3-wait=3 heartbeat-short-3=3 render-1-wait=1 render-1=1 render-2-wait=2 render-2=2 render-3-wait=3 render-3=3

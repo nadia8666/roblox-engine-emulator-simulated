@@ -1324,9 +1324,8 @@ Method("AssetService", "LoadAssetAsync", function(_, AssetId)
 	error(`AssetService:LoadAssetAsync: asset {AssetId} cannot be loaded offline`, 0)
 end)
 
--- Remotes, the server's side: a client never listens and never answers here. FireClient / FireAllClients
--- send nothing; InvokeClient waits as for a client that never returns, until the player leaves, and then
--- raises; the client-only calls raise as Roblox's do.
+-- Remotes, the server's side: no client runs here, so FireClient and FireAllClients (to players) send nothing and InvokeClient waits
+-- until the player leaves, then raises, each reporting itself (Output missing); the client-only calls raise as Roblox's do.
 
 local function IsPlayer(Value)
 	return typeof(Value) == "Instance" and Value:IsA("Player")
@@ -1338,8 +1337,9 @@ for _, Class in { "RemoteEvent", "UnreliableRemoteEvent" } do
 		if not IsPlayer(Player) then
 			Raise("FireClient: player argument must be a Player object")
 		end
+		Missing(Class, "FireClient")
 	end)
-	Method(Class, "FireAllClients", function() end)
+	Method(Class, "FireAllClients", function() if #R.Children(Players) > 0 then Missing(Class, "FireAllClients") end end) -- (with no player, it reaches no one, as in a client)
 	Method(Class, "FireServer", function()
 		Raise("FireServer can only be called from the client")
 	end)
@@ -1351,7 +1351,7 @@ Method("RemoteFunction", "InvokeClient", function(Self, Player)
 	if not IsPlayer(Player) then
 		Raise("InvokeClient: player argument must be a Player object")
 	end
-	if Player.Parent == Players then
+	if Player.Parent == Players then Missing("RemoteFunction", "InvokeClient")
 		local Thread = coroutine.running()
 		local Connection
 		Connection = Players.PlayerRemoving:Connect(function(Leaving)

@@ -140,6 +140,18 @@ fn attachments_hang_past_folders() {
 }
 
 #[test]
+fn data_model_run_service_is_the_service() {
+    // the dump's DataModel.RunService property is the RunService (Studio 0.748), though the service is named "Run Service"
+    check(
+        r#"
+        local RunService = game:GetService("RunService")
+        assert(game.RunService == RunService and RunService.Name == "Run Service")
+        assert(game:FindFirstChild("RunService") == nil and game["Run Service"] == RunService)
+        "#,
+    );
+}
+
+#[test]
 fn workspace_terrain_and_service_names() {
     check(
         r#"
@@ -149,9 +161,24 @@ fn workspace_terrain_and_service_names() {
         assert(Settings.SavedQualityLevel == Enum.SavedQualitySetting.Automatic and Settings.SavedQualityLevel.Value == 0)
         assert(UserSettings():GetService("UserGameSettings") == Settings and Settings.Parent == UserSettings())
         assert(UserSettings().GameSettings == Settings and Settings.Name == "GameSettings")
+        -- names as in Studio 0.748: the root is GlobalBasicSettings, and full names start below it, as below the DataModel
+        local Root = UserSettings()
+        assert(Root.Name == "GlobalBasicSettings" and tostring(Root) == "GlobalBasicSettings" and Root:GetFullName() == "GlobalBasicSettings")
+        assert(Settings:GetFullName() == "GameSettings", Settings:GetFullName())
+        assert(workspace.Terrain:GetFullName() == "Workspace.Terrain")
+        local Loose = Instance.new("Folder")
+        local Inner = Instance.new("Part")
+        Inner.Parent = Loose
+        assert(Inner:GetFullName() == "Folder.Part", Inner:GetFullName())
         -- what Roblox's PlayerModule calls on it
         Settings:SetCameraYInvertVisible()
-        assert(Settings:GetCameraYInvert() == false and Settings:InFullScreen() == false)
+        assert(Settings:GetCameraYInvertValue() == 1 and Settings:InFullScreen() == false)
+        -- the camera's vertical multiplier is GetCameraYInvertValue, the number 1 by default; Studio 0.748 has no
+        -- GetCameraYInvert
+        local OldOk, OldError = pcall(function()
+            return (Settings :: any).GetCameraYInvert
+        end)
+        assert(not OldOk and string.find(tostring(OldError), 'GetCameraYInvert is not a valid member of UserGameSettings "GameSettings"', 1, true), tostring(OldError))
         Settings.FullscreenChanged:Connect(function() end)
         -- deprecated CFrame members still answer
         local Frame = CFrame.new(1, 2, 3)
@@ -593,6 +620,35 @@ fn camera_projections() {
         assert((Ray.Direction - Vector3.new(0, 0, -1)).Magnitude < 1e-4 and (Ray.Origin - Vector3.new(0, 0, 8)).Magnitude < 1e-4, tostring(Ray.Origin))
         local Screen = Camera:ScreenPointToRay(Size.X / 2, Size.Y / 2)
         assert((Screen.Direction - Vector3.new(0, 0, -1)).Magnitude < 1e-4)
+        "#,
+    );
+}
+
+/// The screen forms are measured from below the top inset, as Roblox documents them: WorldToScreenPoint is
+/// WorldToViewportPoint less the inset, and ScreenPointToRay(x, y) is ViewportPointToRay(x, y + inset).
+#[test]
+fn camera_screen_points_are_measured_from_below_the_top_inset() {
+    let engine = Engine::new(Options { topbar_inset: 58.0, ..Options::default() }).expect("engine");
+    let lua = Lua::new();
+    engine_lua::start(&lua, &engine).expect("start");
+    run(
+        &lua,
+        &engine,
+        r#"
+        local Camera = workspace.CurrentCamera
+        Camera.CFrame = CFrame.lookAt(Vector3.new(0, 10, 20), Vector3.zero)
+        local Inset = game:GetService("GuiService"):GetGuiInset()
+        assert(Inset == Vector2.new(0, 58), tostring(Inset))
+        local Point = Vector3.new(3, 2, 0)
+        local Viewport = Camera:WorldToViewportPoint(Point)
+        local Screen, Visible = Camera:WorldToScreenPoint(Point)
+        assert(Visible and math.abs(Screen.X - Viewport.X) < 1e-3 and math.abs(Screen.Z - Viewport.Z) < 1e-4, tostring(Screen))
+        assert(math.abs(Screen.Y - (Viewport.Y - 58)) < 1e-3, `screen {Screen} for viewport {Viewport}`)
+        local Toward = (Point - Camera.CFrame.Position).Unit
+        local FromViewport = Camera:ViewportPointToRay(Viewport.X, Viewport.Y)
+        assert((FromViewport.Direction - Toward).Magnitude < 1e-4, tostring(FromViewport.Direction))
+        local FromScreen = Camera:ScreenPointToRay(Viewport.X, Viewport.Y - 58)
+        assert((FromScreen.Direction - Toward).Magnitude < 1e-4, tostring(FromScreen.Direction))
         "#,
     );
 }
@@ -1752,6 +1808,54 @@ fn a_parts_cframe_is_orthonormalized_as_a_client_stores_it() {
         local Model = Instance.new("Model")
         Model.WorldPivot = CFrame.new(0, 0, 0, 0.5, 0, 0, 0, 0.5, 0, 0, 0, 0.5)
         expect(rows(Model:GetPivot()), { 0.5, 0, 0, 0, 0.5, 0, 0, 0, 0.5 }, "the pivot")
+        "#,
+    );
+}
+
+/// A Capsule part (Enum.PartType.Capsule = 5, new in Studio 0.747's dump) is a box there for now: it keeps its Size, weighs
+/// what a Block of that size weighs (6 x 2 x 4 of Plastic: 33.6, where a Cylinder weighs 13.19) and a ray meets its box
+/// (hits at the corners 2.9, 1.9 from the centre, misses past the faces). Measured in Studio 0.747.0.7471481.
+#[test]
+fn a_capsule_part_is_its_box() {
+    check(
+        r#"
+        local function near(a, b) return math.abs(a - b) < 1e-3 end
+        local Capsule = Instance.new("Part")
+        Capsule.Shape = Enum.PartType.Capsule
+        assert(Capsule.Shape == Enum.PartType.Capsule and Capsule.Shape.Value == 5 and Capsule.Size == Vector3.new(4, 1.2, 2))
+        Capsule.Size = Vector3.new(6, 2, 4)
+        Capsule.Anchored, Capsule.CFrame = true, CFrame.new(1000, 500, 1000)
+        Capsule.Parent = workspace
+        assert(near(Capsule.Mass, 33.6) and near(Capsule:GetMass(), 33.6), Capsule.Mass)
+        local Cylinder = Instance.new("Part")
+        Cylinder.Shape, Cylinder.Size = Enum.PartType.Cylinder, Vector3.new(6, 2, 4)
+        assert(near(Cylinder.Mass, 13.1947), Cylinder.Mass)
+        local Params = RaycastParams.new()
+        Params.FilterType = Enum.RaycastFilterType.Include
+        Params.FilterDescendantsInstances = { Capsule }
+        local function ray(x, z)
+            local Hit = workspace:Raycast(Vector3.new(1000 + x, 510, 1000 + z), Vector3.new(0, -20, 0), Params)
+            return Hit and Hit.Distance
+        end
+        assert(near(ray(0, 0), 9) and near(ray(2.9, 1.9), 9) and near(ray(-2.9, -1.9), 9), "the box's top")
+        assert(ray(3.1, 0) == nil and ray(0, 2.1) == nil, "past the box")
+        local Ok, Problem = pcall(function() Capsule.Shape = 6 end)
+        assert(not Ok and Problem == "Unable to assign property Shape. Invalid value 6 for enum PartType", Problem)
+        "#,
+    );
+}
+
+#[test]
+fn teleport_service_is_named_with_a_space() {
+    // Studio 0.748 names it "Teleport Service", so game["Teleport Service"] finds it and game.TeleportService is no member
+    check(
+        r#"
+        local Teleport = game:GetService("TeleportService")
+        assert(Teleport.Name == "Teleport Service" and game["Teleport Service"] == Teleport, Teleport.Name)
+        local Ok, Problem = pcall(function()
+            return (game :: any).TeleportService
+        end)
+        assert(not Ok and string.find(tostring(Problem), "TeleportService is not a valid member of DataModel", 1, true), tostring(Problem))
         "#,
     );
 }

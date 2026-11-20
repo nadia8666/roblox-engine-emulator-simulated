@@ -1,0 +1,57 @@
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-20
+global function true
+call error The current thread cannot call 'settings' (lacking capability Plugin) | error The current thread cannot call 'settings' (lacking capability Plugin) | error The current thread cannot call 'settings' (lacking capability Plugin)
+caught false string position=false
+game GameSettings ok nil | find ok nil
+game LuaSettings error Invalid parent for Service. LuaSettings cannot be parented to <game> . | find ok nil
+game DebugSettings ok nil | find ok nil
+game PhysicsSettings ok nil | find ok nil
+game NetworkSettings error Invalid parent for Service. NetworkSettings cannot be parented to <game> . | find ok nil
+game RenderSettings ok nil | find ok nil
+game TaskScheduler error Invalid parent for Service. TaskScheduler cannot be parented to <game> . | find ok nil
+game Studio ok nil | find ok nil
+game UserGameSettings error Invalid parent for Service. UserGameSettings cannot be parented to <game> . | find ok nil
+game GlobalSettings ok nil | find ok nil
+game UserSettings ok nil | find ok nil
+game GenericSettings ok nil | find ok nil
+game ServiceProvider ok nil | find ok nil
+user GameSettings ok nil | find ok nil
+user LuaSettings error Invalid parent for Service. LuaSettings cannot be parented to GlobalBasicSettings . | find ok nil
+user DebugSettings ok nil | find ok nil
+user PhysicsSettings ok nil | find ok nil
+user NetworkSettings error Invalid parent for Service. NetworkSettings cannot be parented to GlobalBasicSettings . | find ok nil
+user RenderSettings ok nil | find ok nil
+user TaskScheduler error Invalid parent for Service. TaskScheduler cannot be parented to GlobalBasicSettings . | find ok nil
+user Studio ok nil | find ok nil
+user UserGameSettings ok UserGameSettings:GameSettings<UserSettings> | find ok UserGameSettings:GameSettings<UserSettings>
+user GlobalSettings ok nil | find ok nil
+user UserSettings ok nil | find ok nil
+user GenericSettings ok nil | find ok nil
+user ServiceProvider ok nil | find ok nil
+user-other Players ok nil | find ok nil
+user-other Workspace ok nil | find ok nil
+user-other RunService ok nil | find ok nil
+user-other TweenService ok nil | find ok nil
+user-other CoreGui ok nil | find ok nil
+user-other ReplicatedStorage error Not allowed to add that under settings | find ok nil
+user-other Lighting error Not allowed to add that under settings | find ok nil
+user-other HttpService error Not allowed to add that under settings | find ok nil
+user-other Teams error Not allowed to add that under settings | find ok nil
+user-other DraftsService ok nil | find ok nil
+user-other DraggerService ok nil | find ok nil
+user-other NetworkClient error The current thread cannot create 'NetworkClient' (lacking capability Plugin) | find ok nil
+user-other ScriptEditorService ok nil | find ok nil
+user-other SerializationService ok nil | find ok nil
+user-other StudioService ok nil | find ok nil
+user-other TeamCreateData ok nil | find ok nil
+user-other TeamCreateService ok nil | find ok nil
+user-other VersionControlService ok nil | find ok nil
+user-other NetworkServer error The current thread cannot create 'NetworkServer' (lacking capability RobloxEngine) | find ok nil
+user-other Part ok nil | find ok nil
+user-other NotAService error 'NotAService' is not a valid Service name | find error 'NotAService' is not a valid Service name
+user-children UserGameSettings:GameSettings<UserSettings>
+user-parent error The current thread cannot set 'UserSettings parent' (lacking capability RobloxScript) | error Cannot change Parent of type UserGameSettings
+user-rename ok Renamed Settings Renamed Settings | ok GameSettings
+user-clone error GlobalBasicSettings cannot be cloned | error GameSettings cannot be cloned
+user-add error Not allowed to add that under settings | error Not allowed to add that under settings

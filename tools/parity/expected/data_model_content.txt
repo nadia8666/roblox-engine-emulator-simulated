@@ -1,0 +1,15 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-18
+yields true true
+made EnumItem:Enum.CreateContentResult.Success Content(Enum.ContentSourceType.Opaque uri=nil object=nil) Content{SourceType=Opaque} true
+options ok n=2 EnumItem:Enum.CreateContentResult.Success Content(Enum.ContentSourceType.Opaque uri=nil object=nil)
+again ok n=1 boolean:false
+image ok n=2 EnumItem:Enum.CreateContentResult.Success Content(Enum.ContentSourceType.Opaque uri=nil object=nil)
+uri error The input content type is not supported by AssetService::CreateDataModelContentAsync yet!
+none error The input content type is not supported by AssetService::CreateDataModelContentAsync yet!
+string error The input content type is not supported by AssetService::CreateDataModelContentAsync yet!
+empty-mesh error Error creating FileMeshData: Empty Result
+mesh-part ok n=3 string:MeshPart Vector3(2 3 0.00100000005) Vector3(2 3 0.00100000005)
+editable-copy ok n=2 3 1
+after-edit ok n=2 Vector3(0 0 0) Vector3(0 3 0)
+after-destroy ok n=1 Vector3(2 3 0.00100000005)

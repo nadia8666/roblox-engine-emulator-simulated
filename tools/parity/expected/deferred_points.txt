@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, a headless playing client (script identity 2 unless the probe asks for another; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 from-PreRender c0 c1 c2 c3 c4 c5 c6 |PreA |PreS |Post |Hear |PreA |PreS |Post |Hear |PreA |PreS |Post
 from-PreAnimation c0 |PreA c1 c2 c3 c4 c5 c6 |PreS |Post |Hear |PreA |PreS |Post |Hear |PreA |PreS |Post
 from-PreSimulation c0 |PreS c1 c2 c3 c4 c5 c6 |Post |Hear |PreA |PreS |Post |Hear |PreA |PreS |Post

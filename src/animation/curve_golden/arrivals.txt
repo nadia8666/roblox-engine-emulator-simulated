@@ -1,0 +1,10 @@
+live 0:3:610062 0.5:1:00 1:5:7800007900
+clone 
+signal 
+sequence 
+clip copy 
+clone renamed before use Was 2
+clone swap Gone
+clone destroyed before use X 2
+deep clone renamed Was Instance
+clone of emptied slot X 2

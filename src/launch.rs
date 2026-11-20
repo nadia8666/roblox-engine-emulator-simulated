@@ -4,18 +4,24 @@
 //!
 //!   [--roots "<dir>;<dir>"] [--project <dir>] [--place <place name>]
 //!   [--mount Service/Name=<dir|file>]... [--instance Service/Name=<ClassName>]...
+//!   [--rojo <file.project.json> [--rojo-at Service/Name]]
 //!   [--snapshot <file.rbxm>]... [--snapshot-dir <dir>] [--no-snapshots] [--viewport WxH]
 //!   [--scale S] [--camera WxH] [--rotation-clipping enabled|disabled] [--mode edit|play]
-//!   [--run-context client|server] [--player Name] [--place-id N] [--streaming R] [--offline]
+//!   [--run-context client|server|loopback] [--player Name] [--place-id N] [--streaming R] [--offline]
 //!   [--verbose] [--repo <dir>]
 //!
 //! The project's Rojo roots are `--roots`; without them there is no project (a run of the
 //! harness and its mounts alone), and `--project` only names the project's folder.
 //! `--mount` / `--instance` (in order, after the roots) place a directory, file or instance at an
 //! instance path (roblox-ui-renderer's cli/rojo.mjs translates Rojo project files into them); with
-//! mounts and no `--roots` there is no implicit project. Content naming a relative local path
-//! (`output/x.mesh`) is read from the project's folder: `--project`, else the folder holding the first
-//! root, else the current directory ([`Options::project`]). Environment: RUR_CAMERA / RUR_PLACE_ID /
+//! mounts and no `--roots` there is no implicit project. `--rojo <file.project.json>` mounts a Rojo
+//! project file's tree where the roots would mount ([`crate::rojo`]; a tree that is not a DataModel at
+//! ReplicatedStorage/<project name>, or at `--rojo-at Service/Name`), before the `--mount`s; it takes the
+//! place of `--roots` (the two are refused together), and its folder is the place's root for what is
+//! looked up by a root ([`crate::mount::ProjectSpec::place_roots`]). Content naming a relative local path
+//! (`output/x.mesh`) is read from the project's folder: `--project`, else the folder holding the `--rojo`
+//! file, else the folder holding the first root, else the current directory ([`Options::project`]).
+//! Environment: RUR_CAMERA / RUR_PLACE_ID /
 //! RUR_PLAYER / RUR_PLAYER_ID / RUR_PLAYER_DISPLAY / RUR_ROTATION_CLIPPING / RUR_VERBOSE stand in
 //! for the flags, and REE_LOCALIZED_PLACES / REE_MATCH_PLACES add places to the work clock's place
 //! prices ([`crate::cost::PlacePrices::with`]).
@@ -146,6 +152,8 @@ pub struct Args {
     pub mode: Option<String>,
     pub run_context: Option<String>,
     pub studio: Option<bool>,
+    pub load_module: bool,
+    pub load_string: bool,
     pub player: Option<String>,
     pub device: Option<String>,
     pub place_id: Option<f64>,
@@ -158,9 +166,14 @@ pub struct Args {
     pub verbose: bool,
     pub repo: Option<String>,
     pub mounts: Vec<project::Mount>,
+    /// `--loopback`: one VM plays both sides of a client run (the fork's own; `--run-context loopback` is upstream's separate server and client engines)
     pub loopback: bool,
     pub datastore_dir: Option<String>,
     pub fresh_datastore: bool,
+    /// `--rojo <file.project.json>`: a Rojo project file whose tree is mounted (read by [`prepare`])
+    pub rojo: Option<String>,
+    /// `--rojo-at Service/Name`: where a `--rojo` tree that is not a DataModel mounts
+    pub rojo_at: Option<String>,
 }
 
 fn size(key: &str, text: &str) -> Result<(f64, f64), String> {
@@ -182,6 +195,8 @@ impl Args {
             "--loopback" => self.loopback = true,
             "--fresh-datastore" => self.fresh_datastore = true,
             "--datastore-dir" => self.datastore_dir = Some(need()?),
+            "--load-module" => self.load_module = true,
+            "--load-string" => self.load_string = true,
             "--roots" => self.roots = need()?.split(';').filter(|r| !r.is_empty()).map(str::to_string).collect(),
             "--project" => self.project = Some(need()?),
             "--place" => self.place = Some(need()?),
@@ -207,9 +222,11 @@ impl Args {
             "--repo" => self.repo = Some(need()?),
             "--mount" => self.mounts.push(project::Mount::parse(&need()?, false)?),
             "--instance" => self.mounts.push(project::Mount::parse(&need()?, true)?),
+            "--rojo" => self.rojo = Some(need()?),
+            "--rojo-at" => self.rojo_at = Some(need()?),
             _ => return Ok(None),
         }
-        Ok(Some(if matches!(key, "--offline" | "--verbose" | "--no-snapshots" | "--loopback" | "--fresh-datastore") { 1 } else { 2 }))
+        Ok(Some(if matches!(key, "--offline" | "--verbose" | "--no-snapshots" | "--loopback" | "--fresh-datastore" | "--load-module" | "--load-string") { 1 } else { 2 }))
     }
 }
 
@@ -248,6 +265,15 @@ pub struct Prepared {
     pub snapshot_dir: Option<String>,
     /// --mount / --instance, relative paths resolved
     pub mounts: Vec<project::Mount>,
+    /// `--rojo`'s project tree, mounted where the roots would mount ([`crate::mount::ProjectSpec::rojo`])
+    pub rojo: Option<crate::rojo::Tree>,
+}
+
+impl Prepared {
+    /// The folders the run's place is looked up by ([`crate::mount::place_roots`])
+    pub fn place_roots(&self) -> Vec<String> {
+        crate::mount::place_roots(&self.roots, self.rojo.as_ref())
+    }
 }
 
 /// main.luau's option handling: engine options, roots and snapshots of `args`. `default_repo` is
@@ -256,20 +282,33 @@ pub fn prepare(args: &Args, default_repo: &Path) -> Result<Prepared, String> {
     let repo = args.repo.as_ref().map(PathBuf::from).unwrap_or_else(|| default_repo.to_path_buf());
     // runs need state, so report a missing standalone cache before preparing the engine
     crate::try_state_dir(&repo)?;
+    if args.rojo.is_none() && args.rojo_at.is_some() {
+        return Err("--rojo-at places a Rojo project: it needs --rojo <file.project.json>".into());
+    }
+    if args.rojo.is_some() && !args.roots.is_empty() {
+        return Err("--rojo and --roots both name the project's sources: pass one (a Rojo project file maps every folder it mounts)".into());
+    }
+    // The Rojo project file's tree, read here (a run prepared ahead notes the files read from here on: record/prepare.rs)
+    let rojo = args.rojo.as_deref().map(|file| crate::rojo::Tree::read(Path::new(file), args.rojo_at.as_deref())).transpose()?;
     // Studio snapshots: the ones named (--snapshot-dir / --snapshot)
     let snapshot_dir = args.snapshot_dir.as_ref().map(|d| absolute(d));
     // Options::project: the project named, else the first root's folder, else here
     let project_dir = args.project.as_deref().map(|dir| PathBuf::from(absolute(dir)));
     // Without --roots there is no project: the run has its harness and mounts alone
     let roots: Vec<String> = args.roots.iter().map(|r| absolute(r)).collect();
-    let project_dir = project_dir.or_else(|| roots.first().and_then(|root| Path::new(root).parent()).map(Path::to_path_buf)).or_else(|| std::env::current_dir().ok());
+    let project_dir = project_dir
+        .or_else(|| rojo.as_ref().map(|tree| PathBuf::from(tree.folder())))
+        .or_else(|| roots.first().and_then(|root| Path::new(root).parent()).map(Path::to_path_buf))
+        .or_else(|| std::env::current_dir().ok());
+    // (a Rojo project's folder stands for the place's root where a place is looked up)
+    let place_roots = crate::mount::place_roots(&roots, rojo.as_ref());
 
     let (width, height) = args.viewport.unwrap_or((1920.0, 1080.0));
     let place_id = args
         .place_id
         .or_else(|| std::env::var("RUR_PLACE_ID").ok().and_then(|v| v.parse().ok()))
-        .or_else(|| project::project_setting(&roots, "placeIds").and_then(|v| v.as_f64()))
-        .or_else(|| project::declared_place_id(&roots))
+        .or_else(|| project::project_setting(&place_roots, "placeIds").and_then(|v| v.as_f64()))
+        .or_else(|| project::declared_place_id(&place_roots))
         .unwrap_or(0.0);
     // Camera.ViewportSize (--camera WxH / RUR_CAMERA): the screen the run sits in, which can exceed
     // the rendered area. Defaults to the viewport.
@@ -296,6 +335,13 @@ pub fn prepare(args: &Args, default_repo: &Path) -> Result<Prepared, String> {
     let place_prices = crate::cost::PlacePrices::default().with(std::env::var("REE_LOCALIZED_PLACES").ok().as_deref(), std::env::var("REE_MATCH_PLACES").ok().as_deref())?;
     // A Studio Play-mode server: no local player, and no edit-mode server (Studio's edit DataModel is
     // both sides at once)
+    if run_context == RunContext::Edit && mode != "edit" {
+        return Err("--run-context edit needs --mode edit".into());
+    }
+    // A server and its client (src/loopback): a play session's two sides
+    if run_context == RunContext::Loopback && mode == "edit" {
+        return Err("--run-context loopback needs --mode play".into());
+    }
     if run_context == RunContext::Server {
         if mode == "edit" {
             return Err("--run-context server needs --mode play".into());
@@ -304,12 +350,17 @@ pub fn prepare(args: &Args, default_repo: &Path) -> Result<Prepared, String> {
             return Err("--player names the local player; a server has none (a harness adds its players)".into());
         }
     }
-    if args.loopback && run_context == RunContext::Server {
-        return Err("--loopback plays both sides in a client run; drop --run-context server".into());
+    // `--loopback` is the fork's one-VM play of both sides, so it needs a client run: a server run, a separate-engines
+    // loopback run (`--run-context loopback`) and an edit run each play a side of their own
+    if args.loopback && run_context != RunContext::Client {
+        return Err("--loopback plays both sides in one client run; drop --run-context (or use --run-context loopback alone for separate server and client engines)".into());
     }
     let local_player_name = match run_context {
         RunContext::Server => None,
-        RunContext::Client => Some(args.player.clone().or_else(|| std::env::var("RUR_PLAYER").ok()).unwrap_or_else(|| "Player".into())),
+        // Studio's edit DataModel has no player (Players is empty and LocalPlayer nil for a plugin or the command bar
+        // outside Team Create; not measured: a headless session has no edit DataModel); `--player` gives the run one all the same
+        RunContext::Edit => args.player.clone(),
+        RunContext::Client | RunContext::Loopback => Some(args.player.clone().or_else(|| std::env::var("RUR_PLAYER").ok()).unwrap_or_else(|| "Player".into())),
     };
     let options = Options {
         offline: args.offline,
@@ -322,6 +373,8 @@ pub fn prepare(args: &Args, default_repo: &Path) -> Result<Prepared, String> {
         mode,
         run_context,
         studio: args.studio.unwrap_or(true),
+        load_module: args.load_module,
+        load_string: args.load_string,
         verbose: args.verbose || std::env::var("RUR_VERBOSE").as_deref() == Ok("1"),
         local_player_name,
         local_player_user_id: std::env::var("RUR_PLAYER_ID").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
@@ -331,7 +384,7 @@ pub fn prepare(args: &Args, default_repo: &Path) -> Result<Prepared, String> {
         place_name: if args.roots.is_empty() { "Place".into() } else { args.place.clone().unwrap_or_else(|| "Place".into()) },
         repo: repo.clone(),
         project: project_dir,
-        streaming_target_radius: args.streaming.or_else(|| project::project_setting(&roots, "streamingTargetRadius").and_then(|v| v.as_f64())),
+        streaming_target_radius: args.streaming.or_else(|| project::project_setting(&place_roots, "streamingTargetRadius").and_then(|v| v.as_f64())),
         place_prices,
         loopback: args.loopback,
         clock_probe: None,
@@ -348,7 +401,7 @@ pub fn prepare(args: &Args, default_repo: &Path) -> Result<Prepared, String> {
             _ => mount.clone(),
         })
         .collect();
-    Ok(Prepared { options, roots, snapshot_dir, mounts })
+    Ok(Prepared { options, roots, snapshot_dir, mounts, rojo })
 }
 
 /// What a program running engine commands brings to the engines they start: its name (the prefix
@@ -425,7 +478,16 @@ mod tests {
         let refused = |words: &[&str]| prepare(&args(words), Path::new("C:/somewhere")).err().unwrap_or_default();
         assert!(refused(&["--run-context", "server"]).contains("needs --mode play"));
         assert!(refused(&["--run-context", "server", "--mode", "play", "--player", "Someone"]).contains("a server has none"));
-        assert!(refused(&["--run-context", "both", "--mode", "play"]).contains("client or server"));
+        assert!(refused(&["--run-context", "both", "--mode", "play"]).contains("client, server, edit or loopback"));
+        assert!(refused(&["--run-context", "loopback"]).contains("needs --mode play"));
+        let pair = prepare(&args(&["--mode", "play", "--run-context", "loopback", "--player", "Someone"]), Path::new("C:/somewhere")).unwrap();
+        assert!(pair.options.run_context == RunContext::Loopback && !pair.options.server());
+        assert_eq!(pair.options.local_player_name.as_deref(), Some("Someone"));
+        let edit = prepare(&args(&["--mount", "ReplicatedStorage/Lib=lib", "--run-context", "edit"]), Path::new("C:/somewhere")).unwrap();
+        assert!(edit.options.run_context == RunContext::Edit && !edit.options.server() && edit.options.local_player_name.is_none());
+        let edit_player = prepare(&args(&["--run-context", "edit", "--player", "Someone"]), Path::new("C:/somewhere")).unwrap();
+        assert_eq!(edit_player.options.local_player_name.as_deref(), Some("Someone"));
+        assert!(refused(&["--run-context", "edit", "--mode", "play"]).contains("needs --mode edit"));
     }
 
     #[test]
@@ -441,6 +503,45 @@ mod tests {
         let roots = format!("{};{}", text(&game.join("shared")), text(&base.join("other").join("src")));
         assert_eq!(project(&["--roots".into(), roots]), Some(std::path::absolute(&game).unwrap()), "the first root's folder");
         assert_eq!(project(&["--mount".into(), "ReplicatedStorage/Lib=lib".into()]), std::env::current_dir().ok(), "mounts alone: here");
+    }
+
+    /// `--rojo <file>`: the project file's tree, read into the mounts the roots' place takes, ahead of the command line's
+    /// own; no roots (nor an implicit project); the project's folder is the run's (unless `--project` names one) and the
+    /// place's root (rur.json's place id for it). Refused: with `--roots`, `--rojo-at` alone, a file that isn't there.
+    #[test]
+    fn a_rojo_project_file_is_the_runs_project() {
+        let base = std::env::temp_dir().join(format!("ree-launch-rojo-{}", std::process::id()));
+        let game = base.join("game");
+        std::fs::create_dir_all(game.join("src").join("shared")).unwrap();
+        std::fs::write(game.join("default.project.json"), r#"{"name":"g","tree":{"$className":"DataModel","ReplicatedStorage":{"Shared":{"$path":"src/shared"},"Gone":{"$path":"gone"}}}}"#).unwrap();
+        std::fs::write(base.join("rur.json"), r#"{"placeIds":{"game":42}}"#).unwrap();
+        let words = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let file = game.join("default.project.json").to_string_lossy().into_owned();
+        let prepare_words = |list: &[&str]| prepare(&parse(&split_equals(&words(list))).unwrap(), Path::new("C:/somewhere"));
+        for spelled in [&["--rojo", &file, "--mount", "Workspace/X=x"][..], &[&format!("--rojo={file}"), "--mount", "Workspace/X=x"]] {
+            let prepared = prepare_words(spelled).unwrap();
+            assert!(prepared.roots.is_empty(), "no roots and no implicit project");
+            let tree = prepared.rojo.as_ref().unwrap();
+            assert_eq!(tree.mounts.len(), 1);
+            assert_eq!(tree.mounts[0].segments, ["ReplicatedStorage", "Shared"]);
+            assert!(matches!(&tree.mounts[0].target, project::MountTarget::Path(path) if Path::new(path) == game.join("src").join("shared")));
+            assert_eq!(tree.missing, ["default.project.json maps ReplicatedStorage.Gone to gone, which doesn't exist"]);
+            assert_eq!(prepared.mounts.len(), 1, "the command line's mounts, after the tree");
+            assert_eq!(prepared.options.project.as_deref(), Some(game.as_path()), "the project file's folder");
+            assert_eq!(prepared.place_roots(), [tree.folder()]);
+            if std::env::var_os("RUR_PLACE_ID").is_none() {
+                assert_eq!(prepared.options.place_id, 42.0, "the place's root is the project file's folder");
+            }
+        }
+        let named = prepare_words(&["--rojo", &file, "--project", &base.to_string_lossy()]).unwrap();
+        assert_eq!(named.options.project.as_deref(), Some(std::path::absolute(&base).unwrap().as_path()), "--project names another folder");
+        let refused = |list: &[&str]| prepare_words(list).err().unwrap_or_default();
+        assert!(refused(&["--rojo", &file, "--roots", &game.to_string_lossy()]).contains("--rojo and --roots"));
+        assert!(refused(&["--rojo-at", "ServerStorage/Game"]).contains("needs --rojo"));
+        assert!(refused(&["--rojo", &game.join("none.project.json").to_string_lossy()]).contains("no such file"));
+        // (an empty --roots is no roots: the two go together)
+        assert!(prepare_words(&["--rojo", &file, "--roots", ""]).is_ok());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

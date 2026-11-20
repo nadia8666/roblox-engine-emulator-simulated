@@ -1,0 +1,57 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless play session of one server and one client in processes of their own (the server's half a server Script from the server's start, the client's half a job in the client; script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-19
+# repeated: 3 captures, the same lines
+server: Before cannot write Model.LevelOfDetail: The current thread cannot write 'LevelOfDetail' (lacking capability PluginOrOpenCloud)
+server: Before cannot write Script.RunContext: The current thread cannot write 'RunContext' (lacking capability PluginOrOpenCloud)
+server: Later cannot write Model.LevelOfDetail: The current thread cannot write 'LevelOfDetail' (lacking capability PluginOrOpenCloud)
+server: Later cannot write Script.RunContext: The current thread cannot write 'RunContext' (lacking capability PluginOrOpenCloud)
+client: Before Part arrived {Anchored Archivable CFrame~ CanCollide CanQuery CanTouch CastShadow CollisionGroup Color CustomPhysicalProperties EnableFluidForces Locked Massless Material Reflectance RootPriority Shape Size TopSurface Transparency} not {LocalTransparencyModifier=0} attributes 5 a tagged true
+client: Before Folder arrived {Archivable} not {} attributes 5 a tagged true
+client: Before StringValue arrived {Value} not {} attributes 5 a tagged true
+client: Before NumberValue arrived {Value} not {} attributes 5 a tagged true
+client: Before BoolValue arrived {Value} not {} attributes 5 a tagged true
+client: Before CFrameValue arrived {Value} not {} attributes 5 a tagged true
+client: Before Color3Value arrived {Value} not {} attributes 5 a tagged true
+client: Before ObjectValue arrived {} not {} attributes 5 a tagged true
+client: Before Model arrived {WorldPivot} not {LevelOfDetail unreadable} attributes 5 a tagged true
+client: Before Script arrived {Enabled} not {RunContext=EnumItem} attributes 5 a tagged true
+client: Before LocalScript arrived {Enabled} not {} attributes 5 a tagged true
+client: Before Sound arrived {Looped PlaybackSpeed RollOffMaxDistance SoundId Volume} not {} attributes 5 a tagged true
+client: Before ParticleEmitter arrived {Enabled Lifetime LightEmission Rate Speed} not {} attributes 5 a tagged true
+client: Before PointLight arrived {Brightness Enabled Range Shadows} not {} attributes 5 a tagged true
+client: Before Attachment arrived {CFrame Visible} not {} attributes 5 a tagged true
+client: Before ScreenGui arrived {DisplayOrder Enabled IgnoreGuiInset ResetOnSpawn} not {} attributes 5 a tagged true
+client: Before Frame arrived {BackgroundColor3 Position Rotation Size Visible ZIndex} not {} attributes 5 a tagged true
+client: Before TextLabel arrived {FontFace RichText Text TextScaled TextSize TextTransparency} not {} attributes 5 a tagged true
+client: Before Decal arrived {Face Texture Transparency} not {} attributes 5 a tagged true
+client: Before Highlight arrived {DepthMode Enabled FillColor} not {} attributes 5 a tagged true
+client: Before Configuration arrived {} not {} attributes 5 a tagged true
+client: Before Weld arrived {C0 Enabled} not {} attributes 5 a tagged true
+client: Before BodyVelocity arrived {MaxForce Velocity} not {} attributes 5 a tagged true
+client: Before ProximityPrompt arrived {ActionText Enabled HoldDuration MaxActivationDistance} not {} attributes 5 a tagged true
+client: Before Animation arrived {AnimationId} not {} attributes 5 a tagged true
+client: After Part arrived {Anchored Archivable CFrame~ CanCollide CanQuery CanTouch CastShadow CollisionGroup Color CustomPhysicalProperties EnableFluidForces Locked Massless Material Reflectance RootPriority Shape Size TopSurface Transparency} not {LocalTransparencyModifier=0} attributes 5 a tagged true
+client: After Folder arrived {Archivable} not {} attributes 5 a tagged true
+client: After StringValue arrived {Value} not {} attributes 5 a tagged true
+client: After NumberValue arrived {Value} not {} attributes 5 a tagged true
+client: After BoolValue arrived {Value} not {} attributes 5 a tagged true
+client: After CFrameValue arrived {Value} not {} attributes 5 a tagged true
+client: After Color3Value arrived {Value} not {} attributes 5 a tagged true
+client: After ObjectValue arrived {} not {} attributes 5 a tagged true
+client: After Model arrived {WorldPivot} not {LevelOfDetail unreadable} attributes 5 a tagged true
+client: After Script arrived {Enabled} not {RunContext=EnumItem} attributes 5 a tagged true
+client: After LocalScript arrived {Enabled} not {} attributes 5 a tagged true
+client: After Sound arrived {Looped PlaybackSpeed RollOffMaxDistance SoundId Volume} not {} attributes 5 a tagged true
+client: After ParticleEmitter arrived {Enabled Lifetime LightEmission Rate Speed} not {} attributes 5 a tagged true
+client: After PointLight arrived {Brightness Enabled Range Shadows} not {} attributes 5 a tagged true
+client: After Attachment arrived {CFrame Visible} not {} attributes 5 a tagged true
+client: After ScreenGui arrived {DisplayOrder Enabled IgnoreGuiInset ResetOnSpawn} not {} attributes 5 a tagged true
+client: After Frame arrived {BackgroundColor3 Position Rotation Size Visible ZIndex} not {} attributes 5 a tagged true
+client: After TextLabel arrived {FontFace RichText Text TextScaled TextSize TextTransparency} not {} attributes 5 a tagged true
+client: After Decal arrived {Face Texture Transparency} not {} attributes 5 a tagged true
+client: After Highlight arrived {DepthMode Enabled FillColor} not {} attributes 5 a tagged true
+client: After Configuration arrived {} not {} attributes 5 a tagged true
+client: After Weld arrived {C0 Enabled} not {} attributes 5 a tagged true
+client: After BodyVelocity arrived {MaxForce Velocity} not {} attributes 5 a tagged true
+client: After ProximityPrompt arrived {ActionText Enabled HoldDuration MaxActivationDistance} not {} attributes 5 a tagged true
+client: After Animation arrived {AnimationId} not {} attributes 5 a tagged true

@@ -28,8 +28,12 @@ unsafe extern "C-unwind" {
     pub fn luaopen_math(L: *mut lua_State) -> c_int;
     pub fn luaopen_debug(L: *mut lua_State) -> c_int;
     pub fn luaopen_vector(L: *mut lua_State) -> c_int;
-    pub fn luaopen_integer(L: *mut lua_State) -> c_int;
 
     // open all builtin libraries
     pub fn luaL_openlibs(L: *mut lua_State);
+}
+
+// Luau 0.747 has no integer library: mlua 0.12 opens it with its default libraries, and this leaves `integer` nil
+pub unsafe extern "C-unwind" fn luaopen_integer(_L: *mut lua_State) -> c_int {
+    0
 }

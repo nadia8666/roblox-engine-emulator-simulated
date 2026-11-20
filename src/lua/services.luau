@@ -105,27 +105,27 @@ Method("Players", "GetNameFromUserIdAsync", function(_, UserId)
 	if UnknownUserIds[UserId] then
 		error("Players:GetUserIdFromNameAsync() failed: Unknown user", 0)
 	end
-	return `User{UserId}`
+	Missing("Players", "GetNameFromUserIdAsync") return `User{UserId}` -- (an account's name is the web's: a stand-in)
 end)
-local function HumanoidDescription()
-	return Create("HumanoidDescription")
+local function HumanoidDescription(Name) -- (an avatar is the web's: a default description stands in, and says so)
+	return function() Missing("Players", Name) return Create("HumanoidDescription") end
 end
-Method("Players", "GetHumanoidDescriptionFromUserId", HumanoidDescription)
-Method("Players", "GetHumanoidDescriptionFromUserIdAsync", HumanoidDescription)
-Method("Players", "GetHumanoidDescriptionFromOutfitId", HumanoidDescription)
-Method("Players", "GetHumanoidDescriptionFromOutfitIdAsync", HumanoidDescription)
+Method("Players", "GetHumanoidDescriptionFromUserId", HumanoidDescription("GetHumanoidDescriptionFromUserId"))
+Method("Players", "GetHumanoidDescriptionFromUserIdAsync", HumanoidDescription("GetHumanoidDescriptionFromUserIdAsync"))
+Method("Players", "GetHumanoidDescriptionFromOutfitId", HumanoidDescription("GetHumanoidDescriptionFromOutfitId"))
+Method("Players", "GetHumanoidDescriptionFromOutfitIdAsync", HumanoidDescription("GetHumanoidDescriptionFromOutfitIdAsync"))
 Method("Players", "GetFriendsAsync", function()
 	return EmptyPages()
 end)
--- A bare R15-less rig: a Model holding a Humanoid (no meshes offline).
-local function HumanoidModel()
-	local Model = Create("Model")
+-- A bare R15-less rig: a Model holding a Humanoid (no meshes offline), a stand-in that reports itself.
+local function HumanoidModel(Name)
+	Missing("Players", Name) local Model = Create("Model")
 	local Humanoid = Create("Humanoid")
 	R.SetParent(Humanoid, Model)
 	return Model
 end
 for _, Name in { "CreateHumanoidModelFromDescription", "CreateHumanoidModelFromDescriptionAsync", "CreateHumanoidModelFromUserId", "CreateHumanoidModelFromUserIdAsync" } do
-	Method("Players", Name, HumanoidModel)
+	Method("Players", Name, function() return HumanoidModel(Name) end)
 end
 
 -- UserService / TextChatService (offline: other users exist and may chat)
@@ -433,11 +433,11 @@ end)
 Method("Humanoid", "GetStateEnabled", function(Self, State)
 	return Extra(Self)[`_state:{tostring(State)}`] ~= false
 end)
-Method("Humanoid", "GetState", function()
-	return EnumItem("HumanoidStateType", "None")
+Method("Humanoid", "GetState", function() -- (ree has no Humanoid state machine and simulates no character: these report themselves)
+	Missing("Humanoid", "GetState") return EnumItem("HumanoidStateType", "None")
 end)
 for _, Name in { "ChangeState", "MoveTo", "Move", "ApplyDescription", "ApplyDescriptionAsync", "ApplyDescriptionReset", "BuildRigFromAttachments" } do
-	Method("Humanoid", Name, function() end)
+	Method("Humanoid", Name, function() Missing("Humanoid", Name) end)
 end
 Method("Humanoid", "GetAccessories", function(Self)
 	local Result = {}
@@ -449,7 +449,7 @@ Method("Humanoid", "GetAccessories", function(Self)
 	return Result
 end)
 Method("Humanoid", "GetAppliedDescription", function()
-	return Create("HumanoidDescription")
+	Missing("Humanoid", "GetAppliedDescription") return Create("HumanoidDescription")
 end)
 
 -- Path2D: its control points, their errors and the curve queries are the engine's (path2d.rs), where a host's
@@ -641,14 +641,46 @@ local function Draw(Self, X0, Y0, W0, H0, CombineType, Source)
 	Written(Self)
 end
 
-Method("EditableImage", "DrawRectangle", function(Self, Position, Size, Color, Transparency, CombineType)
+-- Studio 0.747 lists seven more ImageCombineType items (Darken, Lighten, Screen, Overlay, SoftLight, HardLight,
+-- Difference) and gives each Draw method an alphaBlendType (ImageAlphaType) after its other arguments, and plays
+-- neither yet (measured there): such a combine type, as an item, its name or its value, raises "EditableImage:DrawImage:
+-- the requested Enum.ImageCombineType is not yet supported", and after it an alpha type other than Default raises
+-- "EditableImage:DrawImage: Enum.ImageAlphaType other than Default is not yet supported". The image is left as it was.
+local UnsupportedCombine = { Darken = true, Lighten = true, Screen = true, Overlay = true, SoftLight = true, HardLight = true, Difference = true }
+
+local function ItemName(EnumType, Value)
+	if typeof(Value) == "EnumItem" then
+		return Value.Name
+	elseif type(Value) == "string" then
+		return Value
+	elseif type(Value) == "number" then
+		local Item = EnumType:FromValue(Value)
+		return Item and Item.Name
+	end
+	return nil
+end
+
+local function CheckBlend(Name, CombineType, AlphaType)
+	local Combine = ItemName(Enum.ImageCombineType, CombineType)
+	if Combine and UnsupportedCombine[Combine] then
+		error(`EditableImage:{Name}: the requested Enum.ImageCombineType is not yet supported`, 0)
+	end
+	local Alpha = ItemName(Enum.ImageAlphaType, AlphaType)
+	if Alpha == "LockCanvasAlpha" or Alpha == "LockCanvasColor" then
+		error(`EditableImage:{Name}: Enum.ImageAlphaType other than Default is not yet supported`, 0)
+	end
+end
+
+Method("EditableImage", "DrawRectangle", function(Self, Position, Size, Color, Transparency, CombineType, AlphaBlendType)
+	CheckBlend("DrawRectangle", CombineType, AlphaBlendType)
 	local R, G, B, A = Color.R, Color.G, Color.B, 1 - math.clamp(Transparency or 0, 0, 1)
 	Draw(Self, math.floor(Position.X), math.floor(Position.Y), math.floor(Size.X), math.floor(Size.Y), CombineType, function()
 		return R, G, B, A
 	end)
 end)
 
-Method("EditableImage", "DrawImage", function(Self, Position, Image, CombineType)
+Method("EditableImage", "DrawImage", function(Self, Position, Image, CombineType, AlphaBlendType)
+	CheckBlend("DrawImage", CombineType, AlphaBlendType)
 	local Width, Height = ImageSize(Image)
 	local Source = ImagePixels(Image)
 	Draw(Self, math.floor(Position.X), math.floor(Position.Y), Width, Height, CombineType, function(X, Y)
@@ -663,7 +695,8 @@ local function Smooth(AntiAliasing)
 	return not (typeof(AntiAliasing) == "EnumItem" and AntiAliasing.Name == "Disabled")
 end
 
-Method("EditableImage", "DrawCircle", function(Self, Center, Radius, Color, Transparency, CombineType, AntiAliasing)
+Method("EditableImage", "DrawCircle", function(Self, Center, Radius, Color, Transparency, CombineType, AntiAliasing, AlphaBlendType)
+	CheckBlend("DrawCircle", CombineType, AlphaBlendType)
 	local R, G, B, A = Color.R, Color.G, Color.B, 1 - math.clamp(Transparency or 0, 0, 1)
 	local Soft = Smooth(AntiAliasing)
 	local X0, Y0 = math.floor(Center.X - Radius - 1), math.floor(Center.Y - Radius - 1)
@@ -679,7 +712,8 @@ Method("EditableImage", "DrawCircle", function(Self, Center, Radius, Color, Tran
 	end)
 end)
 
-Method("EditableImage", "DrawLine", function(Self, P1, P2, Color, Transparency, CombineType, AntiAliasing)
+Method("EditableImage", "DrawLine", function(Self, P1, P2, Color, Transparency, CombineType, AntiAliasing, AlphaBlendType)
+	CheckBlend("DrawLine", CombineType, AlphaBlendType)
 	local R, G, B, A = Color.R, Color.G, Color.B, 1 - math.clamp(Transparency or 0, 0, 1)
 	local Soft = Smooth(AntiAliasing)
 	local X0, Y0 = math.floor(math.min(P1.X, P2.X)) - 1, math.floor(math.min(P1.Y, P2.Y)) - 1
@@ -706,6 +740,7 @@ end)
 -- AlphaBlend), as Roblox's EditableImage reference and its samples describe it.
 Method("EditableImage", "DrawImageTransformed", function(Self, Position, Scale, Rotation, Image, Options)
 	Options = Options or {}
+	CheckBlend("DrawImageTransformed", Options.CombineType, Options.AlphaBlendType)
 	local Width, Height = ImageSize(Image)
 	local Source = ImagePixels(Image)
 	local Pivot = Options.PivotPoint or Vector2.new(Width / 2, Height / 2)
@@ -840,6 +875,32 @@ Method("AssetService", "CreateSurfaceAppearanceAsync", function(_, Maps)
 	return Surface
 end)
 
+-- CreateDataModelContentAsync: an EditableMesh's or EditableImage's Content made into one of its own, a copy of the object
+-- as it is (measured in a 0.747 client, tools/parity/probes/data_model_content.luau): it yields, then answers
+-- Enum.CreateContentResult.Success and an Opaque Content (no Uri and no Object; each call's is its own), which
+-- CreateMeshPartAsync, CreateEditableMeshAsync and image properties take, and which later edits of the object (or its
+-- Destroy) do not reach; any other Content is refused, and so is a mesh without faces. Offline nothing is uploaded, so the
+-- other results (PermissionDenied, UploadFailed, ...) never come.
+Method("AssetService", "CreateDataModelContentAsync", function(_, Source)
+	local Object = if typeof(Source) == "Content" and Source.SourceType == Enum.ContentSourceType.Object then Source.Object else nil
+	local Uri
+	if Object and Object.ClassName == "EditableMesh" then
+		local Problem
+		Uri, Problem = R.MeshCopy(Object)
+		if not Uri then
+			error(Problem, 0)
+		end
+	elseif Object and Object.ClassName == "EditableImage" then
+		local Data = Extra(Object)
+		local Drawn = if Data.Source then Content.fromUri(Data.Source) else Snapshot(Object)
+		Uri = if Drawn then Drawn.Uri else ""
+	else
+		error("The input content type is not supported by AssetService::CreateDataModelContentAsync yet!", 0)
+	end
+	task.wait()
+	return Enum.CreateContentResult.Success, R.OpaqueContent(Uri)
+end)
+
 -- Any other Content property that takes an image shows an EditableImage too (Roblox's EditableImage
 -- reference: "EditableImage can be used in any Content property which takes an image, such as
 -- ImageLabel.ImageContent or MeshPart.TextureContent", by Content.fromObject): the property holds the
@@ -913,24 +974,24 @@ end)
 Method("Player", "GetMouse", function()
 	return R.Mouse
 end)
-Method("Player", "IsInGroup", function()
-	return false
-end)
-Method("Player", "GetRankInGroup", function()
-	return 0
-end)
-Method("Player", "GetRoleInGroup", function()
-	return "Guest"
-end)
+-- Groups: the offline player is in none (false, rank 0, role Guest), the Async methods as the older ones; the six share the ids a player was asked about, and the first call naming a group yields (a client asks the web), later ones answer at once (measured in a 0.747 client and server: parity loopback/player_groups)
+for Member, Answer in { IsInGroup = false, IsInGroupAsync = false, GetRankInGroup = 0, GetRankInGroupAsync = 0, GetRoleInGroup = "Guest", GetRoleInGroupAsync = "Guest" } do
+	Method("Player", Member, function(Self, GroupId)
+		local Id, Message = R.Int64Argument(GroupId, 1)
+		if typeof(Self) ~= "Instance" or not Self:IsA("Player") then error(`Expected ':' not '.' calling member function {Member}`, 0) elseif not Id then error(Message, 0) end
+		local Data = Extra(Self) Data.Groups = Data.Groups or {}
+		if not Data.Groups[Id] then task.wait() Data.Groups[Id] = true end return Answer
+	end)
+end
 Method("Player", "IsFriendsWith", function()
 	return false
 end)
 Method("Player", "HasAppearanceLoaded", function()
 	return true
 end)
--- Character control without a character (Roblox's ControlModule binds Move at load)
+-- Character control without a character (Roblox's ControlModule binds Move at load). Move walks the player's character (Roblox's Player documentation), so without one it does nothing, as in a client; RequestStreamAroundAsync asks for what a run holds whole already (no instance streaming); the rest are not emulated
 for _, Name in { "Kick", "Move", "LoadCharacter", "LoadCharacterAsync", "RequestStreamAroundAsync" } do
-	Method("Player", Name, function() end)
+	Method("Player", Name, function(Self) if Name == "RequestStreamAroundAsync" or (Name == "Move" and RawGet(Self, "Character") == nil) then return end Missing("Player", Name) end)
 end
 Method("Player", "DistanceFromCharacter", function()
 	return 0
@@ -1115,10 +1176,10 @@ for _, Name in { "UserOwnsGamePassAsync", "PlayerOwnsAsset", "PlayerOwnsBundle" 
 	end)
 end
 Method("MarketplaceService", "GetDeveloperProductsAsync", function()
-	return EmptyPages()
+	Missing("MarketplaceService", "GetDeveloperProductsAsync") return EmptyPages()
 end)
 for _, Name in { "PromptPurchase", "PromptProductPurchase", "PromptGamePassPurchase", "PromptPremiumPurchase", "PromptSubscriptionPurchase", "PromptBundlePurchase" } do
-	Method("MarketplaceService", Name, function() end)
+	Method("MarketplaceService", Name, function() Missing("MarketplaceService", Name) end)
 end
 
 Method("PolicyService", "GetPolicyInfoForPlayerAsync", function()
@@ -1136,10 +1197,10 @@ Method("BadgeService", "UserHasBadgeAsync", function()
 	return false
 end)
 Method("BadgeService", "GetBadgeInfoAsync", function()
-	return { Name = "Badge", Description = "", IconImageId = 0, IsEnabled = true }
+	Missing("BadgeService", "GetBadgeInfoAsync") return { Name = "Badge", Description = "", IconImageId = 0, IsEnabled = true }
 end)
 Method("GroupService", "GetGroupInfoAsync", function(_, GroupId)
-	return { Name = `Group {GroupId}`, Id = GroupId, Owner = { Name = "Owner", Id = 1 }, EmblemUrl = "", Roles = {} }
+	Missing("GroupService", "GetGroupInfoAsync") return { Name = `Group {GroupId}`, Id = GroupId, Owner = { Name = "Owner", Id = 1 }, EmblemUrl = "", Roles = {} }
 end)
 Method("GroupService", "GetGroupsAsync", function()
 	return {}
@@ -1166,21 +1227,22 @@ end)
 Method("TeleportService", "GetTeleportSetting", function()
 	return nil
 end)
-Method("TeleportService", "SetTeleportSetting", function() end)
+Method("TeleportService", "SetTeleportSetting", function() Missing("TeleportService", "SetTeleportSetting") end) -- (not kept: GetTeleportSetting stays nil)
 -- UserGameSettings (UserSettings().GameSettings): a client whose settings are as they start
-for _, Name in { "GetCameraYInvert", "GetOnboardingCompleted", "InFullScreen", "InStudioMode" } do
+for _, Name in { "GetOnboardingCompleted", "InFullScreen", "InStudioMode" } do
 	Method("UserGameSettings", Name, function()
 		return false
 	end)
 end
+-- the camera's vertical multiplier: 1, or -1 when the player inverts it (measured in Studio 0.748: 1 by default)
 Method("UserGameSettings", "GetCameraYInvertValue", function()
 	return 1
 end)
 for _, Name in { "SetCameraYInvertVisible", "SetGamepadCameraSensitivityVisible", "SetOnboardingCompleted" } do
-	Method("UserGameSettings", Name, function() end)
+	Method("UserGameSettings", Name, function() if Name == "SetOnboardingCompleted" then Missing("UserGameSettings", Name) end end) -- (the other two only show options in Roblox's own settings menu, which no script reads)
 end
 for _, Name in { "LogCustomEvent", "LogEconomyEvent", "LogProgressionEvent", "LogFunnelStepEvent", "LogOnboardingFunnelStepEvent" } do
-	Method("AnalyticsService", Name, function() end)
+	Method("AnalyticsService", Name, function() end) -- (the events go to the creator's analytics dashboard; nothing a script can read changes: Roblox's AnalyticsService documentation)
 end
 -- (SoundService:PlayLocalSound is Rust: engine::world reports the play)
 

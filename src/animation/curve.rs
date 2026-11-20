@@ -514,8 +514,10 @@ pub fn encode_markers(keys: &[MarkerKey]) -> Vec<u8> {
     out.extend(2u32.to_le_bytes());
     out.extend((keys.len() as u32).to_le_bytes());
     for key in keys {
-        // (a value ends at its first zero byte, as the stored form has it)
-        out.extend(key.value.iter().take_while(|&&byte| byte != 0));
+        // (measured: Studio writes a value's bytes as they are and a zero byte after them, so a value that holds a zero
+        // byte makes a form nothing reads back: a clone of that curve, a file of it and a track of its clip have no
+        // markers at all, while the curve itself keeps the value)
+        out.extend(&key.value);
         out.push(0);
     }
     write_ticks(&mut out, keys.iter().map(|key| key.tick));

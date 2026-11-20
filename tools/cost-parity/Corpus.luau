@@ -2531,6 +2531,17 @@ end, function(N, Size, Subject)
 end, function(_, Size)
 	return subjects(1, math.max(Size, 16), 0)[1]
 end)
+-- a line of `Size` comma-separated parts split up: one table of Size strings a call (the parts are a string the module holds, so
+-- each one is found rather than made, as for lib's string.split row of five)
+sized("string.split", { 10, 100, 1000, 10000 }, function(Size)
+	return math.max(10, 100000 // Size)
+end, function(N, _, Subject)
+	for _ = 1, N do
+		local _ = string.split(Subject, ",")
+	end
+end, function(_, Size)
+	return string.rep("ab,", Size - 1) .. "ab"
+end)
 sized("string.char", { 16, 256, 4096 }, function(Size)
 	return math.max(200, 400000 // Size)
 end, function(N, Size, Codes)

@@ -2,6 +2,8 @@
 -- Writes data/reflection.json, which the engine compiles in.
 -- Run it in Studio (edit mode, an empty place) with anything that saves the string the chunk returns as
 -- data/reflection.json (a plugin, or a runner that executes Luau in Studio and keeps the result), then rebuild.
+-- Nothing runs this by itself. Compare the new file with the old one first: `node tools/reflection-diff.mjs <old.json>
+-- <new.json>` lists what came, went or changed (docs/engine.md "Data files").
 
 local HttpService = game:GetService("HttpService")
 local ReflectionService = game:GetService("ReflectionService")

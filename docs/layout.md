@@ -1,45 +1,58 @@
 # Source layout
 
-Where things are in the source tree.
+Directory and module overview for `roblox-engine-emulator`.
 
-```
-src/lib.rs             Engine, Options, State, Hooks, Layer, Extension, compiled-in data
-src/alloc.rs           the long-lived heap of what a warm service keeps (`ree`'s allocator: src/main.rs)
-src/emulator.rs        Emulator: an engine, its VM and its project
-src/launch.rs          command-line engine options -> Options, roots, mounts; Host
-src/mount.rs           the project mount
-src/dom.rs reflection.rs value.rs signal.rs instance.rs derived.rs output.rs
-src/scheduler.rs       virtual clock, task library, frame phases, recorded Studio clocks
-src/cost.rs            the work clock's prices
-src/services/          per-class behaviours (DataModel, RunService, TweenService, queries, ...)
-src/project.rs project/   Rojo mounting, models and snapshots, Studio-only placeholders, bundles,
-                       model plans and lazy imports (project/plan.rs), their files (plan/codec.rs),
-                       Rojo's JSON models (project/json_model.rs)
-src/serve/             `ree serve` and its client (`--service`)
-src/timing.rs files.rs `--profile`'s phases; file stamps for the caches
-src/watchdog.rs        Roblox's script timeout, the wall-clock cap, the exit when the parent is gone
-build.rs               the conversion digest: the key of the bundle plan files (`<bundle>.plan`)
-src/lua/               the Luau-facing API: Instance userdata, datatypes, globals, require, stubs
-src/world/ src/record/ the 3D world and the recorder
-src/animation/         AnimationTracks: the Animator's step, clips (KeyframeSequences, CurveAnimations and their curves) and where they load from
-src/meshes.rs          EditableMesh: meshes scripts build or load, their MeshParts' FileMesh snapshots
-src/profile.rs microprofile.rs luau_profile.rs   simulation profile, MicroProfiler scopes, Luau sampler
-src/profiler/          the profiling suite (`--profile <kinds>`): the VM's instruction profile, memory, caches,
-                       the timeline, the CPU, the report's files and `ree profile diff`; hw/ the hardware
-                       counters' client (the counter service's wire format, readings, the counters by name and their
-                       derived figures, the readings around sampled calls and how counts are booked)
-src/trace.rs                                     Context.TraceWrites: Luau call sites of Parent / property writes
-src/census.rs                                    Context.Census: live threads, connections, timers, instances by their Luau line
-data/                  reflection.json (Studio's dump; tools/dump-reflection.luau), font-enums.json, text metrics
-vendor/ patches/ tools/vendor.mjs   the patched Luau VM and Lune datatypes
-tools/cost-parity/     the work clock's calibration: the parity bench (ree against a client), its fits and the kept client sessions
-tools/luau-cost/       the work clock's older Luau calibration (a Studio playtest's, fitted by fit.py), kept for its history
-tools/hw-counters/     the counter service `--profile hw` reads through (a crate of its own) and setup.ps1, its install
-profile-view/          the profile viewer, `ree profile view|render` (a crate and binary of its own, reading profile
-                       folders): the terminal UI, its views and issue detectors, and the PNG, SVG and text renderer;
-                       fonts/ the bundled JetBrains Mono
-tools/what-if/         variant files for `ree profile try`, with what each shows
-tools/profile-demo/    a harness written slowly on purpose, to try the profiler and its viewer on (README "Profiling")
-tests/                 the patched VM's tests and the process guards
-docs/engine.md         the contract: architecture, rules and formats
+```text
+src/
+  lib.rs               Engine, Options, State, Hooks, Layer, Extension, compiled-in data
+  alloc.rs             Long-lived mimalloc heap for warm-service shared state (allocator in main.rs)
+  emulator.rs          High-level Emulator wrapper owning Engine, Lua VM, and mounted project
+  launch.rs            CLI engine option parsing -> Options, roots, mounts; Host trait
+  mount.rs             Project mount orchestration
+  rojo.rs              Rojo project files (`--rojo`): a project's tree read into mounts, shared with roblox-ui-renderer
+                       (end-to-end tests in rojo_tests.rs)
+  dom.rs               Instance arena/DOM
+  reflection.rs        Studio reflection database lookup & property metadata
+  value.rs             Roblox property Value representation
+  signal.rs            Deferred signal queues and connections
+  instance.rs          Instance methods and lifecycle
+  derived.rs           Derived property views
+  output.rs            Structured output & diagnostics log
+  scheduler.rs         Virtual clock, task library, RunService frame phases, recorded Studio clocks
+  cost.rs              Work-clock instruction and engine-call prices
+  services/            Per-class Roblox service and instance behaviors
+  project.rs, project/ Rojo mounting, models, snapshots, Studio placeholders, bundles,
+                       ModelPlan & lazy instantiation (plan.rs, plan/codec.rs), JSON models (json_model.rs)
+  loopback/            `--run-context loopback`: paired server + client replication and remotes, their C-API copier, lazily
+                       paired Studio-only instances (tests in loopback_tests.rs; tests/loopback_alloc.rs, tests/loopback_bench.rs
+                       and tools/bench/loopback/ hold its allocation guard and bench)
+  serve/               `ree serve` daemon and `--service` client
+  timing.rs, files.rs  `--profile` phase timers and cache file stamps
+  watchdog.rs          Script timeout, wall-clock cap, and parent-death watchdog
+  lua/                 Luau-facing API: Instance userdata, datatypes, globals, require, Luau stubs
+  world/               3D world transforms, spatial queries, Camera projections
+  record/              3D scene & timeline recorder (`ree record`)
+  animation/           AnimationTracks, Animator stepping, KeyframeSequence & CurveAnimation loaders
+  meshes.rs            EditableMesh and FileMesh snapshot export
+  profile.rs           Simulation profiler (plus microprofile.rs, luau_profile.rs)
+  profiler/            Profiling suite (`--profile <kinds>`), HTML/JSON reports, `ree profile diff`,
+                       and `hw/` hardware-counter service client
+  trace.rs             Context.TraceWrites (Luau call sites of Parent/property writes)
+  census.rs            Context.Census (live threads, connections, timers, instances by source line)
+
+build.rs               Computes conversion digest keying cached `<bundle>.plan` files
+data/                  Compiled-in Studio reflection dump (reflection.json; tools/dump-reflection.luau,
+                       tools/reflection-diff.mjs), font enums, text metrics, and the canonical normalization table
+                       utf8.nfcnormalize / nfdnormalize read (unicode-normalization.rs; tools/unicode-normalization.mjs)
+vendor/, patches/      Vendored patched Luau VM, mlua-sys, and Lune datatypes (rebuilt by tools/vendor.mjs)
+profile-view/          Separate workspace crate & binary (`ree-profile-view`) for terminal UI and
+                       PNG/SVG/text profile rendering (bundles JetBrains Mono under fonts/)
+tools/
+  cost-parity/         Work-clock parity benchmark against real Roblox clients, fits, reference sessions
+  luau-cost/           Historical Studio-playtest work-clock fit
+  hw-counters/         Separate Windows service crate (`ree-hw-counters`) and setup.ps1 for `--profile hw`
+  what-if/             Variant benchmark scripts for `ree profile try`
+  profile-demo/        Intentionally slow demo harness for trying the profiler (see README)
+tests/                 Patched-VM tests (`luau_vm.rs`), parity runner (`parity.rs`), process guards
+docs/engine.md         Public engine contract: architecture, rules, and formats
 ```

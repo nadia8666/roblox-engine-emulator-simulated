@@ -1,0 +1,79 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-17
+legacy AccessoryType [TeeShirt] ok TShirt 9 Enum.AccessoryType.TShirt false
+legacy AssetType [TeeShirt] ok TShirt 2 Enum.AssetType.TShirt false
+legacy AssetType [TeeShirtAccessory] ok TShirtAccessory 64 Enum.AssetType.TShirtAccessory false
+legacy AvatarAssetType [TeeShirtAccessory] ok TShirtAccessory 64 Enum.AvatarAssetType.TShirtAccessory false
+legacy Axis [Left] ok X 0 Enum.Axis.X false
+legacy Axis [Right] ok X 0 Enum.Axis.X false
+legacy Axis [Bottom] ok Y 1 Enum.Axis.Y false
+legacy Axis [Top] ok Y 1 Enum.Axis.Y false
+legacy Axis [Back] ok Z 2 Enum.Axis.Z false
+legacy Axis [Front] ok Z 2 Enum.Axis.Z false
+legacy BinType [Laser] ok Script 0 Enum.BinType.Script false
+legacy BinType [Rocket] ok Script 0 Enum.BinType.Script false
+legacy BinType [Slingshot] ok Script 0 Enum.BinType.Script false
+legacy CatalogSortType [RecentlyUpdated] ok RecentlyCreated 6 Enum.CatalogSortType.RecentlyCreated false
+legacy ConnectionError [DisconnectNoResponse] ok DisconnectRaknetErrors 279 Enum.ConnectionError.DisconnectRaknetErrors false
+legacy ContextActionPriority [Default] ok Medium 2000 Enum.ContextActionPriority.Medium false
+legacy ControlMode [Mouse Lock Switch] ok MouseLockSwitch 1 Enum.ControlMode.MouseLockSwitch false
+legacy DeveloperMemoryTag [PhysicsParts] ok BaseParts 7 Enum.DeveloperMemoryTag.BaseParts false
+legacy ExplosionType [CratersAndDebris] ok Craters 1 Enum.ExplosionType.Craters false
+legacy ExternalEditorMode [CustomEditor] ok UserSelectedEditor 1 Enum.ExternalEditorMode.UserSelectedEditor false
+legacy FluidForces [Enabled] ok Experimental 1 Enum.FluidForces.Experimental false
+legacy Font [Montserrat] ok Gotham 17 Enum.Font.Gotham false
+legacy Font [GothamSemibold] ok GothamMedium 18 Enum.Font.GothamMedium false
+legacy Font [MontserratMedium] ok GothamMedium 18 Enum.Font.GothamMedium false
+legacy Font [MontserratBold] ok GothamBold 19 Enum.Font.GothamBold false
+legacy Font [MontserratBlack] ok GothamBlack 20 Enum.Font.GothamBlack false
+legacy FormFactor [Block] ok Brick 1 Enum.FormFactor.Brick false
+legacy InputType [Action1] ok NoInput 0 Enum.InputType.NoInput false
+legacy InputType [Action2] ok NoInput 0 Enum.InputType.NoInput false
+legacy InputType [Action3] ok NoInput 0 Enum.InputType.NoInput false
+legacy InputType [Action4] ok NoInput 0 Enum.InputType.NoInput false
+legacy InputType [Action5] ok NoInput 0 Enum.InputType.NoInput false
+legacy InputType [LeftTread] ok NoInput 0 Enum.InputType.NoInput false
+legacy InputType [RightTread] ok NoInput 0 Enum.InputType.NoInput false
+legacy InputType [Steer] ok NoInput 0 Enum.InputType.NoInput false
+legacy InputType [Throtle] ok NoInput 0 Enum.InputType.NoInput false
+legacy InputType [Throttle] ok NoInput 0 Enum.InputType.NoInput false
+legacy InputType [UpDown] ok NoInput 0 Enum.InputType.NoInput false
+legacy KeyCode [Unknown] ok None 0 Enum.KeyCode.None false
+legacy KeyCode [Touch] ok TouchPosition 1034 Enum.KeyCode.TouchPosition false
+legacy Material [Corroded Metal] ok CorrodedMetal 1040 Enum.Material.CorrodedMetal false
+legacy Material [Aluminum] ok Foil 1072 Enum.Material.Foil false
+legacy ModelLevelOfDetail [Deactivated] ok Disabled 2 Enum.ModelLevelOfDetail.Disabled false
+legacy QualityLevel [Level  1] ok Level01 1 Enum.QualityLevel.Level01 false
+legacy QualityLevel [Level  2] ok Level02 2 Enum.QualityLevel.Level02 false
+legacy QualityLevel [Level  3] ok Level03 3 Enum.QualityLevel.Level03 false
+legacy QualityLevel [Level  4] ok Level04 4 Enum.QualityLevel.Level04 false
+legacy QualityLevel [Level  5] ok Level05 5 Enum.QualityLevel.Level05 false
+legacy QualityLevel [Level  6] ok Level06 6 Enum.QualityLevel.Level06 false
+legacy QualityLevel [Level  7] ok Level07 7 Enum.QualityLevel.Level07 false
+legacy QualityLevel [Level  8] ok Level08 8 Enum.QualityLevel.Level08 false
+legacy QualityLevel [Level  9] ok Level09 9 Enum.QualityLevel.Level09 false
+legacy QualityLevel [Level 10] ok Level10 10 Enum.QualityLevel.Level10 false
+legacy QualityLevel [Level 11] ok Level11 11 Enum.QualityLevel.Level11 false
+legacy QualityLevel [Level 12] ok Level12 12 Enum.QualityLevel.Level12 false
+legacy QualityLevel [Level 13] ok Level13 13 Enum.QualityLevel.Level13 false
+legacy QualityLevel [Level 14] ok Level14 14 Enum.QualityLevel.Level14 false
+legacy QualityLevel [Level 15] ok Level15 15 Enum.QualityLevel.Level15 false
+legacy QualityLevel [Level 16] ok Level16 16 Enum.QualityLevel.Level16 false
+legacy QualityLevel [Level 17] ok Level17 17 Enum.QualityLevel.Level17 false
+legacy QualityLevel [Level 18] ok Level18 18 Enum.QualityLevel.Level18 false
+legacy QualityLevel [Level 19] ok Level19 19 Enum.QualityLevel.Level19 false
+legacy QualityLevel [Level 20] ok Level20 20 Enum.QualityLevel.Level20 false
+legacy QualityLevel [Level 21] ok Level21 21 Enum.QualityLevel.Level21 false
+legacy RaycastFilterType [Blacklist] ok Exclude 0 Enum.RaycastFilterType.Exclude false
+legacy RaycastFilterType [Whitelist] ok Include 1 Enum.RaycastFilterType.Include false
+legacy Style [Alternating Supports] ok AlternatingSupports 0 Enum.Style.AlternatingSupports false
+legacy Style [Bridge Style Supports] ok BridgeStyleSupports 1 Enum.Style.BridgeStyleSupports false
+legacy Style [No Supports] ok NoSupports 2 Enum.Style.NoSupports false
+legacy SurfaceType [Spawn] ok Smooth 0 Enum.SurfaceType.Smooth false
+legacy SurfaceType [Unjoinable] ok Smooth 0 Enum.SurfaceType.Smooth false
+legacy SurfaceType [Bumps] ok Glue 1 Enum.SurfaceType.Glue false
+legacy ThreadPoolConfig [PartialThread] ok Auto 0 Enum.ThreadPoolConfig.Auto false
+keycode zero ok true None None Enum.KeyCode.None None 0
+fromname ok Enum.KeyCode.None Enum.KeyCode.None
+fromvalue ok Enum.KeyCode.None
+missing error NoSuchKey is not a valid member of "Enum.KeyCode"

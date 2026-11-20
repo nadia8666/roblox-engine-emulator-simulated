@@ -3,23 +3,26 @@
 //
 //   node tools/ci/test-entry.mjs core <binary> [test arguments]
 //   node tools/ci/test-entry.mjs planted <index> <count> <binary> [test arguments]
-//   node tools/ci/test-entry.mjs standalone <binary> [test arguments]
+//   node tools/ci/test-entry.mjs standalone <index> <count> <binary> [test arguments]
 //
 // Two test binaries take most of a run's testing time, so each runs in jobs of its own, beside the rest:
 //
 // - The planted profile tests (profile-view/tests/planted.rs): each runs the engine under the profiler, and one lock
-//   around the engine keeps them from running side by side. So CI runs them on `count` machines, each running one slice.
+//   around the engine keeps them from running side by side. So CI runs them on `count` machines, each running one slice,
+//   one test at a time.
 // - The standalone tests (tests/standalone.rs): one test runs the installed binary's checks six times in a row and
-//   takes three minutes, longer than every other test of the test job together.
+//   takes two minutes, longer than every other test of the test job together. CI runs them on `count` machines too,
+//   each slice on libtest's own threads.
 //
 // The mode says which job this is:
 //
 //   core        runs every test binary as cargo asked, except planted's and standalone's, which it skips
-//   planted     runs one slice of planted's tests. It lists the binary's tests, sorts the names and takes every
-//               `count`-th name, starting at the zero-based `index`. The slices cover the list without overlap, so
-//               every test runs in exactly one job, and a new test joins a slice by its name with no list to maintain
-//               here.
-//   standalone  runs standalone's test binary as cargo asked
+//   planted,    run one slice of that binary's tests. The runner lists the binary's tests and deals them out to the
+//   standalone  `count` slices longest first, each to the slice with the least time so far (ties to the lowest), by the
+//               seconds test-weights.json holds for that mode's slow tests (any other test counts as RUN_MS). Every job
+//               computes the same slices from the same list, so they cover it without overlap and every test runs in
+//               exactly one job; a new test joins a slice by its name with no list to maintain here. A missing or stale
+//               time only makes the jobs less even.
 //
 // The exit code is the test binary's, so a failing test fails the job. A list that is empty, has a duplicate or does
 // not read as libtest's fails the job too, and so does a planted or standalone job that is handed another test binary,
@@ -27,6 +30,7 @@
 //
 // The arguments are positional, unlike the --name value pairs of the release scripts: cargo puts the test binary and
 // its arguments after the ones in its runner setting.
+import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -51,10 +55,43 @@ export function checkShard(index, count) {
 	}
 }
 
-// The slice of `names` for shard `index` of `count`: the names at positions index, index + count, index + 2 * count...
-export function partition(names, index, count) {
+// What a test without a measured time counts as, in milliseconds
+export const RUN_MS = 500;
+
+// The measured seconds of each mode's slow tests (test-weights.json), as whole milliseconds by name
+export function readWeights(file = new URL("./test-weights.json", import.meta.url)) {
+	const table = JSON.parse(fs.readFileSync(file, "utf8"));
+	const weights = {};
+	for (const mode of Object.keys(OWN_JOBS)) {
+		weights[mode] = new Map();
+		for (const [name, seconds] of Object.entries(table[mode] ?? {})) {
+			if (typeof seconds !== "number" || !(seconds >= 0)) throw new Error(`test-weights.json: ${mode} ${name} has no time in seconds`);
+			weights[mode].set(name, Math.round(seconds * 1000));
+		}
+	}
+	return weights;
+}
+
+// The `count` slices of `names`: longest first, each to the slice with the least time so far, the names of each sorted
+export function shares(names, weights, count) {
+	checkShard(0, count);
+	const items = names.map(name => ({ name, ms: weights.get(name) ?? RUN_MS }));
+	items.sort((a, b) => b.ms - a.ms || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+	const loads = new Array(count).fill(0);
+	const slices = Array.from({ length: count }, () => []);
+	for (const item of items) {
+		let least = 0;
+		for (let i = 1; i < count; i++) if (loads[i] < loads[least]) least = i;
+		slices[least].push(item.name);
+		loads[least] += item.ms;
+	}
+	return slices.map((slice, i) => ({ names: slice.sort(), ms: loads[i] }));
+}
+
+// The slice of `names` for shard `index` of `count`
+export function partition(names, index, count, weights = new Map()) {
 	checkShard(index, count);
-	return names.filter((_, position) => position % count === index);
+	return shares(names, weights, count)[index].names;
 }
 
 // The test binaries that run in jobs of their own, by the mode of those jobs: the package each belongs to and its test
@@ -76,18 +113,18 @@ export function jobOf(binary, packageName) {
 	return "core";
 }
 
-// Splits the command line into the mode, the shard (planted only), the test binary and the arguments for it
+// Splits the command line into the mode, the shard (planted and standalone), the test binary and the arguments for it
 function parseArguments(argv) {
 	const [mode, ...rest] = argv;
 	if (mode !== "core" && !Object.hasOwn(OWN_JOBS, mode)) throw new Error("expected core, planted or standalone runner mode");
-	const [index, count, binary, ...testArguments] = mode === "planted" ? rest : [null, null, ...rest];
+	const [index, count, binary, ...testArguments] = mode === "core" ? [null, null, ...rest] : rest;
 	if (!binary) throw new Error("missing test binary");
 	return { mode, index: Number(index), count: Number(count), binary, testArguments };
 }
 
-// Runs the runner and returns the exit code. `cwd`, `env`, `spawn` and `log` are replaced by the tests. The binary
-// starts in `cwd` with `env`, the folder and variables cargo gave the runner, as if cargo had started it directly.
-export function run(argv, { cwd = process.cwd(), env = process.env, spawn = spawnSync, log = console.error } = {}) {
+// Runs the runner and returns the exit code. `cwd`, `env`, `spawn`, `log` and `weights` are replaced by the tests. The
+// binary starts in `cwd` with `env`, the folder and variables cargo gave the runner, as if cargo had started it directly.
+export function run(argv, { cwd = process.cwd(), env = process.env, spawn = spawnSync, log = console.error, weights } = {}) {
 	const { mode, index, count, binary, testArguments } = parseArguments(argv);
 
 	// Starts the test binary; returns its exit code (1 for a signal) and, when `stdio` pipes it, what it printed
@@ -107,16 +144,18 @@ export function run(argv, { cwd = process.cwd(), env = process.env, spawn = spaw
 	}
 
 	if (job !== mode) throw new Error(`the ${mode} job received a different test target`);
-	if (mode === "standalone") return start(testArguments).code;
 	// A bad shard fails here, whatever the binary would list
 	checkShard(index, count);
 	const listing = start(["--list", "--format", "terse"], ["ignore", "pipe", "inherit"]);
 	if (listing.code !== 0) return listing.code;
 	const names = parseTestList(listing.output);
-	const slice = partition(names, index, count);
-	log(`planted shard ${index + 1}/${count}: ${slice.length} of ${names.length} tests`);
+	const all = shares(names, (weights ?? readWeights())[mode], count);
+	const slice = all[index].names;
+	log(`${mode} shard ${index + 1}/${count}: ${slice.length} of ${names.length} tests, about ${Math.round(all[index].ms / 1000)} s (the shards: ${all.map(share => Math.round(share.ms / 1000)).join(" / ")} s)`);
 	if (slice.length === 0) return 0;
 	// Several test names after the options are run together. --exact makes each name match that test alone, never every
-	// test whose name contains it, and one test thread keeps the engine runs one at a time.
-	return start(["--exact", "--test-threads=1", ...testArguments, ...slice]).code;
+	// test whose name contains it. Planted's one test thread keeps the engine runs one at a time; standalone's tests run
+	// on libtest's threads, as they did in one job.
+	const threads = mode === "planted" ? ["--test-threads=1"] : [];
+	return start(["--exact", ...threads, ...testArguments, ...slice]).code;
 }

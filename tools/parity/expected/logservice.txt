@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 warn after-call,end-of-step,deferred,event,|Hear,out(MessageWarning:parity-log warn one)
 print-and-warns after-calls,|Hear,out(MessageOutput:parity-log print 1 nil true),out(MessageWarning:parity-log warn two),out(MessageWarning:parity-log warn three)
 from-heartbeat hb-after-call,|Hear,out(MessageWarning:parity-log from heartbeat)

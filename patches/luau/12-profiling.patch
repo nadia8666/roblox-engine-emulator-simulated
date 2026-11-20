@@ -35,10 +35,10 @@
 # per-instruction cost.
 
 diff --git a/luau/VM/include/lua.h b/luau/VM/include/lua.h
-index 80a85ef..37ee051 100644
+index c112348..44d61ec 100644
 --- a/luau/VM/include/lua.h
 +++ b/luau/VM/include/lua.h
-@@ -400,6 +400,197 @@ LUA_API void lua_setgcclock(lua_State* L, double (*clock)(void* ud), void* ud);
+@@ -408,6 +408,197 @@ LUA_API void lua_setgcclock(lua_State* L, double (*clock)(void* ud), void* ud);
  // every vector. The table is held for the collector (a weak-keyed one keeps its weak keys).
  LUA_API void lua_settypeofnames(lua_State* L, int idx, const char* vectorname);
  
@@ -237,7 +237,7 @@ index 80a85ef..37ee051 100644
  ** all allocated bytes are attributed to the memory category of the running thread (0..LUA_MEMORY_CATEGORIES-1)
  */
 diff --git a/luau/VM/src/ldo.cpp b/luau/VM/src/ldo.cpp
-index 6262d7a..e15ee72 100644
+index 5abb3b7..4304df9 100644
 --- a/luau/VM/src/ldo.cpp
 +++ b/luau/VM/src/ldo.cpp
 @@ -8,6 +8,7 @@
@@ -248,7 +248,7 @@ index 6262d7a..e15ee72 100644
  
  #if LUA_USE_LONGJMP
  #include <setjmp.h>
-@@ -57,6 +58,8 @@ int luaD_rawrunprotected(lua_State* L, Pfunc f, void* ud)
+@@ -56,6 +57,8 @@ int luaD_rawrunprotected(lua_State* L, Pfunc f, void* ud)
  
      if (LUAU_SETJMP(jb.buf) == 0)
          f(L, ud);
@@ -257,7 +257,7 @@ index 6262d7a..e15ee72 100644
  
      L->global->errorjmp = jb.prev;
      return jb.status;
-@@ -140,9 +143,15 @@ int luaD_rawrunprotected(lua_State* L, Pfunc f, void* ud)
+@@ -139,9 +142,15 @@ int luaD_rawrunprotected(lua_State* L, Pfunc f, void* ud)
          LUAU_ASSERT(e.getThread() == L);
  
          status = e.getStatus();
@@ -273,7 +273,7 @@ index 6262d7a..e15ee72 100644
          // Luau will never throw this, but this can catch exceptions that escape from C++ implementations of external functions
          try
          {
-@@ -182,6 +191,23 @@ static void correctstack(lua_State* L, TValue* oldstack)
+@@ -181,6 +190,23 @@ static void correctstack(lua_State* L, TValue* oldstack)
      L->base = (L->base - oldstack) + L->stack;
  }
  
@@ -297,7 +297,7 @@ index 6262d7a..e15ee72 100644
  void luaD_reallocstack(lua_State* L, int newsize, int fornewci)
  {
      // throw 'out of memory' error because space for a custom error message cannot be guaranteed here
-@@ -202,6 +228,7 @@ void luaD_reallocstack(lua_State* L, int newsize, int fornewci)
+@@ -201,6 +227,7 @@ void luaD_reallocstack(lua_State* L, int newsize, int fornewci)
  
      TValue* oldstack = L->stack;
      int realsize = newsize + EXTRA_STACK;
@@ -305,7 +305,7 @@ index 6262d7a..e15ee72 100644
      LUAU_ASSERT(L->stack_last - L->stack == L->stacksize - EXTRA_STACK);
      luaM_reallocarray(L, L->stack, L->stacksize, realsize, TValue, L->memcat);
      TValue* newstack = L->stack;
-@@ -210,15 +237,18 @@ void luaD_reallocstack(lua_State* L, int newsize, int fornewci)
+@@ -209,15 +236,18 @@ void luaD_reallocstack(lua_State* L, int newsize, int fornewci)
      L->stacksize = realsize;
      L->stack_last = newstack + newsize;
      correctstack(L, oldstack);
@@ -325,7 +325,7 @@ index 6262d7a..e15ee72 100644
  
  void luaD_growstack(lua_State* L, int n)
 diff --git a/luau/VM/src/lgc.cpp b/luau/VM/src/lgc.cpp
-index 303b54a..1e0d5a0 100644
+index dcf97b6..e3f9176 100644
 --- a/luau/VM/src/lgc.cpp
 +++ b/luau/VM/src/lgc.cpp
 @@ -13,6 +13,7 @@
@@ -336,7 +336,7 @@ index 303b54a..1e0d5a0 100644
  
  #include <string.h>
  
-@@ -782,6 +783,9 @@ static void freeobj(lua_State* L, GCObject* o, lua_Page* page)
+@@ -789,6 +790,9 @@ static void freeobj(lua_State* L, GCObject* o, lua_Page* page)
  {
      if (o->gch.marked & bitmask(HASHIDBIT))
          luaH_forgetid(o);
@@ -346,7 +346,7 @@ index 303b54a..1e0d5a0 100644
      switch (o->gch.tt)
      {
      case LUA_TPROTO:
-@@ -831,6 +835,8 @@ void freeobjtagged<LUA_TBUFFER>(lua_State* L, GCObject* o, lua_Page* page)
+@@ -838,6 +842,8 @@ void freeobjtagged<LUA_TBUFFER>(lua_State* L, GCObject* o, lua_Page* page)
  {
      if (o->gch.marked & bitmask(HASHIDBIT))
          luaH_forgetid(o);
@@ -473,10 +473,10 @@ index 09210ac..1f71bb6 100644
      return result;
 diff --git a/luau/VM/src/lprofile.cpp b/luau/VM/src/lprofile.cpp
 new file mode 100644
-index 0000000..a88b50a
+index 0000000..8cbf613
 --- /dev/null
 +++ b/luau/VM/src/lprofile.cpp
-@@ -0,0 +1,2854 @@
+@@ -0,0 +1,2822 @@
 +// This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 +// A host's profile of the interpreter (lua.h "profiling"; the engine's patches/luau/12-profiling.patch). While a profile steps, every thread of its
 +// VM runs luau_execute's single-step variant, whose dispatch calls luaP_step before each instruction:
@@ -523,7 +523,6 @@ index 0000000..a88b50a
 +
 +// (the flags under which the collector marks the roots and references the heap walk follows: lgc.cpp)
 +LUAU_FASTFLAG(LuauGcTraceUdata)
-+LUAU_FASTFLAG(LuauFastpcall)
 +LUAU_FASTFLAG(LuauCoroutineFinally)
 +
 +thread_local lua_ProfileState* luaP_state = NULL;
@@ -744,10 +743,9 @@ index 0000000..a88b50a
 +{
 +    B_GC = 1, // declines while a collector step is owed (it cannot run the collector)
 +    B_GCFIRST = 2, // ... before it looks at the arguments
-+    B_TOSTRING = 4, // tostring: nil, booleans, numbers, strings and integers only, the collector check for a number's string
++    B_TOSTRING = 4, // tostring: nil, booleans, numbers and strings only, the collector check for a number's string
 +    B_RAWLEN = 8, // rawlen: a table or a string
 +    B_SELECT = 16, // select: a number or "#"
-+    B_UNCHECKED = 32, // an argument check not listed here (the integer library): only the count and the results are told
 +};
 +
 +struct BuiltinShape
@@ -763,7 +761,7 @@ index 0000000..a88b50a
 +
 +#define BS1(name, types) {name, 1, -1, R_LE1, types, 0, 0}
 +#define BS2(name, types) {name, 2, -1, R_LE1, types, 0, 0}
-+#define BSI(name) {name, 1, -1, R_LE1, "", 0, B_UNCHECKED}
++#define BSR {NULL, 0, -1, R_LE1, "", 0, 0}
 +
 +// in LBF_* order (Bytecode.h LuauBuiltinFunction)
 +const BuiltinShape kBuiltins[] = {
@@ -861,55 +859,27 @@ index 0000000..a88b50a
 +    BS1("math.isnan", "n"),
 +    BS1("math.isinf", "n"),
 +    BS1("math.isfinite", "n"),
-+    BSI("integer.create"),
-+    BSI("integer.tonumber"),
-+    BSI("integer.neg"),
-+    BSI("integer.add"),
-+    BSI("integer.sub"),
-+    BSI("integer.mul"),
-+    BSI("integer.div"),
-+    BSI("integer.min"),
-+    BSI("integer.max"),
-+    BSI("integer.rem"),
-+    BSI("integer.idiv"),
-+    BSI("integer.udiv"),
-+    BSI("integer.urem"),
-+    BSI("integer.mod"),
-+    BSI("integer.clamp"),
-+    BSI("integer.band"),
-+    BSI("integer.bor"),
-+    BSI("integer.bnot"),
-+    BSI("integer.bxor"),
-+    BSI("integer.lt"),
-+    BSI("integer.le"),
-+    BSI("integer.ult"),
-+    BSI("integer.ule"),
-+    BSI("integer.gt"),
-+    BSI("integer.ge"),
-+    BSI("integer.ugt"),
-+    BSI("integer.uge"),
-+    BSI("integer.lshift"),
-+    BSI("integer.rshift"),
-+    BSI("integer.arshift"),
-+    BSI("integer.lrotate"),
-+    BSI("integer.rrotate"),
-+    BSI("integer.extract"),
-+    BSI("integer.btest"),
-+    BSI("integer.countrz"),
-+    BSI("integer.countlz"),
-+    BSI("integer.bswap"),
-+    BS2("buffer.readinteger", "bn"),
-+    {"buffer.writeinteger", 3, -1, R_LE0, "bni", 0, 0},
++    // (ids 94 to 132: the integer library's and buffer.readinteger / writeinteger, removed in release 747)
++    BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR,
++    BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR,
++    BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR,
++    BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR,
 +    {"table.create", 1, -1, R_LE1, "n", 0, B_GC},
 +    {"table.clear", 1, -1, R_LE0, "t", 0, 0},
++    BS2("buffer.readvectorf32x2", "bn"),
++    BS2("buffer.readvectorf32x3", "bn"),
++    BS2("buffer.readvectorf32x4", "bn"), // (declines where vectors have three components)
++    {"buffer.writevectorf32x2", 3, -1, R_LE0, "bnv", 0, 0},
++    {"buffer.writevectorf32x3", 3, -1, R_LE0, "bnv", 0, 0},
++    {"buffer.writevectorf32x4", 3, -1, R_LE0, "bnv", 0, 0}, // (likewise)
 +};
 +
 +#undef BS1
 +#undef BS2
-+#undef BSI
++#undef BSR
 +
 +const int kBuiltinCount = int(sizeof(kBuiltins) / sizeof(kBuiltins[0]));
-+static_assert(sizeof(kBuiltins) / sizeof(kBuiltins[0]) == LBF_TABLE_CLEAR + 1, "a builtin shape for each LBF_* id, in order");
++static_assert(sizeof(kBuiltins) / sizeof(kBuiltins[0]) == LBF_BUFFER_WRITEVECTORF32X4 + 1, "a builtin shape for each LBF_* id, in order");
 +
 +} // namespace
 +
@@ -2026,8 +1996,6 @@ index 0000000..a88b50a
 +        return ttisvector(v);
 +    case 'b':
 +        return ttisbuffer(v);
-+    case 'i':
-+        return ttisinteger(v);
 +    }
 +    return true;
 +}
@@ -2105,25 +2073,22 @@ index 0000000..a88b50a
 +        return LUA_PROFILE_DECLINE_RESULTS;
 +    if ((shape.flags & B_GCFIRST) && luaC_needsGC(L))
 +        return LUA_PROFILE_DECLINE_GCDEBT;
-+    if (!(shape.flags & B_UNCHECKED))
++    int listed = int(strlen(shape.types));
++    for (int i = 0; i < nparams && (i < listed || shape.rest); ++i)
 +    {
-+        int listed = int(strlen(shape.types));
-+        for (int i = 0; i < nparams && (i < listed || shape.rest); ++i)
-+        {
-+            const TValue* v = arg(i);
-+            if (v && !argtype(v, i < listed ? shape.types[i] : shape.rest))
-+                return LUA_PROFILE_DECLINE_TYPES;
-+            // (the fixed forms carry at most three: a vararg call is the plain FASTCALL)
-+            if (op != LOP_FASTCALL && i >= 2)
-+                break;
-+        }
++        const TValue* v = arg(i);
++        if (v && !argtype(v, i < listed ? shape.types[i] : shape.rest))
++            return LUA_PROFILE_DECLINE_TYPES;
++        // (the fixed forms carry at most three: a vararg call is the plain FASTCALL)
++        if (op != LOP_FASTCALL && i >= 2)
++            break;
 +    }
 +    if (shape.flags & B_TOSTRING)
 +    {
 +        const TValue* v = arg(0);
-+        if (!(ttisnil(v) || ttisboolean(v) || ttisnumber(v) || ttisstring(v) || ttisinteger(v)))
++        if (!(ttisnil(v) || ttisboolean(v) || ttisnumber(v) || ttisstring(v)))
 +            return LUA_PROFILE_DECLINE_TYPES;
-+        if ((ttisnumber(v) || ttisinteger(v)) && luaC_needsGC(L))
++        if (ttisnumber(v) && luaC_needsGC(L))
 +            return LUA_PROFILE_DECLINE_GCDEBT;
 +        return LUA_PROFILE_DECLINE_VALUES;
 +    }
@@ -3222,6 +3187,12 @@ index 0000000..a88b50a
 +        walkedge(w, obj2gco(p), obj2gco(p->optimized), "optimized");
 +    if (p->deoptimized)
 +        walkedge(w, obj2gco(p), obj2gco(p->deoptimized), "deoptimized");
++    // (a lazy-load stub holds its chunk's environments: luau_loadlazy)
++    if (p->lazychunk)
++    {
++        walkedge(w, obj2gco(p), obj2gco(p->lazychunk->envt), "environment");
++        walkedge(w, obj2gco(p), obj2gco(p->lazychunk->importenv), "import environment");
++    }
 +}
 +
 +void walkobject(HeapWalk* w, GCObject* o)
@@ -3313,13 +3284,10 @@ index 0000000..a88b50a
 +        if (g->udatadirectfields[i])
 +            edge(context, NULL, walkpointer(obj2gco(g->udatadirectfields[i])), "userdata direct fields");
 +    }
-+    if (FFlag::LuauFastpcall)
-+    {
-+        if (g->builtinPcall)
-+            edge(context, NULL, walkpointer(obj2gco(g->builtinPcall)), "pcall");
-+        if (g->builtinXpcall)
-+            edge(context, NULL, walkpointer(obj2gco(g->builtinXpcall)), "xpcall");
-+    }
++    if (g->builtinPcall)
++        edge(context, NULL, walkpointer(obj2gco(g->builtinPcall)), "pcall");
++    if (g->builtinXpcall)
++        edge(context, NULL, walkpointer(obj2gco(g->builtinXpcall)), "xpcall");
 +    if (g->typeofnames)
 +        edge(context, NULL, walkpointer(obj2gco(g->typeofnames)), "typeof names");
 +    if (g->vectortypename)
@@ -3408,7 +3376,7 @@ index 0000000..49f8f6b
 +    }
 +};
 diff --git a/luau/VM/src/lstate.cpp b/luau/VM/src/lstate.cpp
-index 6ef02d9..3280270 100644
+index 724a947..4c64113 100644
 --- a/luau/VM/src/lstate.cpp
 +++ b/luau/VM/src/lstate.cpp
 @@ -10,6 +10,7 @@
@@ -3472,7 +3440,7 @@ index b93b721..43731ec 100644
      stringtable* tb = &g->strt;
      uint8_t hashshift = uint8_t(32 - luaO_log2(unsigned(newsize)));
 diff --git a/luau/VM/src/ltable.cpp b/luau/VM/src/ltable.cpp
-index 4ff877c..9256015 100644
+index b19857a..8200a9f 100644
 --- a/luau/VM/src/ltable.cpp
 +++ b/luau/VM/src/ltable.cpp
 @@ -34,6 +34,7 @@
@@ -3483,7 +3451,7 @@ index 4ff877c..9256015 100644
  
  #include <string.h>
  
-@@ -727,6 +728,8 @@ static void countstored(lua_State* L, size_t bytes)
+@@ -675,6 +676,8 @@ static void countstored(lua_State* L, size_t bytes)
  {
      if (luaE_scriptinsn(L))
          L->global->work.stored += bytes;
@@ -3492,7 +3460,7 @@ index 4ff877c..9256015 100644
  }
  
  static void setarrayvector(lua_State* L, LuaTable* t, int size)
-@@ -735,6 +738,7 @@ static void setarrayvector(lua_State* L, LuaTable* t, int size)
+@@ -683,6 +686,7 @@ static void setarrayvector(lua_State* L, LuaTable* t, int size)
          luaG_runerror(L, "table overflow");
      if (size > t->sizearray)
          countstored(L, size * sizeof(TValue));
@@ -3500,7 +3468,7 @@ index 4ff877c..9256015 100644
      luaM_reallocarray(L, t->array, t->sizearray, size, TValue, t->memcat);
      TValue* array = t->array;
      for (int i = t->sizearray; i < size; i++)
-@@ -758,6 +762,7 @@ static void setnodevector(lua_State* L, LuaTable* t, int size)
+@@ -706,6 +710,7 @@ static void setnodevector(lua_State* L, LuaTable* t, int size)
              luaG_runerror(L, "table overflow");
          size = twoto(lsize);
          countstored(L, size * sizeof(LuaNode));
@@ -3508,39 +3476,31 @@ index 4ff877c..9256015 100644
          t->node = luaM_newarray(L, size, LuaNode, t->memcat);
          for (i = 0; i < size; i++)
          {
-@@ -805,6 +810,7 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
+@@ -751,6 +756,7 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
  
-         if (nasize != oldsizearray)
+     if (nasize != oldsizearray)
+     {
++        luaP_allockind = LUA_ALLOC_TABLE;
+         newarray = luaM_newarray(L, nasize, TValue, t->memcat);
+ 
+         if (nasize < oldsizearray)
+@@ -778,6 +784,7 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
+         // if we allocated a new array part, we have to be careful to with hash part allocation failure
+         if (oldarray != newarray)
          {
 +            luaP_allockind = LUA_ALLOC_TABLE;
-             newarray = luaM_newarray(L, nasize, TValue, t->memcat);
+             newnode = luaM_trynewarray(L, nhsize, LuaNode, t->memcat);
  
-             if (nasize < oldsizearray)
-@@ -832,6 +838,7 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
-             // if we allocated a new array part, we have to be careful to with hash part allocation failure
-             if (oldarray != newarray)
-             {
-+                luaP_allockind = LUA_ALLOC_TABLE;
-                 newnode = luaM_trynewarray(L, nhsize, LuaNode, t->memcat);
+             if (newnode == nullptr)
+@@ -788,6 +795,7 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
+         }
+         else
+         {
++            luaP_allockind = LUA_ALLOC_TABLE;
+             newnode = luaM_newarray(L, nhsize, LuaNode, t->memcat);
+         }
  
-                 if (newnode == nullptr)
-@@ -842,6 +849,7 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
-             }
-             else
-             {
-+                luaP_allockind = LUA_ALLOC_TABLE;
-                 newnode = luaM_newarray(L, nhsize, LuaNode, t->memcat);
-             }
- 
-@@ -922,6 +930,7 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
-         TValue* oldarray = t->array;
- 
-         // shrink array
-+        luaP_allockind = LUA_ALLOC_TABLE;
-         t->array = luaM_newarray(L, nasize, TValue, t->memcat);
-         t->sizearray = nasize;
- 
-@@ -1001,7 +1010,13 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
+@@ -888,7 +896,13 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
          // (the keys this rehash moves: the hash part's and the new one; the array part stays)
          if (luaE_scriptinsn(L))
              L->global->work.rehashed += nh;
@@ -3554,7 +3514,7 @@ index 4ff877c..9256015 100644
          return;
      }
  
-@@ -1056,9 +1071,18 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
+@@ -943,9 +957,18 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
  
      if (luaE_scriptinsn(L))
          L->global->work.rehashed += totaluse;
@@ -3573,7 +3533,7 @@ index 4ff877c..9256015 100644
  }
  
  /*
-@@ -1535,6 +1559,7 @@ LuaTable* luaH_clone(lua_State* L, LuaTable* tt)
+@@ -1416,6 +1439,7 @@ LuaTable* luaH_clone(lua_State* L, LuaTable* tt)
      if (tt->sizearray)
      {
          countstored(L, tt->sizearray * sizeof(TValue));
@@ -3581,7 +3541,7 @@ index 4ff877c..9256015 100644
          t->array = luaM_newarray(L, tt->sizearray, TValue, t->memcat);
          maybesetaboundary(t, getaboundary(tt));
          t->sizearray = tt->sizearray;
-@@ -1546,6 +1571,7 @@ LuaTable* luaH_clone(lua_State* L, LuaTable* tt)
+@@ -1427,6 +1451,7 @@ LuaTable* luaH_clone(lua_State* L, LuaTable* tt)
      {
          int size = 1 << tt->lsizenode;
          countstored(L, size * sizeof(LuaNode));
@@ -3590,7 +3550,7 @@ index 4ff877c..9256015 100644
          t->lsizenode = tt->lsizenode;
          t->nodemask8 = tt->nodemask8;
 diff --git a/luau/VM/src/lvmexecute.cpp b/luau/VM/src/lvmexecute.cpp
-index f8e2c1d..9d57eef 100644
+index 5a5b668..b606ee4 100644
 --- a/luau/VM/src/lvmexecute.cpp
 +++ b/luau/VM/src/lvmexecute.cpp
 @@ -15,6 +15,7 @@
@@ -3601,7 +3561,7 @@ index f8e2c1d..9d57eef 100644
  
  #include <string.h>
  
-@@ -293,10 +294,13 @@ static void luau_execute(lua_State* L)
+@@ -295,10 +296,13 @@ static void luau_execute(lua_State* L)
          L->global->work.hostcalls++;
  
  #if VM_HAS_NATIVE
@@ -3616,7 +3576,7 @@ index f8e2c1d..9d57eef 100644
  
          if (L->global->ecb.enter(L, p) == 0)
              return;
-@@ -335,6 +339,10 @@ reentry:
+@@ -337,6 +341,10 @@ reentry:
                      goto exit;
              }
  
@@ -3627,7 +3587,7 @@ index f8e2c1d..9d57eef 100644
  #if VM_USE_CGOTO
              VM_COUNT_OP(LUAU_INSN_OP(*pc));
              VM_CONTINUE(LUAU_INSN_OP(*pc));
-@@ -1132,7 +1140,7 @@ reentry:
+@@ -1134,7 +1142,7 @@ reentry:
                      // codeentry may point to NATIVECALL instruction when proto is compiled to native code
                      // this will result in execution continuing in native code, and is equivalent to if (p->execdata) but has no additional overhead
                      // note that p->codeentry may point *outside* of p->code..p->code+p->sizecode, but that pointer never gets saved to savedpc.
@@ -3636,7 +3596,7 @@ index f8e2c1d..9d57eef 100644
                      if ((ccl->l.p->flags & LUAU_PROTO_WORK_EXEMPT) && !(cl->l.p->flags & LUAU_PROTO_WORK_EXEMPT))
                          L->global->work.hostcalls++;
                      cl = ccl;
-@@ -1249,7 +1257,7 @@ reentry:
+@@ -1251,7 +1259,7 @@ reentry:
                      // codeentry may point to NATIVECALL instruction when proto is compiled to native code
                      // this will result in execution continuing in native code, and is equivalent to if (p->execdata) but has no additional overhead
                      // note that p->codeentry may point *outside* of p->code..p->code+p->sizecode, but that pointer never gets saved to savedpc.
@@ -3645,7 +3605,7 @@ index f8e2c1d..9d57eef 100644
                      if ((ccl->l.p->flags & LUAU_PROTO_WORK_EXEMPT) && !(cl->l.p->flags & LUAU_PROTO_WORK_EXEMPT))
                          L->global->work.hostcalls++;
                      cl = ccl;
-@@ -1343,8 +1351,10 @@ reentry:
+@@ -1345,8 +1353,10 @@ reentry:
                  Proto* nextproto = cip->p;
  
  #if VM_HAS_NATIVE
@@ -3657,7 +3617,7 @@ index f8e2c1d..9d57eef 100644
                      if (L->global->ecb.enter(L, nextproto) == 1)
                          goto reentry;
                      else
-@@ -3811,7 +3821,7 @@ reentry:
+@@ -3814,7 +3824,7 @@ reentry:
                      Proto* p = L->ci->p;
  
                      // reentry into the call (see LOP_CALL for description of how native calls are handled with 'codeentry')
@@ -3666,7 +3626,7 @@ index f8e2c1d..9d57eef 100644
                      if ((fcl->l.p->flags & LUAU_PROTO_WORK_EXEMPT) && !(cl->l.p->flags & LUAU_PROTO_WORK_EXEMPT))
                          L->global->work.hostcalls++;
                      cl = fcl;
-@@ -4022,6 +4032,17 @@ exit:;
+@@ -4025,6 +4035,17 @@ exit:;
  
  void luau_execute(lua_State* L)
  {
@@ -3685,7 +3645,7 @@ index f8e2c1d..9d57eef 100644
          luau_execute<true>(L);
      else
 diff --git a/luau/VM/src/lvmload.cpp b/luau/VM/src/lvmload.cpp
-index e8f70c6..d32ec26 100644
+index 0937461..72bccae 100644
 --- a/luau/VM/src/lvmload.cpp
 +++ b/luau/VM/src/lvmload.cpp
 @@ -14,6 +14,7 @@
@@ -3704,71 +3664,71 @@ index e8f70c6..d32ec26 100644
          this->data = luaM_newarray(L, count, T, 0);
          this->count = count;
      }
-@@ -454,6 +456,7 @@ static int loadsafe(
-                     // transform v1 into v2 format
-                     int headersize = typesize > 127 ? 4 : 3;
+@@ -571,6 +573,7 @@ static void loadProto(
+                 // transform v1 into v2 format
+                 int headersize = typesize > 127 ? 4 : 3;
  
-+                    luaP_allockind = LUA_ALLOC_PROTO;
-                     p->typeinfo = luaM_newarray(L, headersize + typesize, uint8_t, p->memcat);
-                     p->sizetypeinfo = headersize + typesize;
++                luaP_allockind = LUA_ALLOC_PROTO;
+                 p->typeinfo = luaM_newarray(L, headersize + typesize, uint8_t, p->memcat);
+                 p->sizetypeinfo = headersize + typesize;
  
-@@ -484,6 +487,7 @@ static int loadsafe(
-                 {
-                     uint8_t* types = (uint8_t*)data + offset;
+@@ -601,6 +604,7 @@ static void loadProto(
+             {
+                 uint8_t* types = (uint8_t*)data + offset;
  
-+                    luaP_allockind = LUA_ALLOC_PROTO;
-                     p->typeinfo = luaM_newarray(L, typesize, uint8_t, p->memcat);
-                     p->sizetypeinfo = typesize;
-                     memcpy(p->typeinfo, types, typesize);
-@@ -498,6 +502,7 @@ static int loadsafe(
-         }
++                luaP_allockind = LUA_ALLOC_PROTO;
+                 p->typeinfo = luaM_newarray(L, typesize, uint8_t, p->memcat);
+                 p->sizetypeinfo = typesize;
+                 memcpy(p->typeinfo, types, typesize);
+@@ -615,6 +619,7 @@ static void loadProto(
+     }
  
-         const int sizecode = readVarInt(data, size, offset);
+     const int sizecode = readVarInt(data, size, offset);
++    luaP_allockind = LUA_ALLOC_PROTO;
+     p->code = luaM_newarray(L, sizecode, Instruction, p->memcat);
+     p->sizecode = sizecode;
+ 
+@@ -624,6 +629,7 @@ static void loadProto(
+     p->codeentry = p->code;
+ 
+     const int sizek = readVarInt(data, size, offset);
++    luaP_allockind = LUA_ALLOC_PROTO;
+     p->k = luaM_newarray(L, sizek, TValue, p->memcat);
+     p->sizek = sizek;
+ 
+@@ -853,6 +859,7 @@ static void loadProto(
+     }
+ 
+     const int sizep = readVarInt(data, size, offset);
++    luaP_allockind = LUA_ALLOC_PROTO;
+     p->p = luaM_newarray(L, sizep, Proto*, p->memcat);
+     p->sizep = sizep;
+ 
+@@ -879,6 +886,7 @@ static void loadProto(
+         int absoffset = (p->sizecode + 3) & ~3;
+ 
+         const int sizelineinfo = absoffset + intervals * sizeof(int);
 +        luaP_allockind = LUA_ALLOC_PROTO;
-         p->code = luaM_newarray(L, sizecode, Instruction, p->memcat);
-         p->sizecode = sizecode;
+         p->lineinfo = luaM_newarray(L, sizelineinfo, uint8_t, p->memcat);
+         p->sizelineinfo = sizelineinfo;
  
-@@ -507,6 +512,7 @@ static int loadsafe(
-         p->codeentry = p->code;
- 
-         const int sizek = readVarInt(data, size, offset);
+@@ -904,6 +912,7 @@ static void loadProto(
+     if (debuginfo)
+     {
+         const int sizelocvars = readVarInt(data, size, offset);
 +        luaP_allockind = LUA_ALLOC_PROTO;
-         p->k = luaM_newarray(L, sizek, TValue, p->memcat);
-         p->sizek = sizek;
+         p->locvars = luaM_newarray(L, sizelocvars, LocVar, p->memcat);
+         p->sizelocvars = sizelocvars;
  
-@@ -743,6 +749,7 @@ static int loadsafe(
-         }
+@@ -921,6 +930,7 @@ static void loadProto(
+         const int sizeupvalues = readVarInt(data, size, offset);
+         LUAU_ASSERT(sizeupvalues == p->nups);
  
-         const int sizep = readVarInt(data, size, offset);
 +        luaP_allockind = LUA_ALLOC_PROTO;
-         p->p = luaM_newarray(L, sizep, Proto*, p->memcat);
-         p->sizep = sizep;
+         p->upvalues = luaM_newarray(L, sizeupvalues, TString*, p->memcat);
+         p->sizeupvalues = sizeupvalues;
  
-@@ -765,6 +772,7 @@ static int loadsafe(
-             int absoffset = (p->sizecode + 3) & ~3;
- 
-             const int sizelineinfo = absoffset + intervals * sizeof(int);
-+            luaP_allockind = LUA_ALLOC_PROTO;
-             p->lineinfo = luaM_newarray(L, sizelineinfo, uint8_t, p->memcat);
-             p->sizelineinfo = sizelineinfo;
- 
-@@ -790,6 +798,7 @@ static int loadsafe(
-         if (debuginfo)
-         {
-             const int sizelocvars = readVarInt(data, size, offset);
-+            luaP_allockind = LUA_ALLOC_PROTO;
-             p->locvars = luaM_newarray(L, sizelocvars, LocVar, p->memcat);
-             p->sizelocvars = sizelocvars;
- 
-@@ -804,6 +813,7 @@ static int loadsafe(
-             const int sizeupvalues = readVarInt(data, size, offset);
-             LUAU_ASSERT(sizeupvalues == p->nups);
- 
-+            luaP_allockind = LUA_ALLOC_PROTO;
-             p->upvalues = luaM_newarray(L, sizeupvalues, TString*, p->memcat);
-             p->sizeupvalues = sizeupvalues;
- 
-@@ -877,6 +887,10 @@ static int loadsafe(
+@@ -1060,6 +1070,10 @@ static int loadsafe(
              p->flags |= LUAU_PROTO_WORK_NATIVE;
      }
  
@@ -3779,3 +3739,27 @@ index e8f70c6..d32ec26 100644
      luaC_threadbarrier(L);
  
      Closure* cl = luaF_newLclosure(L, 0, envt, main);
+@@ -1166,6 +1180,7 @@ static int loadlazysafe(lua_State* L, LuauLazyChunk* chunk, const char* chunknam
+ 
+     // string table: just the offsets, a string is created when a function that uses it is built
+     unsigned int stringCount = readVarInt(data, size, offset);
++    luaP_allockind = LUA_ALLOC_PROTO;
+     chunk->stringOffsets = luaM_newarray(L, stringCount, uint32_t, chunk->memcat);
+     chunk->stringCount = stringCount;
+ 
+@@ -1181,6 +1196,7 @@ static int loadlazysafe(lua_State* L, LuauLazyChunk* chunk, const char* chunknam
+     readUserdataRemapping(L, chunk->typesversion, strings, chunk->userdataRemapping, data, size, offset);
+ 
+     unsigned int protoCount = readVarInt(data, size, offset);
++    luaP_allockind = LUA_ALLOC_PROTO;
+     chunk->protoOffsets = luaM_newarray(L, protoCount, uint32_t, chunk->memcat);
+     chunk->protoCount = protoCount;
+ 
+@@ -1236,6 +1252,7 @@ static void runLazyLoad(lua_State* L, void* ud)
+ {
+     LazyLoadContext* ctx = static_cast<LazyLoadContext*>(ud);
+ 
++    luaP_allockind = LUA_ALLOC_PROTO;
+     LuauLazyChunk* chunk = luaM_newarray(L, 1, LuauLazyChunk, L->activememcat);
+     memset(chunk, 0, sizeof(LuauLazyChunk));
+     chunk->data = ctx->data;

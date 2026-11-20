@@ -44,6 +44,8 @@ impl Drop for Emulator {
         if let Some(timeout) = self.engine.state.try_borrow().ok().and_then(|state| state.sched.timeout.clone()) {
             timeout.detach();
         }
+        // a loopback run's callers waiting on the other side, held for this VM, go before it
+        crate::loopback::release(&self.engine);
         // SAFETY: the field is never used again (this is the Emulator's drop)
         unsafe { ManuallyDrop::drop(&mut self.lua) };
         self.engine.teardown();
@@ -132,6 +134,65 @@ mod tests {
         let lines: Vec<String> = emulator.output().iter().map(|line| format!("{}: {}", line.kind, line.message)).collect();
         assert_eq!(lines, ["print: true", "warn: later true"]);
         assert!(emulator.now() >= 1.0);
+    }
+
+    /// A client's and a server's Emulator with an empty project, a script run in each: their output
+    fn start_and_run(server: bool, source: &str) -> Vec<String> {
+        let options = Options {
+            mode: "play".into(),
+            run_context: if server { crate::RunContext::Server } else { crate::RunContext::Client },
+            local_player_name: if server { None } else { Some("Player".into()) },
+            ..Options::default()
+        };
+        let emulator = Emulator::start(Engine::new(options).unwrap(), &ProjectSpec::default()).unwrap();
+        emulator.run("Probe", source).unwrap();
+        emulator.run_until(0.1).unwrap();
+        emulator.output().iter().map(|line| format!("{}: {}", line.kind, line.message)).collect()
+    }
+
+    /// The engine's own Luau (prelude, services, server, vector3) compiles once a process (lua::modules::load_engine_luau):
+    /// a second client and a second server compile none of it, and their scripts see what the first ones saw.
+    #[test]
+    fn a_second_engine_compiles_no_engine_luau_and_runs_the_same() {
+        let probe = "local V = Vector3.new(1, 2, 3) print(typeof(V), V.Magnitude, V:Dot(Vector3.one), CFrame.new(V):Inverse().Position) \
+                     print(game:GetService('RunService'):IsServer(), #game:GetService('Players'):GetPlayers()) \
+                     task.wait(0.05) print(pcall(function() return game:GetService('DataStoreService'):GetDataStore('A'):GetAsync('k') end))";
+        let first = (start_and_run(false, probe), start_and_run(true, probe));
+        // (counted on this thread: other tests start engines meanwhile)
+        let compiled = crate::lua::modules::engine_compiles_here();
+        let second = (start_and_run(false, probe), start_and_run(true, probe));
+        assert_eq!(crate::lua::modules::engine_compiles_here(), compiled, "a second engine compiled engine Luau again");
+        assert!(crate::lua::modules::engine_compiles() >= 4, "the four chunks compiled");
+        assert_eq!(first, second);
+        assert!(first.0.iter().any(|line| line == "print: false 1") && first.1.iter().any(|line| line == "print: true 0"), "{first:?}");
+    }
+
+    /// What starting an engine with an empty project costs, client and server (Engine::new and Emulator::start, the engine's
+    /// own Luau compiled to native code as `ree run` has it): `cargo test --release engine_start_times -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn engine_start_times() {
+        for server in [false, true] {
+            let mut times: Vec<f64> = (0..9)
+                .map(|_| {
+                    let options = Options {
+                        mode: "play".into(),
+                        run_context: if server { crate::RunContext::Server } else { crate::RunContext::Client },
+                        local_player_name: if server { None } else { Some("Player".into()) },
+                        ..Options::default()
+                    };
+                    let started = Instant::now();
+                    let emulator = Emulator::start(Engine::new(options).unwrap(), &ProjectSpec::default()).unwrap();
+                    let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+                    drop(emulator);
+                    elapsed
+                })
+                .collect();
+            // (the first start reads the reflection dump)
+            times.remove(0);
+            times.sort_by(f64::total_cmp);
+            eprintln!("{} start: min {:.2} ms, median {:.2} ms", if server { "server" } else { "client" }, times[0], times[times.len() / 2]);
+        }
     }
 
     /// A project mounts on a thread pool whose only thread is the mounting one. The mount lists its

@@ -9,7 +9,10 @@
 //! of a value (`{"Vector3": [1, 2, 3]}`), or implicit, read by the property's type in rbx-dom's
 //! reflection database: a string for a string, Content or enum item name, a number, a bool, `[x, y]` /
 //! `[x, y, z]` for vectors and colours, twelve numbers for a CFrame, an array of strings for Tags, a
-//! Font object. An attribute is explicit, a string, a number or a bool. A file holding only white
+//! Font object. A property rbx-dom's database does not have (it is older than the engine's Studio
+//! dump: InputBinding.Type, SurfaceAppearance.ResampleMode) is read by the engine's reflection, and
+//! an enum item name by the engine's enum (KeyCode.MouseWheel), as the Rojo release that knows them
+//! reads them. An attribute is explicit, a string, a number or a bool. A file holding only white
 //! space makes nothing; one Rojo would reject (not a model, an unknown property given implicitly, a
 //! value of the wrong type) makes nothing either and is reported.
 //!
@@ -25,6 +28,8 @@ use rbx_dom_weak::{
 };
 use rbx_reflection::DataType;
 use serde::Deserialize;
+
+use crate::Reflection;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,17 +92,13 @@ impl Implicit {
 
     /// The value of `class_name.property` this stands for, by the property's type.
     fn resolve(self, class_name: &str, property: &str) -> Result<Variant, String> {
-        let descriptor = crate::record::encode::dom_property(class_name, property).ok_or_else(|| format!("unknown property {class_name}.{property} (an explicit value names its type)"))?;
-        match &descriptor.data_type {
-            DataType::Enum(enum_name) => {
-                let database = rbx_reflection_database::get().map_err(|_| "no reflection database".to_string())?;
-                let items = &database.enums.get(enum_name.as_ref()).ok_or_else(|| format!("unknown enum {enum_name}"))?.items;
-                match self {
-                    Implicit::String(item) => items.get(item.as_str()).map(|&value| Enum::from_u32(value).into()).ok_or_else(|| format!("{class_name}.{property}: {item} is not an item of Enum.{enum_name}")),
-                    other => Err(format!("{class_name}.{property} takes the name of an Enum.{enum_name} item, not {}", other.describe())),
-                }
-            }
-            DataType::Value(kind) => match (kind, self) {
+        match property_type(class_name, property).ok_or_else(|| format!("unknown property {class_name}.{property} (an explicit value names its type)"))? {
+            PropertyType::Enum(enum_name) => match self {
+                Implicit::String(item) => enum_item_value(&enum_name, &item).map(|value| Enum::from_u32(value).into()).ok_or_else(|| format!("{class_name}.{property}: {item} is not an item of Enum.{enum_name}")),
+                other => Err(format!("{class_name}.{property} takes the name of an Enum.{enum_name} item, not {}", other.describe())),
+            },
+            PropertyType::Unknown => Err(format!("{class_name}.{property}: a type this reader does not know")),
+            PropertyType::Value(kind) => match (kind, self) {
                 (VariantType::Bool, Implicit::Bool(value)) => Ok(value.into()),
                 (VariantType::Float32, Implicit::Number(value)) => Ok((value as f32).into()),
                 (VariantType::Float64, Implicit::Number(value)) => Ok(value.into()),
@@ -120,9 +121,60 @@ impl Implicit {
                 (VariantType::MaterialColors, Implicit::MaterialColors(value)) => Ok(value.into()),
                 (kind, other) => Err(format!("{class_name}.{property} takes a {kind:?}, not {}", other.describe())),
             },
-            _ => Err(format!("{class_name}.{property}: a type this reader does not know")),
         }
     }
+}
+
+/// What an implicit value of a property is read as.
+enum PropertyType {
+    Enum(String),
+    Value(VariantType),
+    Unknown,
+}
+
+/// `class_name.property`'s type: rbx-dom's descriptor, as Rojo resolves it, else the engine's reflection for a property
+/// rbx-dom's (older) database does not have.
+fn property_type(class_name: &str, property: &str) -> Option<PropertyType> {
+    if let Some(descriptor) = crate::record::encode::dom_property(class_name, property) {
+        return Some(match &descriptor.data_type {
+            DataType::Enum(enum_name) => PropertyType::Enum(enum_name.to_string()),
+            DataType::Value(kind) => PropertyType::Value(*kind),
+            _ => PropertyType::Unknown,
+        });
+    }
+    let reflection = Reflection::shared().ok()?;
+    let info = reflection.class_property(reflection.class_id(class_name)?, reflection.name_id(property)?)?;
+    if let Some(enum_name) = &info.enum_name {
+        return Some(PropertyType::Enum(enum_name.to_string()));
+    }
+    Some(match &*info.engine_type_name {
+        "bool" => PropertyType::Value(VariantType::Bool),
+        "float" => PropertyType::Value(VariantType::Float32),
+        "double" => PropertyType::Value(VariantType::Float64),
+        "int" => PropertyType::Value(VariantType::Int32),
+        "int64" => PropertyType::Value(VariantType::Int64),
+        "string" => PropertyType::Value(VariantType::String),
+        "Content" => PropertyType::Value(VariantType::Content),
+        "ContentId" => PropertyType::Value(VariantType::ContentId),
+        "Vector2" => PropertyType::Value(VariantType::Vector2),
+        "Vector3" => PropertyType::Value(VariantType::Vector3),
+        "Color3" => PropertyType::Value(VariantType::Color3),
+        "CoordinateFrame" => PropertyType::Value(VariantType::CFrame),
+        "Font" => PropertyType::Value(VariantType::Font),
+        _ => PropertyType::Unknown,
+    })
+}
+
+/// The value of the item named `item` of `enum_name`: the engine's enum first (it has the items a newer Studio added),
+/// then rbx-dom's.
+fn enum_item_value(enum_name: &str, item: &str) -> Option<u32> {
+    if let Ok(reflection) = Reflection::shared() {
+        if let Some(id) = reflection.enum_item(enum_name, item) {
+            return Some(reflection.enum_item_info(id).value as u32);
+        }
+    }
+    let database = rbx_reflection_database::get().ok()?;
+    database.enums.get(enum_name)?.items.get(item).copied()
 }
 
 impl Unresolved {

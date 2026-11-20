@@ -1,8 +1,9 @@
-//! EncodingService in a server run (`--run-context server`): CompressBuffer / DecompressBuffer /
-//! GetDecompressedBufferSize (Zstd, the one CompressionAlgorithm) and Base64Encode / Base64Decode, as Roblox's
-//! EncodingService documentation gives them: compressionLevel 1 by default, -7 to 22; a frame that does not hold its decompressed size, or holds
-//! one past 1 GB, is refused. The zstd library is the one Roblox's documentation names; the error texts are
-//! not measured. ComputeBufferHash / ComputeStringHash are not emulated (Output `missing`).
+//! EncodingService: CompressBuffer / DecompressBuffer / GetDecompressedBufferSize (Zstd, the one CompressionAlgorithm)
+//! and Base64Encode / Base64Decode, on a client and a server alike, as Roblox's EncodingService documentation gives them:
+//! compressionLevel 1 by default, -7 to 22. The zstd library is the one Roblox's documentation names. Measured in a 0.747
+//! playing client and server (tools/parity/probes/encoding.luau): every member answers a buffer; an argument that is no
+//! buffer is "missing or nil"; Base64Decode refuses input that is not padded Base64; the errors' texts are the client's.
+//! ComputeBufferHash / ComputeStringHash are not emulated (Output `missing`).
 
 use std::rc::Rc;
 
@@ -16,11 +17,11 @@ use crate::{
 
 const MAX_DECOMPRESSED: u64 = 1 << 30;
 
-fn buffer_argument(args: &Args, index: usize, member: &str) -> Result<Vec<u8>, Flow> {
+/// (measured: a string, like nil, is "missing or nil")
+fn buffer_argument(args: &Args, index: usize) -> Result<Vec<u8>, Flow> {
     match args.get(index) {
         LuaValue::Buffer(buffer) => Ok(buffer.to_vec()),
-        LuaValue::Nil => raise(format!("Argument {index} missing or nil")),
-        other => raise(format!("{member}: buffer expected, got {}", other.type_name())),
+        _ => raise(format!("Argument {index} missing or nil")),
     }
 }
 
@@ -44,15 +45,17 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
     let name = |member: &str| reflection.name_id(member);
     if let Some(n) = name("CompressBuffer") {
         behaviors.add_method(service, n, method(|lua, engine, _, args| {
-            let input = buffer_argument(args, 1, "CompressBuffer")?;
+            let input = buffer_argument(args, 1)?;
             algorithm_argument(engine, args, 2, "CompressBuffer")?;
             let level = match (args.get(3), args.number(3)) {
                 (LuaValue::Nil, _) => 1.0,
                 (_, Some(level)) => level,
                 _ => return raise("CompressBuffer: compressionLevel must be a number"),
             };
-            if !(-7.0..=22.0).contains(&level) || level.fract() != 0.0 {
-                return raise("CompressBuffer: compressionLevel must be an integer from -7 to 22");
+            // (an int argument: a fraction is cut off; measured: 23 is refused)
+            let level = level.trunc();
+            if !(-7.0..=22.0).contains(&level) {
+                return raise("CompressBuffer: unsupported compression level for Zstd");
             }
             let compressed = zstd::bulk::compress(&input, level as i32).or_else(|error| raise(format!("CompressBuffer: {error}")))?;
             Ok(values([LuaValue::Buffer(lua.create_buffer(compressed)?)]))
@@ -60,35 +63,41 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
     }
     if let Some(n) = name("DecompressBuffer") {
         behaviors.add_method(service, n, method(|lua, engine, _, args| {
-            let input = buffer_argument(args, 1, "DecompressBuffer")?;
+            let input = buffer_argument(args, 1)?;
             algorithm_argument(engine, args, 2, "DecompressBuffer")?;
-            let Some(size) = decompressed_size(&input) else {
-                return raise("DecompressBuffer: the data does not hold a valid decompressed size");
-            };
-            let output = zstd::bulk::decompress(&input, size as usize).or_else(|error| raise(format!("DecompressBuffer: invalid data ({error})")))?;
+            // (measured: data that is no Zstd frame; a frame without its size, or one that does not hold what it says, is
+            // refused the same way here)
+            const FAILED: &str = "DecompressBuffer: decompression failed - Unspecified error code";
+            let Some(size) = decompressed_size(&input) else { return raise(FAILED) };
+            let output = zstd::bulk::decompress(&input, size as usize).or_else(|_| raise(FAILED))?;
             if output.len() as u64 != size {
-                return raise("DecompressBuffer: the data does not match its decompressed size");
+                return raise(FAILED);
             }
             Ok(values([LuaValue::Buffer(lua.create_buffer(output)?)]))
         }));
     }
     if let Some(n) = name("GetDecompressedBufferSize") {
         behaviors.add_method(service, n, method(|_, engine, _, args| {
-            let input = buffer_argument(args, 1, "GetDecompressedBufferSize")?;
+            let input = buffer_argument(args, 1)?;
             algorithm_argument(engine, args, 2, "GetDecompressedBufferSize")?;
             Ok(values([decompressed_size(&input).map_or(LuaValue::Nil, |size| LuaValue::Number(size as f64))]))
         }));
     }
     if let Some(n) = name("Base64Encode") {
         behaviors.add_method(service, n, method(|lua, _, _, args| {
-            let input = buffer_argument(args, 1, "Base64Encode")?;
+            let input = buffer_argument(args, 1)?;
             Ok(values([LuaValue::Buffer(lua.create_buffer(base64::encode(input))?)]))
         }));
     }
     if let Some(n) = name("Base64Decode") {
         behaviors.add_method(service, n, method(|lua, _, _, args| {
-            let input = buffer_argument(args, 1, "Base64Decode")?;
-            let decoded = base64::decode(input).or_else(|_| raise("Base64Decode: the input is not valid Base64"))?;
+            let input = buffer_argument(args, 1)?;
+            // (measured: unpadded input is refused)
+            const INVALID: &str = "Base64Decode: input is not a base64 string";
+            if input.len() % 4 != 0 {
+                return raise(INVALID);
+            }
+            let decoded = base64::decode(input).or_else(|_| raise(INVALID))?;
             Ok(values([LuaValue::Buffer(lua.create_buffer(decoded)?)]))
         }));
     }

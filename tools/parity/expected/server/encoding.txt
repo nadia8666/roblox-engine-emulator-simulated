@@ -1,0 +1,14 @@
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-18
+b64enc ok 1 buffer[16] aGVsbG8gd29ybGQ=
+b64enc-empty ok 1 buffer[0] 
+b64dec ok 1 buffer[11] hello world
+b64dec-unpadded error Base64Decode: input is not a base64 string
+b64dec-bad error Base64Decode: input is not a base64 string
+b64enc-string error Argument 1 missing or nil
+b64enc-nil error Argument 1 missing or nil
+compress ok 3 string buffer boolean true number 512
+compress-level-22 ok 1 string buffer
+compress-level-23 error CompressBuffer: unsupported compression level for Zstd
+compress-no-algorithm error Argument 2 missing or nil
+decompress-bad error DecompressBuffer: decompression failed - Unspecified error code

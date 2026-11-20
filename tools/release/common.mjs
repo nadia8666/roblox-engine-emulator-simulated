@@ -116,7 +116,8 @@ function gitDependencyLines() {
 	return [...new Set(lines)];
 }
 
-// SOURCE.md: where this binary's Corresponding Source is (GPL-3.0-or-later asks for it to stay reachable)
+// SOURCE.md: where this binary's Corresponding Source is (GPL-3.0-or-later asks for it to stay reachable). It links the
+// exact commit, since a build of main between releases (the canary) is not of its version tag's commit.
 export function sourceText(releaseVersion, commit, repository = REPOSITORY) {
 	if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error("source commit must be a full SHA");
 	if (repository !== REPOSITORY) throw new Error("release source must be the public repository");
@@ -126,8 +127,8 @@ export function sourceText(releaseVersion, commit, repository = REPOSITORY) {
 		"",
 		"This binary is distributed under GPL-3.0-or-later.",
 		"",
-		`The source is https://github.com/${repository}/tree/${tag}, commit ${commit}.`,
-		`GitHub's source archive: https://github.com/${repository}/archive/refs/tags/${tag}.tar.gz`,
+		`The source is https://github.com/${repository}/tree/${commit}, commit ${commit} (version ${tag}).`,
+		`GitHub's source archive: https://github.com/${repository}/archive/${commit}.tar.gz`,
 		"",
 		"Cargo.lock pins the Rust crates from crates.io, with each archive's SHA-256 checksum.",
 		"Git dependencies are available in their repositories at the pinned commits:",

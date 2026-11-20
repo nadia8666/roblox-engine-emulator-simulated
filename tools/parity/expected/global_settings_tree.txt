@@ -1,0 +1,185 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 4; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-20
+root Instance GlobalSettings | Global Settings | Global Settings | Global Settings
+same true true parent nil archivable true
+isa Instance true
+isa ServiceProvider true
+isa GenericSettings true
+isa GlobalSettings true
+isa UserSettings false
+isa DataModel false
+children 8 GameSettings:Game Options,LuaSettings:Lua,DebugSettings:Diagnostics,PhysicsSettings:Physics,Studio:Studio,NetworkSettings:Network,RenderSettings:Rendering,TaskScheduler:Task Scheduler
+child Instance GameSettings:Game Options<GlobalSettings> full=Game Options tostring=Game Options children=0 archivable=true
+child Instance LuaSettings:Lua<GlobalSettings> full=Lua tostring=Lua children=0 archivable=true
+child Instance DebugSettings:Diagnostics<GlobalSettings> full=Diagnostics tostring=Diagnostics children=0 archivable=true
+child Instance PhysicsSettings:Physics<GlobalSettings> full=Physics tostring=Physics children=0 archivable=true
+child Instance Studio:Studio<GlobalSettings> full=Studio tostring=Studio children=0 archivable=true
+child Instance NetworkSettings:Network<GlobalSettings> full=Network tostring=Network children=0 archivable=true
+child Instance RenderSettings:Rendering<GlobalSettings> full=Rendering tostring=Rendering children=0 archivable=true
+child Instance TaskScheduler:Task Scheduler<GlobalSettings> full=Task Scheduler tostring=Task Scheduler children=0 archivable=true
+service GameSettings find ok Instance GameSettings:Game Options<GlobalSettings> | get ok Instance GameSettings:Game Options<GlobalSettings>
+service LuaSettings find ok Instance LuaSettings:Lua<GlobalSettings> | get ok Instance LuaSettings:Lua<GlobalSettings>
+service DebugSettings find ok Instance DebugSettings:Diagnostics<GlobalSettings> | get ok Instance DebugSettings:Diagnostics<GlobalSettings>
+service PhysicsSettings find ok Instance PhysicsSettings:Physics<GlobalSettings> | get ok Instance PhysicsSettings:Physics<GlobalSettings>
+service NetworkSettings find ok Instance NetworkSettings:Network<GlobalSettings> | get ok Instance NetworkSettings:Network<GlobalSettings>
+service RenderSettings find ok Instance RenderSettings:Rendering<GlobalSettings> | get ok Instance RenderSettings:Rendering<GlobalSettings>
+service TaskScheduler find ok Instance TaskScheduler:Task Scheduler<GlobalSettings> | get ok Instance TaskScheduler:Task Scheduler<GlobalSettings>
+service Studio find ok Instance Studio:Studio<GlobalSettings> | get ok Instance Studio:Studio<GlobalSettings>
+service UserGameSettings find ok nil nil | get error Invalid parent for Service. UserGameSettings cannot be parented to Global Settings .
+service GlobalSettings find ok nil nil | get ok nil nil
+service Workspace find ok nil nil | get ok nil nil
+service Lighting find ok nil nil | get error Not allowed to add that under settings
+service Part find ok nil nil | get ok nil nil
+service NotAService find error 'NotAService' is not a valid Service name | get error 'NotAService' is not a valid Service name
+children-after 8 GameSettings:Game Options,LuaSettings:Lua,DebugSettings:Diagnostics,PhysicsSettings:Physics,Studio:Studio,NetworkSettings:Network,RenderSettings:Rendering,TaskScheduler:Task Scheduler
+index Rendering ok Instance RenderSettings:Rendering<GlobalSettings>
+index Game Options ok Instance GameSettings:Game Options<GlobalSettings>
+index Lua ok Instance LuaSettings:Lua<GlobalSettings>
+index Diagnostics ok Instance DebugSettings:Diagnostics<GlobalSettings>
+index Physics ok Instance PhysicsSettings:Physics<GlobalSettings>
+index Network ok Instance NetworkSettings:Network<GlobalSettings>
+index Task Scheduler ok Instance TaskScheduler:Task Scheduler<GlobalSettings>
+index Studio ok Instance Studio:Studio<GlobalSettings>
+index RenderSettings error RenderSettings is not a valid member of GlobalSettings "Global Settings"
+index GameSettings error GameSettings is not a valid member of GlobalSettings "Global Settings"
+index Name ok string Global Settings
+index NotAMember error NotAMember is not a valid member of GlobalSettings "Global Settings"
+prop RenderSettings.AutoFRMLevel ok number 1
+prop RenderSettings.EagerBulkExecution ok boolean false
+prop RenderSettings.EditQualityLevel ok EnumItem Enum.QualityLevel.Automatic
+prop RenderSettings.Enable VR Mode ok boolean false
+prop RenderSettings.EnableFRM ok boolean true
+prop RenderSettings.ExportMergeByMaterial ok boolean false
+prop RenderSettings.FrameRateManager ok EnumItem Enum.FramerateManagerMode.Automatic
+prop RenderSettings.GraphicsMode ok EnumItem Enum.GraphicsMode.Automatic
+prop RenderSettings.MeshCacheSize ok number 33554432
+prop RenderSettings.MeshPartDetailLevel ok EnumItem Enum.MeshPartDetailLevel.DistanceBased
+prop RenderSettings.QualityLevel ok EnumItem Enum.QualityLevel.Automatic
+prop RenderSettings.ReloadAssets ok boolean false
+prop RenderSettings.RenderCSGTrianglesDebug ok boolean false
+prop RenderSettings.ShowBoundingBoxes ok boolean false
+prop RenderSettings.ViewMode ok EnumItem Enum.ViewMode.None
+prop GameSettings.VideoCaptureEnabled ok boolean true
+prop DebugSettings.DataModel ok number
+prop DebugSettings.InstanceCount ok number
+prop DebugSettings.IsScriptStackTracingEnabled ok boolean true
+prop DebugSettings.JobCount ok number
+prop DebugSettings.PlayerCount ok number
+prop DebugSettings.ReportSoundWarnings ok boolean false
+prop DebugSettings.RobloxVersion ok string
+prop DebugSettings.TickCountPreciseOverride ok EnumItem Enum.TickCountSampleMethod.Precise
+prop PhysicsSettings.AllowSleep ok boolean true
+prop PhysicsSettings.AreAnchorsShown ok boolean false
+prop PhysicsSettings.AreAssembliesShown ok boolean false
+prop PhysicsSettings.AreAssemblyCentersOfMassShown error The current thread cannot read 'AreAssemblyCentersOfMassShown' (lacking capability RobloxScript)
+prop PhysicsSettings.AreAwakePartsHighlighted ok boolean false
+prop PhysicsSettings.AreBodyTypesShown ok boolean false
+prop PhysicsSettings.AreCollisionCostsShown error The current thread cannot read 'AreCollisionCostsShown' (lacking capability RobloxScript)
+prop PhysicsSettings.AreConstraintForcesShownForSelectedOrHoveredInstances error The current thread cannot read 'AreConstraintForcesShownForSelectedOrHoveredInstances' (lacking capability RobloxScript)
+prop PhysicsSettings.AreConstraintTorquesShownForSelectedOrHoveredInstances error The current thread cannot read 'AreConstraintTorquesShownForSelectedOrHoveredInstances' (lacking capability RobloxScript)
+prop PhysicsSettings.AreContactForcesShownForSelectedOrHoveredAssemblies error The current thread cannot read 'AreContactForcesShownForSelectedOrHoveredAssemblies' (lacking capability RobloxScript)
+prop PhysicsSettings.AreContactIslandsShown ok boolean false
+prop PhysicsSettings.AreContactPointsShown ok boolean false
+prop PhysicsSettings.AreGravityForcesShownForSelectedOrHoveredAssemblies error The current thread cannot read 'AreGravityForcesShownForSelectedOrHoveredAssemblies' (lacking capability RobloxScript)
+prop PhysicsSettings.AreJointCoordinatesShown ok boolean false
+prop PhysicsSettings.AreMagnitudesShownForDrawnForcesAndTorques error The current thread cannot read 'AreMagnitudesShownForDrawnForcesAndTorques' (lacking capability RobloxScript)
+prop PhysicsSettings.AreMechanismsShown ok boolean false
+prop PhysicsSettings.AreModelCoordsShown ok boolean false
+prop PhysicsSettings.AreNonAnchorsShown ok boolean false
+prop PhysicsSettings.AreOwnersShown ok boolean false
+prop PhysicsSettings.ArePartCoordsShown ok boolean false
+prop PhysicsSettings.AreRegionsShown ok boolean false
+prop PhysicsSettings.AreSolverIslandsShown error The current thread cannot read 'AreSolverIslandsShown' (lacking capability RobloxScript)
+prop PhysicsSettings.AreTerrainReplicationRegionsShown ok boolean false
+prop PhysicsSettings.AreTimestepsShown error The current thread cannot read 'AreTimestepsShown' (lacking capability RobloxScript)
+prop PhysicsSettings.AreUnalignedPartsShown ok boolean false
+prop PhysicsSettings.AreWorldCoordsShown ok boolean false
+prop PhysicsSettings.DisableCSGv2 ok boolean false
+prop PhysicsSettings.DisableCSGv3ForPlugins ok boolean false
+prop PhysicsSettings.DrawConstraintsNetForce error The current thread cannot read 'DrawConstraintsNetForce' (lacking capability RobloxScript)
+prop PhysicsSettings.DrawContactsNetForce error The current thread cannot read 'DrawContactsNetForce' (lacking capability RobloxScript)
+prop PhysicsSettings.DrawTotalNetForce error The current thread cannot read 'DrawTotalNetForce' (lacking capability RobloxScript)
+prop PhysicsSettings.EnableForceVisualizationSmoothing error The current thread cannot read 'EnableForceVisualizationSmoothing' (lacking capability RobloxScript)
+prop PhysicsSettings.FluidForceDrawScale error The current thread cannot read 'FluidForceDrawScale' (lacking capability RobloxScript)
+prop PhysicsSettings.ForceCSGv2 ok boolean true
+prop PhysicsSettings.ForceDrawScale error The current thread cannot read 'ForceDrawScale' (lacking capability RobloxScript)
+prop PhysicsSettings.ForceVisualizationSmoothingSteps error The current thread cannot read 'ForceVisualizationSmoothingSteps' (lacking capability RobloxScript)
+prop PhysicsSettings.IsInterpolationThrottleShown ok boolean false
+prop PhysicsSettings.IsReceiveAgeShown ok boolean false
+prop PhysicsSettings.IsTreeShown ok boolean false
+prop PhysicsSettings.PhysicsEnvironmentalThrottle ok EnumItem Enum.EnviromentalPhysicsThrottle.DefaultAuto
+prop PhysicsSettings.ShowDecompositionGeometry ok boolean false
+prop PhysicsSettings.ShowFluidForcesForSelectedOrHoveredMechanisms error The current thread cannot read 'ShowFluidForcesForSelectedOrHoveredMechanisms' (lacking capability RobloxScript)
+prop PhysicsSettings.ShowInstanceNamesForDrawnForcesAndTorques error The current thread cannot read 'ShowInstanceNamesForDrawnForcesAndTorques' (lacking capability RobloxScript)
+prop PhysicsSettings.SolverConvergenceMetricType error The current thread cannot read 'SolverConvergenceMetricType' (lacking capability RobloxScript)
+prop PhysicsSettings.SolverConvergenceVisualizationMode error The current thread cannot read 'SolverConvergenceVisualizationMode' (lacking capability RobloxScript)
+prop PhysicsSettings.ThrottleAdjustTime ok number 1
+prop PhysicsSettings.TorqueDrawScale error The current thread cannot read 'TorqueDrawScale' (lacking capability RobloxScript)
+prop PhysicsSettings.UseCSGv2 ok boolean false
+prop NetworkSettings.EmulatedTotalMemoryInMB ok number
+prop NetworkSettings.FreeMemoryMBytes ok number
+prop NetworkSettings.HttpProxyEnabled ok boolean false
+prop NetworkSettings.HttpProxyURL ok string 
+prop NetworkSettings.IncomingReplicationLag ok number 0
+prop NetworkSettings.OpenCertManagerDialog error OpenCertManagerDialog is not a valid member of NetworkSettings "Network"
+prop NetworkSettings.PrintJoinSizeBreakdown ok boolean false
+prop NetworkSettings.PrintPhysicsErrors ok boolean false
+prop NetworkSettings.PrintStreamInstanceQuota ok boolean false
+prop NetworkSettings.RandomizeJoinInstanceOrder ok boolean true
+prop NetworkSettings.RenderStreamedRegions ok boolean false
+prop NetworkSettings.ShowActiveAnimationAsset ok boolean false
+prop TaskScheduler.SchedulerDutyCycle ok number
+prop TaskScheduler.SchedulerRate ok number
+prop TaskScheduler.ThreadPoolConfig ok EnumItem Enum.ThreadPoolConfig.Auto
+prop TaskScheduler.ThreadPoolSize ok number
+prop LuaSettings.GcPause error GcPause is not a valid member of LuaSettings "Lua"
+prop LuaSettings.DefaultWaitTime error DefaultWaitTime is not a valid member of LuaSettings "Lua"
+enum ok Automatic 0 QualityLevel true
+method GetMaxQualityLevel ok 22 | dot error Expected ':' not '.' calling member function GetMaxQualityLevel
+method GetFFlag error Flag NoSuchFlagAnywhere referenced from Lua isn't defined in C++ code | error Argument 1 missing or nil | error Flag 12 referenced from Lua isn't defined in C++ code
+method GetFVariable error Flag NoSuchFlagAnywhere referenced from Lua isn't defined in C++ code | error Argument 1 missing or nil
+method dot error Expected ':' not '.' calling member function GetService | error Expected ':' not '.' calling member function FindService
+write QualityLevel ok EnumItem Enum.QualityLevel.Level05 | number ok EnumItem Enum.QualityLevel.Level03 | name ok EnumItem Enum.QualityLevel.Level07 | bad error Unable to assign property QualityLevel. Invalid value "Nope" for enum QualityLevel | wrong enum error Unable to assign property QualityLevel. EnumItem of type QualityLevel expected, got an EnumItem of type Material
+restored EnumItem Enum.QualityLevel.Automatic
+write read-only error Unable to assign property RobloxVersion. Property is read only | error Unable to assign property ThreadPoolSize. Property is read only | error The current thread cannot write 'HttpProxyURL' (lacking capability RobloxScript) | error The current thread cannot write 'HttpProxyEnabled' (lacking capability RobloxScript)
+write missing error NotAProp is not a valid member of RenderSettings "Rendering" | root error NotAProp is not a valid member of GlobalSettings "Global Settings"
+missing error NotAProp is not a valid member of RenderSettings "Rendering" | root error NotAProp is not a valid member of GlobalSettings "Global Settings" | method error NotAMethod is not a valid member of GlobalSettings "Global Settings"
+changed RenderSettings.QualityLevel ok EnumItem Enum.QualityLevel.Level04 | seen  | restored EnumItem Enum.QualityLevel.Automatic
+changed RenderSettings.EditQualityLevel ok EnumItem Enum.QualityLevel.Level04 | seen  | restored EnumItem Enum.QualityLevel.Automatic
+changed RenderSettings.ShowBoundingBoxes ok boolean true | seen  | restored boolean false
+changed RenderSettings.MeshPartDetailLevel ok EnumItem Enum.MeshPartDetailLevel.Level02 | seen  | restored EnumItem Enum.MeshPartDetailLevel.DistanceBased
+changed RenderSettings.AutoFRMLevel ok number 3 | seen  | restored number 1
+changed RenderSettings.EagerBulkExecution ok boolean true | seen  | restored boolean false
+changed RenderSettings.ExportMergeByMaterial ok boolean true | seen  | restored boolean false
+changed RenderSettings.RenderCSGTrianglesDebug ok boolean true | seen  | restored boolean false
+changed RenderSettings.ViewMode ok EnumItem Enum.ViewMode.Transparent | seen  | restored EnumItem Enum.ViewMode.None
+changed RenderSettings.EnableFRM ok boolean false | seen  | restored boolean true
+changed RenderSettings.FrameRateManager ok EnumItem Enum.FramerateManagerMode.Off | seen  | restored EnumItem Enum.FramerateManagerMode.Automatic
+changed RenderSettings.MeshCacheSize ok number 1048576 | seen  | restored number 33554432
+changed PhysicsSettings.AllowSleep ok boolean false | seen AllowSleep,signal | restored boolean true
+changed PhysicsSettings.AreAnchorsShown ok boolean true | seen AreAnchorsShown,signal | restored boolean false
+changed PhysicsSettings.ThrottleAdjustTime ok number 2 | seen ThrottleAdjustTime,signal | restored number 1
+changed DebugSettings.ReportSoundWarnings ok boolean true | seen ReportSoundWarnings,signal | restored boolean false
+changed DebugSettings.IsScriptStackTracingEnabled ok boolean false | seen IsScriptStackTracingEnabled,signal | restored boolean true
+changed GameSettings.VideoCaptureEnabled ok boolean true | seen  | restored boolean true
+changed NetworkSettings.PrintPhysicsErrors ok boolean true | seen PrintPhysicsErrors,signal | restored boolean false
+changed NetworkSettings.RandomizeJoinInstanceOrder ok boolean false | seen RandomizeJoinInstanceOrder,signal | restored boolean true
+parent child error Cannot change Parent of type RenderSettings | root error The current thread cannot set 'settings parent' (lacking capability RobloxScript)
+clone child error Rendering cannot be cloned | root error Global Settings cannot be cloned
+add root error Not allowed to add that under settings | child error Not allowed to add that under settings
+rename root ok Renamed Settings | Renamed Settings | Renamed Settings | Rendering | child ok Rendering | nil
+rename services GameSettings=ok Game Options, LuaSettings=ok Lua, DebugSettings=ok Diagnostics, PhysicsSettings=ok Physics, Studio=ok Studio, NetworkSettings=ok Network, RenderSettings=ok Rendering, TaskScheduler=ok Task Scheduler
+generic ok Instance RenderSettings:Rendering<GlobalSettings> Instance RenderSettings:Rendering<GlobalSettings> Instance LuaSettings:Lua<GlobalSettings> true true
+destroy child error The Parent property of Lua is locked | root error The Parent property of Game Options is locked
+children-end 8 GameSettings:Game Options,LuaSettings:Lua,DebugSettings:Diagnostics,PhysicsSettings:Physics,Studio:Studio,NetworkSettings:Network,RenderSettings:Rendering,TaskScheduler:Task Scheduler
+game GameSettings error Invalid parent for Service. GameSettings cannot be parented to <game> . | find ok nil nil | user error Invalid parent for Service. GameSettings cannot be parented to GlobalBasicSettings . | find ok nil nil
+game LuaSettings error Invalid parent for Service. LuaSettings cannot be parented to <game> . | find ok nil nil | user error Invalid parent for Service. LuaSettings cannot be parented to GlobalBasicSettings . | find ok nil nil
+game DebugSettings error Invalid parent for Service. DebugSettings cannot be parented to <game> . | find ok nil nil | user error Invalid parent for Service. DebugSettings cannot be parented to GlobalBasicSettings . | find ok nil nil
+game PhysicsSettings error Invalid parent for Service. PhysicsSettings cannot be parented to <game> . | find ok nil nil | user error Invalid parent for Service. PhysicsSettings cannot be parented to GlobalBasicSettings . | find ok nil nil
+game NetworkSettings error Invalid parent for Service. NetworkSettings cannot be parented to <game> . | find ok nil nil | user error Invalid parent for Service. NetworkSettings cannot be parented to GlobalBasicSettings . | find ok nil nil
+game RenderSettings error Invalid parent for Service. RenderSettings cannot be parented to <game> . | find ok nil nil | user error Invalid parent for Service. RenderSettings cannot be parented to GlobalBasicSettings . | find ok nil nil
+game TaskScheduler error Invalid parent for Service. TaskScheduler cannot be parented to <game> . | find ok nil nil | user error Invalid parent for Service. TaskScheduler cannot be parented to GlobalBasicSettings . | find ok nil nil
+game Studio error Invalid parent for Service. Studio cannot be parented to <game> . | find ok nil nil | user error Invalid parent for Service. Studio cannot be parented to GlobalBasicSettings . | find ok nil nil
+game UserGameSettings error Invalid parent for Service. UserGameSettings cannot be parented to <game> . | find ok nil nil | user ok Instance UserGameSettings:GameSettings<UserSettings> | find ok Instance UserGameSettings:GameSettings<UserSettings>
+game GlobalSettings ok nil nil | find ok nil nil | user ok nil nil | find ok nil nil
+studio ok Instance number number | ok RBXScriptSignal

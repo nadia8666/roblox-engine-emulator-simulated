@@ -30,10 +30,10 @@
 
 LUAU_FASTFLAGVARIABLE(LuauGcTraceUdata)
 LUAU_FLAGVERSION(LuauGcTraceUdata, 5)
-LUAU_FASTFLAG(LuauFastpcall)
 LUAU_FASTFLAG(LuauCoroutineFinally)
 LUAU_DYNAMIC_FASTFLAGVARIABLE(LuauGcHeapShrinkFix, false)
 LUAU_FASTFLAGVARIABLE(LuauRuntimeFeedback)
+LUAU_FLAGVERSION(LuauRuntimeFeedback, 2)
 LUAU_FASTFLAG(LuauBufferSweep)
 LUAU_FASTFLAG(LuauLoadExplicitGcDisable)
 
@@ -433,7 +433,14 @@ static void traverseproto(global_State* g, Proto* f)
     if (f->deoptimized)
         markobject(g, f->deoptimized);
 
-    if (FFlag::LuauRuntimeFeedback && g->ecb.examinefunction)
+    if (f->lazychunk)
+    {
+        markobject(g, f->lazychunk->envt);
+        markobject(g, f->lazychunk->importenv);
+    }
+
+    // a lazy-load stub has no code to compile yet; it is examined once built
+    if (FFlag::LuauRuntimeFeedback && g->ecb.examinefunction && !f->lazychunk)
     {
         if ((f->execflags & PEF_EXECLOCKED) == 0)
             g->ecb.examinefunction(g->mainthread, f);
@@ -981,8 +988,7 @@ static void markroot(lua_State* L)
 
     markudatadirectfields(g);
 
-    if (FFlag::LuauFastpcall)
-        markfastpcalls(g);
+    markfastpcalls(g);
 
     markmt(g);
 
@@ -1083,8 +1089,7 @@ static size_t atomic(lua_State* L)
 
     markudatadirectfields(g); // mark direct field dispatch tables (again)
 
-    if (FFlag::LuauFastpcall)
-        markfastpcalls(g);
+    markfastpcalls(g);
 
     work += propagateall(g);
 
@@ -1769,6 +1774,7 @@ static std::mutex coldlock;
 
 // coldon and coldslot sit in padding: the state's size (counted in totalbytes) is the stock one, whatever the release's layout
 #define LUAI_COLDALIGNUP(x, a) (((x) + (a) - 1) / (a) * (a))
+#if UINTPTR_MAX > 0xffffffffu
 static_assert(offsetof(global_State, coldon) == offsetof(global_State, gcdisabled) + 1 &&
                   offsetof(global_State, gray) == LUAI_COLDALIGNUP(offsetof(global_State, gcdisabled) + 1, alignof(GCObject*)),
     "coldon must sit in the padding before gray");
@@ -1779,6 +1785,7 @@ static_assert(offsetof(global_State, coldslot) == offsetof(global_State, gcsteps
 static_assert(offsetof(Proto, coldslot) == offsetof(Proto, execflags) + 2 &&
                   offsetof(Proto, lineinfo) == LUAI_COLDALIGNUP(offsetof(Proto, execflags) + 1, alignof(uint8_t*)),
     "Proto::coldslot must sit in the padding after execflags");
+#endif
 #undef LUAI_COLDALIGNUP
 
 static bool coldgrow(void** items, size_t* capacity, size_t itemsize)
@@ -1834,6 +1841,10 @@ static void coldunarm(Proto* p)
 void luaC_coldprepare(lua_State* L, Proto* p)
 {
     if (!L->global->coldon)
+        return;
+    // A lazy-load stub's code is one static instruction every stub shares (luau_loadlazy):
+    // nothing to arm until the function is built, from its next frame on.
+    if (p->lazychunk)
         return;
     // The host marks engine chunks after loading them. Revoke their markers too,
     // so code whose operation the host prices does not trap once per frame.

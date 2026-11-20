@@ -1,0 +1,197 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-18
+in-playergui ok boolean:true
+in-playergui: in-playergui Pressed | in-playergui StateChanged boolean:true
+under-folder ok boolean:false
+under-folder: (nothing)
+context-folder ok boolean:true
+context-folder: context-folder Pressed | context-folder StateChanged boolean:true
+action-in-action ok boolean:true
+action-in-action: action-in-action Pressed | action-in-action StateChanged boolean:true
+disable-1d fire: disable-1d StateChanged number:0.5
+disable-1d state number:0
+disable-1d: disable-1d StateChanged number:0
+disable-vp fire: disable-vp StateChanged Vector2:10 20
+disable-vp state Vector2:-1 -1
+disable-vp: disable-vp StateChanged Vector2:-1 -1
+disable-2d fire: disable-2d StateChanged Vector2:0.5 0
+action-disable-2d state Vector2:0 0
+action-disable-2d: disable-2d StateChanged Vector2:0 0
+action-disable fire: action-disable Pressed | action-disable StateChanged boolean:true
+action-disable state boolean:false
+action-disable: action-disable Released | action-disable StateChanged boolean:false
+move-ctx fire: move-ctx Pressed | move-ctx StateChanged boolean:true
+move-ctx state boolean:false
+move-ctx: move-ctx Released | move-ctx StateChanged boolean:false
+move-ctx-nil-first fire: move-ctx-nil-first Pressed | move-ctx-nil-first StateChanged boolean:true
+move-action-to-nil-context state boolean:false
+move-action-to-nil-context: move-ctx-nil-first Released | move-ctx-nil-first StateChanged boolean:false
+refire: move-ctx-nil-first Pressed | move-ctx-nil-first StateChanged boolean:true
+move-action-between state boolean:false
+move-action-between: move-ctx-nil-first Released | move-ctx-nil-first StateChanged boolean:false
+type-change fire: type-change Pressed | type-change StateChanged boolean:true
+type-change state number:0
+type-change: type-change StateChanged number:0
+destroy-ctx fire: destroy-ctx Pressed | destroy-ctx StateChanged boolean:true
+destroy-ctx state boolean:false
+destroy-ctx: destroy-ctx Released | destroy-ctx StateChanged boolean:false
+priority-change fire: priority-change Pressed | priority-change StateChanged boolean:true
+priority-change state boolean:true
+priority-change: (nothing)
+nil-then-parent fire: nil-then-parent Pressed | nil-then-parent StateChanged boolean:true
+nil-then-parent state boolean:false
+nil-then-parent: nil-then-parent Released | nil-then-parent StateChanged boolean:false
+bool fire boolean:true ok boolean:true
+bool boolean:true: bool Pressed | bool StateChanged boolean:true
+bool fire boolean:true ok boolean:true
+bool boolean:true: (nothing)
+bool fire boolean:false ok boolean:false
+bool boolean:false: bool Released | bool StateChanged boolean:false
+bool fire number:0.69999999999999996 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+bool number:0.69999999999999996: (nothing)
+bool fire number:0.29999999999999999 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+bool number:0.29999999999999999: (nothing)
+bool fire number:0.59999999999999998 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+bool number:0.59999999999999998: (nothing)
+bool fire number:0.10000000000000001 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+bool number:0.10000000000000001: (nothing)
+bool fire number:1 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+bool number:1: (nothing)
+bool fire number:0 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+bool number:0: (nothing)
+bool fire number:-1 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+bool number:-1: (nothing)
+bool fire Vector2:1 0 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+bool Vector2:1 0: (nothing)
+bool fire Vector2:0.300000012 0.400000006 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+bool Vector2:0.300000012 0.400000006: (nothing)
+bool fire Vector3:1 0 0 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+bool Vector3:1 0 0: (nothing)
+bool fire string:x error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+bool string:x: (nothing)
+bool fire boolean:false ok boolean:false
+bool boolean:false: (nothing)
+bool fire-nil error Argument 1 missing or nil
+thresh fire number:0.69999999999999996 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+thresh number:0.69999999999999996: (nothing)
+thresh fire number:0.84999999999999998 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+thresh number:0.84999999999999998: (nothing)
+thresh fire number:0.5 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+thresh number:0.5: (nothing)
+thresh fire number:0.29999999999999999 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+thresh number:0.29999999999999999: (nothing)
+thresh fire number:0.90000000000000002 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+thresh number:0.90000000000000002: (nothing)
+thresh fire boolean:false ok boolean:false
+thresh boolean:false: (nothing)
+thresh fire boolean:true ok boolean:true
+thresh boolean:true: thresh Pressed | thresh StateChanged boolean:true
+thresh fire number:0.39000000000000001 error InputBinding:Fire() on InputActionType.Bool should be called with a bool state
+thresh number:0.39000000000000001: (nothing)
+thresh fire-nil error Argument 1 missing or nil
+1d fire number:0.25 ok number:0.25
+1d number:0.25: 1d StateChanged number:0.25
+1d fire boolean:true error InputBinding:Fire() on InputActionType.Direction1D should be called with a number state
+1d boolean:true: (nothing)
+1d fire boolean:false error InputBinding:Fire() on InputActionType.Direction1D should be called with a number state
+1d boolean:false: (nothing)
+1d fire number:-0.29999999999999999 ok number:-0.30000001192092896
+1d number:-0.29999999999999999: 1d StateChanged number:-0.30000001192092896
+1d fire number:2 ok number:2
+1d number:2: 1d StateChanged number:2
+1d fire Vector2:0.5 0.200000003 error InputBinding:Fire() on InputActionType.Direction1D should be called with a number state
+1d Vector2:0.5 0.200000003: (nothing)
+1d fire Vector3:0.100000001 0.200000003 0.300000012 error InputBinding:Fire() on InputActionType.Direction1D should be called with a number state
+1d Vector3:0.100000001 0.200000003 0.300000012: (nothing)
+1d fire number:0.050000000000000003 ok number:0.05000000074505806
+1d number:0.050000000000000003: 1d StateChanged number:0.05000000074505806
+1d fire number:0 ok number:0
+1d number:0: 1d StateChanged number:0
+1d fire-nil error Argument 1 missing or nil
+1d-scale fire number:0.25 ok number:0.25
+1d-scale number:0.25: 1d-scale StateChanged number:0.25
+1d-scale fire number:0.59999999999999998 ok number:0.60000002384185791
+1d-scale number:0.59999999999999998: 1d-scale StateChanged number:0.60000002384185791
+1d-scale fire boolean:true error InputBinding:Fire() on InputActionType.Direction1D should be called with a number state
+1d-scale boolean:true: (nothing)
+1d-scale fire number:0 ok number:0
+1d-scale number:0: 1d-scale StateChanged number:0
+1d-scale fire-nil error Argument 1 missing or nil
+1d-curve fire number:0.5 ok number:0.5
+1d-curve number:0.5: 1d-curve StateChanged number:0.5
+1d-curve fire number:-0.5 ok number:-0.5
+1d-curve number:-0.5: 1d-curve StateChanged number:-0.5
+1d-curve fire number:1 ok number:1
+1d-curve number:1: 1d-curve StateChanged number:1
+1d-curve fire number:0.29999999999999999 ok number:0.30000001192092896
+1d-curve number:0.29999999999999999: 1d-curve StateChanged number:0.30000001192092896
+1d-curve fire-nil error Argument 1 missing or nil
+1d-dead fire number:0.10000000000000001 ok number:0.10000000149011612
+1d-dead number:0.10000000000000001: 1d-dead StateChanged number:0.10000000149011612
+1d-dead fire number:0.5 ok number:0.5
+1d-dead number:0.5: 1d-dead StateChanged number:0.5
+1d-dead fire number:0.90000000000000002 ok number:0.89999997615814209
+1d-dead number:0.90000000000000002: 1d-dead StateChanged number:0.89999997615814209
+1d-dead fire number:-0.5 ok number:-0.5
+1d-dead number:-0.5: 1d-dead StateChanged number:-0.5
+1d-dead fire number:0.20000000000000001 ok number:0.20000000298023224
+1d-dead number:0.20000000000000001: 1d-dead StateChanged number:0.20000000298023224
+1d-dead fire number:0 ok number:0
+1d-dead number:0: 1d-dead StateChanged number:0
+1d-dead fire-nil error Argument 1 missing or nil
+2d fire Vector2:0.300000012 0.400000006 ok Vector2:0.300000012 0.400000006
+2d Vector2:0.300000012 0.400000006: 2d StateChanged Vector2:0.300000012 0.400000006
+2d fire Vector2:3 4 ok Vector2:3 4
+2d Vector2:3 4: 2d StateChanged Vector2:3 4
+2d fire Vector2:0.0500000007 0 ok Vector2:0.0500000007 0
+2d Vector2:0.0500000007 0: 2d StateChanged Vector2:0.0500000007 0
+2d fire number:0.5 error InputBinding:Fire() on InputActionType.Direction2D should be called with a Vector2 state
+2d number:0.5: (nothing)
+2d fire boolean:true error InputBinding:Fire() on InputActionType.Direction2D should be called with a Vector2 state
+2d boolean:true: (nothing)
+2d fire Vector3:1 2 3 error InputBinding:Fire() on InputActionType.Direction2D should be called with a Vector2 state
+2d Vector3:1 2 3: (nothing)
+2d fire-nil error Argument 1 missing or nil
+2d-scale fire Vector2:0.300000012 0.400000006 ok Vector2:0.300000012 0.400000006
+2d-scale Vector2:0.300000012 0.400000006: 2d-scale StateChanged Vector2:0.300000012 0.400000006
+2d-scale fire Vector2:0.800000012 0 ok Vector2:0.800000012 0
+2d-scale Vector2:0.800000012 0: 2d-scale StateChanged Vector2:0.800000012 0
+2d-scale fire-nil error Argument 1 missing or nil
+2d-noclamp fire Vector2:3 4 ok Vector2:3 4
+2d-noclamp Vector2:3 4: 2d-noclamp StateChanged Vector2:3 4
+2d-noclamp fire-nil error Argument 1 missing or nil
+3d fire Vector3:1 2 2 ok Vector3:1 2 2
+3d Vector3:1 2 2: 3d StateChanged Vector3:1 2 2
+3d fire Vector3:0.0500000007 0 0 ok Vector3:0.0500000007 0 0
+3d Vector3:0.0500000007 0 0: 3d StateChanged Vector3:0.0500000007 0 0
+3d fire Vector2:1 0 error InputBinding:Fire() on InputActionType.Direction3D should be called with a Vector3 state
+3d Vector2:1 0: (nothing)
+3d fire number:1 error InputBinding:Fire() on InputActionType.Direction3D should be called with a Vector3 state
+3d number:1: (nothing)
+3d fire boolean:true error InputBinding:Fire() on InputActionType.Direction3D should be called with a Vector3 state
+3d boolean:true: (nothing)
+3d fire-nil error Argument 1 missing or nil
+3d-scale fire Vector3:0.100000001 0.100000001 0.100000001 ok Vector3:0.100000001 0.100000001 0.100000001
+3d-scale Vector3:0.100000001 0.100000001 0.100000001: 3d-scale StateChanged Vector3:0.100000001 0.100000001 0.100000001
+3d-scale fire-nil error Argument 1 missing or nil
+vp fire Vector2:100 200 ok Vector2:100 200
+vp Vector2:100 200: vp StateChanged Vector2:100 200
+vp fire Vector2:0.5 0.5 ok Vector2:0.5 0.5
+vp Vector2:0.5 0.5: vp StateChanged Vector2:0.5 0.5
+vp fire number:1 error InputBinding:Fire() on InputActionType.ViewportPosition should be called with a Vector2 state
+vp number:1: (nothing)
+vp fire boolean:true error InputBinding:Fire() on InputActionType.ViewportPosition should be called with a Vector2 state
+vp boolean:true: (nothing)
+vp fire-nil error Argument 1 missing or nil
+two first-down: two Pressed | two StateChanged boolean:true
+two second-down: (nothing)
+two first-up state boolean:false
+two first-up: two Released | two StateChanged boolean:false
+two second-up: (nothing)
+orphan ok done
+no-ctx ok boolean:false
+no-ctx: (nothing)
+in-folder ok boolean:true
+in-folder: no-ctx Pressed | no-ctx StateChanged boolean:true
+ctx-disabled ok boolean:false
+ctx-disabled: no-ctx Released | no-ctx StateChanged boolean:false

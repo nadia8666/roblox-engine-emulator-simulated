@@ -28,8 +28,9 @@ fn easing_ends_and_legacy_directions() {
             assert!((ease(style, direction, 1.0) - 1.0).abs() < 1e-4, "{style} {direction}");
         }
     }
-    // Constant holds the earlier key; legacy Cubic "In" eases out, CubicV2 "In" eases in
-    assert_eq!(ease(1, 0, 0.9), 0.0);
+    // Constant holds the later key with In, the earlier with Out and changes half way with InOut; legacy Cubic "In"
+    // eases out, CubicV2 "In" eases in
+    assert_eq!((ease(1, 0, 0.1), ease(1, 1, 0.9), ease(1, 2, 0.4), ease(1, 2, 0.6)), (1.0, 0.0, 0.0, 1.0));
     assert!(ease(3, 0, 0.25) > 0.25);
     assert!(ease(5, 0, 0.25) < 0.25);
 }
@@ -37,17 +38,30 @@ fn easing_ends_and_legacy_directions() {
 #[test]
 fn sampling_holds_and_interpolates() {
     let keys = [key(0.5, 1.0, 0, 0), key(1.5, 3.0, 0, 0)];
-    assert_eq!(sample(&keys, 0.0).1.x, 1.0);
-    assert_eq!(sample(&keys, 1.0).1.x, 2.0);
-    assert_eq!(sample(&keys, 9.0).1.x, 3.0);
-    let constant = [key(0.0, 0.0, 1, 0), key(1.0, 5.0, 0, 0)];
-    assert_eq!(sample(&constant, 0.99).1.x, 0.0);
-    assert_eq!(sample(&constant, 1.0).1.x, 5.0);
+    assert_eq!(sample(&keys, 0.0, false).1.x, 1.0);
+    assert_eq!(sample(&keys, 1.0, false).1.x, 2.0);
+    assert_eq!(sample(&keys, 9.0, false).1.x, 3.0);
+    // (Constant with Out holds the earlier key, with In the later one)
+    let constant = [key(0.0, 0.0, 1, 1), key(1.0, 5.0, 0, 0)];
+    assert_eq!(sample(&constant, 0.99, false).1.x, 0.0);
+    assert_eq!(sample(&constant, 1.0, false).1.x, 5.0);
+    let early = [key(0.0, 0.0, 1, 0), key(1.0, 5.0, 0, 0)];
+    assert_eq!((sample(&early, 0.0, false).1.x, sample(&early, 0.01, false).1.x), (0.0, 5.0));
     let rotated = [
         Key { rotation: Quat::IDENTITY, ..key(0.0, 0.0, 0, 0) },
         Key { rotation: Quat::from_rotation_x(1.0), ..key(1.0, 0.0, 0, 0) },
     ];
-    assert!((sample(&rotated, 0.5).0.angle_between(Quat::from_rotation_x(0.5))).abs() < 1e-5);
+    // (the short way round at an even rate, then through Studio's angle: 1 rad reads 1.0000431 rad)
+    assert!((sample(&rotated, 0.5, false).0.angle_between(Quat::from_rotation_x(0.5))).abs() < 1e-4);
+    let whole = sample(&rotated, 1.0, false).0;
+    assert!((2.0 * whole.x.atan2(whole.w) - 1.000_043_1).abs() < 2e-6, "{whole:?}");
+    // a packed clip mixes the two quaternions instead: a quarter of 2 rad reads 0.46675 rad
+    let packed = [
+        Key { rotation: Quat::IDENTITY, ..key(0.0, 0.0, clip::PACKED, 0) },
+        Key { rotation: Quat::from_rotation_x(2.0), ..key(1.0, 0.0, clip::PACKED, 0) },
+    ];
+    let quarter = sample(&packed, 0.25, true).0;
+    assert!((2.0 * quarter.x.atan2(quarter.w) - 0.46675).abs() < 1e-4, "{quarter:?}");
 }
 
 #[test]
@@ -181,7 +195,7 @@ fn a_track_poses_its_rig_over_time() {
         assert(Track:IsA("AnimationTrack") and Track.Name == "Swing", "a track named after its animation")
         assert(near(Track.Length, 1) and not Track.IsPlaying and Track.Looped == false, "Length / IsPlaying / Looped")
         assert(Track.Priority == Enum.AnimationPriority.Action, tostring(Track.Priority))
-        assert(Track.Animation and Track.Speed == 1 and Track.WeightTarget == 1 and Track.WeightCurrent == 0)
+        assert(Track.Animation and Track.Speed == 1 and Track.WeightTarget == 0 and Track.WeightCurrent == 0, "WeightTarget is 0 until the track is played")
         local Rest = Arm.CFrame
         Track:Play(0)
         assert(Track.IsPlaying and Track.TimePosition == 0)
@@ -447,9 +461,12 @@ fn fades_stops_and_ends() {
         Once:Play(0)
         task.wait(0.35)
         assert(not Once.IsPlaying and near(Once.TimePosition, 0.3), "ended at its length")
-        assert(Order[1] == "Stopped", table.concat(Order, ","))
+        -- (it passed its end: DidLoop, and it fades out over 0.3 s before Ended)
+        assert(table.concat(Order, ",") == "Stopped,DidLoop", table.concat(Order, ","))
         task.wait(0.2)
-        assert(table.concat(Order, ",") == "Stopped,Ended", table.concat(Order, ","))
+        assert(table.concat(Order, ",") == "Stopped,DidLoop", "still fading: " .. table.concat(Order, ","))
+        task.wait(0.2)
+        assert(table.concat(Order, ",") == "Stopped,DidLoop,Ended", table.concat(Order, ","))
         "#,
         2.0,
     );
@@ -474,7 +491,8 @@ fn looping_markers_and_keyframes() {
         task.wait(1.1)
         assert(Loops == 2, "DidLoop " .. Loops)
         assert(Track.IsPlaying and Track.TimePosition < 0.5)
-        assert(table.concat(Seen, ","):sub(1, 23) == "Start,Hit,Impact=big,St", table.concat(Seen, ","))
+        -- (a keyframe's markers fire before its name)
+        assert(table.concat(Seen, ","):sub(1, 23) == "Start,Impact=big,Hit,St", table.concat(Seen, ","))
         local Hits = 0
         for _, Name in Seen do if Name == "Hit" then Hits += 1 end end
         assert(Hits == 2, "Hit fired each loop: " .. table.concat(Seen, ","))
@@ -508,7 +526,9 @@ fn higher_priorities_override_and_equal_ones_blend() {
         Action:Stop(0)
         Idle:Stop(0)
         task.wait()
-        assert(near(angle(Shoulder.Transform), 0), "rest once nothing plays")
+        -- (a track stopped at once writes no pose again: the joint keeps the last one)
+        assert(near(angle(Shoulder.Transform), 0.8, 0.02), "the pose stays once nothing plays " .. angle(Shoulder.Transform))
+        assert(near(Action.WeightCurrent, 3) and not Action.IsPlaying, "and the weight " .. Action.WeightCurrent)
         "#,
         1.0,
     );
@@ -752,14 +772,22 @@ fn get_keyframe_sequence_async_copies_a_registered_sequence() {
         local B = Provider.GetKeyframeSequenceAsync(Provider, Id)
         assert(table.concat(Order, ",") == "spawned,returned", "the call yields: " .. table.concat(Order, ","))
         assert(typeof(A) == "Instance" and A:IsA("KeyframeSequence") and A.Parent == nil, "an unparented KeyframeSequence")
-        assert(A ~= Sequence and B ~= Sequence and A ~= B, "a new copy each call")
+        assert(A ~= Sequence and A == B, "one copy, the same each call")
+        -- (the copy has the class's name, not the sequence's)
         local Original = Describe(Sequence)
-        assert(Describe(A) == Original, Describe(A) .. "\n--\n" .. Original)
-        assert(Describe(B) == Original, Describe(B))
+        local Expected = string.gsub(Original, "KeyframeSequence Wave", "KeyframeSequence KeyframeSequence", 1)
+        assert(Describe(A) == Expected, Describe(A) .. "\n--\n" .. Expected)
         local Root = A:FindFirstChild("Start").HumanoidRootPart
         assert(Root:IsA("Pose") and Root.Weight == 0 and Root.Torso.Weight == 0.5, "the weight-0 parent pose and its child")
         Root.Torso.Weight = 1
-        assert(Describe(Sequence) == Original and Describe(B) == Original, "copies are their own")
+        assert(Describe(Sequence) == Original, "the copy is its own")
+        assert(Provider:GetKeyframeSequenceAsync(Id) == A and Root.Torso.Weight == 1, "the same instance again, as the script left it")
+        -- the sequence changed after it was registered: the copy is the sequence as registered
+        Sequence.Loop = false
+        Sequence:GetChildren()[2]:Destroy()
+        A:Destroy()
+        local Again = Provider:GetKeyframeSequenceAsync(Id)
+        assert(Again == A, "even destroyed")
         -- an id that loads nothing raises (this engine loads no files), after the yield
         local Failed = {}
         task.spawn(function()
@@ -845,5 +873,81 @@ fn a_marker_signal_fires_after_earlier_tracks_were_collected() {
         assert(table.concat(Seen, " ") == "1 1 1 1 1 1 1 1", table.concat(Seen, " "))
         "#,
         6.0,
+    );
+}
+
+/// Registering a clip keeps it as it is then (source::register), for the Get...Async members to give later. It is kept
+/// as data: no instance is made and no serial used, so a script that registers a sequence and never changes it sees
+/// what it saw before clips were kept, and keeping a sequence of 1,200 instances takes well under a millisecond (about
+/// 0.2 ms on the machine this was written on).
+#[test]
+fn registering_a_clip_makes_nothing_a_script_sees() {
+    let (lua, engine) = start("play");
+    let counts = |engine: &Rc<Engine>| {
+        let state = engine.state.borrow();
+        (state.dom.live_count(), state.dom.created())
+    };
+    run(
+        &lua,
+        &engine,
+        r#"
+        local Sequence = Instance.new("KeyframeSequence")
+        Sequence.Name = "Registered"
+        for Index = 1, 300 do
+            local Keyframe = Instance.new("Keyframe")
+            Keyframe.Time = Index / 30
+            local Root = Instance.new("Pose")
+            Root.Name = "HumanoidRootPart"
+            Root.Weight = 0
+            Root.Parent = Keyframe
+            local Torso = Instance.new("Pose")
+            Torso.Name = "Torso"
+            Torso.CFrame = CFrame.Angles(Index / 100, 0, 0)
+            Torso.Parent = Root
+            local Arm = Instance.new("Pose")
+            Arm.Name = "Right Arm"
+            Arm.CFrame = CFrame.new(Index, 0, 0)
+            Arm.Parent = Torso
+            Keyframe.Parent = Sequence
+        end
+        Sequence.Parent = workspace
+        "#,
+        0.1,
+    );
+    // (what running a script that does nothing makes: the script's own instance)
+    let before = counts(&engine);
+    run(&lua, &engine, "local _ = workspace.Registered", 0.1);
+    let idle = counts(&engine);
+    run(&lua, &engine, r#"_G.Id = Provider:RegisterKeyframeSequence(workspace.Registered)"#, 0.1);
+    let registered = counts(&engine);
+    assert_eq!((registered.0 - idle.0, registered.1 - idle.1), (idle.0 - before.0, idle.1 - before.1), "registering made instances");
+    let sequence = {
+        let state = engine.state.borrow();
+        let workspace = state.dom.at(engine.world().workspace);
+        *workspace.children.iter().find(|&&child| state.dom.at(child).name.as_bytes() == b"Registered").expect("the sequence")
+    };
+    let started = std::time::Instant::now();
+    let rounds = 20;
+    for _ in 0..rounds {
+        let kept = crate::instance::KeptTree::of(&engine.state.borrow(), sequence).expect("kept");
+        assert_eq!(kept.nodes().len(), 1201);
+    }
+    let each = started.elapsed().as_secs_f64() * 1000.0 / rounds as f64;
+    println!("keeping a sequence of 1,201 instances: {each:.3} ms");
+    assert!(each < 2.0, "keeping a sequence of 1,201 instances took {each:.3} ms");
+    // and the copy made later is the sequence as it was registered
+    run(
+        &lua,
+        &engine,
+        r#"
+        local Sequence = workspace.Registered
+        Sequence:GetChildren()[1]:Destroy()
+        Sequence.Loop = false
+        local Copy = Provider:GetKeyframeSequenceAsync(_G.Id)
+        assert(#Copy:GetChildren() == 300 and #Sequence:GetChildren() == 299, "the copy has the keyframe destroyed since")
+        assert(Copy.Loop == true and Copy.Name == "KeyframeSequence", "and the Loop it had")
+        assert(#Copy:GetDescendants() == 1200, #Copy:GetDescendants())
+        "#,
+        0.5,
     );
 }

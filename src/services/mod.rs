@@ -6,7 +6,7 @@
 //! BindToRenderStep), CollectionService, GuiService, UserInputService (the static answers; runtime/
 //! input's live state is phase 5), StarterGui, ContextActionService, Debris, Sound, Bindable* /
 //! Remote*, HttpService (GUIDs, URL / JSON encoding, disabled requests); TweenService (tween.rs),
-//! QueryDescendants (query.rs); derived property views are engine::derived. GUI behaviours that
+//! QueryDescendants (query.rs), PhysicsService's collision groups (physics.rs); derived property views are engine::derived. GUI behaviours that
 //! need layout or text measurement (Absolute*, TextBounds, TextService:GetTextSize, ContentText)
 //! and live input are a host layer's (crate::Layer; roblox-ui-renderer installs them). The script-data stubs (Player methods, 3D model helpers,
 //! humanoid stand-ins (AnimationTracks: crate::animation), EditableImage, ContentProvider, marketplace / policy /
@@ -14,9 +14,12 @@
 //! runtime's own file (runtime/engine/packages/ui-labs.luau, mounted by project.rs).
 
 pub mod encoding;
+pub mod input_actions;
 pub mod json;
+pub mod physics;
 pub mod query;
 pub mod reflection_service;
+pub mod settings;
 pub mod tween;
 
 use std::{cell::RefCell, rc::Rc};
@@ -263,6 +266,15 @@ fn constant(value: impl Fn(&Lua) -> LuaResult<LuaValue> + 'static) -> MethodFn {
     Rc::new(move |lua, _, _, _| Ok(values([value(lua)?])))
 }
 
+/// A method that does nothing here where a client does something a script can see: each call reports `class`.`member` as not
+/// emulated (Output `missing`, Engine::missing) and returns nothing, so the script runs on.
+fn unemulated(class: &'static str, member: &'static str) -> MethodFn {
+    Rc::new(move |lua, engine, _, _| {
+        engine.missing(Some(lua), class, member);
+        Ok(none())
+    })
+}
+
 fn string_value(lua: &Lua, text: &str) -> LuaResult<LuaValue> {
     Ok(LuaValue::String(lua.create_string(text)?))
 }
@@ -278,6 +290,21 @@ fn vector2(lua: &Lua, x: f64, y: f64) -> LuaResult<LuaValue> {
     let vector = lune_roblox::datatypes::types::Vector2::from(dom::Vector2::new(x as f32, y as f32));
     Ok(LuaValue::UserData(lua.create_userdata(vector)?))
 }
+
+/// Services Roblox keeps for its own scripts: a script's `game:GetService` answers nil for them, with no error (Studio 0.747,
+/// a play session's client and server at script identity 2 and a client at identity 4, the command bar's:
+/// tools/parity/probes/core_services.luau). At identity 2 CoreGui, StudioService and ScriptEditorService are nil as well, and a
+/// server refuses NetworkClient; ree answers those as identity 4 does, since edit-mode code that Studio runs as a plugin
+/// parents its previews to CoreGui.
+pub const ROBLOX_ONLY_SERVICES: &[&str] = &[
+    "AppStorageService",
+    "CSGDictionaryService",
+    "CorePackages",
+    "CoreScriptSyncService",
+    "PluginGuiService",
+    "RobloxPluginGuiService",
+    "RobloxReplicatedStorage",
+];
 
 /// GetService: the existing service child, or a new one (named, parented without events and
 /// parent-locked).
@@ -298,17 +325,36 @@ pub fn get_service(engine: &Engine, game: InstanceId, service_name: &str) -> Res
         return raise(format!("'{service_name}' is not a valid Service name"));
     };
     // Roblox's names that are not the class's: scripts index `game["Run Service"]` and
-    // `UserSettings().GameSettings`
+    // `UserSettings().GameSettings` (Studio 0.748: Run Service, Script Context and Teleport Service are the DataModel's
+    // only services named otherwise)
     let instance_name = match service_name {
         "RunService" => "Run Service",
+        "ScriptContext" => "Script Context",
+        "TeleportService" => "Teleport Service",
         "UserGameSettings" => "GameSettings",
         other => other,
     };
     let service = core::create_named(&mut state, reflection, class, instance_name);
+    for &(class_name, property, value) in SERVICE_VALUES {
+        if class_name == service_name {
+            if let Some(name) = reflection.name_id(property) {
+                core::raw_set_silent(&mut state, reflection, service, name, Value::Number(value));
+            }
+        }
+    }
     state.dom.attach(service, game);
     state.dom.at_mut(service).set_flag(flags::PARENT_LOCKED, true);
     Ok(service)
 }
+
+/// What a playing client's services hold from the start where neither the dump nor rbx-dom gives a default (a service
+/// has none, and rbx-dom leaves UserGameSettings' numbers out, so they read 0): the mouse and gamepad sensitivities read 1
+/// (measured in a 0.747 client: tools/parity/probes/settings.luau; the settings file it read holds 1 for both sensitivities).
+const SERVICE_VALUES: &[(&str, &str, f64)] = &[
+    ("UserGameSettings", "MouseSensitivity", 1.0),
+    ("UserGameSettings", "GamepadCameraSensitivity", 1.0),
+    ("UserInputService", "MouseDeltaSensitivity", 1.0),
+];
 
 /// A UserSettings object (outside the DataModel, as in Roblox): `UserSettings()` makes it on its first
 /// call and returns it from then on. None when the reflection has no UserSettings class.
@@ -316,7 +362,8 @@ pub fn user_settings(engine: &Engine) -> Option<InstanceId> {
     let class = engine.reflection.class_id("UserSettings")?;
     let id = {
         let mut state = engine.state.borrow_mut();
-        let id = core::create_named(&mut state, &engine.reflection, class, "UserSettings");
+        // named as in Roblox (Studio 0.748: UserSettings().Name, tostring and GetFullName are "GlobalBasicSettings")
+        let id = core::create_named(&mut state, &engine.reflection, class, "GlobalBasicSettings");
         state.dom.at_mut(id).set_flag(flags::PARENT_LOCKED, true);
         state.dom.pin(id);
         id
@@ -345,6 +392,20 @@ struct RenderStep {
     sequence: u64,
 }
 
+/// The methods only Roblox's own scripts may call (reflection.rs CAPABILITY_CALLS): each is a function that raises the
+/// client's error whatever it is called with, in every run context. Plain functions, not instance methods, because the
+/// error comes before the instance is checked (`game.DefineFastInt("x", 1)` raises it too, not "Expected ':' not '.'").
+/// Installed with the core's behaviours, before a host's layers, which may replace them.
+pub fn install_capability_calls(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
+    for &(class_name, member, capability) in crate::reflection::CAPABILITY_CALLS {
+        let (Some(owner), Some(name)) = (class(&engine.reflection, class_name), engine.reflection.name_id(member)) else { continue };
+        let message = format!("The current thread cannot call '{member}' (lacking capability {capability})");
+        let function = super::lua::wrapped(lua, engine, move |_, _| raise(message.clone()))?;
+        engine.behaviors.borrow_mut().add_lua_method(owner, name, function);
+    }
+    Ok(())
+}
+
 /// Installs the service behaviours (Services.Install) and the RunService frame hooks.
 pub fn install(engine: &Rc<Engine>) {
     let reflection = engine.reflection.clone();
@@ -355,6 +416,14 @@ pub fn install(engine: &Rc<Engine>) {
     if let Some(data_model) = class(&reflection, "DataModel") {
         let get = method(|lua, engine, id, args| {
             let service_name = args.string(1).map(|s| s.to_string_lossy()).unwrap_or_default();
+            if ROBLOX_ONLY_SERVICES.contains(&&*service_name) {
+                return Ok(values([LuaValue::Nil]));
+            }
+            // (the settings services belong to settings() and UserSettings(): settings.rs)
+            if let Some(answer) = settings::data_model_service(engine, id, &service_name) {
+                answer?;
+                return Ok(values([LuaValue::Nil]));
+            }
             let service = get_service(engine, id, &service_name)?;
             Ok(values([instance_value(lua, engine, service)?]))
         });
@@ -362,7 +431,11 @@ pub fn install(engine: &Rc<Engine>) {
         behaviors.add_method(data_model, K::service as NameId, get);
         behaviors.add_method(data_model, K::FindService as NameId, method(|lua, engine, id, args| {
             let service_name = args.string(1).map(|s| s.to_string_lossy()).unwrap_or_default();
-            Ok(values([match find_service(engine, id, &service_name) {
+            // (a name that is no service's raises as GetService does: tools/parity/probes/core_services.luau)
+            if !engine.reflection.class_by_name(&service_name).is_some_and(|class| class.service) && !settings::found_nowhere(&service_name) {
+                return raise(format!("'{service_name}' is not a valid Service name"));
+            }
+            Ok(values([match find_service(engine, id, &service_name).filter(|_| !ROBLOX_ONLY_SERVICES.contains(&&*service_name)) {
                 Some(service) => instance_value(lua, engine, service)?,
                 None => LuaValue::Nil,
             }]))
@@ -380,6 +453,15 @@ pub fn install(engine: &Rc<Engine>) {
                 Ok(instance_value(lua, engine, service)?)
             }));
         }
+        // (the dump's `game.RunService` is the RunService, though the service is named "Run Service": measured in Studio
+        // 0.748, where game:FindFirstChild("RunService") is nil)
+        if let Some(run_service) = reflection.name_id("RunService") {
+            behaviors.add_getter(data_model, run_service, getter(|lua, engine, id| {
+                let service = get_service(engine, id, "RunService")?;
+                Ok(instance_value(lua, engine, service)?)
+            }));
+        }
+        // (its function runs when the server shuts down, which no run reaches: Roblox's DataModel documentation)
         behaviors.add_method(data_model, K::BindToClose as NameId, method(|_, _, _, _| Ok(none())));
         behaviors.add_method(data_model, K::GetJobsInfo as NameId, constant(|lua| Ok(LuaValue::Table(lua.create_table()?))));
         let place_id = options.place_id;
@@ -395,24 +477,6 @@ pub fn install(engine: &Rc<Engine>) {
         behaviors.add_getter(data_model, K::PlaceVersion as NameId, getter(|_, _, _| Ok(LuaValue::Number(0.0))));
         behaviors.add_getter(data_model, K::PrivateServerId as NameId, getter(|lua, _, _| Ok(string_value(lua, "")?)));
         behaviors.add_getter(data_model, K::PrivateServerOwnerId as NameId, getter(|_, _, _| Ok(LuaValue::Number(0.0))));
-    }
-
-    // UserSettings(): GetService / FindService give its settings services (children made on first
-    // use, like the DataModel's)
-    if let Some(settings) = class(&reflection, "UserSettings") {
-        let get = method(|lua, engine, id, args| {
-            let service_name = args.string(1).map(|s| s.to_string_lossy()).unwrap_or_default();
-            let service = get_service(engine, id, &service_name)?;
-            Ok(values([instance_value(lua, engine, service)?]))
-        });
-        behaviors.add_method(settings, K::GetService as NameId, get);
-        behaviors.add_method(settings, K::FindService as NameId, method(|lua, engine, id, args| {
-            let service_name = args.string(1).map(|s| s.to_string_lossy()).unwrap_or_default();
-            Ok(values([match find_service(engine, id, &service_name) {
-                Some(service) => instance_value(lua, engine, service)?,
-                None => LuaValue::Nil,
-            }]))
-        }));
     }
 
     // Workspace / Camera
@@ -551,10 +615,12 @@ pub fn install(engine: &Rc<Engine>) {
         let mode_edit = options.edit_mode();
         let server = options.server();
         let loopback = options.loopback;
+        // (Studio's edit DataModel, `--run-context edit`, is both sides: the same documentation's table, not measured)
+        let both = options.run_context == crate::RunContext::Edit;
         let studio = options.studio;
         behaviors.add_method(run_service, K::IsStudio as NameId, constant(move |_| Ok(LuaValue::Boolean(studio))));
         behaviors.add_method(run_service, K::IsClient as NameId, constant(move |_| Ok(LuaValue::Boolean(!server))));
-        behaviors.add_method(run_service, K::IsServer as NameId, constant(move |_| Ok(LuaValue::Boolean(server || loopback))));
+        behaviors.add_method(run_service, K::IsServer as NameId, constant(move |_| Ok(LuaValue::Boolean(server || loopback || both))));
         behaviors.add_method(run_service, K::IsRunning as NameId, constant(move |_| Ok(LuaValue::Boolean(!mode_edit))));
         behaviors.add_method(run_service, K::IsRunMode as NameId, constant(|_| Ok(LuaValue::Boolean(false))));
         // (a game script may not ask: "The current thread cannot call 'IsEdit' (lacking capability PluginOrOpenCloud)" on a
@@ -655,14 +721,16 @@ pub fn install(engine: &Rc<Engine>) {
     // TweenService, Instance:QueryDescendants, AnimationTracks
     tween::install(engine, &mut behaviors);
     reflection_service::install(engine, &mut behaviors);
+    physics::install(engine, &mut behaviors);
+    // settings() and UserSettings(): GetService / FindService and the settings services' members
+    settings::install(engine, &mut behaviors);
     crate::animation::install(engine, &mut behaviors);
     crate::meshes::install(engine, &mut behaviors);
+    input_actions::install(engine, &mut behaviors);
     crate::path2d::install(engine, &mut behaviors);
     query::install(engine, &mut behaviors);
-    // (a client keeps EncodingService unemulated, as it was: its output does not change)
-    if options.server() {
-        encoding::install(engine, &mut behaviors);
-    }
+    // (on every side: a playing client answers its members as a server does, measured)
+    encoding::install(engine, &mut behaviors);
 
     // CollectionService
     if let Some(collection) = class(&reflection, "CollectionService") {
@@ -744,9 +812,17 @@ pub fn install(engine: &Rc<Engine>) {
                 behaviors.add_method(gui, n, constant(|_| Ok(LuaValue::Boolean(false))));
             }
         }
-        for member in ["CloseInspectMenu", "SetEmotesMenuOpen", "Select", "AddSelectionParent", "RemoveSelectionGroup"] {
+        // (no inspect menu opens without a GUI layer, so there is none to close, and no selection group to remove but one
+        // AddSelectionParent made, which reports itself)
+        for member in ["CloseInspectMenu", "RemoveSelectionGroup"] {
             if let Some(n) = name(&reflection, member) {
                 behaviors.add_method(gui, n, method(|_, _, _, _| Ok(none())));
+            }
+        }
+        // (not kept: GetEmotesMenuOpen stays false, SelectedObject unset)
+        for member in ["SetEmotesMenuOpen", "Select", "AddSelectionParent"] {
+            if let Some(n) = name(&reflection, member) {
+                behaviors.add_method(gui, n, unemulated("GuiService", member));
             }
         }
     }
@@ -795,9 +871,10 @@ pub fn install(engine: &Rc<Engine>) {
 
     // StarterGui / ContextActionService / Debris / Sound
     if let Some(starter) = class(&reflection, "StarterGui") {
+        // (Roblox's own UI is not emulated: GetCore and GetCoreGuiEnabled keep their first answers)
         for member in ["SetCore", "SetCoreGuiEnabled"] {
             if let Some(n) = name(&reflection, member) {
-                behaviors.add_method(starter, n, method(|_, _, _, _| Ok(none())));
+                behaviors.add_method(starter, n, unemulated("StarterGui", member));
             }
         }
         if let Some(n) = name(&reflection, "GetCore") {
@@ -812,6 +889,8 @@ pub fn install(engine: &Rc<Engine>) {
         }
     }
     if let Some(actions) = class(&reflection, "ContextActionService") {
+        // (BindAction, BindActionAtPriority, UnbindAction and UnbindAllActions are world/input.rs's: this fork has an input layer,
+        // where upstream's own reports them as unemulated)
         for member in ["SetTitle", "SetImage", "SetDescription", "SetPosition", "BindActivate", "UnbindActivate"] {
             if let Some(n) = name(&reflection, member) {
                 behaviors.add_method(actions, n, method(|_, _, _, _| Ok(none())));
@@ -887,21 +966,22 @@ pub fn install(engine: &Rc<Engine>) {
         }));
     }
 
-    // Remotes never reach a server offline. With `--loopback` one VM plays both sides: FireServer reaches OnServerEvent with the
+    // Remotes never reach a server offline (a client run's: a server run's and an engine-pair loopback run's are their own), so
+    // FireServer reports itself. With `--loopback` one VM plays both sides: FireServer reaches OnServerEvent with the
     // local player in front, FireClient (to the local player) and FireAllClients reach OnClientEvent; arguments are copied as
     // Bindable's are. Bindables fire locally
     let loopback = options.loopback;
     for remote in ["RemoteEvent", "UnreliableRemoteEvent"] {
         let Some(c) = class(&reflection, remote) else { continue };
+        if !loopback {
+            if let Some(n) = name(&reflection, "FireServer") {
+                behaviors.add_method(c, n, unemulated(remote, "FireServer"));
+            }
+            continue;
+        }
         for (member, event, from_player) in [("FireServer", "OnServerEvent", true), ("FireClient", "OnClientEvent", false), ("FireAllClients", "OnClientEvent", false)] {
             let (Some(n), Some(event)) = (name(&reflection, member), name(&reflection, event)) else { continue };
-            if !loopback && member != "FireServer" {
-                continue;
-            }
             behaviors.add_method(c, n, method(move |lua, engine, id, args| {
-                if !loopback {
-                    return Ok(none());
-                }
                 let local = engine.world().local_player;
                 let mut arguments: Vec<Value> = Vec::new();
                 if from_player {
@@ -1199,9 +1279,10 @@ pub fn install_gui_behaviors(engine: &Rc<Engine>) {
         }
     }
     if let Some(text_box) = class(&reflection, "TextBox") {
+        // (focus is the input layer's: without one, nothing takes it)
         for member in ["CaptureFocus", "ReleaseFocus"] {
             if let Some(name) = n(member) {
-                behaviors.add_method(text_box, name, method(|_, _, _, _| Ok(none())));
+                behaviors.add_method(text_box, name, unemulated("TextBox", member));
             }
         }
         if let Some(name) = n("IsFocused") {
@@ -1217,7 +1298,12 @@ pub fn install_gui_behaviors(engine: &Rc<Engine>) {
         if let Some(name) = n("GuiState") {
             behaviors.add_getter(gui_object, name, getter(|lua, engine, _| Ok(enum_item(lua, engine, "GuiState", "Idle")?)));
         }
-        // Tween* methods apply the end values at once and report Completed at the next resumption
+        // Tween* methods apply the end values at once and report Completed at the next resumption.
+        // Their arguments are cast first, in order (Studio 0.747: a string for the UDim2 raises "Unable to cast string to
+        // UDim2", nil "Argument 1 missing or nil", then the direction, the style and the time); Spring and Bezier are
+        // refused ("GuiObject:TweenPosition does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier", by item,
+        // name or value, nothing moved and no callback); and an object outside the DataModel is refused last ("Can only
+        // tween objects in the workspace": a Frame with no parent, or under a ScreenGui or Folder that has none).
         let tweens: [(&str, &[&str]); 3] = [
             ("TweenPosition", &["Position"]),
             ("TweenSize", &["Size"]),
@@ -1227,12 +1313,31 @@ pub fn install_gui_behaviors(engine: &Rc<Engine>) {
             let Some(name) = n(member) else { continue };
             let fields: Vec<NameId> = fields.iter().filter_map(|f| n(f)).collect();
             behaviors.add_method(gui_object, name, method(move |lua, engine, id, args| {
-                let class = engine.state.borrow().dom.at(id).class;
-                for (index, field) in fields.iter().enumerate() {
-                    if let Some(info) = engine.reflection.class_property(class, *field).cloned() {
-                        let value = convert::coerce(lua, engine, &info, args.get(1 + index))?;
-                        set_property(engine, id, *field, value);
+                let mut ends = Vec::with_capacity(fields.len());
+                for index in 0..fields.len() {
+                    let value = args.get(1 + index);
+                    match convert::from_lua(value) {
+                        end @ Value::UDim2(_) => ends.push(end),
+                        Value::Nil => return raise(format!("Argument {} missing or nil", 1 + index)),
+                        _ => return raise(format!("Unable to cast {} to UDim2", tween::cast_name(engine, value))),
                     }
+                }
+                let after = 1 + fields.len();
+                if !args.get(after).is_nil() {
+                    tween::enum_arg(lua, engine, args, after, "EasingDirection")?;
+                }
+                let style = if args.get(after + 1).is_nil() { None } else { Some(tween::enum_arg(lua, engine, args, after + 1, "EasingStyle")?) };
+                if !args.get(after + 2).is_nil() {
+                    tween::float_arg(lua, engine, args, after + 2)?;
+                }
+                if let Some(message) = style.and_then(|style| tween::unsupported_style(engine, style, &format!("GuiObject:{member}"))) {
+                    return raise(message);
+                }
+                if !in_data_model(&engine.state.borrow(), id) {
+                    return raise("Can only tween objects in the workspace");
+                }
+                for (field, end) in fields.iter().zip(ends) {
+                    set_property(engine, id, *field, end);
                 }
                 let callback_index = 1 + fields.len() + 4;
                 if let LuaValue::Function(callback) = args.get(callback_index).clone() {
@@ -1243,6 +1348,88 @@ pub fn install_gui_behaviors(engine: &Rc<Engine>) {
                 Ok(values([LuaValue::Boolean(true)]))
             }));
         }
+    }
+    // Settings only a plugin or the engine's own scripts use (reflection.rs CAPABILITY_ONLY): a game script's read and
+    // write raise as a client's do; the engine reads the stored values itself
+    for &(class_name, member, capability) in crate::reflection::CAPABILITY_ONLY {
+        let (Some(owner), Some(name)) = (class(&reflection, class_name), n(member)) else { continue };
+        let read = format!("The current thread cannot read '{member}' (lacking capability {capability})");
+        let write = format!("The current thread cannot write '{member}' (lacking capability {capability})");
+        behaviors.add_getter(owner, name, getter(move |_, _, _| raise(read.clone())));
+        behaviors.add_setter(owner, name, Rc::new(move |_, _, _, _| raise(write.clone())));
+    }
+    // UIPageLayout.EasingStyle keeps its value when Spring or Bezier is assigned (Studio 0.747: by item, name or value;
+    // no error and no Changed)
+    if let (Some(layout), Some(name)) = (class(&reflection, "UIPageLayout"), n("EasingStyle")) {
+        behaviors.add_setter(layout, name, Rc::new(move |lua, engine, id, value| {
+            let class = engine.state.borrow().dom.at(id).class;
+            let Some(info) = engine.reflection.class_property(class, name).cloned() else { return Ok(()) };
+            let style = convert::coerce(lua, engine, &info, &value)?;
+            if let Value::EnumItem(item) = style
+                && tween::unsupported_style(engine, item, "").is_some()
+            {
+                return Ok(());
+            }
+            set_property(engine, id, name, style);
+            Ok(())
+        }));
+    }
+    // A Camera's projection is not in use yet: Studio 0.747 lists ProjectionType, OrthographicMode, OrthographicSize and
+    // ViewStretch, reads their defaults (Perspective, Vertical, 35, 1) and drops every write without a Changed. The two
+    // enums still refuse what is no item of theirs; the two numbers take any value silently (a string, a table, nil).
+    if let Some(camera) = class(&reflection, "Camera") {
+        for member in ["ProjectionType", "OrthographicMode"] {
+            let Some(name) = n(member) else { continue };
+            behaviors.add_setter(camera, name, Rc::new(move |lua, engine, id, value| {
+                let class = engine.state.borrow().dom.at(id).class;
+                if let Some(info) = engine.reflection.class_property(class, name).cloned() {
+                    convert::coerce(lua, engine, &info, &value)?;
+                }
+                Ok(())
+            }));
+        }
+        for member in ["OrthographicSize", "ViewStretch"] {
+            if let Some(name) = n(member) {
+                behaviors.add_setter(camera, name, Rc::new(|_, _, _, _| Ok(())));
+            }
+        }
+    }
+    // Number ranges, measured in Studio 0.747: a write outside is stored as the nearest bound, and changes nothing when
+    // that is the value already (ParticleEmitter2D.TimeScale 0.5, 5, 9, 1 from 1: Changed twice). InputBinding.Deadzone
+    // holds each end within 0 and 1 (2..3 reads 1 1).
+    const RANGES: &[(&str, &str, f64, f64)] = &[
+        ("ParticleEmitter", "TimeScale", 0.0, 1.0),
+        ("ParticleEmitter2D", "TimeScale", 0.0, 1.0),
+        ("ParticleEmitter2D", "Brightness", 0.0, 10000.0),
+        ("ParticleEmitter2D", "Blend", 0.0, 1.0),
+        ("ParticleEmitter2D", "FlipbookSizeX", 1.0, 64.0),
+        ("ParticleEmitter2D", "FlipbookSizeY", 1.0, 64.0),
+        ("UIBlur", "Transparency", 0.0, 1.0),
+    ];
+    for &(class_name, member, low, high) in RANGES {
+        let (Some(owner), Some(name)) = (class(&reflection, class_name), n(member)) else { continue };
+        behaviors.add_setter(owner, name, Rc::new(move |lua, engine, id, value| {
+            let class = engine.state.borrow().dom.at(id).class;
+            let Some(info) = engine.reflection.class_property(class, name).cloned() else { return Ok(()) };
+            let value = match convert::coerce(lua, engine, &info, &value)? {
+                Value::Number(number) => Value::Number(number.clamp(low, high)),
+                other => other,
+            };
+            set_property(engine, id, name, value);
+            Ok(())
+        }));
+    }
+    if let (Some(binding), Some(name)) = (class(&reflection, "InputBinding"), n("Deadzone")) {
+        behaviors.add_setter(binding, name, Rc::new(move |lua, engine, id, value| {
+            let class = engine.state.borrow().dom.at(id).class;
+            let Some(info) = engine.reflection.class_property(class, name).cloned() else { return Ok(()) };
+            let value = match convert::coerce(lua, engine, &info, &value)? {
+                Value::NumberRange(range) => Value::NumberRange(dom::NumberRange::new(range.min.clamp(0.0, 1.0), range.max.clamp(0.0, 1.0))),
+                other => other,
+            };
+            set_property(engine, id, name, value);
+            Ok(())
+        }));
     }
     // (ApplyLayout, UIPageLayout navigation, the Absolute* / TextBounds getters and the
     // CanvasPosition setter are a layout layer's)

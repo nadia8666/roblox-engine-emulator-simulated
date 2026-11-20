@@ -1,0 +1,6 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless play session of one server and one client in processes of their own (the server's half a server Script from the server's start, the client's half a job in the client; script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-19
+# repeated: 3 captures, the same lines
+client: server time now: client minus server within a second true, not behind true
+client: time(): client below the server's true
+client: DistributedGameTime: within a second of the server's true

@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 defer-chain start,d1,[Heartbeat],d2,d3,[PreAnimation],[PreSimulation],[PostSimulation],[Heartbeat],[PreAnimation],[PreSimulation],[PostSimulation]
 event-chain start,e1,[Heartbeat],e2,e3,[PreAnimation],[PreSimulation],[PostSimulation],[Heartbeat],[PreAnimation],[PreSimulation],[PostSimulation]
 mixed start,d,f1,[Heartbeat],f1,f1-defer,f2,f1-defer,f2,[PreAnimation],[PreSimulation],[PostSimulation],[Heartbeat],[PreAnimation],[PreSimulation],[PostSimulation]

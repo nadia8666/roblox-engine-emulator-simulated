@@ -46,6 +46,48 @@ fn assert_golden(got: &[String], expected: &str, tolerance: f64) {
     assert_eq!(got.len(), expected.len(), "the number of lines");
 }
 
+/// A line cut into its numbers and the text between them.
+fn numbers_of(line: &str) -> (String, Vec<f64>) {
+    let bytes = line.as_bytes();
+    let (mut text, mut numbers, mut at) = (String::new(), Vec::new(), 0);
+    while at < bytes.len() {
+        let digit = |index: usize| bytes.get(index).is_some_and(u8::is_ascii_digit);
+        let start = at;
+        if digit(at) || (bytes[at] == b'-' && digit(at + 1)) {
+            at += 1;
+            while digit(at) || (bytes.get(at) == Some(&b'.') && digit(at + 1)) {
+                at += 1;
+            }
+            if matches!(bytes.get(at), Some(b'e' | b'E')) && (digit(at + 1) || (matches!(bytes.get(at + 1), Some(b'-' | b'+')) && digit(at + 2))) {
+                at += 2;
+                while digit(at) {
+                    at += 1;
+                }
+            }
+            numbers.push(line[start..at].parse().expect("a number"));
+            text.push('#');
+        } else {
+            at += line[at..].chars().next().map_or(1, char::len_utf8);
+            text.push_str(&line[start..at]);
+        }
+    }
+    (text, numbers)
+}
+
+/// Compares a golden script's lines with Studio's, every number within `tolerance` and all else alike: for poses
+/// whose last digit follows Studio's own float32 sine, cosine and powers.
+fn assert_golden_near(got: &[String], expected: &str, tolerance: f64) {
+    let expected: Vec<&str> = expected.lines().collect();
+    for (index, (got, want)) in got.iter().zip(&expected).enumerate() {
+        let ((our_text, ours), (their_text, theirs)) = (numbers_of(got), numbers_of(want));
+        assert_eq!(our_text, their_text, "line {}:\n ree    {got}\n studio {want}", index + 1);
+        for (a, b) in ours.iter().zip(&theirs) {
+            assert!((a - b).abs() <= tolerance, "line {}: {a} against Studio's {b}\n ree    {got}\n studio {want}", index + 1);
+        }
+    }
+    assert_eq!(got.len(), expected.len(), "the number of lines");
+}
+
 #[test]
 fn curve_keys_match_studio() {
     assert_golden(&golden(include_str!("curve_golden/keys.luau")), include_str!("curve_golden/keys.txt"), 0.0);
@@ -95,12 +137,83 @@ fn clips_at_the_edges_match_studio() {
     assert_golden(&golden_in("edit", include_str!("curve_golden/playback_clips.luau"), 60.0), include_str!("curve_golden/playback_clips.txt"), 0.0);
 }
 
-/// Animator:StepAnimations has Plugin security (Roblox's API reference): a game's script may not call it.
+/// A track's weight in float32 over its fades, what Stopped and Ended fire and when, a track ended at once, and
+/// which joints a step writes: a joint keeps its pose when its last track is stopped at once.
+#[test]
+fn weights_fades_and_ends_match_studio() {
+    assert_golden(&golden_in("edit", include_str!("curve_golden/playback_weights.luau"), 120.0), include_str!("curve_golden/playback_weights.txt"), 0.0);
+}
+
+/// Deltas of 0, below 0, past the end, infinite and not a number, and TimePosition set anywhere.
+#[test]
+fn deltas_of_every_kind_match_studio() {
+    assert_golden(&golden_in("edit", include_str!("curve_golden/playback_deltas.luau"), 120.0), include_str!("curve_golden/playback_deltas.txt"), 0.0);
+}
+
+/// A KeyframeSequence's track stepped as the two scripts above step a CurveAnimation's.
+#[test]
+fn stepped_sequence_tracks_match_studio() {
+    assert_golden(&golden_in("edit", include_str!("curve_golden/sequence_steps.luau"), 120.0), include_str!("curve_golden/sequence_steps.txt"), 0.0);
+}
+
+/// Thirteen mixes of five tracks on four priorities, for both kinds of clip, to the last digit.
+#[test]
+fn blends_match_studio() {
+    assert_golden(&golden_in("edit", include_str!("curve_golden/playback_blend.luau"), 120.0), include_str!("curve_golden/playback_blend.txt"), 0.0);
+}
+
+/// 1,800 translations of a CurveAnimation's track, each Studio's to the last digit.
+#[test]
+fn curve_translations_match_studio() {
+    assert_golden(&golden_in("edit", include_str!("curve_golden/playback_poses.luau"), 120.0), include_str!("curve_golden/playback_poses.txt"), 0.0);
+}
+
+/// Forty rotations of a CurveAnimation's track, within 1e-6 a matrix entry (without Studio's way through an angle
+/// they are up to 1.2e-4 off).
+#[test]
+fn curve_rotations_match_studio() {
+    assert_golden_near(&golden_in("edit", include_str!("curve_golden/playback_rotations.luau"), 120.0), include_str!("curve_golden/playback_rotations.txt"), 1e-6);
+}
+
+/// A KeyframeSequence's poses: played from its keys or from the packed form, every easing, rotations, a packed
+/// clip's keyframe times. Within 2e-6 a number; 2,180 of the 2,472 are Studio's to the last digit.
+#[test]
+fn sequence_poses_match_studio() {
+    assert_golden_near(&golden_in("edit", include_str!("curve_golden/sequence_poses.luau"), 120.0), include_str!("curve_golden/sequence_poses.txt"), 2e-6);
+}
+
+/// What the two Get...Async members give for a registered id: the clip as registered, one instance a member and id.
+#[test]
+fn registered_copies_match_studio() {
+    assert_golden(&golden_in("edit", include_str!("curve_golden/registered.luau"), 120.0), include_str!("curve_golden/registered.txt"), 0.0);
+}
+
+/// A track of an `active://` id follows its clip.
+#[test]
+fn active_ids_match_studio() {
+    assert_golden(&golden_in("edit", include_str!("curve_golden/active.luau"), 120.0), include_str!("curve_golden/active.txt"), 0.0);
+}
+
+/// A marker value with a zero byte, and the channels of a curve that was cloned whole.
+#[test]
+fn curves_that_arrive_whole_match_studio() {
+    assert_golden(&golden_in("edit", include_str!("curve_golden/arrivals.luau"), 120.0), include_str!("curve_golden/arrivals.txt"), 0.0);
+}
+
+/// A clip's FaceControls curves and NumberPoses drive the rig's FaceControls instance.
+#[test]
+fn face_controls_match_studio() {
+    assert_golden(&golden_in("edit", include_str!("curve_golden/face_controls.luau"), 120.0), include_str!("curve_golden/face_controls.txt"), 0.0);
+}
+
+/// Animator:StepAnimations in a running game (measured in a Studio 0.747 playtest): a game's script may not call it
+/// ("lacking capability PluginOrOpenCloud"); the command bar's call there raises "Animator:StepAnimations() can only
+/// be used when the game is not running!", which no script of this engine reaches.
 #[test]
 fn a_games_script_may_not_step_animations() {
     let (lua, engine) = start("play");
     let lines = run(&lua, &engine, r#"print(pcall(function() Instance.new("Animator"):StepAnimations(0.1) end))"#, 0.1);
-    assert!(lines.iter().any(|line| line.ends_with("false The current thread cannot call 'StepAnimations' (lacking capability Plugin)")), "{lines:?}");
+    assert!(lines.iter().any(|line| line.ends_with("false The current thread cannot call 'StepAnimations' (lacking capability PluginOrOpenCloud)")), "{lines:?}");
 }
 
 fn float_key(time: f32, value: f32) -> (f32, FloatKey) {
@@ -477,8 +590,10 @@ fn the_providers_register_and_return_curve_animations() {
         Raises(function() Sequences:RegisterActiveKeyframeSequence(Clip) end, "Argument must be a 'KeyframeSequence' object")
         Raises(function() Sequences:RegisterActiveKeyframeSequence() end, "Argument 1 missing or nil")
         local First = Sequences:RegisterActiveKeyframeSequence(Sequence)
+        local Zero = Clips:RegisterActiveAnimationClip(Clip)
         local Active = Clips:RegisterActiveAnimationClip(Clip)
-        assert(First == "active://0" and Active == "active://1", `{First} {Active}`)
+        assert(First == "active://0" and Zero == "active://0" and Active == "active://1", `each service counts its own, and a clip again takes the next: {First} {Zero} {Active}`)
+        assert(Sequences:GetKeyframeSequenceAsync(Zero) == Sequence, "KeyframeSequenceProvider reads an active id in its own list")
         -- a Position or Rotation child of another class: AnimationClipProvider refuses, KeyframeSequenceProvider does not look
         local Bad = Instance.new("CurveAnimation")
         Float("Rotation", { FK(0, 1, L) }, Folder("Arm", Folder("Root", Bad)))

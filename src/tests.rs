@@ -62,6 +62,19 @@ fn assert_script(source: &str) {
     assert!(errors.is_empty(), "{errors:?}");
 }
 
+/// A playing client's mouse and gamepad sensitivities start at 1 (measured: tools/parity/probes/settings.luau); they
+/// read 0 before (a service has no reflection defaults, and rbx-dom leaves UserGameSettings' numbers out).
+#[test]
+fn services_start_at_a_clients_sensitivities() {
+    assert_script(
+        r#"
+        local Settings = UserSettings():GetService("UserGameSettings")
+        assert(Settings.MouseSensitivity == 1 and Settings.GamepadCameraSensitivity == 1, tostring(Settings.MouseSensitivity))
+        assert(game:GetService("UserInputService").MouseDeltaSensitivity == 1)
+        "#,
+    );
+}
+
 #[test]
 fn instances_properties_and_errors() {
     assert_script(
@@ -852,6 +865,55 @@ fn random_draws_unit_vectors_shuffles_and_bounds_as_measured() {
     );
 }
 
+/// utf8.nfcnormalize and utf8.nfdnormalize as a playing client and a server answer them (Studio 0.747,
+/// tools/parity/probes/utf8_normalize.luau; lua/normalize.rs), where both returned their argument: nfc composes with the
+/// code point before it only (no reordering, singletons and exclusions stay, any syllable takes a trailing consonant),
+/// nfd decomposes in place with a U+0000 after a singleton; numbers are read as text, and the argument and invalid UTF-8
+/// errors are raised at the calling line.
+#[test]
+fn utf8_normalization_follows_a_clients_rules() {
+    let script = r##"
+        local U = utf8.char
+        local function Codes(Text)
+            local Out = {}
+            for _, Code in utf8.codes(Text) do
+                table.insert(Out, string.format("%X", Code))
+            end
+            return table.concat(Out, " ")
+        end
+        print("nfc", Codes(utf8.nfcnormalize(U(0x65, 0x301))), Codes(utf8.nfcnormalize(U(0x61, 0x302, 0x323))), Codes(utf8.nfcnormalize(U(0x61, 0x316, 0x301))))
+        print("nfc kept", Codes(utf8.nfcnormalize(U(0x212B, 0x958, 0xF900))), Codes(utf8.nfcnormalize(U(0x11935, 0x11930))))
+        print("nfc hangul", Codes(utf8.nfcnormalize(U(0x1100, 0x1161, 0x11A8))), Codes(utf8.nfcnormalize(U(0xAC01, 0x11A8))), Codes(utf8.nfcnormalize(U(0xAC00, 0x11A7))))
+        print("nfd", Codes(utf8.nfdnormalize(U(0x1EC7))), Codes(utf8.nfdnormalize(U(0x61, 0x301, 0x323))), Codes(utf8.nfdnormalize(U(0xD7A3))))
+        print("nfd singletons", Codes(utf8.nfdnormalize(U(0x212B))), Codes(utf8.nfdnormalize(U(0x2126, 0x62))), Codes(utf8.nfdnormalize(U(0x1F71))))
+        print("values", select("#", utf8.nfcnormalize("abc")), utf8.nfcnormalize(123), utf8.nfdnormalize(-0.5), utf8.nfcnormalize(""))
+        print(pcall(utf8.nfcnormalize))
+        print(pcall(utf8.nfdnormalize, nil))
+        print(pcall(utf8.nfcnormalize, workspace))
+        print(pcall(function() return utf8.nfcnormalize("\255") end))
+        print(pcall(function() return utf8.nfdnormalize("e\204") end))
+        print(pcall(function() return utf8.nfdnormalize(true) end))
+    "##;
+    let (lua, engine) = start();
+    assert_eq!(
+        run(&lua, &engine, script),
+        [
+            "print: nfc E9 E2 323 61 316 301",
+            "print: nfc kept 212B 958 F900 11935 11930",
+            "print: nfc hangul AC01 AC02 AC00",
+            "print: nfd 65 323 302 61 301 323 1112 1175 11C2",
+            "print: nfd singletons 41 30A 0 3A9 0 62 3B1 301 0",
+            "print: values 1 123 -0.5 ",
+            "print: false missing argument #1 to 'nfcnormalize' (string expected)",
+            "print: false invalid argument #1 to 'nfdnormalize' (string expected, got nil)",
+            "print: false invalid argument #1 to 'nfcnormalize' (string expected, got Instance)",
+            "print: false Test:19: String contains invalid UTF-8",
+            "print: false Test:20: End of string is invalid UTF-8",
+            "print: false Test:21: invalid argument #1 to 'nfdnormalize' (string expected, got boolean)",
+        ]
+    );
+}
+
 #[test]
 fn the_task_library_raises_robloxs_errors() {
     // Measured in a playing client (Studio 0.744, tools/parity/probes/task_order.luau): no position on any of them,
@@ -1073,6 +1135,17 @@ fn enums_and_engine_datatypes() {
     assert_script(
         r#"
         assert(Enum.Font.GothamSemibold == Enum.Font.GothamMedium)
+        -- legacy names resolve to the item that carries the current name, and nothing lists them (measured, a 0.747 client:
+        -- tools/parity/probes/enum_legacy.luau). KeyCode's value 0 is None; Unknown is its legacy name
+        local Unknown = Enum.KeyCode.Unknown
+        assert(Unknown == Enum.KeyCode.None and Unknown.Name == "None" and Unknown.Value == 0 and tostring(Unknown) == "Enum.KeyCode.None")
+        assert(Enum.KeyCode:FromValue(0).Name == "None" and Enum.KeyCode:GetEnumItems()[1].Name == "None")
+        assert(Enum.KeyCode.Touch == Enum.KeyCode.TouchPosition and Enum.Material["Corroded Metal"] == Enum.Material.CorrodedMetal)
+        assert(Enum.Axis.Left == Enum.Axis.X and Enum.Axis.Top.Name == "Y" and Enum.SurfaceType.Bumps == Enum.SurfaceType.Glue)
+        assert(Enum.QualityLevel["Level  1"] == Enum.QualityLevel.Level01 and Enum.InputType.Throtle == Enum.InputType.NoInput)
+        for _, Item in Enum.Axis:GetEnumItems() do
+            assert(Item.Name ~= "Left" and Item.Name ~= "Top")
+        end
         assert(typeof(Enum) == "Enums" and typeof(Enum.Font) == "Enum" and typeof(Enum.Font.Arial) == "EnumItem")
         assert(tostring(Enum) == "Enums" and tostring(Enum.Font) == "Font" and tostring(Enum.Font.Arial) == "Enum.Font.Arial")
         assert(Enum.Font.Arial.EnumType == Enum.Font and Enum.Font.Arial:IsA("Font") and not Enum.Font.Arial:IsA("Nope"))
@@ -1793,6 +1866,87 @@ fn rojo_json_models_mount_as_their_instances() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Model files hold properties and enum items the engine's reflection (data/reflection.json, a newer Studio) has and
+/// rbx-dom's database does not: an InputBinding's Type and PrimaryModifier, KeyCode.MouseWheel, a SurfaceAppearance's
+/// ResampleMode. A Rojo JSON model gives them implicitly or explicitly (`rojo build` 7.7 takes both), and binary and XML
+/// models keep them; each reads back as the engine has it (rbx-dom's older database dropped the values).
+#[test]
+fn models_keep_what_the_engines_reflection_has_and_rbx_dom_lacks() {
+    use super::project::{Mount, mount_at};
+    use rbx_dom_weak::{InstanceBuilder, WeakDom, types::Enum};
+    let dir = std::env::temp_dir().join(format!("ree-newer-model-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(
+        dir.join("lib/Input.model.json"),
+        r#"{
+            "className": "InputContext",
+            "children": [
+                {
+                    "name": "Zoom", "className": "InputAction", "properties": { "Type": "Direction1D" },
+                    "children": [
+                        { "name": "Wheel", "className": "InputBinding", "properties": { "KeyCode": "MouseWheel", "Type": "Scriptable", "PrimaryModifier": "LeftShift" } }
+                    ]
+                }
+            ]
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("lib/Explicit.model.json"),
+        r#"{ "className": "InputBinding", "properties": { "KeyCode": { "Enum": 1035 }, "PrimaryModifier": { "Enum": 304 }, "Type": { "Enum": 1 } } }"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("lib/Look.model.json"), r#"{ "className": "SurfaceAppearance", "properties": { "ResampleMode": "Pixelated" } }"#).unwrap();
+    std::fs::write(
+        dir.join("lib/Xml.rbxmx"),
+        r#"<roblox version="4">
+	<Item class="InputBinding" referent="RBX0">
+		<Properties>
+			<string name="Name">Xml</string>
+			<token name="KeyCode">1035</token>
+			<token name="PrimaryModifier">304</token>
+			<token name="Type">1</token>
+		</Properties>
+	</Item>
+</roblox>"#,
+    )
+    .unwrap();
+    let mut dom = WeakDom::new(InstanceBuilder::new("DataModel"));
+    let binding = InstanceBuilder::new("InputBinding")
+        .with_name("Binary")
+        .with_property("KeyCode", Enum::from_u32(1035))
+        .with_property("PrimaryModifier", Enum::from_u32(304))
+        .with_property("Type", Enum::from_u32(1));
+    let look = InstanceBuilder::new("SurfaceAppearance").with_name("BinaryLook").with_property("ResampleMode", Enum::from_u32(1));
+    let top = dom.insert(dom.root_ref(), InstanceBuilder::new("Folder").with_name("Binary").with_children([binding, look]));
+    let mut file = Vec::new();
+    rbx_binary::to_writer(&mut file, &dom, &[top]).unwrap();
+    std::fs::write(dir.join("lib/Binary.rbxm"), file).unwrap();
+    let (lua, engine) = start();
+    mount_at(&engine, &Mount::parse(&format!("ReplicatedStorage/Lib={}", dir.join("lib").to_string_lossy()), false).unwrap()).unwrap();
+    let output = run(&lua, &engine, r#"
+        local Lib = game:GetService("ReplicatedStorage").Lib
+        local function check(Binding)
+            assert(Binding.KeyCode == Enum.KeyCode.MouseWheel, Binding.Name .. " KeyCode " .. tostring(Binding.KeyCode))
+            assert(Binding.PrimaryModifier == Enum.KeyCode.LeftShift, Binding.Name .. " PrimaryModifier " .. tostring(Binding.PrimaryModifier))
+            assert(Binding.Type == Enum.InputBindingType.Scriptable, Binding.Name .. " Type " .. tostring(Binding.Type))
+        end
+        assert(Lib.Input.ClassName == "InputContext" and Lib.Input.Zoom.Type == Enum.InputActionType.Direction1D, "the action's Type")
+        check(Lib.Input.Zoom.Wheel)
+        check(Lib.Explicit)
+        check(Lib.Xml)
+        check(Lib.Binary.Binary)
+        assert(Lib.Look.ResampleMode == Enum.ResamplerMode.Pixelated, "ResampleMode " .. tostring(Lib.Look.ResampleMode))
+        assert(Lib.Binary.BinaryLook.ResampleMode == Enum.ResamplerMode.Pixelated, "binary ResampleMode")
+        print("ok")
+    "#);
+    assert!(output.contains(&"print: ok".to_string()), "{output:?}");
+    assert!(output.iter().all(|line| !line.starts_with("warn") && !line.starts_with("error")), "{output:?}");
+    drop(lua);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Everything the engine holds per instance, signal and connection, and the Luau heap.
 #[derive(Debug, PartialEq, Clone, Copy)]
 struct Held {
@@ -1819,6 +1973,31 @@ fn held(lua: &Lua, engine: &Rc<Engine>) -> (Held, usize) {
         connections,
     };
     (held, lua.used_memory())
+}
+
+/// A Content made by Content.fromObject keeps its object alive, as Roblox's does (measured in a 0.747 client: an
+/// EditableImage only a Content holds is still the Content's object, and an image's content, after the collector ran):
+/// an EditableImage only the Content holds survives the instance collector, can be shown, and is freed once the Content
+/// is gone. Before, the collector freed it and the assignment raised an engine error (stale instance id).
+#[test]
+fn a_content_keeps_its_object_alive() {
+    let (lua, engine) = start();
+    run(&lua, &engine, r#"
+        shared.Kept = Content.fromObject(game:GetService("AssetService"):CreateEditableImage({ Size = Vector2.new(4, 4) }))
+    "#);
+    let (before, _) = held(&lua, &engine);
+    let output = run(&lua, &engine, r#"
+        local Kept = shared.Kept
+        local Label = Instance.new("ImageLabel")
+        Label.ImageContent = Kept
+        print("kept", typeof(Kept.Object), Kept.Object.ClassName, Kept.SourceType)
+        shared.Kept = nil
+        Label:Destroy()
+    "#);
+    assert!(output.iter().any(|line| line == "print: kept Instance EditableImage Enum.ContentSourceType.Object"), "{output:?}");
+    assert!(output.iter().all(|line| !line.starts_with("error")), "{output:?}");
+    let (after, _) = held(&lua, &engine);
+    assert!(after.instances < before.instances, "the image is freed once its Content is gone: {before:?} -> {after:?}");
 }
 
 /// A UI in the DataModel, every button's handlers capturing the whole tree (the cycle Roblox never
@@ -3381,6 +3560,255 @@ fn editable_meshes_follow_studio() {
     assert!(output.contains(&"print: ok".to_string()), "{output:?}");
 }
 
+/// A new face's corner takes the normal, uv and colour the newest face over its vertex uses there, and an automatic normal
+/// several corners share sums their faces' unit normals weighed by the square of the sine of each corner's angle (measured
+/// in a 0.747 client: tools/parity/probes/editable_mesh_batch.luau; the values are that client's to 3e-7). Before, every
+/// AddTriangle corner had attributes of its own, and a shared normal was area-weighted.
+#[test]
+fn editable_mesh_faces_share_their_vertices_corners() {
+    assert_script(
+        r#"
+        local AssetService = game:GetService("AssetService")
+        local function near(a, b) return (a - b).Magnitude < 1e-6 end
+        local m = AssetService:CreateEditableMesh()
+        local v = {}
+        for _, p in { Vector3.new(0, 0, 0), Vector3.new(1, 0, 0), Vector3.new(1, 1, 0), Vector3.new(0, 0, 1), Vector3.new(0, 1, 0) } do
+            table.insert(v, m:AddVertex(p))
+        end
+        local a = m:AddTriangle(v[1], v[2], v[3])
+        local b = m:AddTriangle(v[1], v[3], v[4])
+        local na, nb = m:GetFaceNormals(a), m:GetFaceNormals(b)
+        assert(#m:GetNormals() == 4 and #m:GetUVs() == 4 and #m:GetColors() == 4, "4 corners' worth: " .. #m:GetNormals())
+        assert(nb[1] == na[1] and nb[2] == na[3] and m:GetFaceUVs(b)[2] == m:GetFaceUVs(a)[3] and m:GetFaceColors(b)[1] == m:GetFaceColors(a)[1], "shared")
+        assert(near(m:GetNormal(nb[1]), Vector3.new(0.632455528, -0.632455528, 0.44721359)), tostring(m:GetNormal(nb[1])))
+        assert(near(m:GetNormal(nb[2]), Vector3.new(0.392232329, -0.392232329, 0.832050323)), tostring(m:GetNormal(nb[2])))
+        assert(near(m:GetNormal(nb[3]), Vector3.new(0.707106769, -0.707106769, 0)), tostring(m:GetNormal(nb[3])))
+        -- the newest face's corner, a normal set on it included
+        local explicit = m:AddNormal(Vector3.new(1, 0, 0))
+        m:SetFaceNormals(b, { explicit, nb[2], nb[3] })
+        local c = m:AddTriangle(v[1], v[5], v[3])
+        assert(m:GetFaceNormals(c)[1] == explicit and m:GetFaceNormals(c)[3] == nb[2], "the newest face's")
+        -- a vertex no face uses any more gets new ones
+        local fresh = AssetService:CreateEditableMesh()
+        local p, q, r = fresh:AddVertex(Vector3.zero), fresh:AddVertex(Vector3.xAxis), fresh:AddVertex(Vector3.yAxis)
+        fresh:RemoveFace(fresh:AddTriangle(p, q, r))
+        local again = fresh:AddTriangle(p, q, r)
+        assert(#fresh:GetNormals() == 6 and fresh:GetFaceNormals(again)[1] == 8589934596, "new after the face went")
+        "#,
+    );
+}
+
+/// EditableMesh:BatchAdd as a 0.747 client answers it (tools/parity/probes/editable_mesh_batch.luau): the new ids in the
+/// values' order; colours with their alphas; faces numbered backwards (the first face the batch's last id), listed by
+/// GetFaces in the order given, their corners as AddTriangle makes them; a value of the wrong type raises at the caller
+/// with the values before it set and the rest made; a bad face makes none; the client's errors.
+#[test]
+fn editable_mesh_batch_add_follows_a_client() {
+    let (lua, engine) = start();
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local AssetService = game:GetService("AssetService")
+        local m = AssetService:CreateEditableMesh()
+        local v = m:BatchAdd(Enum.MeshAttribute.Vertex, { Vector3.new(0, 0, 0), Vector3.new(1, 0, 0), Vector3.new(0, 1, 0), Vector3.new(1, 1, 0) })
+        assert(#v == 4 and v[1] == 4294967297 and v[4] == 4294967300 and m:GetPosition(v[2]) == Vector3.new(1, 0, 0), "vertices")
+        local n = m:BatchAdd(Enum.MeshAttribute.Normal, { Vector3.new(0, 0, 1), nil, Vector3.new(0, 1, 0) })
+        assert(#n == 3 and n[1] == 8589934593 and m:GetNormal(n[1]) == Vector3.new(0, 0, 1), "normals, a hole automatic")
+        local u = m:BatchAdd(Enum.MeshAttribute.UV, { Vector2.new(0.5, 0.25) })
+        assert(u[1] == 17179869185 and m:GetUV(u[1]) == Vector2.new(0.5, 0.25), "uvs")
+        local c = m:BatchAdd(Enum.MeshAttribute.Color, { Color3.new(1, 0, 0), Color3.new(0, 0, 1) }, { 0.5, 2 })
+        assert(c[1] == 12884901889 and m:GetColor(c[1]) == Color3.new(1, 0, 0), "colours")
+        assert(math.abs(m:GetColorAlpha(c[1]) - 128 / 255) < 1e-6 and m:GetColorAlpha(c[2]) == 1, "alphas in 1/255 steps, clamped")
+        local f = m:BatchAdd(Enum.MeshAttribute.Face, { { v[1], v[2], v[3] }, { v[2], v[4], v[3] } })
+        assert(f[1] == 21474836482 and f[2] == 21474836481, "faces numbered backwards")
+        local listed = m:GetFaces()
+        assert(listed[1] == f[1] and listed[2] == f[2], "listed in the order given")
+        assert(m:GetFaceNormals(f[2])[1] == m:GetFaceNormals(f[1])[2], "corners shared over a vertex")
+        assert(#m:BatchAdd(Enum.MeshAttribute.Vertex, {}) == 0, "none")
+        local function fails(f, ...) local ok, e = pcall(f, ...) assert(not ok) print("error", e) end
+        local before = #m:GetVertices()
+        fails(function() m:BatchAdd(Enum.MeshAttribute.Vertex, { Vector3.new(5, 5, 5), "x", Vector3.new(6, 6, 6) }) end)
+        local after = m:GetVertices()
+        assert(#after == before + 3 and m:GetPosition(after[before + 1]) == Vector3.new(5, 5, 5) and m:GetPosition(after[before + 3]) == Vector3.zero, "made, then set in order")
+        local faces = #m:GetFaces()
+        fails(function() m:BatchAdd(Enum.MeshAttribute.Face, { { v[1], v[2], v[3] }, { v[1], v[2] } }) end)
+        fails(function() m:BatchAdd(Enum.MeshAttribute.Face, { { v[1], v[2], n[1] } }) end)
+        fails(function() m:BatchAdd(Enum.MeshAttribute.Face, { { v[1], v[2], 12345 } }) end)
+        assert(#m:GetFaces() == faces, "a bad face makes none")
+        fails(function() m:BatchAdd(Enum.MeshAttribute.Color, { Color3.new() }, {}) end)
+        fails(function() m:BatchAdd(Enum.MeshAttribute.Color, { Color3.new() }) end)
+        fails(function() m:BatchAdd(Enum.MeshAttribute.Vertex, {}, {}) end)
+        fails(function() m:BatchAdd(Enum.MeshAttribute.UV, 5) end)
+        fails(function() m:BatchAdd(Enum.MeshAttribute.Face, 5) end)
+        fails(function() m:BatchAdd("Vertex", {}) end)
+        fails(function() m:BatchAdd(Enum.MeshAttribute.Vertex) end)
+        fails(function() m:BatchAdd(Enum.MeshAttribute.UV, { Vector3.new() }) end)
+        print("ok")
+        "#,
+    );
+    assert!(output.contains(&"print: ok".to_string()), "{output:?}");
+    let errors: Vec<&str> = output.iter().filter_map(|line| line.strip_prefix("print: error ")).collect();
+    let wanted = [
+        "Test:21: invalid argument #-1 (Vector3 expected, got string)",
+        "BatchAdd(Enum.MeshAttribute.Face, ...): element 2 must have 3 or 4 vertex ids, got 2",
+        "Unexpected EditableMesh id type. Expected Vertex id, received Normal id",
+        "Unexpected EditableMesh id type. Expected Vertex id, received value that doesn't appear to be an id",
+        "BatchAdd(Enum.MeshAttribute.Color, ...): colors and alphas arrays must be the same length",
+        "BatchAdd(Enum.MeshAttribute.Color, ...): expects 2 arguments (colors, alphas)",
+        "BatchAdd(Enum.MeshAttribute.Vertex, ...): expects 1 argument (positions)",
+        "BatchAdd(Enum.MeshAttribute.UV, ...): uvs must be an array",
+        "BatchAdd(Enum.MeshAttribute.Face, ...): vertexIds must be a 2D array",
+        "Invalid value for enum 'MeshAttribute'",
+        "BatchAdd: expects at least 2 arguments (attr, data)",
+        "Test:36: invalid argument #4 (Vector2 expected, got Vector3)",
+    ];
+    assert_eq!(errors, wanted, "{output:?}");
+}
+
+/// EditableMesh's per-vertex batches as a 0.747 client answers them (tools/parity/probes/editable_mesh_vertex_batch.luau,
+/// public issue 18: all three answered nil, a fixed-size copy's included): BatchGetVertexAttributes lists per vertex one
+/// entry per corner over it, the newest corner first; BatchGetVertexFaceAttributes reads one corner each; and
+/// BatchSetVertexFaceAttributes sets corners in turn (an error leaves the ones before it set) and brings a changed corner
+/// to the front, as the single-item methods do.
+#[test]
+fn editable_mesh_vertex_batches_follow_a_client() {
+    let (lua, engine) = start();
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local AssetService = game:GetService("AssetService")
+        local function show(t) local out = {} for _, x in t do table.insert(out, if type(x) == "table" then "{" .. show(x) .. "}" else string.format("%d:%d", x // 4294967296, x % 4294967296)) end return table.concat(out, ",") end
+        local m = AssetService:CreateEditableMesh()
+        local v = {}
+        for _, p in { Vector3.new(0, 0, 0), Vector3.new(1, 0, 0), Vector3.new(1, 1, 0), Vector3.new(0, 1, 0), Vector3.new(0, 0, 1), Vector3.new(2, 2, 2) } do
+            table.insert(v, m:AddVertex(p))
+        end
+        local a, b, c = m:AddTriangle(v[1], v[2], v[3]), m:AddTriangle(v[1], v[3], v[4]), m:AddTriangle(v[2], v[3], v[5])
+        local n = m:AddNormal(Vector3.xAxis)
+        local old = m:GetFaceNormals(b)
+        m:SetFaceNormals(b, { n, old[2], old[3] })
+        print("normals", show(m:BatchGetVertexAttributes(Enum.MeshAttribute.Normal, v)))
+        print("faces", show(m:BatchGetVertexAttributes(Enum.MeshAttribute.Face, v)))
+        print("single", show(m:GetVertexNormals(v[2])), show(m:GetVertexFaces(v[3])))
+        local copy = AssetService:CreateEditableMeshAsync(Content.fromObject(m))
+        print("fixed copy", copy.FixedSize, show(copy:BatchGetVertexAttributes(Enum.MeshAttribute.UV, { v[1], v[6] })))
+        print("corners", show(m:BatchGetVertexFaceAttributes(Enum.MeshAttribute.Normal, { v[1], v[1], v[3] }, { a, b, c })), show({ m:GetVertexFaceNormal(v[1], b) }))
+        -- set in turn: the first pair is set when the second fails
+        local z = m:AddNormal(Vector3.zAxis)
+        print("set", pcall(m.BatchSetVertexFaceAttributes, m, { v[2], v[5] }, { a, a }, { z, z }))
+        print("after", show(m:GetFaceNormals(a)), show(m:BatchGetVertexAttributes(Enum.MeshAttribute.Face, { v[1] })))
+        m:SetVertexFaceUV(v[3], b, m:AddUV(Vector2.one))
+        print("moved", show(m:GetVertexFaces(v[3])))
+        print("adjacent", show(m:GetAdjacentVertices(v[1])), show(m:GetAdjacentVertices(v[3])))
+        for _, call in {
+            function() return m:BatchGetVertexAttributes(Enum.MeshAttribute.Vertex, v) end,
+            function() return m:BatchGetVertexAttributes(Enum.MeshAttribute.Normal, { v[1], 12345 }) end,
+            function() return m:BatchGetVertexAttributes(Enum.MeshAttribute.Normal, { "x" }) end,
+            function() return m:BatchGetVertexAttributes(Enum.KeyCode.A, v) end,
+            function() return m:BatchGetVertexFaceAttributes(Enum.MeshAttribute.Normal, { v[5] }, { a }) end,
+            function() return m:BatchGetVertexFaceAttributes(Enum.MeshAttribute.Normal, { v[1] }, {}) end,
+            function() return m:BatchSetVertexFaceAttributes({ v[1] }, { a }, { v[2] }) end,
+            function() return m:GetVertexFaceNormal(v[5], a) end,
+        } do
+            print("error", select(2, pcall(call)))
+        end
+        "#,
+    );
+    let lines: Vec<&str> = output.iter().filter_map(|line| line.strip_prefix("print: ")).collect();
+    let wanted = [
+        "normals {2:6,2:1},{2:2,2:2},{2:3,2:3,2:3},{2:4},{2:5},{}",
+        "faces {5:2,5:1},{5:3,5:1},{5:3,5:2,5:1},{5:2},{5:3},{}",
+        "single 2:2,2:2 5:3,5:2,5:1",
+        "fixed copy true {4:1,4:1},{}",
+        "corners 2:1,2:6,2:3 2:6",
+        "set false BatchSetVertexFaceAttributes: vertexId not found on requested face at index 2",
+        "after 2:1,2:7,2:3 {5:2,5:1}",
+        "moved 5:2,5:3,5:1",
+        "adjacent 1:4,1:3,1:2 1:1,1:4,1:2,1:5,1:2",
+        "error BatchGetVertexAttributes: Enum.MeshAttribute.Vertex is not supported",
+        "error Unexpected EditableMesh id type. Expected Vertex id, received value that doesn't appear to be an id",
+        "error BatchGetVertexAttributes: id at index 1 is not a number",
+        "error Invalid type 'KeyCode' for enum 'MeshAttribute'",
+        "error BatchGetVertexFaceAttributes: vertexId not found on requested face at index 1",
+        "error BatchGetVertexFaceAttributes: vertexIds and faceIds arrays must be the same length",
+        "error BatchSetVertexFaceAttributes: unsupported attribute ID type 1",
+        "error vertexId not found on requested face",
+    ];
+    assert_eq!(lines, wanted, "{output:?}");
+}
+
+/// BatchRemove and the slots removed elements leave, as a 0.747 client has them (editable_mesh_vertex_batch.luau): it
+/// removes faces only, every id checked first; what they used stays until RemoveUnused; a freed slot comes back, the last
+/// freed first, under its next generation (`13:3`), so the old id is gone; the lists are dense arrays a removed item's
+/// place in is taken by the last one. Before, BatchRemove did nothing and ids were never reused.
+#[test]
+fn editable_mesh_batch_remove_frees_slots_as_a_client() {
+    let (lua, engine) = start();
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local AssetService = game:GetService("AssetService")
+        local function show(t) local out = {} for _, x in t do table.insert(out, string.format("%d:%d", x // 4294967296, x % 4294967296)) end return table.concat(out, ",") end
+        local function counts(m) return #m:GetVertices() .. "v " .. #m:GetNormals() .. "n " .. #m:GetFaces() .. "f" end
+        local m = AssetService:CreateEditableMesh()
+        local v = {}
+        for _, p in { Vector3.new(0, 0, 0), Vector3.new(1, 0, 0), Vector3.new(1, 1, 0), Vector3.new(0, 1, 0), Vector3.new(0, 0, 1), Vector3.new(2, 2, 2) } do
+            table.insert(v, m:AddVertex(p))
+        end
+        local f = { m:AddTriangle(v[1], v[2], v[3]), m:AddTriangle(v[1], v[3], v[4]), m:AddTriangle(v[2], v[3], v[5]) }
+        print("bad", pcall(m.BatchRemove, m, { f[1], v[6] }))
+        print("kept", counts(m))
+        print("removed", m:BatchRemove({ f[3], f[1], f[1] }), counts(m), show(m:GetFaces()))
+        print("again", pcall(m.BatchRemove, m, { f[1] }))
+        local g = { m:AddTriangle(v[1], v[2], v[3]), m:AddTriangle(v[2], v[3], v[5]), m:AddTriangle(v[4], v[5], v[6]) }
+        print("reused", show(g), show(m:GetFaces()))
+        print("stale", pcall(m.GetFaceVertices, m, f[3]))
+        local batch = m:BatchAdd(Enum.MeshAttribute.Face, { { v[1], v[2], v[4] } })
+        m:RemoveFace(g[1])
+        print("batch", show(batch), show(m:BatchAdd(Enum.MeshAttribute.Face, { { v[1], v[2], v[3] }, { v[1], v[4], v[5] } })))
+        m:BatchRemove(m:GetFaces())
+        local removed = m:RemoveUnused()
+        local w = { m:AddVertex(Vector3.one), m:AddVertex(Vector3.zero) }
+        print("unused", #removed, show({ removed[1], removed[6], removed[7] }), counts(m), show(w))
+        local plain = AssetService:CreateEditableMesh({ FixedSize = true })
+        print("options", plain.FixedSize, AssetService:CreateEditableMeshAsync(Content.fromObject(plain), { FixedSize = false }).FixedSize)
+        local fixed = AssetService:CreateEditableMeshAsync(Content.fromObject(plain))
+        for _, call in {
+            function() return fixed:BatchRemove({}) end,
+            function() return fixed:AddNormal(Vector3.one) end,
+            function() return fixed:RemoveUnused() end,
+            function() return m:RemoveFace(0) end,
+            function() return m:AddTriangle(w[1], w[2], v[6]) end,
+            function() return m:AddBone({ Name = "b", CFrame = CFrame.new() }) end,
+        } do
+            print("error", select(2, pcall(call)))
+        end
+        "#,
+    );
+    let lines: Vec<&str> = output.iter().filter_map(|line| line.strip_prefix("print: ")).collect();
+    let wanted = [
+        "bad false Unexpected EditableMesh id type. Expected Face id, received Vertex id",
+        "kept 6v 5n 3f",
+        "removed nil 6v 5n 1f 5:2",
+        "again false Invalid faceId",
+        "reused 13:1,13:3,5:4 5:2,13:1,13:3,5:4",
+        "stale false Invalid id",
+        "batch 5:5 5:6,21:1",
+        "unused 30 1:1,1:6,2:1 2v 0n 0f 9:6,9:5",
+        "options false false",
+        "error EditableMesh is fixed-size, adding or removing elements is not allowed in-experience",
+        "error EditableMesh is fixed-size, adding or removing elements is not allowed in-experience",
+        "error EditableMesh is fixed-size, adding or removing elements is not allowed in-experience",
+        "error Unexpected EditableMesh id type. Expected Face id, received value that doesn't appear to be an id",
+        "error Unable to add new triangle, vertex id 4294967302 is invalid",
+        "error Missing bone Virtual value",
+    ];
+    assert_eq!(lines, wanted, "{output:?}");
+}
+
 /// CreateMeshPartAsync of a mesh file the project holds, as a game's asset id modules can name one until
 /// it is uploaded: its repo-relative path and a relative file:// URI are read from the project's folder
 /// (Options::project), whatever the current directory, and give the mesh's size as an absolute URI
@@ -3595,6 +4023,55 @@ fn editable_mesh_colours_take_numbers_as_alpha() {
         "#,
     );
     assert!(output.contains(&"print: ok".to_string()), "{output:?}");
+}
+
+/// AssetService:CreateDataModelContentAsync as a 0.747 client answers it (tools/parity/probes/data_model_content.luau): it
+/// yields, then gives Enum.CreateContentResult.Success and an Opaque Content (no Uri, no Object, each call's its own), which
+/// CreateMeshPartAsync and CreateEditableMeshAsync take, a copy that later edits and the mesh's Destroy do not reach; other
+/// Content and a mesh without faces are refused with the client's errors.
+#[cfg(feature = "meshes")]
+#[test]
+fn data_model_content_is_a_copy_of_a_mesh() {
+    let (lua, engine) = start_with(Options { mode: "play".into(), ..Options::default() });
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local AssetService = game:GetService("AssetService")
+        local m = AssetService:CreateEditableMesh()
+        local a, b, c = m:AddVertex(Vector3.new(0, 0, 0)), m:AddVertex(Vector3.new(2, 0, 0)), m:AddVertex(Vector3.new(0, 3, 0))
+        m:AddTriangle(a, b, c)
+        task.spawn(function()
+            local Deferred = false
+            task.defer(function() Deferred = true end)
+            local result, made = AssetService:CreateDataModelContentAsync(Content.fromObject(m))
+            local _, again = AssetService:CreateDataModelContentAsync(Content.fromObject(m), {})
+            print("made", Deferred, result, tostring(made), made.SourceType, made.Uri, made.Object, made == made, made == again)
+            m:SetPosition(a, Vector3.new(-1, 0, 0))
+            m:Destroy()
+            local part = AssetService:CreateMeshPartAsync(made)
+            print("part", part.MeshSize == Vector3.new(2, 3, 0.001))
+            local copy = AssetService:CreateEditableMeshAsync(made)
+            print("copy", #copy:GetVertices(), #copy:GetFaces(), copy:GetPosition(copy:GetVertices()[1]) == Vector3.zero)
+            for _, source in { Content.fromUri("rbxassetid://1"), Content.none, Content.fromObject(AssetService:CreateEditableMesh()) } do
+                print("refused", pcall(AssetService.CreateDataModelContentAsync, AssetService, source))
+            end
+            print("done")
+        end)
+        "#,
+    );
+    assert!(!output.iter().any(|line| line.starts_with("print: made")), "it yields: {output:?}");
+    scheduler::run_until(&lua, &engine, 0.5).unwrap();
+    let lines = lines(&engine);
+    for wanted in [
+        "print: made true Enum.CreateContentResult.Success Content{SourceType=Opaque} Enum.ContentSourceType.Opaque nil nil true false",
+        "print: part true",
+        "print: copy 3 1 true",
+        "print: refused false The input content type is not supported by AssetService::CreateDataModelContentAsync yet!",
+        "print: refused false Error creating FileMeshData: Empty Result",
+    ] {
+        assert!(lines.iter().any(|line| line == wanted), "{wanted}: {lines:?}");
+    }
 }
 
 /// The work clock: os.clock advances within a frame by what the engine calls a script makes cost
@@ -4202,6 +4679,144 @@ fn text_service_returns_a_vector2_without_a_text_layer() {
         "#,
     );
     assert!(output.contains(&"print: measured".to_string()), "{output:?}");
+}
+
+/// TextService:GetTextBoundsAsync returned nothing without a host's text layer (it was an unemulated stub), so a UI view that read the
+/// bounds failed. It measures as GetTextSize does now, with the GetTextBoundsParams' Font face, Size and Width (measured in a playing
+/// client, Studio 0.747: tools/parity/probes/text_bounds.luau).
+#[test]
+fn text_service_measures_text_bounds_without_a_text_layer() {
+    let (lua, engine) = start();
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local TextService = game:GetService("TextService")
+        local Params = Instance.new("GetTextBoundsParams")
+        Params.Text = "Hello world"
+        Params.Font = Font.fromEnum(Enum.Font.FredokaOne)
+        Params.Size = 20
+        local Bounds = TextService:GetTextBoundsAsync(Params)
+        assert(typeof(Bounds) == "Vector2", typeof(Bounds))
+        assert(Bounds == Vector2.new(94, 20), tostring(Bounds))
+        assert(Bounds == TextService:GetTextSize("Hello world", 20, Enum.Font.FredokaOne, Vector2.new(1e6, 1e6)))
+        -- a face no Enum.Font names measures as the one its family has
+        Params.Font = Font.new("rbxasset://fonts/families/FredokaOne.json", Enum.FontWeight.Bold)
+        assert(TextService:GetTextBoundsAsync(Params) == Vector2.new(94, 20))
+        -- Width wraps, and Size stores 1 to 100, whole
+        Params.Text = "The quick brown fox jumps over the lazy dog and keeps running"
+        Params.Size = 14.99
+        Params.Width = 100
+        assert(Params.Size == 14, Params.Size)
+        assert(TextService:GetTextBoundsAsync(Params) == Vector2.new(98, 56), tostring(TextService:GetTextBoundsAsync(Params)))
+        Params.Size = 500
+        assert(Params.Size == 100)
+        Params.Size = 0.2
+        assert(Params.Size == 1)
+        local Empty = Instance.new("GetTextBoundsParams")
+        assert(TextService:GetTextBoundsAsync(Empty) == Vector2.new(0, 20), tostring(TextService:GetTextBoundsAsync(Empty)))
+        local function Raised(...)
+            local Ok, Message = pcall(TextService.GetTextBoundsAsync, TextService, ...)
+            assert(not Ok)
+            return Message
+        end
+        assert(Raised(nil) == "Argument 1 missing or nil")
+        assert(Raised(Instance.new("Part")) == "Argument 1 is invalid: expected 'GetTextBoundsParams' instance type")
+        assert(Raised({}) == "Unable to cast value to Object")
+        Empty.Font = Font.new("")
+        assert(Raised(Empty) == "Font with empty asset ID passed to TextService:GetTextBoundsAsync()")
+        print("measured")
+        "#,
+    );
+    assert!(output.contains(&"print: measured".to_string()), "{output:?}");
+    // a face of its own the tables lack is measured as the nearest and said; the faces above were all measurable
+    assert!(engine.state.borrow().output.missing.is_empty(), "{:?}", engine.state.borrow().output.missing);
+    run(
+        &lua,
+        &engine,
+        r#"
+        local Params = Instance.new("GetTextBoundsParams")
+        Params.Text = "Hello"
+        Params.Font = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.SemiBold)
+        game:GetService("TextService"):GetTextBoundsAsync(Params)
+        Params.Font = Font.fromEnum(Enum.Font.SourceSans)
+        Params.RichText = true
+        Params.Text = "<b>Hello</b>"
+        game:GetService("TextService"):GetTextBoundsAsync(Params)
+        "#,
+    );
+    let missing: Vec<String> = engine.state.borrow().output.missing.iter().map(|(name, _)| name.clone()).collect();
+    assert_eq!(
+        missing,
+        [
+            "TextService.GetTextBoundsAsync of rbxasset://fonts/families/GothamSSm.json SemiBold Normal (a face the text tables lack; measured as GothamBold)",
+            "TextService.GetTextBoundsAsync of rich text markup (measured as plain text)",
+        ]
+    );
+}
+
+/// The first GetTextBoundsAsync of a face a client has not loaded yields while it loads, and a call that cannot yield (from a
+/// metamethod) raises; the faces a client starts with, and a face that resolves to a loaded one, do not yield (measured in a playing
+/// client, Studio 0.747: tools/parity/probes/text_bounds.luau).
+#[test]
+fn text_bounds_wait_for_a_face_to_load() {
+    let (lua, engine) = start();
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local TextService = game:GetService("TextService")
+        local function Params(Face)
+            local Made = Instance.new("GetTextBoundsParams")
+            Made.Text = "Hello"
+            Made.Font = Face
+            return Made
+        end
+        local function Status(Face)
+            local Thread = coroutine.create(function()
+                print("bounds", TextService:GetTextBoundsAsync(Params(Face)))
+            end)
+            coroutine.resume(Thread)
+            return coroutine.status(Thread)
+        end
+        local function FromMetamethod(Face)
+            local Meta = setmetatable({}, { __index = function()
+                return TextService:GetTextBoundsAsync(Params(Face))
+            end })
+            local Ok, Result = pcall(function()
+                return Meta.Bounds
+            end)
+            return if Ok then "ok" else Result
+        end
+        print("first", Status(Font.fromEnum(Enum.Font.FredokaOne)))
+        print("again", Status(Font.fromEnum(Enum.Font.FredokaOne)))
+        print("bold", FromMetamethod(Font.new("rbxasset://fonts/families/FredokaOne.json", Enum.FontWeight.Bold)))
+        print("SourceSans", Status(Font.fromEnum(Enum.Font.SourceSans)))
+        print("SourceSansPro Medium", FromMetamethod(Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Medium)))
+        print("Creepster", FromMetamethod(Font.fromEnum(Enum.Font.Creepster)))
+        task.defer(function()
+            print("Creepster later", FromMetamethod(Font.fromEnum(Enum.Font.Creepster)))
+        end)
+        "#,
+    );
+    let printed: Vec<&str> = output.iter().filter_map(|line| line.strip_prefix("print: ")).collect();
+    assert_eq!(
+        printed,
+        [
+            "first suspended",
+            "bounds 43, 20",
+            "again dead",
+            "bold ok",
+            "bounds 36, 20",
+            "SourceSans dead",
+            "SourceSansPro Medium ok",
+            "Creepster thread is not yieldable",
+            // (the first call, resumed at the next resumption point)
+            "bounds 43, 20",
+            "Creepster later ok",
+        ],
+        "{output:?}"
+    );
 }
 
 /// The work clock charges a script's own Luau as the interpreter runs it (crate::cost::luau): its
@@ -5962,6 +6577,58 @@ fn social_and_group_services_answer_as_studio_does_for_an_offline_player() {
     assert!(output.contains(&"print: studio's answers".to_string()), "{output:?}");
 }
 
+/// Player's group methods, the Async ones (public issue 19: "IsInGroupAsync is not a valid member of Player") and the older
+/// ones, as a 0.747 client and server answer for the offline player (tools/parity/probes/loopback/player_groups.luau): in no
+/// group, the six sharing the ids it was asked about (the first call naming one yields, later ones by any of the six do not),
+/// the id cast as an int64 argument, and the errors of a cast and of a call without the player
+#[test]
+fn players_group_methods_answer_as_a_client_does_for_the_offline_player() {
+    let (lua, engine) = start();
+    run(
+        &lua,
+        &engine,
+        r#"
+        local Player = game:GetService("Players").LocalPlayer
+        local function Call(Name, ...)
+            local Ran = false
+            task.defer(function() Ran = true end)
+            local Ok, Answer = pcall(Player[Name], Player, ...)
+            return tostring(Answer) .. (if not Ok then "!" elseif Ran then " yielded" else "")
+        end
+        print(Call("IsInGroupAsync", 7), Call("IsInGroupAsync", 7), Call("GetRankInGroup", 7), Call("GetRoleInGroupAsync", 7))
+        print(Call("GetRankInGroupAsync", 8), Call("GetRoleInGroupAsync", 8), Call("IsInGroup", 8), Call("GetRoleInGroup", 9))
+        print(Call("IsInGroupAsync", 10.5), Call("IsInGroupAsync", 11), Call("IsInGroupAsync", true), Call("IsInGroupAsync", 1))
+        print(Call("IsInGroupAsync", 0 / 0), Call("IsInGroupAsync", 0), Call("IsInGroupAsync", 1e20), Call("IsInGroupAsync", -2 ^ 63))
+        print(Call("IsInGroupAsync", " 012 "), Call("IsInGroupAsync", 12), Call("IsInGroupAsync", "9007199254740993"), Call("IsInGroupAsync", 2 ^ 53))
+        print(Call("IsInGroupAsync", "+13"), Call("IsInGroupAsync", "13.0"), Call("IsInGroupAsync", "9223372036854775808"), Call("IsInGroupAsync", "-9223372036854775808"))
+        print(Call("GetRankInGroupAsync"), Call("GetRankInGroupAsync", {}), Call("GetRankInGroupAsync", { a = 1 }), Call("GetRankInGroupAsync", Enum.KeyCode.A), Call("GetRankInGroupAsync", print))
+        print(pcall(Player.IsInGroupAsync, workspace, 7))
+        print(pcall(Player.GetRoleInGroupAsync))
+        print(Player.IsInGroupAsync == Player.IsInGroupAsync, Player.IsInGroupAsync == Player.IsInGroup)
+        "#,
+    );
+    for _ in 0..4 {
+        crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    }
+    let output = lines(&engine);
+    assert_eq!(
+        output,
+        [
+            "print: false yielded false 0 Guest",
+            "print: 0 yielded Guest false Guest yielded",
+            "print: false yielded false false yielded false",
+            "print: false yielded false false yielded false",
+            "print: false yielded false false yielded false yielded",
+            "print: Unable to cast string to int64! Unable to cast string to int64! Unable to cast string to int64! false",
+            "print: Argument 1 missing or nil! Unable to cast Array to int64! Unable to cast Dictionary to int64! Unable to cast KeyCode to int64! Unable to cast Function to int64!",
+            "print: false Expected ':' not '.' calling member function IsInGroupAsync",
+            "print: false Expected ':' not '.' calling member function GetRoleInGroupAsync",
+            "print: true false",
+        ],
+        "{output:?}"
+    );
+}
+
 /// A one-letter Text write's and a workspace part's CFrame write's price in a client of `place_id` with `prices` and `parts` parts
 /// in the workspace, in us a write
 fn place_write_prices(place_id: f64, parts: usize, prices: crate::cost::PlacePrices) -> Vec<f64> {
@@ -6890,6 +7557,8 @@ fn reflection_service_lists_the_dumps_classes_as_a_game_script_gets_them() {
         "print: errors Unable to cast bool to Dictionary",
         "print: errors attempt to modify a readonly table",
         "print: errors Expected ':' not '.' calling member function GetClasses",
+        // (the first use of an unemulated member writes its line, before the print it is an argument of)
+        "missing: ReflectedClass.Permits is not emulated",
         "print: Permits table nil nil",
     ];
     assert_eq!(output, expected);
@@ -6897,7 +7566,7 @@ fn reflection_service_lists_the_dumps_classes_as_a_game_script_gets_them() {
     assert_eq!(missing, vec![("ReflectedClass.Permits".to_string(), 2)], "{missing:?}");
     // the dump's classes and no others; IsA counts a class and its subclasses
     let reflected = engine.reflection.classes.iter().filter(|class| class.reflected).count();
-    assert_eq!(reflected, 640);
+    assert_eq!(reflected, 660);
 }
 
 /// A vide-like module that builds its element names from ReflectionService:GetClasses() when it is required (stock vide's
@@ -7173,6 +7842,39 @@ fn a_scripts_number_classifiers_are_fast_calls() {
     assert!(calls >= 3000 && ccalls >= 3000, "after getfenv: {calls} calls, {ccalls} C calls");
 }
 
+/// Luau 0.747's compiler makes every pcall / xpcall a fast protected call (FASTPCALL, which skips the import and the C call of the
+/// fallback it carries); a 0.747 client still pays what that call cost (the parity bench's lang.call.pcall: 18.3 ns, 17.9 in a 0.744
+/// client that made the call), so the call is counted as the C call it stands for: one a pcall, as before.
+#[test]
+fn a_fast_protected_call_counts_the_c_call_it_stands_for() {
+    let (lua, engine) = start();
+    engine_lua::modules::interpret_all(&lua, &engine);
+    crate::scheduler::step(&lua, &engine, Some(1.0 / 60.0)).expect("step");
+    run(
+        &lua,
+        &engine,
+        &format!(
+            r#"
+            local Module = Instance.new("ModuleScript")
+            __setSource(Module, {source:?})
+            _G.Protected = require(Module)
+            "#,
+            source = "local function f(x) return x end
+return function(N) local s = 0 for i = 1, N do local ok, v = pcall(f, i) if ok then s += v end local ok2 = xpcall(f, print, i) if ok2 then s += 1 end end return s end
+"
+        ),
+    );
+    let before = vm_counts(&engine);
+    let output = run(&lua, &engine, "print(_G.Protected(1000))");
+    let after = vm_counts(&engine);
+    assert!(output.contains(&"print: 501500".to_string()), "{output:?}");
+    // (FASTPCALL is opcode 89, CALL 21 and CALLFB 87: the fast path skips the fallback's call; the snippet that calls the module and
+    // print make a few calls of their own)
+    let (fast, calls, ccalls) = (after.ops[89] - before.ops[89], after.ops[21] + after.ops[87] - before.ops[21] - before.ops[87], after.ccalls - before.ccalls);
+    assert!(fast >= 2000 && calls < 10, "{fast} fast protected calls, {calls} calls: the fast path ran");
+    assert!((2000..2010).contains(&ccalls), "{ccalls} C calls for 2,000 protected calls");
+}
+
 /// A `--!native` module's instructions are priced as a client's machine code takes them (cost.rs NATIVE_OPS: a keyed table read or
 /// write 0.42 ns, an addition or loop step 0.43; interpreted 2.45 and 0.48), whether or not this VM compiles the module: the parity
 /// bench's native rows run 0.8-7.8x faster than the same loops interpreted.
@@ -7372,4 +8074,976 @@ fn place_content_leaves_out_a_link_back_up_its_way_down() {
     let left_out: Vec<String> = lines(&engine).into_iter().filter(|line| line.contains("a link back to")).collect();
     assert_eq!(left_out.len(), 2, "{left_out:?}");
     let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// Enum.EasingStyle as Studio 0.747 lists it (Bezier = 11 and Spring = 12 after Cubic), and what takes one: TweenInfo.new,
+/// TweenService:GetValue and GuiObject's Tween methods refuse the two in Studio's words, UIPageLayout.EasingStyle keeps its
+/// value, and a Pose's easing is another enum (measured in Studio 0.747.0.7471481; tools/parity/probes/api_747.luau).
+#[test]
+fn spring_and_bezier_are_easing_styles_nothing_plays() {
+    assert_script(
+        r#"
+        local Names = {}
+        for _, Item in Enum.EasingStyle:GetEnumItems() do table.insert(Names, Item.Name .. "=" .. Item.Value) end
+        assert(table.concat(Names, " ") == "Linear=0 Sine=1 Back=2 Quad=3 Quart=4 Quint=5 Bounce=6 Elastic=7 Exponential=8 Circular=9 Cubic=10 Bezier=11 Spring=12", table.concat(Names, " "))
+        assert(tostring(Enum.EasingStyle.Spring) == "Enum.EasingStyle.Spring" and Enum.EasingStyle:FromValue(11) == Enum.EasingStyle.Bezier and Enum.EasingStyle:FromValue(13) == nil)
+        local function fails(message, f, ...)
+            local Ok, Problem = pcall(f, ...)
+            assert(not Ok and Problem == message, tostring(Problem))
+        end
+        local TweenService = game:GetService("TweenService")
+        local Refused = " does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier"
+        for _, Name in { "Spring", "Bezier" } do
+            local Style = Enum.EasingStyle[Name]
+            fails("TweenInfo.new" .. Refused, TweenInfo.new, 1, Style)
+            fails("TweenInfo.new" .. Refused, TweenInfo.new, 1, Style.Value)
+            fails("TweenInfo.new" .. Refused, TweenInfo.new, 1, Style, "bad")
+            fails("TweenInfo.new second argument expects Enum.EasingStyle input", TweenInfo.new, 1, Name)
+            fails("TweenInfo.new first argument expects a number for time.", TweenInfo.new, "x", Style)
+            for _, Alpha in { 0, 0.5, 1, -1 } do
+                fails("TweenService:GetValue" .. Refused, TweenService.GetValue, TweenService, Alpha, Style, Enum.EasingDirection.In)
+            end
+            fails("TweenService:GetValue" .. Refused, TweenService.GetValue, TweenService, 0.5, Name, "Out")
+            fails("TweenService:GetValue" .. Refused, TweenService.GetValue, TweenService, 0.5, Style.Value, 2)
+            fails("Unable to cast string to EasingDirection", TweenService.GetValue, TweenService, 0.5, Style, "bad")
+            fails("Argument 1 missing or nil", TweenService.GetValue, TweenService, nil, Style, Enum.EasingDirection.In)
+            fails("Argument 3 missing or nil", TweenService.GetValue, TweenService, 0.5, Style)
+        end
+        fails("Unable to cast double to EasingStyle", TweenService.GetValue, TweenService, 0.5, 13, 0)
+        fails("Unable to cast EasingDirection to EasingStyle", TweenService.GetValue, TweenService, 0.5, Enum.EasingDirection.In, Enum.EasingDirection.In)
+        fails("Unable to cast string to float", TweenService.GetValue, TweenService, "x", Enum.EasingStyle.Linear, Enum.EasingDirection.In)
+        assert(TweenService:GetValue(0.5, "Quad", "In") == 0.25 and TweenService:GetValue(0.5, 3, 0) == 0.25)
+
+        local Layout = Instance.new("UIPageLayout")
+        local Changes = 0
+        Layout:GetPropertyChangedSignal("EasingStyle"):Connect(function() Changes += 1 end)
+        assert(Layout.EasingStyle == Enum.EasingStyle.Back)
+        Layout.EasingStyle = Enum.EasingStyle.Spring
+        Layout.EasingStyle = "Bezier"
+        Layout.EasingStyle = 12
+        assert(Layout.EasingStyle == Enum.EasingStyle.Back)
+        Layout.EasingStyle = Enum.EasingStyle.Quad
+        Layout.EasingStyle = Enum.EasingStyle.Bezier
+        assert(Layout.EasingStyle == Enum.EasingStyle.Quad)
+        fails("Unable to assign property EasingStyle. Invalid value 13 for enum EasingStyle", function() Layout.EasingStyle = 13 end)
+        task.wait()
+        assert(Changes == 1, Changes)
+
+        local Pose = Instance.new("Pose")
+        fails("Unable to assign property EasingStyle. EnumItem of type PoseEasingStyle expected, got an EnumItem of type EasingStyle", function() Pose.EasingStyle = Enum.EasingStyle.Spring end)
+        fails('Unable to assign property EasingStyle. Invalid value "Spring" for enum PoseEasingStyle', function() Pose.EasingStyle = "Spring" end)
+        "#,
+    );
+}
+
+/// TweenInfo.new checks every argument it is given, nil included, in order (Studio 0.747): only arguments left off take
+/// their defaults, a style or direction is an item or a number cut to an item's value, and RepeatCount is whole.
+#[test]
+fn tween_info_new_checks_each_argument_it_is_given() {
+    assert_script(
+        r#"
+        local Quad, In = Enum.EasingStyle.Quad, Enum.EasingDirection.In
+        local function fails(message, ...)
+            local Ok, Problem = pcall(TweenInfo.new, ...)
+            assert(not Ok and Problem == message, tostring(Problem))
+        end
+        assert(tostring(TweenInfo.new()) == "Time:1 DelayTime:0 RepeatCount:0 Reverses:False EasingDirection:Out EasingStyle:Quad")
+        assert(tostring(TweenInfo.new(2)) == "Time:2 DelayTime:0 RepeatCount:0 Reverses:False EasingDirection:Out EasingStyle:Quad")
+        assert(tostring(TweenInfo.new(1, Quad, In, 2, true, 1, "extra")) == "Time:1 DelayTime:1 RepeatCount:2 Reverses:True EasingDirection:In EasingStyle:Quad")
+        fails("TweenInfo.new first argument expects a number for time.", nil)
+        fails("TweenInfo.new first argument expects a number for time.", "1")
+        fails("TweenInfo.new first argument expects a number for time.", true)
+        fails("TweenInfo.new first argument expects a number for time.", nil, Quad)
+        fails("TweenInfo.new second argument expects Enum.EasingStyle input", 1, nil)
+        fails("TweenInfo.new second argument expects Enum.EasingStyle input", 1, nil, In)
+        fails("TweenInfo.new second argument expects Enum.EasingStyle input", 1, "Quad")
+        fails("TweenInfo.new second argument expects Enum.EasingStyle input", 1, false)
+        fails("TweenInfo.new second argument expects Enum.EasingStyle input", 1, 13)
+        fails("TweenInfo.new second argument expects Enum.EasingStyle input", 1, -1)
+        fails("TweenInfo.new second argument expects Enum.EasingStyle input", 1, In)
+        fails("TweenInfo.new third argument expects Enum.EasingDirection input", 1, Quad, nil)
+        fails("TweenInfo.new third argument expects Enum.EasingDirection input", 1, Quad, nil, 2)
+        fails("TweenInfo.new third argument expects Enum.EasingDirection input", 1, Quad, "In")
+        fails("TweenInfo.new third argument expects Enum.EasingDirection input", 1, Quad, 3)
+        fails("TweenInfo.new third argument expects Enum.EasingDirection input", 1, Quad, Quad)
+        fails("TweenInfo.new fourth arg should be a number for RepeatCount.", 1, Quad, In, nil)
+        fails("TweenInfo.new fourth arg should be a number for RepeatCount.", 1, Quad, In, "3")
+        fails("TweenInfo.new fifth arg should be a boolean for Reverses.", 1, Quad, In, 2, nil, 1)
+        fails("TweenInfo.new fifth arg should be a boolean for Reverses.", 1, Quad, In, 2, 1)
+        fails("TweenInfo.new sixth arg should be a number for DelayTime.", 1, Quad, In, 2, true, nil)
+        fails("TweenInfo.new sixth arg should be a number for DelayTime.", 1, Quad, In, 2, true, "0.5")
+        assert(TweenInfo.new(1, 3).EasingStyle == Quad and TweenInfo.new(1, 2.5).EasingStyle == Enum.EasingStyle.Back and TweenInfo.new(1, 10.9).EasingStyle == Enum.EasingStyle.Cubic)
+        assert(TweenInfo.new(1, Quad, 0).EasingDirection == In and TweenInfo.new(1, Quad, 1.9).EasingDirection == Enum.EasingDirection.Out)
+        assert(TweenInfo.new(1, Quad, In, 2.7).RepeatCount == 2 and TweenInfo.new(1, Quad, In, -1).RepeatCount == -1)
+        assert(TweenInfo.new(math.huge).Time == math.huge and TweenInfo.new(-1).Time == -1)
+        "#,
+    );
+}
+
+/// GuiObject's Tween methods cast their arguments, refuse Spring and Bezier, and refuse an object outside the DataModel
+/// (Studio 0.747): nothing moves and no callback runs when one raises.
+#[test]
+fn gui_tween_methods_cast_refuse_and_need_the_data_model() {
+    assert_script(
+        r#"
+        local function fails(message, f, ...)
+            local Ok, Problem = pcall(f, ...)
+            assert(not Ok and Problem == message, tostring(Problem))
+        end
+        local Out, Quad, Spring = Enum.EasingDirection.Out, Enum.EasingStyle.Quad, Enum.EasingStyle.Spring
+        local Holder = Instance.new("Folder")
+        Holder.Parent = workspace
+        local Frame = Instance.new("Frame")
+        Frame.Parent = Holder
+        local Called = false
+        local To = UDim2.fromOffset(5, 5)
+        for _, Style in { Spring, Enum.EasingStyle.Bezier, "Spring", 11 } do
+            fails("GuiObject:TweenPosition does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier", Frame.TweenPosition, Frame, To, Out, Style, 0.05, true, function() Called = true end)
+            fails("GuiObject:TweenSize does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier", Frame.TweenSize, Frame, To, Out, Style, 0.05, true)
+            fails("GuiObject:TweenSizeAndPosition does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier", Frame.TweenSizeAndPosition, Frame, To, To, Out, Style, 0.05, true)
+        end
+        fails("Unable to cast string to UDim2", Frame.TweenPosition, Frame, "x", Out, Spring, 0.05, true)
+        fails("Argument 1 missing or nil", Frame.TweenPosition, Frame, nil, Out, Spring, 0.05, true)
+        fails("Unable to cast string to UDim2", Frame.TweenSizeAndPosition, Frame, To, "x", Out, Quad, 0.05, true)
+        fails("Unable to cast string to EasingDirection", Frame.TweenPosition, Frame, To, "bad", Spring, 0.05, true)
+        fails("Unable to cast double to EasingStyle", Frame.TweenPosition, Frame, To, Out, 13, 0.05, true)
+        fails("Unable to cast string to float", Frame.TweenPosition, Frame, To, Out, Spring, "x", true)
+        local Loose = Instance.new("Frame")
+        local Unplaced = Instance.new("Frame")
+        Unplaced.Parent = Instance.new("ScreenGui")
+        fails("Can only tween objects in the workspace", Loose.TweenPosition, Loose, To, Out, Quad, 0.05, true)
+        fails("Can only tween objects in the workspace", Loose.TweenSize, Loose, To)
+        fails("Can only tween objects in the workspace", Unplaced.TweenSizeAndPosition, Unplaced, To, To)
+        fails("GuiObject:TweenPosition does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier", Loose.TweenPosition, Loose, To, Out, Spring)
+        task.wait()
+        assert(Frame.Position == UDim2.new() and Frame.Size == UDim2.new() and Loose.Position == UDim2.new() and not Called)
+        assert(Frame:TweenPosition(To, Out, Quad, 0.05, true, function() Called = true end) == true and Frame.Position == To)
+        assert(Frame:TweenSize(To) == true and Frame.Size == To)
+        task.wait()
+        assert(Called)
+        "#,
+    );
+}
+
+/// What Studio 0.747 does with the properties its dump adds beyond storing them: a Camera's projection properties drop
+/// every write, and some numbers hold a range (ParticleEmitter.TimeScale, ParticleEmitter2D's, UIBlur.Transparency,
+/// InputBinding.Deadzone). Every other new property of a creatable class read and wrote back as stored there (131 of them,
+/// each written once and read again).
+#[test]
+fn new_properties_of_0_747_ignore_and_clamp_as_studio_does() {
+    assert_script(
+        r#"
+        local Camera = Instance.new("Camera")
+        local Fired = 0
+        Camera.Changed:Connect(function() Fired += 1 end)
+        assert(Camera.ProjectionType == Enum.ProjectionType.Perspective and Camera.OrthographicMode == Enum.OrthographicMode.Vertical and Camera.OrthographicSize == 35 and Camera.ViewStretch == 1)
+        Camera.ProjectionType = Enum.ProjectionType.Orthographic
+        Camera.ProjectionType = "Orthographic"
+        Camera.OrthographicMode = Enum.OrthographicMode.Horizontal
+        Camera.OrthographicSize = 10
+        Camera.OrthographicSize = "x"
+        Camera.ViewStretch = 2
+        Camera.ViewStretch = nil
+        assert(Camera.ProjectionType == Enum.ProjectionType.Perspective and Camera.OrthographicMode == Enum.OrthographicMode.Vertical and Camera.OrthographicSize == 35 and Camera.ViewStretch == 1)
+        local Ok, Problem = pcall(function() Camera.ProjectionType = 5 end)
+        assert(not Ok and Problem == "Unable to assign property ProjectionType. Invalid value 5 for enum ProjectionType", Problem)
+        Ok, Problem = pcall(function() Camera.OrthographicMode = Enum.EasingStyle.Quad end)
+        assert(not Ok and Problem == "Unable to assign property OrthographicMode. EnumItem of type OrthographicMode expected, got an EnumItem of type EasingStyle", Problem)
+        task.wait()
+        assert(Fired == 0, Fired)
+
+        local function set(Object, Property, Value)
+            Object[Property] = Value
+            return Object[Property]
+        end
+        local Emitter = Instance.new("ParticleEmitter")
+        assert(set(Emitter, "TimeScale", -1) == 0 and set(Emitter, "TimeScale", 0.25) == 0.25 and set(Emitter, "TimeScale", 7) == 1)
+        local Flat = Instance.new("ParticleEmitter2D")
+        local Changes = 0
+        Flat:GetPropertyChangedSignal("TimeScale"):Connect(function() Changes += 1 end)
+        Flat.TimeScale = 0.5
+        Flat.TimeScale = 5
+        Flat.TimeScale = 9
+        Flat.TimeScale = 1
+        task.wait()
+        assert(Changes == 2 and Flat.TimeScale == 1, Changes)
+        assert(set(Flat, "TimeScale", -1) == 0 and set(Flat, "Brightness", -5) == 0 and set(Flat, "Brightness", 1e9) == 10000)
+        assert(set(Flat, "Blend", 5) == 1 and set(Flat, "Blend", -1) == 0 and set(Flat, "FlipbookSizeX", 0) == 1 and set(Flat, "FlipbookSizeY", 100000) == 64)
+        assert(set(Flat, "Rate", -5) == -5 and set(Flat, "Drag", -5) == -5 and set(Flat, "LightInfluence", 5) == 5 and set(Flat, "ZIndex", 2.7) == 2)
+        local Blur = Instance.new("UIBlur")
+        assert(Blur.Strength == Enum.UIBlurStrength.Heavy and Blur.Enabled and Blur.Color == Color3.new(1, 1, 1))
+        assert(set(Blur, "Transparency", 1.5) == 1 and set(Blur, "Transparency", -0.5) == 0 and set(Blur, "Transparency", 0.5) == 0.5)
+        local Binding = Instance.new("InputBinding")
+        assert(Binding.Deadzone == NumberRange.new(0.1, 1), tostring(Binding.Deadzone))
+        assert(set(Binding, "Deadzone", NumberRange.new(2, 3)) == NumberRange.new(1, 1) and set(Binding, "Deadzone", NumberRange.new(-3, 0.5)) == NumberRange.new(0, 0.5))
+
+        -- stored as written, and defaults as the dump has them
+        assert(set(Instance.new("Decal"), "ResampleMode", Enum.ResamplerMode.Pixelated) == Enum.ResamplerMode.Pixelated)
+        assert(Instance.new("AudioDeviceInput").Active == false and Instance.new("SurfaceAppearance").SurfaceSlot == -1 and Instance.new("UIDragDetector").Selectable == true)
+        assert(game.ServerRegion == "" and workspace.AuthorityMode == Enum.AuthorityMode.Automatic)
+        -- gone with 0.747
+        assert(not pcall(function() return Enum.PrimalPhysicsSolver end) and not pcall(function() return workspace.PrimalPhysicsSolver end))
+        assert(not pcall(Instance.new, "PlayerDataRecord"))
+        "#,
+    );
+}
+
+/// EditableImage's Draw methods refuse the combine types and alpha types Studio 0.747 lists and does not play yet.
+#[test]
+fn editable_image_refuses_the_blends_studio_does_not_play_yet() {
+    assert_script(
+        r#"
+        local AssetService = game:GetService("AssetService")
+        local Image = AssetService:CreateEditableImage({ Size = Vector2.new(4, 4) })
+        local Other = AssetService:CreateEditableImage({ Size = Vector2.new(2, 2) })
+        local Red = Color3.new(1, 0, 0)
+        Image:DrawRectangle(Vector2.zero, Vector2.new(4, 4), Color3.new(0, 0, 1), 0, Enum.ImageCombineType.Overwrite)
+        local Before = buffer.tostring(Image:ReadPixelsBuffer(Vector2.zero, Vector2.new(4, 4)))
+        local function fails(message, f, ...)
+            local Ok, Problem = pcall(f, ...)
+            assert(not Ok and Problem == message, tostring(Problem))
+        end
+        local Add, Lock, Smooth = Enum.ImageCombineType.Add, Enum.ImageAlphaType.LockCanvasAlpha, Enum.AntiAliasing.Enabled
+        for _, Name in { "Darken", "Lighten", "Screen", "Overlay", "SoftLight", "HardLight", "Difference" } do
+            local Combine = Enum.ImageCombineType[Name]
+            local Refused = ": the requested Enum.ImageCombineType is not yet supported"
+            fails("EditableImage:DrawImage" .. Refused, Image.DrawImage, Image, Vector2.zero, Other, Combine)
+            fails("EditableImage:DrawImage" .. Refused, Image.DrawImage, Image, Vector2.zero, Other, Name)
+            fails("EditableImage:DrawImage" .. Refused, Image.DrawImage, Image, Vector2.zero, Other, Combine.Value)
+            fails("EditableImage:DrawImage" .. Refused, Image.DrawImage, Image, Vector2.zero, Other, Combine, Lock)
+            fails("EditableImage:DrawRectangle" .. Refused, Image.DrawRectangle, Image, Vector2.zero, Vector2.one, Red, 0, Combine)
+            fails("EditableImage:DrawCircle" .. Refused, Image.DrawCircle, Image, Vector2.one, 1, Red, 0, Combine)
+            fails("EditableImage:DrawLine" .. Refused, Image.DrawLine, Image, Vector2.zero, Vector2.one, Red, 0, Combine)
+            fails("EditableImage:DrawImageTransformed" .. Refused, Image.DrawImageTransformed, Image, Vector2.one, Vector2.one, 0, Other, { CombineType = Combine })
+        end
+        assert(Enum.ImageCombineType.Darken.Value == 8 and Enum.ImageCombineType.Difference.Value == 14)
+        for _, Alpha in { Lock, Enum.ImageAlphaType.LockCanvasColor } do
+            local Refused = ": Enum.ImageAlphaType other than Default is not yet supported"
+            fails("EditableImage:DrawImage" .. Refused, Image.DrawImage, Image, Vector2.zero, Other, Add, Alpha)
+            fails("EditableImage:DrawRectangle" .. Refused, Image.DrawRectangle, Image, Vector2.zero, Vector2.one, Red, 0, Add, Alpha)
+            fails("EditableImage:DrawCircle" .. Refused, Image.DrawCircle, Image, Vector2.one, 1, Red, 0, Add, Smooth, Alpha)
+            fails("EditableImage:DrawLine" .. Refused, Image.DrawLine, Image, Vector2.zero, Vector2.one, Red, 0, Add, Smooth, Alpha)
+            fails("EditableImage:DrawImageTransformed" .. Refused, Image.DrawImageTransformed, Image, Vector2.one, Vector2.one, 0, Other, { CombineType = Add, AlphaBlendType = Alpha })
+        end
+        assert(buffer.tostring(Image:ReadPixelsBuffer(Vector2.zero, Vector2.new(4, 4))) == Before, "a refused draw leaves the image")
+        Image:DrawRectangle(Vector2.zero, Vector2.one, Red, 0, Enum.ImageCombineType.Overwrite, Enum.ImageAlphaType.Default)
+        assert(buffer.readu8(Image:ReadPixelsBuffer(Vector2.zero, Vector2.one), 0) == 255)
+        "#,
+    );
+}
+
+/// The streaming and player settings Studio 0.747's ReflectionService lists no more are still stored (a place file's
+/// values, the engine's own reads), and a game script may neither read nor write them (a playing client, Studio 0.746:
+/// tools/parity/probes/api_747.luau).
+#[test]
+fn settings_the_0_747_dump_leaves_out_are_still_stored() {
+    let reflection = crate::Reflection::shared().unwrap();
+    assert_eq!(reflection.version, "0.747.0.7471481");
+    for (class, name) in [
+        ("Workspace", "StreamingMinRadius"),
+        ("Workspace", "StreamingTargetRadius"),
+        ("Workspace", "StreamOutBehavior"),
+        ("Workspace", "StreamingIntegrityMode"),
+        ("Workspace", "PredictiveStreamingMode"),
+        ("Players", "BanningEnabled"),
+        ("Players", "UseStrafingAnimations"),
+        ("StarterPlayer", "CreateDefaultPlayerModule"),
+    ] {
+        let class_id = reflection.class_id(class).unwrap();
+        let property = reflection.class_property(class_id, reflection.name_id(name).unwrap()).unwrap_or_else(|| panic!("{class}.{name}"));
+        assert!(property.serialized, "{class}.{name}");
+    }
+    let behavior = reflection.class_property(reflection.class_id("Workspace").unwrap(), reflection.name_id("StreamOutBehavior").unwrap()).unwrap();
+    assert_eq!(behavior.enum_type, reflection.enum_id("StreamOutBehavior"));
+    // every Content property with a string twin is still a view of it, whichever of the two the dump calls serialized
+    assert_script(
+        r#"
+        local Label = Instance.new("ImageLabel")
+        Label.Image = "rbxassetid://5"
+        assert(Label.ImageContent.Uri == "rbxassetid://5")
+        Label.ImageContent = Content.fromUri("rbxassetid://6")
+        assert(Label.Image == "rbxassetid://6")
+        local Sound = Instance.new("Sound")
+        Sound.AudioContent = Content.fromUri("rbxassetid://7")
+        assert(Sound.SoundId == "rbxassetid://7")
+        local Mesh = Instance.new("MeshPart")
+        Mesh.TextureID = "rbxassetid://8"
+        assert(Mesh.TextureContent.Uri == "rbxassetid://8")
+        local function fails(message, f)
+            local Ok, Problem = pcall(f)
+            assert(not Ok and Problem == message, tostring(Problem))
+        end
+        fails("The current thread cannot read 'StreamingMinRadius' (lacking capability PluginOrOpenCloud)", function() return workspace.StreamingMinRadius end)
+        fails("The current thread cannot write 'StreamingTargetRadius' (lacking capability PluginOrOpenCloud)", function() workspace.StreamingTargetRadius = 64 end)
+        fails("The current thread cannot read 'BanningEnabled' (lacking capability PluginOrOpenCloud)", function() return game:GetService("Players").BanningEnabled end)
+        fails("The current thread cannot write 'CreateDefaultPlayerModule' (lacking capability PluginOrOpenCloud)", function() game:GetService("StarterPlayer").CreateDefaultPlayerModule = false end)
+        fails("The current thread cannot read 'PlayerScriptsUseInputActionSystem' (lacking capability RobloxScript)", function() return workspace.PlayerScriptsUseInputActionSystem end)
+        "#,
+    );
+}
+
+/// The fast-flag methods and GuiService:GetResolutionScale are there for a game script to read and raise when it calls
+/// them, in every run context, with the client's text and capability (reflection.rs CAPABILITY_CALLS, measured in a
+/// playing client and a server, Studio 0.747: tools/parity/probes/engine_capabilities.luau), where they answered nil and
+/// reported themselves missing: a settings helper that takes its default when the define raises went on with nil, and a
+/// scheduler that then read the setting divided by nil.
+#[test]
+fn engine_only_methods_raise_a_game_scripts_capability_error_in_every_run_context() {
+    use super::RunContext;
+    let script = r#"
+        local GuiService = game:GetService("GuiService")
+        local Calls = {
+            DefineFastFlag = function() return game:DefineFastFlag("TestFlag", true) end,
+            DefineFastInt = function() return game:DefineFastInt("TestInt", 7) end,
+            DefineFastString = function() return game:DefineFastString("TestString", "seven") end,
+            GetFastFlag = function() return game:GetFastFlag("TestFlag") end,
+            GetFastInt = function() return game:GetFastInt("TestInt") end,
+            GetFastString = function() return game:GetFastString("TestString") end,
+            GetEngineFeature = function() return game:GetEngineFeature("TestFeature") end,
+            GetResolutionScale = function() return GuiService:GetResolutionScale() end,
+        }
+        for _, Name in { "DefineFastFlag", "DefineFastInt", "DefineFastString", "GetFastFlag", "GetFastInt", "GetFastString", "GetEngineFeature", "GetResolutionScale" } do
+            local Owner = if Name == "GetResolutionScale" then GuiService else game
+            local Ok, Message = pcall(Calls[Name])
+            local NoSelf = select(2, pcall(Owner[Name]))
+            print(Name, typeof(Owner[Name]), Ok, type(Message), Message, NoSelf == Message)
+        end
+
+        -- a settings helper: define the setting under pcall and keep the default when the call raises
+        local function Setting(Kind, Name, Default)
+            local Ok, Value = pcall(function()
+                return game["Define" .. Kind](game, Name, Default)
+            end)
+            if Ok then
+                return Value
+            end
+            return Default
+        end
+        print("settings", Setting("FastInt", "TestFrameRate", 60), Setting("FastFlag", "TestEnabled", true), Setting("FastString", "TestMode", "on"))
+
+        -- a scheduler that reads its frame budget through such a helper: the getter it keeps reads the engine's value only
+        -- when the define went through, and the budget divides by it
+        local function IntGetter(Name, Default)
+            if pcall(function() return game:DefineFastInt(Name, Default) end) then
+                return function() return game:GetFastInt(Name) end
+            end
+            return function() return Default end
+        end
+        local TargetFps = IntGetter("TestTargetFps", 50)
+        print("frame budget", 1000 / TargetFps())
+    "#;
+    let mut want: Vec<String> = [("DefineFastFlag", "RobloxScript"), ("DefineFastInt", "RobloxScript"), ("DefineFastString", "RobloxScript"), ("GetFastFlag", "LocalUser"), ("GetFastInt", "LocalUser"), ("GetFastString", "LocalUser"), ("GetEngineFeature", "LocalUser"), ("GetResolutionScale", "RobloxScript")]
+        .iter()
+        .map(|(name, capability)| format!("print: {name} function false string The current thread cannot call '{name}' (lacking capability {capability}) true"))
+        .collect();
+    want.push("print: settings 60 true on".into());
+    want.push("print: frame budget 20".into());
+    for (mode, run_context) in [("play", RunContext::Client), ("play", RunContext::Server), ("edit", RunContext::Edit), ("edit", RunContext::Client)] {
+        let (lua, engine) = start_with(Options { mode: mode.into(), run_context, ..Options::default() });
+        let output = run(&lua, &engine, script);
+        assert_eq!(output, want, "{mode} {run_context:?}");
+    }
+}
+
+/// What Studio 0.747's dump adds and ree does not emulate reports itself (an Output line of kind `missing` at its first use)
+/// and answers nil; what the dump drops is no member any more.
+#[test]
+fn methods_new_in_0_747_report_themselves_as_not_emulated() {
+    let (lua, engine) = start();
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        print(game:GetService("CollectionService"):GetCollections(Instance.new("Part")))
+        print(game:GetService("RunService"):BindToSimulationParallel(function() end, Enum.StepFrequency.Hz60, 1))
+        local Emitter = Instance.new("ParticleEmitter2D")
+        print(Emitter:Emit(3), Emitter:Clear())
+        print(Instance.new("Sound"):GetPlaybackState(), Instance.new("TextDocument"):ReadAsync())
+        print(game:GetService("FeatureMatchingService").ClassName, Instance.new("UIBlur"):IsA("UIComponent"), Instance.new("AvatarRules").ClassName)
+        print(pcall(function() return Instance.new("AnimationRigData"):LoadFromHumanoid() end))
+        "#,
+    );
+    assert_eq!(
+        output,
+        [
+            "missing: CollectionService.GetCollections is not emulated",
+            "print: ",
+            "missing: RunService.BindToSimulationParallel is not emulated",
+            "print: ",
+            "missing: ParticleEmitter2D.Emit is not emulated",
+            "missing: ParticleEmitter2D.Clear is not emulated",
+            "print: nil",
+            "missing: Sound.GetPlaybackState is not emulated",
+            "missing: TextDocument.ReadAsync is not emulated",
+            "print: nil",
+            "print: FeatureMatchingService true AvatarRules",
+            "print: false LoadFromHumanoid is not a valid member of AnimationRigData \"AnimationRigData\"",
+        ]
+    );
+    let missing: Vec<String> = engine.state.borrow().output.missing.iter().map(|(name, _)| name.clone()).collect();
+    assert_eq!(
+        missing,
+        ["CollectionService.GetCollections", "RunService.BindToSimulationParallel", "ParticleEmitter2D.Emit", "ParticleEmitter2D.Clear", "Sound.GetPlaybackState", "TextDocument.ReadAsync"]
+    );
+}
+
+#[test]
+fn a_color3_tween_blends_its_channels_linearly() {
+    // Measured in roblox-sim's 0.747 client and server with live flags (tools/parity/probes/tween_color.luau, 1,485
+    // channels bit-exact over every style and direction): each channel is a + (b - a) * eased in float32 on every class's
+    // Color3 properties, so Back's overshoot goes below 0; the end is that blend at 1 (a hair off the goal itself) and a
+    // reversed tween ends on the blend at 0, the start itself. Roblox's DFFlagStyleTransitionColorSpace, off since
+    // 2026-11-13, blended the squares instead.
+    let (lua, engine) = start_with(Options { mode: "play".into(), ..Options::default() });
+    engine.state.borrow_mut().sched.set_main_thread(&lua.current_thread());
+    run(
+        &lua,
+        &engine,
+        r#"
+        local TweenService = game:GetService("TweenService")
+        local A, B = Color3.fromRGB(200, 40, 40), Color3.fromRGB(40, 40, 200)
+        local function Make(Class, Property, From, To, Info)
+            local Object = Instance.new(Class)
+            Object[Property] = From
+            local Tween = TweenService:Create(Object, Info, { [Property] = To })
+            Tween:Play()
+            return Object, Tween
+        end
+        _G.Frame = Make("Frame", "BackgroundColor3", A, B, TweenInfo.new(1, Enum.EasingStyle.Linear))
+        _G.Eased = Make("NumberValue", "Value", 0, 1, TweenInfo.new(1, Enum.EasingStyle.Linear))
+        _G.Light = Make("PointLight", "Color", A, B, TweenInfo.new(1, Enum.EasingStyle.Linear))
+        _G.Back = Make("Color3Value", "Value", Color3.new(0, 0, 0), Color3.new(1, 1, 1), TweenInfo.new(1, Enum.EasingStyle.Back, Enum.EasingDirection.In))
+        _G.Ending = Make("Color3Value", "Value", A, B, TweenInfo.new(0.05))
+        _G.Reversed = Make("Color3Value", "Value", Color3.new(-0.5, 0.3, 2), Color3.new(0.2, -0.7, 0.1), TweenInfo.new(0.05, Enum.EasingStyle.Linear, Enum.EasingDirection.In, 0, true))
+        _G.Lerp = A:Lerp(B, 0.5)
+        "#,
+    );
+    for _ in 0..12 {
+        scheduler::step(&lua, &engine, Some(1.0 / 60.0)).unwrap();
+    }
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local function F(X) return Vector3.new(X, 0, 0).X end
+        local function Linear(A, B, T)
+            return F(A + F(F(B - A) * F(T)))
+        end
+        local A, B = Color3.fromRGB(200, 40, 40), Color3.fromRGB(40, 40, 200)
+        local T = _G.Eased.Value
+        assert(T > 0.1 and T < 0.3, "eased " .. T)
+        for _, Color in { _G.Frame.BackgroundColor3, _G.Light.Color } do
+            for _, C in { "R", "G", "B" } do
+                assert(Color[C] == Linear(A[C], B[C], T), C .. " " .. Color[C] .. " " .. Linear(A[C], B[C], T))
+            end
+        end
+        assert(_G.Frame.BackgroundColor3.R < 0.7 and _G.Frame.BackgroundColor3.B < 0.3, "linear, not squared")
+        local Back = _G.Back.Value
+        assert(Back.R < -0.01 and Back.R == Back.G and Back.R == Back.B, "Back's overshoot goes below 0 " .. tostring(Back))
+        local Ending = _G.Ending.Value
+        assert(Ending.R == Linear(A.R, B.R, 1) and Ending.R ~= B.R and Ending.B == Linear(A.B, B.B, 1), "the end is the blend at 1")
+        local Reversed = _G.Reversed.Value
+        assert(Reversed.R == -0.5 and Reversed.G == F(0.3) and Reversed.B == 2, "reversed end " .. tostring(Reversed))
+        assert(math.abs(_G.Lerp.R - 120 / 255) < 1e-6, "Color3:Lerp stays linear")
+        print("ok")
+        "#,
+    );
+    assert!(output.iter().any(|line| line.ends_with("ok")), "{output:?}");
+}
+
+/// The Input Action System as a 0.747 client answers scripts (tools/parity/probes/input_actions.luau): GetState's defaults;
+/// Fire sets the state at once and queues Pressed / Released, then StateChanged; a value the state holds changes nothing;
+/// Fire acts in an enabled context anywhere (or with no context, in the DataModel) and nowhere else; a Scriptable binding's
+/// Fire is its action's; disabling, moving or retyping resets; the client's errors. Before, Fire did nothing and GetState
+/// answered nil.
+#[test]
+fn input_actions_keep_their_state_and_fire() {
+    let (lua, engine) = start();
+    run(&lua, &engine, r#"
+        local RS = game:GetService("ReplicatedStorage")
+        local Log = {}
+        shared.Log = Log
+        local function watch(label, action)
+            action.Pressed:Connect(function() table.insert(Log, `{label} Pressed`) end)
+            action.Released:Connect(function() table.insert(Log, `{label} Released`) end)
+            action.StateChanged:Connect(function(value) table.insert(Log, `{label} StateChanged {value}`) end)
+        end
+        local function make(kind, parent)
+            local context = Instance.new("InputContext")
+            local action = Instance.new("InputAction")
+            if kind then action.Type = kind end
+            action.Parent = context
+            context.Parent = parent
+            return context, action
+        end
+        local defaults = {}
+        for _, kind in Enum.InputActionType:GetEnumItems() do
+            local action = Instance.new("InputAction")
+            action.Type = kind
+            table.insert(defaults, tostring(action:GetState()))
+        end
+        assert(table.concat(defaults, ";") == "false;0;0, 0;0, 0, 0;-1, -1", table.concat(defaults, ";"))
+        local context, a = make(nil, RS)
+        watch("a", a)
+        a:Fire(true)
+        assert(a:GetState() == true and #Log == 0, "at once; the events deferred")
+        a:Fire(true)
+        a:Fire(false)
+        local _, one = make(Enum.InputActionType.Direction1D, nil)
+        watch("one", one)
+        one:Fire(0.7)
+        assert(one:GetState() == 0.699999988079071, "a float: " .. one:GetState())
+        local loose = Instance.new("InputAction")
+        loose:Fire(true)
+        assert(loose:GetState() == false, "no context, outside the DataModel")
+        local inGame = Instance.new("InputAction")
+        inGame.Parent = workspace
+        inGame:Fire(true)
+        assert(inGame:GetState() == true, "no context, in the DataModel")
+        local errors = {}
+        for _, case in { { a, 1 }, { a }, { one, true } } do
+            table.insert(errors, select(2, pcall(case[1].Fire, case[1], case[2])))
+        end
+        local binding = Instance.new("InputBinding")
+        binding.Parent = a
+        table.insert(errors, select(2, pcall(binding.Fire, binding, true)))
+        table.insert(errors, select(2, pcall(context.GetInputActions, context)))
+        shared.Errors = table.concat(errors, "|")
+        binding.Type = Enum.InputBindingType.Scriptable
+        binding:Fire(true)
+        assert(a:GetState() == true, "a Scriptable binding's Fire")
+        context.Enabled = false
+        assert(a:GetState() == false, "a disabled context resets")
+        a:Fire(true)
+        assert(a:GetState() == false, "nor fires")
+        context.Enabled = true
+        a:Fire(true)
+        context.Parent = workspace
+        assert(a:GetState() == false, "a moved context resets")
+        a:Fire(true)
+        a.Type = Enum.InputActionType.Direction2D
+        assert(a:GetState() == Vector2.zero, "a new type's default")
+    "#);
+    let output = run(&lua, &engine, r#"print("log", table.concat(shared.Log, ",")) print("errors", shared.Errors)"#);
+    let log = "a Pressed,a StateChanged true,a Released,a StateChanged false,one StateChanged 0.699999988079071,a Pressed,a StateChanged true,\
+        a Released,a StateChanged false,a Pressed,a StateChanged true,a Released,a StateChanged false,a Pressed,a StateChanged true,\
+        a StateChanged 0, 0";
+    assert!(output.iter().any(|line| line == &format!("print: log {log}")), "{output:?}");
+    let errors = "Action:Fire() on InputActionType.Bool should be called with a bool state|Argument 1 missing or nil|\
+        Action:Fire() on InputActionType.Direction1D should be called with a number state|\
+        InputBinding:Fire() can only be called when Type is Scriptable|\
+        The current thread cannot call 'GetInputActions' (lacking capability RobloxScript)";
+    assert!(output.iter().any(|line| line == &format!("print: errors {errors}")), "{output:?}");
+}
+
+/// A host's device input reaches bound actions through services::input_actions::deliver as a 0.747 client delivers keys
+/// and buttons (measured with a client's own key and mouse input): a key's binding presses a Bool and gives a
+/// Direction1D its Scale; modifiers must be down first and their release releases; composites sum and clamp; a sinking
+/// context of a higher priority keeps the input from lower ones, equal priorities all get it, the newest context first;
+/// nothing under StarterGui; a binding whose key changes while held releases; a key going up reaches what it holds.
+#[test]
+fn device_input_reaches_bound_actions() {
+    let (lua, engine) = start();
+    run(&lua, &engine, r#"
+        local Log = {}
+        shared.Log = Log
+        local function make(label, parent, props, kind, priority, sink)
+            local context = Instance.new("InputContext")
+            if priority then context.Priority = priority end
+            if sink then context.Sink = true end
+            local action = Instance.new("InputAction")
+            if kind then action.Type = kind end
+            action.Parent = context
+            local binding = Instance.new("InputBinding")
+            for key, value in props do binding[key] = value end
+            binding.Parent = action
+            context.Parent = parent
+            action.Pressed:Connect(function() table.insert(Log, `{label}+`) end)
+            action.Released:Connect(function() table.insert(Log, `{label}-`) end)
+            action.StateChanged:Connect(function(value) if typeof(value) ~= "boolean" then table.insert(Log, `{label}={value}`) end end)
+            shared[label] = { context = context, action = action, binding = binding }
+        end
+        local RS = game:GetService("ReplicatedStorage")
+        make("e", RS, { KeyCode = Enum.KeyCode.E })
+        make("e2", RS, { KeyCode = Enum.KeyCode.E })
+        make("shiftE", RS, { KeyCode = Enum.KeyCode.E, PrimaryModifier = Enum.KeyCode.LeftShift })
+        make("q-high", RS, { KeyCode = Enum.KeyCode.Q }, nil, 2000, true)
+        make("q-low", RS, { KeyCode = Enum.KeyCode.Q })
+        make("f", RS, { KeyCode = Enum.KeyCode.F, Scale = 2.5 }, Enum.InputActionType.Direction1D)
+        make("wasd", RS, { Up = Enum.KeyCode.W, Down = Enum.KeyCode.S, Left = Enum.KeyCode.A, Right = Enum.KeyCode.D }, Enum.InputActionType.Direction2D)
+        make("starter", game:GetService("StarterGui"), { KeyCode = Enum.KeyCode.R })
+        make("click", RS, { KeyCode = Enum.KeyCode.MouseLeftButton })
+    "#);
+    let key = |name: &str| engine.reflection.enum_item("KeyCode", name).unwrap();
+    let mut steps: Vec<String> = Vec::new();
+    let mut step = |label: &str, events: &[(&str, bool)], after: &str| {
+        for (name, down) in events {
+            crate::services::input_actions::deliver(&engine, key(name), *down);
+            scheduler::flush_deferred(&lua, &engine).unwrap();
+        }
+        if !after.is_empty() {
+            run(&lua, &engine, after);
+        }
+        engine.state.borrow_mut().output.entries.clear();
+        let output = run(&lua, &engine, r#"print("log", table.concat(shared.Log, ",")) table.clear(shared.Log)"#);
+        let line = output.iter().find_map(|line| line.strip_prefix("print: log ")).unwrap_or_default().to_string();
+        steps.push(format!("{label}: {line}"));
+    };
+    step("E", &[("E", true), ("E", false)], "");
+    step("shift E", &[("LeftShift", true), ("E", true), ("LeftShift", false), ("E", false)], "");
+    step("E shift", &[("E", true), ("LeftShift", true), ("E", false), ("LeftShift", false)], "");
+    step("Q", &[("Q", true), ("Q", false)], "");
+    step("F", &[("F", true), ("F", false)], "");
+    step("W D", &[("W", true), ("D", true), ("W", false), ("D", false)], "");
+    step("R under StarterGui", &[("R", true), ("R", false)], "");
+    step("click", &[("MouseLeftButton", true), ("MouseLeftButton", false)], "");
+    step("E held, rebound", &[("E", true)], "shared.e.binding.KeyCode = Enum.KeyCode.T");
+    step("E up", &[("E", false)], "");
+    let wanted = [
+        "E: e2+,e+,e2-,e-",
+        "shift E: shiftE+,e2+,e+,shiftE-,e2-,e-",
+        "E shift: e2+,e+,e2-,e-",
+        "Q: q-high+,q-high-",
+        "F: f=2.5,f=0",
+        "W D: wasd=0, 1,wasd=0.707106769, 0.707106769,wasd=1, 0,wasd=0, 0",
+        "R under StarterGui: ",
+        "click: click+,click-",
+        "E held, rebound: e2+,e+,e-",
+        "E up: e2-",
+    ];
+    assert_eq!(steps, wanted);
+}
+
+/// PhysicsService's collision group registry on a server (measured in roblox-sim's 0.747 server: tools/parity/probes/
+/// collision_groups.luau and collision_group_args.luau): Default alone at the start, groups at the lowest free id, the
+/// masks a collidable pair gives, a rename, an unregister and the id a later group takes, the casts, the errors, the
+/// 32-group limit and the deprecated CreateCollisionGroup / GetCollisionGroups. A game that walks the groups each frame
+/// iterated nil before.
+#[test]
+fn collision_groups_register_collide_rename_and_unregister_on_a_server() {
+    use super::RunContext;
+    let (lua, engine) = start_with(Options { run_context: RunContext::Server, ..Options::default() });
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local PhysicsService = game:GetService("PhysicsService")
+        local function Groups()
+            local Parts = {}
+            for _, Group in PhysicsService:GetRegisteredCollisionGroups() do
+                table.insert(Parts, Group.name .. "=" .. Group.mask)
+            end
+            return table.concat(Parts, " ")
+        end
+        local function Try(...)
+            local Ok, Problem = pcall(...)
+            return if Ok then "ok" else Problem
+        end
+        print(PhysicsService:GetMaxCollisionGroups(), Groups())
+        PhysicsService:RegisterCollisionGroup("GroupA")
+        PhysicsService:RegisterCollisionGroup("GroupB")
+        PhysicsService:RegisterCollisionGroup("GroupA")
+        PhysicsService:CollisionGroupSetCollidable("GroupA", "GroupB", false)
+        PhysicsService:CollisionGroupSetCollidable("GroupB", "GroupB", false)
+        print(Groups(), PhysicsService:IsCollisionGroupRegistered("GroupA"), PhysicsService:IsCollisionGroupRegistered("groupa"))
+        print(PhysicsService:CollisionGroupsAreCollidable("GroupB", "GroupA"), PhysicsService:CollisionGroupsAreCollidable("GroupA", "Default"), PhysicsService:CollisionGroupsAreCollidable("GroupA", "Nope"))
+        PhysicsService:RenameCollisionGroup("GroupA", "Renamed")
+        PhysicsService:UnregisterCollisionGroup("GroupB")
+        PhysicsService:RegisterCollisionGroup("GroupC")
+        print(Groups())
+        print(Try(PhysicsService.RegisterCollisionGroup, PhysicsService, ""))
+        print(Try(PhysicsService.RegisterCollisionGroup, PhysicsService, "Default"))
+        print(Try(PhysicsService.RegisterCollisionGroup, PhysicsService, string.rep("x", 101)))
+        print(Try(PhysicsService.RegisterCollisionGroup, PhysicsService, string.rep("x", 100)))
+        print(Try(PhysicsService.CollisionGroupSetCollidable, PhysicsService, "GroupC", "Nope", false))
+        print(Try(PhysicsService.CollisionGroupSetCollidable, PhysicsService, "Nope", "Default", "no"))
+        print(Try(PhysicsService.RenameCollisionGroup, PhysicsService, nil, nil))
+        print(Try(PhysicsService.GetCollisionGroupId, PhysicsService, "Nope"))
+        print(Try(PhysicsService.GetCollisionGroupName, PhysicsService, 31.5))
+        print(PhysicsService:GetCollisionGroupName(1.5), PhysicsService:GetCollisionGroupName("1"), PhysicsService:GetCollisionGroupName(9), PhysicsService:GetCollisionGroupId("GroupC"))
+        PhysicsService:RegisterCollisionGroup(5)
+        PhysicsService:RegisterCollisionGroup(true)
+        PhysicsService:CollisionGroupSetCollidable("5", "true", 0)
+        local Off = PhysicsService:CollisionGroupsAreCollidable("5", "true")
+        PhysicsService:CollisionGroupSetCollidable("5", "true", "TRUE")
+        print(PhysicsService:IsCollisionGroupRegistered(5), PhysicsService:IsCollisionGroupRegistered("true"), Off, PhysicsService:CollisionGroupsAreCollidable("5", "true"))
+        for Index = 1, 26 do
+            PhysicsService:RegisterCollisionGroup("Fill" .. Index)
+        end
+        print(#PhysicsService:GetRegisteredCollisionGroups(), Try(PhysicsService.RegisterCollisionGroup, PhysicsService, "Over"), Try(PhysicsService.RegisterCollisionGroup, PhysicsService, "GroupC"))
+        PhysicsService:UnregisterCollisionGroup("Fill1")
+        local Id = PhysicsService:CreateCollisionGroup("Made")
+        local Entry = PhysicsService:GetCollisionGroups()[Id + 1]
+        print(Id, Entry.id, Entry.name, Entry.mask, Try(PhysicsService.CreateCollisionGroup, PhysicsService, "Made"))
+        "#,
+    );
+    assert_eq!(
+        output,
+        [
+            "print: 32 Default=-1",
+            "print: Default=-1 GroupA=-5 GroupB=-7 true false",
+            "print: false true true",
+            "print: Default=-1 Renamed=-1 GroupC=-1",
+            "print: Collision group requires a valid name.",
+            "print: Can not use/change the Default collision group.",
+            "print: Collision group name length cannot exceed 100 chars",
+            "print: ok",
+            "print: Both collision groups must be registered.",
+            "print: Unable to cast string to bool",
+            "print: Argument 2 missing or nil",
+            "print: Collision group not found.",
+            "print: The Collision group Id must be between 0 and 32",
+            "print: GroupC Renamed  2",
+            "print: true true false true",
+            "print: 32 Cannot register more than 32 collision groups in this world. Cannot register more than 32 collision groups in this world.",
+            "print: 6 6 Made -1 Cannot register more than 32 collision groups.",
+        ]
+    );
+    let missing: Vec<String> = engine.state.borrow().output.missing.iter().map(|(name, _)| name.clone()).filter(|name| name.contains("PhysicsService")).collect();
+    assert!(missing.is_empty(), "{missing:?}");
+}
+
+/// A playing client reads the registry and may not change it: the name checks of Create and Remove come first, the
+/// argument casts before everything (measured in roblox-sim's 0.747 client); SetPartCollisionGroup works there. An edit
+/// DataModel (ree's default mode, an edit-mode client too) may register.
+#[test]
+fn a_playing_client_reads_collision_groups_and_may_not_change_them() {
+    use super::RunContext;
+    let (lua, engine) = start_with(Options { mode: "play".into(), ..Options::default() });
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local PhysicsService = game:GetService("PhysicsService")
+        local function Try(...)
+            local Ok, Problem = pcall(...)
+            return if Ok then "ok" else Problem
+        end
+        print(PhysicsService:GetMaxCollisionGroups(), #PhysicsService:GetRegisteredCollisionGroups(), PhysicsService:IsCollisionGroupRegistered("Default"), PhysicsService:CollisionGroupsAreCollidable("Default", "Nope"))
+        for _, Name in { "RegisterCollisionGroup", "UnregisterCollisionGroup", "CreateCollisionGroup", "RemoveCollisionGroup" } do
+            print(Name, Try(PhysicsService[Name], PhysicsService, "GroupA"), Try(PhysicsService[Name], PhysicsService, ""), Try(PhysicsService[Name], PhysicsService, nil))
+        end
+        print(Try(PhysicsService.RenameCollisionGroup, PhysicsService, "GroupA", "GroupB"), Try(PhysicsService.CollisionGroupSetCollidable, PhysicsService, "Default", "Default", false), Try(PhysicsService.CollisionGroupSetCollidable, PhysicsService, "Default", "Default", "no"))
+        local Part = Instance.new("Part")
+        PhysicsService:SetPartCollisionGroup(Part, "GroupA")
+        print(Part.CollisionGroup, PhysicsService:CollisionGroupContainsPart("GroupA", Part), Try(PhysicsService.CollisionGroupContainsPart, PhysicsService, "GroupA", Instance.new("Folder")), #PhysicsService:GetRegisteredCollisionGroups())
+        "#,
+    );
+    let refused = "This API can only be used on the server!";
+    assert_eq!(
+        output,
+        [
+            "print: 32 1 true true".to_string(),
+            format!("print: RegisterCollisionGroup {refused} {refused} Argument 1 missing or nil"),
+            format!("print: UnregisterCollisionGroup {refused} {refused} Argument 1 missing or nil"),
+            format!("print: CreateCollisionGroup {refused} Collision group requires a valid name. Argument 1 missing or nil"),
+            format!("print: RemoveCollisionGroup {refused} Collision group requires a valid name. Argument 1 missing or nil"),
+            format!("print: {refused} {refused} Unable to cast string to bool"),
+            "print: GroupA true Parameter 2 must be BasePart in CollisionGroupContainsPart. 1".to_string(),
+        ]
+    );
+    for (mode, run_context) in [("edit", RunContext::Client), ("edit", RunContext::Edit)] {
+        let (lua, engine) = start_with(Options { mode: mode.into(), run_context, ..Options::default() });
+        let output = run(&lua, &engine, r#"game:GetService("PhysicsService"):RegisterCollisionGroup("GroupA") print(#game:GetService("PhysicsService"):GetRegisteredCollisionGroups())"#);
+        assert_eq!(output, ["print: 2"], "{mode} {run_context:?}");
+    }
+}
+
+/// A part's CollisionGroupId is its group's id while it is in the Workspace (-1 for a name that is not registered): worked
+/// out on the way in (inside a model), when its name changes there and when the groups change, over a script's id, and
+/// left as it is outside; each change fires Changed. CollisionGroup ignores "" and keeps 100 bytes. (Measured in
+/// roblox-sim's 0.747 server: tools/parity/probes/collision_group_args.luau.)
+#[test]
+fn a_parts_collision_group_id_follows_the_registry_in_the_workspace() {
+    use super::RunContext;
+    let (lua, engine) = start_with(Options { run_context: RunContext::Server, ..Options::default() });
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local PhysicsService = game:GetService("PhysicsService")
+        PhysicsService:RegisterCollisionGroup("GroupA")
+        local Model = Instance.new("Model")
+        local Inner = Instance.new("Part")
+        local Changes = {}
+        Inner.Changed:Connect(function(Name)
+            if string.find(Name, "^CollisionGroup") then
+                table.insert(Changes, Name)
+            end
+        end)
+        Inner.CollisionGroup = "GroupA"
+        Inner.Parent = Model
+        print("outside", Inner.CollisionGroupId)
+        Model.Parent = workspace
+        print("entered", Inner.CollisionGroupId)
+        Inner.CollisionGroup = "GroupB"
+        print("unknown", Inner.CollisionGroupId)
+        PhysicsService:RegisterCollisionGroup("GroupB")
+        print("registered", Inner.CollisionGroupId)
+        Inner.CollisionGroupId = 9
+        PhysicsService:CollisionGroupSetCollidable("GroupA", "GroupB", false)
+        print("collidable", Inner.CollisionGroupId)
+        PhysicsService:UnregisterCollisionGroup("GroupA")
+        print("unregistered", Inner.CollisionGroupId)
+        PhysicsService:RenameCollisionGroup("GroupB", "GroupC")
+        print("renamed", Inner.CollisionGroup, Inner.CollisionGroupId)
+        Inner.CollisionGroup = ""
+        print("empty", Inner.CollisionGroup)
+        Inner.CollisionGroup = string.rep("L", 99) .. "\u{00FC}"
+        print("cut", #Inner.CollisionGroup)
+        Model.Parent = nil
+        Inner.CollisionGroup = "GroupC"
+        print("left", Inner.CollisionGroup, Inner.CollisionGroupId)
+        task.defer(function()
+            print("changes", table.concat(Changes, " "))
+        end)
+        "#,
+    );
+    let changes = ["CollisionGroup", "CollisionGroupId", "CollisionGroup", "CollisionGroupId", "CollisionGroupId", "CollisionGroupId", "CollisionGroupId", "CollisionGroupId", "CollisionGroup", "CollisionGroup"];
+    assert_eq!(
+        output,
+        [
+            "print: outside 0".to_string(),
+            "print: entered 1".into(),
+            "print: unknown -1".into(),
+            "print: registered 2".into(),
+            "print: collidable 9".into(),
+            "print: unregistered 2".into(),
+            "print: renamed GroupB -1".into(),
+            "print: empty GroupB".into(),
+            "print: cut 100".into(),
+            "print: left GroupC -1".into(),
+            format!("print: changes {}", changes.join(" ")),
+        ]
+    );
+}
+
+/// Each engine (DataModel) has its own collision groups.
+#[test]
+fn each_engine_has_its_own_collision_groups() {
+    use super::RunContext;
+    let server = || start_with(Options { run_context: RunContext::Server, ..Options::default() });
+    let (first_lua, first) = server();
+    let (second_lua, second) = server();
+    let count = r#"print(#game:GetService("PhysicsService"):GetRegisteredCollisionGroups())"#;
+    assert_eq!(run(&first_lua, &first, &format!(r#"game:GetService("PhysicsService"):RegisterCollisionGroup("GroupA") {count}"#)), ["print: 2"]);
+    assert_eq!(run(&second_lua, &second, count), ["print: 1"]);
+}
+
+/// settings() is refused to a game script, which a play run's scripts are, and the settings services are no children of the
+/// DataModel's or of UserSettings()' (measured in a 0.747 client and server: tools/parity/probes/global_settings.luau). It was a
+/// table of tables, and GetService made a settings service, or any other, under either.
+#[test]
+fn settings_is_refused_to_a_game_script_and_no_other_provider_holds_a_settings_service() {
+    let (lua, engine) = start_with(Options { mode: "play".into(), ..Options::default() });
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local Ok, Problem = pcall(settings)
+        assert(not Ok and Problem == "The current thread cannot call 'settings' (lacking capability Plugin)", tostring(Problem))
+        assert(select(2, pcall(settings, 1, "x")) == Problem)
+        -- the DataModel: a settings service a game script may not have is nil, another refused
+        assert(game:GetService("RenderSettings") == nil and game:FindService("RenderSettings") == nil)
+        assert(select(2, pcall(game.GetService, game, "TaskScheduler")) == "Invalid parent for Service. TaskScheduler cannot be parented to " .. game.Name .. " .")
+        assert(select(2, pcall(game.GetService, game, "UserGameSettings")) == "Invalid parent for Service. UserGameSettings cannot be parented to " .. game.Name .. " .")
+        assert(game:GetService("GlobalSettings") == nil and game:FindService("UserSettings") == nil)
+        -- UserSettings() holds its own service and makes no other
+        local User = UserSettings()
+        assert(User:GetService("Players") == nil and User:GetService("RenderSettings") == nil and User:GetService("StudioService") == nil)
+        assert(select(2, pcall(User.GetService, User, "Lighting")) == "Not allowed to add that under settings")
+        assert(select(2, pcall(User.GetService, User, "LuaSettings")) == "Invalid parent for Service. LuaSettings cannot be parented to GlobalBasicSettings .")
+        assert(select(2, pcall(User.GetService, User, "NetworkClient")) == "The current thread cannot create 'NetworkClient' (lacking capability Plugin)")
+        assert(select(2, pcall(User.FindService, User, "NotAService")) == "'NotAService' is not a valid Service name")
+        assert(#User:GetChildren() == 1)
+        -- its tree is locked
+        assert(select(2, pcall(function() User.Parent = workspace end)) == "The current thread cannot set 'UserSettings parent' (lacking capability RobloxScript)")
+        assert(select(2, pcall(function() User.GameSettings.Parent = workspace end)) == "Cannot change Parent of type UserGameSettings")
+        assert(select(2, pcall(function() Instance.new("Folder").Parent = User end)) == "Not allowed to add that under settings")
+        assert(select(2, pcall(function() Instance.new("Folder").Parent = User.GameSettings end)) == "Not allowed to add that under settings")
+        assert(select(2, pcall(User.Clone, User)) == "GlobalBasicSettings cannot be cloned")
+        User.GameSettings.Name = "Renamed"
+        assert(User.GameSettings.Name == "GameSettings")
+        "#,
+    );
+    assert!(output.iter().all(|line| !line.starts_with("error")), "{output:?}");
+}
+
+/// In edit mode, where a plugin's code runs, settings() is the GlobalSettings object, the same every call, with its eight
+/// settings services under a client's names and their values (measured at identity 4: tools/parity/probes/global_settings_tree.luau
+/// and global_settings_services.luau). What ree does not emulate reports itself.
+#[test]
+fn settings_is_the_global_settings_object_a_plugin_gets() {
+    let (lua, engine) = start();
+    let output = run(
+        &lua,
+        &engine,
+        r#"
+        local Root = settings()
+        assert(typeof(Root) == "Instance" and Root.ClassName == "GlobalSettings" and Root.Name == "Global Settings" and tostring(Root) == "Global Settings")
+        assert(settings() == Root and Root:GetFullName() == "Global Settings" and Root.Parent == nil and Root:IsA("GenericSettings") and not Root:IsA("UserSettings"))
+        local Names = {}
+        for _, Child in Root:GetChildren() do
+            table.insert(Names, Child.ClassName .. ":" .. Child.Name)
+        end
+        assert(table.concat(Names, ",") == "GameSettings:Game Options,LuaSettings:Lua,DebugSettings:Diagnostics,PhysicsSettings:Physics,Studio:Studio,NetworkSettings:Network,RenderSettings:Rendering,TaskScheduler:Task Scheduler", table.concat(Names, ","))
+        local Rendering = Root.Rendering
+        assert(Root:GetService("RenderSettings") == Rendering and Root:FindService("RenderSettings") == Rendering and Rendering:GetFullName() == "Rendering")
+        assert(Rendering.QualityLevel == Enum.QualityLevel.Automatic and Rendering.MeshCacheSize == 33554432 and Rendering.EnableFRM and Rendering:GetMaxQualityLevel() == 22)
+        assert(Root.Physics.AllowSleep and Root.Diagnostics.TickCountPreciseOverride == Enum.TickCountSampleMethod.Precise and Root.Network.RandomizeJoinInstanceOrder)
+        assert(select(2, pcall(function() return Root.NotAMember end)) == 'NotAMember is not a valid member of GlobalSettings "Global Settings"')
+        assert(select(2, pcall(function() return Root.RenderSettings end)) == 'RenderSettings is not a valid member of GlobalSettings "Global Settings"')
+        -- writes: an enum setting takes an item's value; what a plugin may not touch refuses; a dropped write keeps the value
+        Rendering.QualityLevel = 3
+        assert(Rendering.QualityLevel == Enum.QualityLevel.Level03)
+        assert(select(2, pcall(function() Root.Network.HttpProxyURL = "x" end)) == "The current thread cannot write 'HttpProxyURL' (lacking capability RobloxScript)")
+        assert(select(2, pcall(function() return Root.Physics.AreTimestepsShown end)) == "The current thread cannot read 'AreTimestepsShown' (lacking capability RobloxScript)")
+        Root["Game Options"].VideoCaptureEnabled = false
+        Rendering.Name = "Renamed"
+        assert(Root["Game Options"].VideoCaptureEnabled and Rendering.Name == "Rendering")
+        -- the tree is locked
+        assert(select(2, pcall(function() Rendering.Parent = workspace end)) == "Cannot change Parent of type RenderSettings")
+        assert(select(2, pcall(function() Root.Parent = workspace end)) == "The current thread cannot set 'settings parent' (lacking capability RobloxScript)")
+        assert(select(2, pcall(function() Instance.new("Folder").Parent = Root end)) == "Not allowed to add that under settings")
+        assert(select(2, pcall(Root.Clone, Root)) == "Global Settings cannot be cloned" and select(2, pcall(Rendering.Clone, Rendering)) == "Rendering cannot be cloned")
+        assert(select(2, pcall(Root.Lua.Destroy, Root.Lua)) == "The Parent property of Lua is locked")
+        assert(select(2, pcall(Root.Destroy, Root)) == "The Parent property of Game Options is locked" and #Root:GetChildren() == 8)
+        -- the other providers' services
+        assert(select(2, pcall(Root.GetService, Root, "UserGameSettings")) == "Invalid parent for Service. UserGameSettings cannot be parented to Global Settings .")
+        assert(select(2, pcall(Root.GetService, Root, "Lighting")) == "Not allowed to add that under settings")
+        assert(Root:GetService("Workspace") == nil and #Root:GetChildren() == 8)
+        assert(select(2, pcall(game.GetService, game, "RenderSettings")) == "Invalid parent for Service. RenderSettings cannot be parented to " .. game.Name .. " .")
+        assert(select(2, pcall(UserSettings().GetService, UserSettings(), "Studio")) == "Invalid parent for Service. Studio cannot be parented to GlobalBasicSettings .")
+        -- RenderSettings' writes fire no Changed, PhysicsSettings' do (read after the deferred events ran)
+        _G.Seen = {}
+        Rendering.Changed:Connect(function(Name)
+            table.insert(_G.Seen, Name)
+        end)
+        Root.Physics.Changed:Connect(function(Name)
+            table.insert(_G.Seen, Name)
+        end)
+        Rendering.QualityLevel = Enum.QualityLevel.Level07
+        Root.Physics.AllowSleep = false
+        -- a live reading, Studio's settings and the flag methods report themselves
+        local _ = Root.Diagnostics.InstanceCount, Root.Studio["Tab Width"], Root:GetFFlag("Anything")
+        "#,
+    );
+    assert!(output.iter().all(|line| !line.starts_with("error")), "{output:?}");
+    assert_eq!(run(&lua, &engine, r#"print(table.concat(_G.Seen, ","))"#).last().map(String::as_str), Some("print: AllowSleep"));
+    let missing: Vec<String> = engine.state.borrow().output.missing.iter().map(|(name, _)| name.clone()).collect();
+    assert_eq!(missing, ["DebugSettings.InstanceCount", "Studio.Tab Width", "GlobalSettings.GetFFlag"]);
+}
+
+/// settings() makes its tree on its first call, so a run that never calls it numbers its instances as before
+#[test]
+fn settings_makes_its_tree_on_the_first_call() {
+    let (lua, engine) = start();
+    let class = engine.reflection.class_id("GlobalSettings").unwrap();
+    run(&lua, &engine, "local _ = UserSettings ~= nil and workspace");
+    assert_eq!(engine.state.borrow_mut().dom.count_of_class(class), 0);
+    let before = engine.state.borrow().dom.live_count();
+    run(&lua, &engine, "assert(settings() == settings())");
+    // (the run's own script, the root and its eight services)
+    assert_eq!(engine.state.borrow().dom.live_count(), before + 1 + 9);
+    assert_eq!(engine.state.borrow_mut().dom.count_of_class(class), 1);
 }

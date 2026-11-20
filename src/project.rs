@@ -298,6 +298,27 @@ pub fn materialize(state: &mut State, reflection: &Reflection, id: InstanceId) {
     }
 }
 
+/// A loopback client's place hierarchy: the server's snapshot (shared), its own DataModel at the top, and the same stand-in
+/// sources (loopback/lazy.rs: each side makes the Studio-only instances of what it copied)
+pub fn share_studio(server: &State, client: &mut State, client_game: InstanceId) {
+    client.project.studio = server.project.studio.as_ref().map(|studio| Studio { game: client_game, index: studio.index.clone() });
+    client.project.stand_in_sources = server.project.stand_in_sources.clone();
+    client.project.hierarchy_path = server.project.hierarchy_path.clone();
+}
+
+/// Whether `id` waits to make instances only the server can (a lazily imported plan's, a bundle's: not the Studio
+/// snapshot's, which a loopback client makes itself)
+pub fn lazy_beyond_studio(state: &State, id: InstanceId) -> bool {
+    if state.dom.at(id).flags & (flags::LAZY_PENDING | flags::BUNDLE_ROOT | flags::LAZY_ABOVE) != 0 {
+        return true;
+    }
+    #[cfg(feature = "bundles")]
+    if state.project.model_assets.waits_at(id) {
+        return true;
+    }
+    false
+}
+
 /// MaterializeDeep: materializes a whole subtree (Clone, GetDescendants).
 pub fn materialize_deep(engine: &Engine, id: InstanceId) {
     let mut stack = vec![id];
@@ -533,7 +554,7 @@ fn scan_below(path: String, up: Option<&Above>) -> ScanNode {
     let mut entries = Vec::new();
     let mut kinds = Vec::new();
     let mut stamps = Vec::new();
-    let stamped = crate::lua::modules::reusing_compiled_modules();
+    let stamped = crate::lua::modules::keeping_between_runs();
     if let Ok(read) = std::fs::read_dir(&path) {
         let mut valid = true;
         for entry in read {
@@ -602,7 +623,7 @@ fn scan_below(path: String, up: Option<&Above>) -> ScanNode {
 /// [`scan`] of a mounted tree, kept between VMs in a process that keeps compiled modules ([`kept_listing`]).
 fn listed(path: String) -> ScanNode {
     #[cfg(windows)]
-    if crate::lua::modules::reusing_compiled_modules() {
+    if crate::lua::modules::keeping_between_runs() {
         return kept_listing::listed(path);
     }
     scan(path)
@@ -1048,7 +1069,7 @@ fn decode_model_file(engine: &Engine, path: &str, bytes: &[u8]) -> Option<WeakDo
 fn mounted_plan(engine: &Engine, path: &str) -> Option<std::sync::Arc<ModelPlan>> {
     type Kept = std::sync::Mutex<FxHashMap<String, (crate::files::Stamp, std::sync::Arc<ModelPlan>)>>;
     static KEPT: std::sync::OnceLock<Kept> = std::sync::OnceLock::new();
-    let keep = crate::lua::modules::reusing_compiled_modules();
+    let keep = crate::lua::modules::keeping_between_runs();
     crate::files::note(Path::new(path));
     let stamp = crate::files::stamp(Path::new(path));
     if keep {
@@ -1211,7 +1232,13 @@ pub struct Prescan {
 
 impl Prescan {
     pub fn start(roots: &[String], reflection: &std::sync::Arc<Reflection>) -> Prescan {
-        let given = roots.to_vec();
+        Prescan::start_for(roots, roots, reflection)
+    }
+
+    /// [`Prescan::start`] of layout roots `roots`, with the data roots of the place `place_roots` names
+    /// ([`crate::mount::place_roots`]: a Rojo project file's folder when it is mounted without roots).
+    pub fn start_for(roots: &[String], place_roots: &[String], reflection: &std::sync::Arc<Reflection>) -> Prescan {
+        let given = place_roots.to_vec();
         let layout: Vec<_> = roots
             .iter()
             .map(|root| {
@@ -1665,7 +1692,10 @@ pub fn decode_model(bytes: &[u8]) -> Result<WeakDom, String> {
         }
         Err(first_error.unwrap_or_default())
     } else {
-        rbx_xml::from_reader_default(bytes).map_err(|e| e.to_string())
+        // (properties rbx-dom's database does not know are read too, as rbx_binary reads them: a newer Studio's, which the
+        // engine's reflection has)
+        let options = rbx_xml::DecodeOptions::new().property_behavior(rbx_xml::DecodePropertyBehavior::ReadUnknown);
+        rbx_xml::from_reader(bytes, options).map_err(|e| e.to_string())
     }
 }
 
@@ -1690,6 +1720,12 @@ fn forget_property(db: &mut rbx_reflection::ReflectionDatabase<'static>, class: 
     false
 }
 
+/// The enum the engine's reflection gives `class_name.property`, when it is an enum property.
+pub(crate) fn engine_enum(reflection: &Reflection, class_name: &str, property: &str) -> Option<crate::reflection::EnumId> {
+    let class = reflection.class_id(class_name)?;
+    reflection.class_property(class, reflection.name_id(property)?)?.enum_type
+}
+
 /// The enum an rbx-dom Enum property holds (from rbx-dom's property descriptor, as Lune reads it).
 fn dom_enum_name(class_name: &str, property: &str) -> Option<String> {
     let database = rbx_reflection_database::get().ok()?;
@@ -1706,9 +1742,14 @@ fn dom_enum_name(class_name: &str, property: &str) -> Option<String> {
     None
 }
 
-/// An rbx-dom Enum property value as the engine's enum item (by rbx-dom's descriptor, as Lune
-/// reads it).
+/// An rbx-dom Enum property value as the engine's enum item: by the engine's own reflection when it
+/// gives the property an enum (data/reflection.json, a newer Studio than rbx-dom's database: an
+/// InputBinding's Type and PrimaryModifier, KeyCode.MouseWheel), else by rbx-dom's descriptor, as
+/// Lune reads it.
 fn dom_enum_value(reflection: &Reflection, class_name: &str, property: &str, item: u32) -> Option<Value> {
+    if let Some(enum_id) = engine_enum(reflection, class_name, property) {
+        return reflection.enums[enum_id as usize].by_value.get(&(item as i64)).copied().map(Value::EnumItem);
+    }
     let enum_name = dom_enum_name(class_name, property)?;
     let database = rbx_reflection_database::get().ok()?;
     let descriptor = database.enums.get(enum_name.as_str())?;

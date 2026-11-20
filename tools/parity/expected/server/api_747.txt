@@ -1,0 +1,68 @@
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
+easingstyle Linear=0 Sine=1 Back=2 Quad=3 Quart=4 Quint=5 Bounce=6 Elastic=7 Exponential=8 Circular=9 Cubic=10 Bezier=11 Spring=12
+easingstyle-values Enum.EasingStyle.Bezier Enum.EasingStyle.Spring nil Enum.EasingStyle.Spring
+tweeninfo () ok Time:1 DelayTime:0 RepeatCount:0 Reverses:False EasingDirection:Out EasingStyle:Quad
+tweeninfo (nil) error TweenInfo.new first argument expects a number for time.
+tweeninfo (1) ok Time:1 DelayTime:0 RepeatCount:0 Reverses:False EasingDirection:Out EasingStyle:Quad
+tweeninfo (1,nil) error TweenInfo.new second argument expects Enum.EasingStyle input
+tweeninfo (1,nil,In) error TweenInfo.new second argument expects Enum.EasingStyle input
+tweeninfo (1,Quad,nil) error TweenInfo.new third argument expects Enum.EasingDirection input
+tweeninfo (1,Quad,In,nil) error TweenInfo.new fourth arg should be a number for RepeatCount.
+tweeninfo (1,Quad,In,2,nil) error TweenInfo.new fifth arg should be a boolean for Reverses.
+tweeninfo (1,Quad,In,2,true,nil) error TweenInfo.new sixth arg should be a number for DelayTime.
+tweeninfo (1,Quad,In,2,true,1,extra) ok Time:1 DelayTime:1 RepeatCount:2 Reverses:True EasingDirection:In EasingStyle:Quad
+tweeninfo ('1') error TweenInfo.new first argument expects a number for time.
+tweeninfo (true) error TweenInfo.new first argument expects a number for time.
+tweeninfo (1,'Quad') error TweenInfo.new second argument expects Enum.EasingStyle input
+tweeninfo (1,3) ok Time:1 DelayTime:0 RepeatCount:0 Reverses:False EasingDirection:Out EasingStyle:Quad
+tweeninfo (1,2.5) ok Time:1 DelayTime:0 RepeatCount:0 Reverses:False EasingDirection:Out EasingStyle:Back
+tweeninfo (1,13) error TweenInfo.new second argument expects Enum.EasingStyle input
+tweeninfo (1,-1) error TweenInfo.new second argument expects Enum.EasingStyle input
+tweeninfo (1,false) error TweenInfo.new second argument expects Enum.EasingStyle input
+tweeninfo (1,In) error TweenInfo.new second argument expects Enum.EasingStyle input
+tweeninfo (1,Quad,'In') error TweenInfo.new third argument expects Enum.EasingDirection input
+tweeninfo (1,Quad,0) ok Time:1 DelayTime:0 RepeatCount:0 Reverses:False EasingDirection:In EasingStyle:Quad
+tweeninfo (1,Quad,1.9) ok Time:1 DelayTime:0 RepeatCount:0 Reverses:False EasingDirection:Out EasingStyle:Quad
+tweeninfo (1,Quad,3) error TweenInfo.new third argument expects Enum.EasingDirection input
+tweeninfo (1,Quad,Quad) error TweenInfo.new third argument expects Enum.EasingDirection input
+tweeninfo (1,Quad,In,'3') error TweenInfo.new fourth arg should be a number for RepeatCount.
+tweeninfo (1,Quad,In,2.7) ok Time:1 DelayTime:0 RepeatCount:2 Reverses:False EasingDirection:In EasingStyle:Quad
+tweeninfo (1,Quad,In,2,1) error TweenInfo.new fifth arg should be a boolean for Reverses.
+tweeninfo (1,Quad,In,2,true,'0.5') error TweenInfo.new sixth arg should be a number for DelayTime.
+tweeninfo (1,Spring) error TweenInfo.new does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier
+tweeninfo (1,Spring value) error TweenInfo.new does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier
+tweeninfo (1,'Spring') error TweenInfo.new second argument expects Enum.EasingStyle input
+tweeninfo (1,Spring,'bad') error TweenInfo.new does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier
+tweeninfo ('x',Spring) error TweenInfo.new first argument expects a number for time.
+getvalue Spring error TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error Unable to cast string to EasingDirection | error Argument 1 missing or nil | error Argument 3 missing or nil
+tweeninfo (1,Bezier) error TweenInfo.new does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier
+tweeninfo (1,Bezier value) error TweenInfo.new does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier
+tweeninfo (1,'Bezier') error TweenInfo.new second argument expects Enum.EasingStyle input
+tweeninfo (1,Bezier,'bad') error TweenInfo.new does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier
+tweeninfo ('x',Bezier) error TweenInfo.new first argument expects a number for time.
+getvalue Bezier error TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error TweenService:GetValue does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error Unable to cast string to EasingDirection | error Argument 1 missing or nil | error Argument 3 missing or nil
+getvalue-casts error Unable to cast double to EasingStyle | error Unable to cast EasingDirection to EasingStyle | ok 0.25 | ok 0.25 | error Unable to cast string to EasingDirection | error Argument 2 missing or nil
+pagelayout Enum.EasingStyle.Back | ok -> Enum.EasingStyle.Quad | ok -> Enum.EasingStyle.Quad | ok -> Enum.EasingStyle.Quad | ok -> Enum.EasingStyle.Quad | error Unable to assign property EasingStyle. Invalid value 13 for enum EasingStyle -> Enum.EasingStyle.Quad | error Unable to assign property EasingStyle. EnumItem of type EasingStyle expected, got an EnumItem of type EasingDirection -> Enum.EasingStyle.Quad | ok -> Enum.EasingStyle.Sine
+pagelayout-changes 2
+guitween Spring error GuiObject:TweenPosition does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error GuiObject:TweenSize does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error GuiObject:TweenSizeAndPosition does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error GuiObject:TweenPosition does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error GuiObject:TweenPosition does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error GuiObject:TweenPosition does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier
+guitween Bezier error GuiObject:TweenPosition does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error GuiObject:TweenSize does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error GuiObject:TweenSizeAndPosition does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error GuiObject:TweenPosition does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error GuiObject:TweenPosition does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier | error GuiObject:TweenPosition does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier
+guitween-casts error Unable to cast string to UDim2 | error Argument 1 missing or nil | error Unable to cast string to EasingDirection | error Unable to cast double to EasingStyle | error Unable to cast string to float | error Unable to cast string to UDim2
+guitween-untouched {0, 0}, {0, 0} {0, 0}, {0, 0}
+guitween-loose error Can only tween objects in the workspace | error Can only tween objects in the workspace | {0, 0}, {0, 0}
+guitween-placed ok true
+pose error Unable to assign property EasingStyle. EnumItem of type PoseEasingStyle expected, got an EnumItem of type EasingStyle -> Enum.PoseEasingStyle.Linear | error Unable to assign property EasingStyle. Invalid value "Spring" for enum PoseEasingStyle -> Enum.PoseEasingStyle.Linear | error Unable to assign property EasingStyle. Invalid value 12 for enum PoseEasingStyle -> Enum.PoseEasingStyle.Linear
+camera ok Enum.ProjectionType.Perspective Enum.OrthographicMode.Vertical 35 1
+camera-writes ok ok -> Enum.ProjectionType.Perspective | ok -> Enum.ProjectionType.Perspective | error Unable to assign property ProjectionType. Invalid value 5 for enum ProjectionType -> Enum.ProjectionType.Perspective | ok -> Enum.OrthographicMode.Vertical | error Unable to assign property OrthographicMode. EnumItem of type OrthographicMode expected, got an EnumItem of type EasingStyle -> Enum.OrthographicMode.Vertical | ok -> 35 | ok -> 35 | ok -> 1
+camera-changes 0
+capsule ok Enum.PartType.Capsule 6, 2, 4 mass 33.5999985 rays 9 9 miss miss
+editableimage ok error EditableImage:DrawImage: the requested Enum.ImageCombineType is not yet supported | error EditableImage:DrawImage: the requested Enum.ImageCombineType is not yet supported | error EditableImage:DrawImage: the requested Enum.ImageCombineType is not yet supported | error EditableImage:DrawImage: Enum.ImageAlphaType other than Default is not yet supported | error EditableImage:DrawImage: the requested Enum.ImageCombineType is not yet supported | ok  | error EditableImage:DrawRectangle: the requested Enum.ImageCombineType is not yet supported | error EditableImage:DrawRectangle: Enum.ImageAlphaType other than Default is not yet supported | error EditableImage:DrawCircle: the requested Enum.ImageCombineType is not yet supported | error EditableImage:DrawCircle: Enum.ImageAlphaType other than Default is not yet supported | error EditableImage:DrawLine: the requested Enum.ImageCombineType is not yet supported | error EditableImage:DrawLine: Enum.ImageAlphaType other than Default is not yet supported | error EditableImage:DrawImageTransformed: the requested Enum.ImageCombineType is not yet supported | error EditableImage:DrawImageTransformed: Enum.ImageAlphaType other than Default is not yet supported
+ranges ok ok -> 0 | ok -> 0.25 | ok -> 1
+ranges-2d ok ok -> 1 | ok -> 0 | ok -> 0 | ok -> 10000 | ok -> 1 | ok -> 0 | ok -> 1 | ok -> 64 | ok -> -5
+ranges-blur ok Enum.UIBlurStrength.Heavy ok -> 1 | ok -> 0
+ranges-deadzone ok 0.1 1  | ok -> 1 1  | ok -> 0 0.5 
+reads ok  | ok Enum.AuthorityMode.Automatic | ok false | ok 0.699999988 | ok Enum.ResamplerMode.Default | ok false | ok Content{SourceType=None}
+gone error PrimalPhysicsSolver is not a valid member of Workspace "Workspace" | error The current thread cannot read 'StreamingMinRadius' (lacking capability PluginOrOpenCloud) | error The current thread cannot read 'BanningEnabled' (lacking capability PluginOrOpenCloud) | error siz is not a valid member of Part "Part" | error PrimalPhysicsSolver is not a valid member of "Enum"
+hidden StreamingMinRadius: error The current thread cannot read 'StreamingMinRadius' (lacking capability PluginOrOpenCloud) / error The current thread cannot write 'StreamingMinRadius' (lacking capability PluginOrOpenCloud) | StreamingTargetRadius: error The current thread cannot read 'StreamingTargetRadius' (lacking capability PluginOrOpenCloud) / error The current thread cannot write 'StreamingTargetRadius' (lacking capability PluginOrOpenCloud) | StreamOutBehavior: error The current thread cannot read 'StreamOutBehavior' (lacking capability PluginOrOpenCloud) / error The current thread cannot write 'StreamOutBehavior' (lacking capability PluginOrOpenCloud)
+hidden StreamingIntegrityMode: error The current thread cannot read 'StreamingIntegrityMode' (lacking capability PluginOrOpenCloud) / error The current thread cannot write 'StreamingIntegrityMode' (lacking capability PluginOrOpenCloud) | PredictiveStreamingMode: error The current thread cannot read 'PredictiveStreamingMode' (lacking capability PluginOrOpenCloud) / error The current thread cannot write 'PredictiveStreamingMode' (lacking capability PluginOrOpenCloud) | PlayerScriptsUseInputActionSystem: error The current thread cannot read 'PlayerScriptsUseInputActionSystem' (lacking capability RobloxScript) / error The current thread cannot write 'PlayerScriptsUseInputActionSystem' (lacking capability RobloxScript)
+hidden BanningEnabled: error The current thread cannot read 'BanningEnabled' (lacking capability PluginOrOpenCloud) / error The current thread cannot write 'BanningEnabled' (lacking capability PluginOrOpenCloud) | UseStrafingAnimations: error The current thread cannot read 'UseStrafingAnimations' (lacking capability PluginOrOpenCloud) / error The current thread cannot write 'UseStrafingAnimations' (lacking capability PluginOrOpenCloud) | CreateDefaultPlayerModule: error The current thread cannot read 'CreateDefaultPlayerModule' (lacking capability PluginOrOpenCloud) / error The current thread cannot write 'CreateDefaultPlayerModule' (lacking capability PluginOrOpenCloud)

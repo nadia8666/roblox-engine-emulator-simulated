@@ -116,6 +116,9 @@ enum Read {
 enum Write {
     /// A writable reflected property without a setter (property index)
     Plain(u32),
+    /// A [`Write::Plain`] property a client does more for than store, which is not emulated: a write that changes it reports
+    /// that (lua/instance.rs unemulated_write)
+    Watched(u32),
     Parent,
     Name,
     Slow,
@@ -246,6 +249,7 @@ fn compute_member(engine: &Engine, class: ClassId, key: NameId) -> Member {
                 }
             } else {
                 match property {
+                    Some(index) if !reflection.property(index).read_only && linstance::unemulated_write(engine, class, name) => Write::Watched(index),
                     Some(index) if !reflection.property(index).read_only => Write::Plain(index),
                     _ => Write::Slow,
                 }
@@ -750,6 +754,10 @@ pub fn instance_value(lua: &Lua, engine: &Engine, id: InstanceId) -> LuaResult<L
         }
     }
     crate::profiler::caches::miss(crate::profiler::caches::Cache::Wrappers);
+    // (a freed instance never gets a userdata: every use of one would be an engine error)
+    if engine.state.try_borrow().is_ok_and(|state| state.dom.get(id).is_none()) {
+        return Err(LuaError::runtime("engine error: the instance was freed"));
+    }
     crate::profiler::caches::instance_touched(id.index, id.generation);
     let create = api.create.borrow().clone().expect("instance factory");
     create.call::<LuaValue>((id.index, id.generation))
@@ -883,7 +891,7 @@ unsafe fn this<'a>(state: *mut ffi::lua_State) -> Option<(&'a Api, InstanceId)> 
 
 #[inline]
 /// The instance the stack value at `index` is, if any.
-pub(super) unsafe fn stack_instance(state: *mut ffi::lua_State, index: c_int) -> Option<InstanceId> {
+pub(crate) unsafe fn stack_instance(state: *mut ffi::lua_State, index: c_int) -> Option<InstanceId> {
     unsafe { arg_instance(state, index) }
 }
 
@@ -1339,7 +1347,7 @@ unsafe fn newindex_fast(state: *mut ffi::lua_State) -> Out {
         let member = api.member(class, name);
         let kind = ffi::lua_type(state, 3);
         match member.write {
-            Write::Plain(property) => {
+            Write::Plain(property) | Write::Watched(property) => {
                 let info = engine.reflection.property(property);
                 let value = match (info.script_type, kind) {
                     (ScriptType::Number, ffi::LUA_TNUMBER) => {
@@ -1372,7 +1380,10 @@ unsafe fn newindex_fast(state: *mut ffi::lua_State) -> Out {
                         None => return Out::Slow,
                     },
                 };
-                linstance::script_set_property(engine, id, member.name, value);
+                let changed = linstance::script_set_property(engine, id, member.name, value);
+                if changed && matches!(member.write, Write::Watched(_)) {
+                    linstance::report_unemulated_write(engine, id, member.name, || super::script_position_on(state));
+                }
                 Out::Ret(0)
             }
             Write::Parent => {
@@ -2280,6 +2291,7 @@ pub fn collect(lua: &Lua, engine: &Engine) -> LuaResult<usize> {
         unsafe { lua.exec_raw::<()>((), |state| sync(state, &api))? };
     }
     prune_children_lists(&api, engine)?;
+    super::types::apply_pending_pins(engine);
     let (dead, orphans) = {
         let mut gc = api.gc.borrow_mut();
         gc.frames = 0;

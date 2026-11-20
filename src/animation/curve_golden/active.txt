@@ -1,0 +1,40 @@
+unknown track E(Unknown 'active' animation: 'active://N')
+not a number E(Invalid 'active' animation format: it should be active://ID)
+negative E(Invalid 'active' animation format: it should be active://ID)
+empty E(Invalid 'active' animation format: it should be active://ID)
+ACP get unknown E(Unknown 'active' animation: 'active://N')
+KSP get unknown E(Unknown 'active' animation: 'active://N')
+set on track, then clip true Idle
+clip Loop true true
+track set false, clip renamed false true
+shortened while at 0.5 L=0.25 t=0.5
+after a step L=0.25 t=0.25 x=9.66667 false
+Length changed signal 0 3
+initial active://N L=1 L=1 false Action arm=5 hand=0 <>
+key value 20 active://N L=1 L=1 false Action arm=10 hand=0 <>
+key at 2 s active://N L=2 L=2 false Action arm=10 hand=0 <>
+clip Loop true active://N L=2 L=2 true Action arm=10 hand=0 <>
+clip Priority Core active://N L=2 L=2 true Core arm=10 hand=0 <>
+joint added active://N L=2 L=2 true Core arm=10 hand=3 <>
+markers after edit 0.6 <M:m=string:quarter,M:m=string:half,M:n=string:new>
+mid-play edit before step 12
+after step 100
+Position renamed active://N L=2 L=2 true Core arm=0 hand=3 <>
+Position named back active://N L=2 L=2 true Core arm=100 hand=3 <>
+folder renamed to Hand active://N L=2 L=2 true Core arm=0 hand=100 <>
+folder named back active://N L=2 L=2 true Core arm=100 hand=3 <>
+Position destroyed active://N L=2 L=2 true Core arm=0 hand=3 <>
+second track L=2
+clip emptied active://N L=0 L=0 true Core arm=0 hand=0 <>
+clip destroyed active://N L=0 L=0 true Core arm=0 hand=0 <>
+load after destroy true L=0
+get after destroy ok(Instance)
+initial active://N L=1 L=1 false Action arm=5 <>
+pose value 20 active://N L=1 L=1 false Action arm=10 <>
+keyframe at 2 s active://N L=2 L=2 false Action arm=9.99969 <>
+keyframe moved to 1.5 active://N L=2 L=2 false Action arm=6.66667 <>
+Loop true active://N L=2 L=2 true Action arm=6.66667 <>
+Priority Core active://N L=2 L=2 true Core arm=6.66667 <>
+last keyframe destroyed active://N L=1.5 L=1.5 true Core arm=6.66667 <>
+marker and name after edit <M:m=string:v,K:Start>
+sequence destroyed active://N L=0 L=0 true Core arm=0 <>

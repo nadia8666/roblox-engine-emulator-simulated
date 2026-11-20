@@ -45,7 +45,6 @@
 
 // (the flags under which the collector marks the roots and references the heap walk follows: lgc.cpp)
 LUAU_FASTFLAG(LuauGcTraceUdata)
-LUAU_FASTFLAG(LuauFastpcall)
 LUAU_FASTFLAG(LuauCoroutineFinally)
 
 thread_local lua_ProfileState* luaP_state = NULL;
@@ -308,10 +307,9 @@ enum
 {
     B_GC = 1, // declines while a collector step is owed (it cannot run the collector)
     B_GCFIRST = 2, // ... before it looks at the arguments
-    B_TOSTRING = 4, // tostring: nil, booleans, numbers, strings and integers only, the collector check for a number's string
+    B_TOSTRING = 4, // tostring: nil, booleans, numbers and strings only, the collector check for a number's string
     B_RAWLEN = 8, // rawlen: a table or a string
     B_SELECT = 16, // select: a number or "#"
-    B_UNCHECKED = 32, // an argument check not listed here (the integer library): only the count and the results are told
 };
 
 struct BuiltinShape
@@ -327,7 +325,7 @@ struct BuiltinShape
 
 #define BS1(name, types) {name, 1, -1, R_LE1, types, 0, 0}
 #define BS2(name, types) {name, 2, -1, R_LE1, types, 0, 0}
-#define BSI(name) {name, 1, -1, R_LE1, "", 0, B_UNCHECKED}
+#define BSR {NULL, 0, -1, R_LE1, "", 0, 0}
 
 // in LBF_* order (Bytecode.h LuauBuiltinFunction)
 const BuiltinShape kBuiltins[] = {
@@ -425,59 +423,27 @@ const BuiltinShape kBuiltins[] = {
     BS1("math.isnan", "n"),
     BS1("math.isinf", "n"),
     BS1("math.isfinite", "n"),
-    BSI("integer.create"),
-    BSI("integer.tonumber"),
-    BSI("integer.neg"),
-    BSI("integer.add"),
-    BSI("integer.sub"),
-    BSI("integer.mul"),
-    BSI("integer.div"),
-    BSI("integer.min"),
-    BSI("integer.max"),
-    BSI("integer.rem"),
-    BSI("integer.idiv"),
-    BSI("integer.udiv"),
-    BSI("integer.urem"),
-    BSI("integer.mod"),
-    BSI("integer.clamp"),
-    BSI("integer.band"),
-    BSI("integer.bor"),
-    BSI("integer.bnot"),
-    BSI("integer.bxor"),
-    BSI("integer.lt"),
-    BSI("integer.le"),
-    BSI("integer.ult"),
-    BSI("integer.ule"),
-    BSI("integer.gt"),
-    BSI("integer.ge"),
-    BSI("integer.ugt"),
-    BSI("integer.uge"),
-    BSI("integer.lshift"),
-    BSI("integer.rshift"),
-    BSI("integer.arshift"),
-    BSI("integer.lrotate"),
-    BSI("integer.rrotate"),
-    BSI("integer.extract"),
-    BSI("integer.btest"),
-    BSI("integer.countrz"),
-    BSI("integer.countlz"),
-    BSI("integer.bswap"),
-    BS2("buffer.readinteger", "bn"),
-    {"buffer.writeinteger", 3, -1, R_LE0, "bni", 0, 0},
+    // (ids 94 to 132: the integer library's and buffer.readinteger / writeinteger, removed in release 747)
+    BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR,
+    BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR,
+    BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR,
+    BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR, BSR,
     {"table.create", 1, -1, R_LE1, "n", 0, B_GC},
     {"table.clear", 1, -1, R_LE0, "t", 0, 0},
     BS2("buffer.readvectorf32x2", "bn"),
     BS2("buffer.readvectorf32x3", "bn"),
+    BS2("buffer.readvectorf32x4", "bn"), // (declines where vectors have three components)
     {"buffer.writevectorf32x2", 3, -1, R_LE0, "bnv", 0, 0},
     {"buffer.writevectorf32x3", 3, -1, R_LE0, "bnv", 0, 0},
+    {"buffer.writevectorf32x4", 3, -1, R_LE0, "bnv", 0, 0}, // (likewise)
 };
 
 #undef BS1
 #undef BS2
-#undef BSI
+#undef BSR
 
 const int kBuiltinCount = int(sizeof(kBuiltins) / sizeof(kBuiltins[0]));
-static_assert(sizeof(kBuiltins) / sizeof(kBuiltins[0]) == LBF_BUFFER_WRITEVECTORF32X3 + 1, "a builtin shape for each LBF_* id, in order");
+static_assert(sizeof(kBuiltins) / sizeof(kBuiltins[0]) == LBF_BUFFER_WRITEVECTORF32X4 + 1, "a builtin shape for each LBF_* id, in order");
 
 // a function's calls as the call hook samples them: each with a chance of one in `every`; with `every` 0 none, and one
 // call after every `remeasure` read for its length alone (`left` of those calls still to come). `open` of its sampled
@@ -1771,8 +1737,6 @@ static bool argtype(const TValue* v, char type)
         return ttisvector(v);
     case 'b':
         return ttisbuffer(v);
-    case 'i':
-        return ttisinteger(v);
     }
     return true;
 }
@@ -1850,25 +1814,22 @@ static int declinereason(lua_State* L, Closure* cl, const Instruction* pc, int o
         return LUA_PROFILE_DECLINE_RESULTS;
     if ((shape.flags & B_GCFIRST) && luaC_needsGC(L))
         return LUA_PROFILE_DECLINE_GCDEBT;
-    if (!(shape.flags & B_UNCHECKED))
+    int listed = int(strlen(shape.types));
+    for (int i = 0; i < nparams && (i < listed || shape.rest); ++i)
     {
-        int listed = int(strlen(shape.types));
-        for (int i = 0; i < nparams && (i < listed || shape.rest); ++i)
-        {
-            const TValue* v = arg(i);
-            if (v && !argtype(v, i < listed ? shape.types[i] : shape.rest))
-                return LUA_PROFILE_DECLINE_TYPES;
-            // (the fixed forms carry at most three: a vararg call is the plain FASTCALL)
-            if (op != LOP_FASTCALL && i >= 2)
-                break;
-        }
+        const TValue* v = arg(i);
+        if (v && !argtype(v, i < listed ? shape.types[i] : shape.rest))
+            return LUA_PROFILE_DECLINE_TYPES;
+        // (the fixed forms carry at most three: a vararg call is the plain FASTCALL)
+        if (op != LOP_FASTCALL && i >= 2)
+            break;
     }
     if (shape.flags & B_TOSTRING)
     {
         const TValue* v = arg(0);
-        if (!(ttisnil(v) || ttisboolean(v) || ttisnumber(v) || ttisstring(v) || ttisinteger(v)))
+        if (!(ttisnil(v) || ttisboolean(v) || ttisnumber(v) || ttisstring(v)))
             return LUA_PROFILE_DECLINE_TYPES;
-        if ((ttisnumber(v) || ttisinteger(v)) && luaC_needsGC(L))
+        if (ttisnumber(v) && luaC_needsGC(L))
             return LUA_PROFILE_DECLINE_GCDEBT;
         return LUA_PROFILE_DECLINE_VALUES;
     }
@@ -3383,6 +3344,12 @@ void walkproto(HeapWalk* w, Proto* p)
         walkedge(w, obj2gco(p), obj2gco(p->optimized), "optimized");
     if (p->deoptimized)
         walkedge(w, obj2gco(p), obj2gco(p->deoptimized), "deoptimized");
+    // (a lazy-load stub holds its chunk's environments: luau_loadlazy)
+    if (p->lazychunk)
+    {
+        walkedge(w, obj2gco(p), obj2gco(p->lazychunk->envt), "environment");
+        walkedge(w, obj2gco(p), obj2gco(p->lazychunk->importenv), "import environment");
+    }
 }
 
 void walkobject(HeapWalk* w, GCObject* o)
@@ -3474,13 +3441,10 @@ void lua_enumheap(
         if (g->udatadirectfields[i])
             edge(context, NULL, walkpointer(obj2gco(g->udatadirectfields[i])), "userdata direct fields");
     }
-    if (FFlag::LuauFastpcall)
-    {
-        if (g->builtinPcall)
-            edge(context, NULL, walkpointer(obj2gco(g->builtinPcall)), "pcall");
-        if (g->builtinXpcall)
-            edge(context, NULL, walkpointer(obj2gco(g->builtinXpcall)), "xpcall");
-    }
+    if (g->builtinPcall)
+        edge(context, NULL, walkpointer(obj2gco(g->builtinPcall)), "pcall");
+    if (g->builtinXpcall)
+        edge(context, NULL, walkpointer(obj2gco(g->builtinXpcall)), "xpcall");
     if (g->typeofnames)
         edge(context, NULL, walkpointer(obj2gco(g->typeofnames)), "typeof names");
     if (g->vectortypename)

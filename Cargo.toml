@@ -1,6 +1,6 @@
 [package]
 name = "roblox-engine-emulator"
-version = "0.1.0"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.90"
 publish = false
@@ -50,7 +50,8 @@ glam = "=0.30.10"
 # Lune's Roblox datatypes as Luau values, patched (vendor/, tools/vendor.mjs)
 lune-roblox = { path = "vendor/lune-roblox", version = "=0.3.4" }
 # mlua 0.12.2 / mlua-sys 0.13.0 bind Luau 0.740's C API, the newest any mlua release binds; the vendored VM is a later
-# release whose C API mlua uses the same way (patches/luau/upstream.json; docs/building.md "Updating Luau").
+# release (patches/luau/upstream.json; docs/building.md "Updating Luau"), whose C API mlua uses the same way but for the
+# type tags and integer functions 0.747 removed, which patches/mlua-sys.patch moves in the vendored mlua-sys.
 # mlua-sys compiles vendor/luau0-src through the [patch] below, so the versions move with the VM's C API, not on their own;
 # it is vendored too (vendor/mlua-sys, tools/vendor.mjs's MLUA_SYS), so moving it moves that pin.
 mlua = { version = "=0.12.2", features = ["luau", "serde", "async"] }
@@ -69,7 +70,7 @@ serde_json = { version = "=1.0.145", features = ["float_roundtrip"] }
 sha2 = { version = "=0.10.9", optional = true }
 mimalloc = { version = "=0.1.52", default-features = false, features = ["v2"], optional = true }
 dhat = { version = "=0.3.3", optional = true }
-ror-mesh = { git = "https://github.com/Anime-Vanguards/roblox-object-renderer", rev = "60c69c9821e245f74181467bdc58ca0a8babf04c", optional = true }
+ror-mesh = { git = "https://github.com/Anime-Vanguards/roblox-object-renderer", rev = "b01540fd6551f562e77128be3697f64cb60fba4d", optional = true }
 # EncodingService (src/services/encoding.rs): the versions rbx_binary and its dependencies build already
 zstd = "=0.13.3"
 base64 = "=0.13.1"
@@ -82,8 +83,8 @@ members = ["profile-view", "tests/host"]
 default-members = [".", "profile-view", "tests/host"]
 exclude = ["vendor"]
 
-# The patched Luau VM (vendor/luau0-src), and mlua-sys with its bytecode version range (vendor/mlua-sys: 0.13.0 reads the
-# bytecode of a Luau newer than 0.740 as text). Only a workspace root's [patch] applies: a crate that
+# The patched Luau VM (vendor/luau0-src), and mlua-sys with the VM's type tags and bytecode version range (vendor/mlua-sys:
+# 0.13.0 reads the bytecode of a Luau newer than 0.740 as text, and 0.747's values by the wrong tags). Only a workspace root's [patch] applies: a crate that
 # depends on this one adds the same entries, pointing at this repository (docs/api.md "Use from another crate").
 [patch.crates-io]
 luau0-src = { path = "vendor/luau0-src" }

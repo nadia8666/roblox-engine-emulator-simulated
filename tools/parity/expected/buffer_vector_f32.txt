@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-10
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 vector-f32-native false
 read-x3 ok 1 1.5 -2.25 0.333333343 | ok 1 -2.25 0.333333343 1.00000002e+30 | ok 1 1.00000002e+30 -0 7
 read-x2 ok 1 1.5 -2.25 0 | ok 1 0.333333343 1.00000002e+30 0 | ok 1 -0 7 0

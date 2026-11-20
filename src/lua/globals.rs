@@ -19,6 +19,7 @@ use crate::{
 };
 
 const PRELUDE: &str = include_str!("prelude.luau");
+const VECTOR3: &str = include_str!("vector3.luau");
 
 /// Services Engine.Start creates, in its order.
 const START_SERVICES: &[&str] = &[
@@ -183,6 +184,9 @@ fn load_prelude(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
             Ok(none())
         })?,
     )?;
+    // utf8.nfcnormalize and utf8.nfdnormalize (lua/normalize.rs)
+    r.set("NfcNormalize", primitive(lua, engine, |lua, engine, args| super::encode(lua, super::normalize::normalize(lua, engine, args, true)))?)?;
+    r.set("NfdNormalize", primitive(lua, engine, |lua, engine, args| super::encode(lua, super::normalize::normalize(lua, engine, args, false)))?)?;
     // task library primitives (scheduler.luau Task)
     r.set(
         "TaskSpawn",
@@ -234,7 +238,7 @@ fn load_prelude(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
                 crate::boundary::add_cost(crate::cost::DELAYED);
                 let rest: Vec<Value> = args.0.iter().skip(2).map(super::convert::from_lua).collect();
                 let mut state = engine.state.borrow_mut();
-                state.sched.schedule_task(TimerKind::Delay, delay, thread.clone(), rest);
+                state.sched.schedule_call(TimerKind::Delay, delay, thread.clone(), rest);
                 state.sched.set_task_state(&thread, "delayed");
                 Ok(values([LuaValue::Thread(thread)]))
             })())
@@ -248,7 +252,7 @@ fn load_prelude(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
                 let args = Args::new(args);
                 let delay = task_seconds(lua, engine, args.get(0), "wait")?.unwrap_or(0.0);
                 refs::admit(engine, Hold::Wait, "task.wait")?;
-                engine.state.borrow_mut().sched.schedule_task(TimerKind::Wait, delay, lua.current_thread(), Vec::new());
+                engine.state.borrow_mut().sched.schedule_call(TimerKind::Wait, delay, lua.current_thread(), Vec::new());
                 Ok(none())
             })())
         })?,
@@ -323,7 +327,7 @@ fn load_prelude(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
         "Vector3",
         crate::cost::engine_luau(
             lua,
-            lua.load(include_str!("vector3.luau")).set_name("=rur.vector3").set_compiler(modules::engine_compiler()).into_function()?,
+            modules::load_engine_luau(lua, VECTOR3, "=rur.vector3", None)?,
         )?,
     )?;
     r.set(
@@ -346,7 +350,7 @@ fn load_prelude(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
     )?;
 
     let roblox = lune_roblox::module(lua.clone())?;
-    let prelude = lua.load(PRELUDE).set_name("=rur.prelude").set_compiler(modules::engine_compiler()).into_function()?;
+    let prelude = modules::load_engine_luau(lua, PRELUDE, "=rur.prelude", None)?;
     let exports: LuaTable = crate::cost::engine_luau(lua, prelude)?.call((r, roblox))?;
     let prelude = Prelude {
         wrap: exports.get("Wrap")?,
@@ -515,6 +519,7 @@ pub fn start(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
     types::register(lua, engine)?;
     instance::register(lua, engine)?;
     services::install(engine);
+    services::install_capability_calls(lua, engine)?;
     crate::derived::install(engine);
     // The 3D world's views, queries and reported calls (engine::world; after the derived views)
     crate::world::install(engine);
@@ -910,13 +915,34 @@ fn build_shared(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<LuaTable> {
     shared.raw_set("task", exports.get::<LuaValue>("Task")?)?;
 
     let make_stub: LuaFunction = exports.get("MakeStubTree")?;
-    let settings: LuaValue = make_stub.call("settings")?;
+    // settings(): refused to a game script, which a play run's scripts are ("The current thread cannot call 'settings' (lacking
+    // capability Plugin)", with no position: a playing client and a server, Studio 0.747, tools/parity/probes/global_settings.luau);
+    // in edit mode, where a plugin's code runs, the GlobalSettings object with its settings services (services/settings.rs),
+    // made on the first call as UserSettings() is, else an inert stub without the class
+    let stub_global: LuaValue = make_stub.call("settings")?;
+    let global_settings: std::cell::RefCell<Option<LuaValue>> = std::cell::RefCell::new(None);
+    let e = engine.clone();
+    let edit = engine.options.edit_mode();
+    let settings = wrapped(lua, engine, move |lua, _| {
+        if !edit {
+            return raise_plain("The current thread cannot call 'settings' (lacking capability Plugin)");
+        }
+        if let Some(existing) = global_settings.borrow().as_ref() {
+            return Ok(values([existing.clone()]));
+        }
+        let made = match services::settings::global_settings(&e) {
+            Some(id) => instance_value(lua, &e, id)?,
+            None => stub_global.clone(),
+        };
+        *global_settings.borrow_mut() = Some(made.clone());
+        Ok(values([made]))
+    })?;
+    shared.raw_set("settings", settings)?;
     // UserSettings(): the UserSettings object (its GetService gives UserGameSettings & co. at their
     // defaults: SavedQualityLevel Automatic, ...), made on the first call (an engine that made it at
     // start would number every later instance differently), else an inert stub without the class
     let stub_settings: LuaValue = make_stub.call("UserSettings")?;
     let user_settings: std::cell::RefCell<Option<LuaValue>> = std::cell::RefCell::new(None);
-    shared.raw_set("settings", lua.create_function(move |_, ()| Ok(settings.clone()))?)?;
     let e = engine.clone();
     shared.raw_set(
         "UserSettings",
@@ -955,10 +981,11 @@ fn build_shared(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<LuaTable> {
             print.call::<()>(format!("{} 2", prefix.unwrap_or_else(|| "Current identity is".into())))
         })?,
     )?;
-    shared.raw_set(
-        "loadstring",
-        lua.create_function(|_, _: LuaMultiValue| Ok((LuaValue::Nil, "loadstring() is not available")))?,
-    )?;
+    let e = engine.clone();
+    shared.raw_set("loadstring", wrapped(lua, engine, move |lua, args| super::loading::loadstring(lua, &e, args))?)?;
+    let e = engine.clone();
+    let debug: LuaTable = exports.get("Debug")?;
+    debug.raw_set("loadmodule", wrapped(lua, engine, move |lua, args| super::loading::loadmodule(lua, &e, args))?)?;
     let inert: LuaFunction = exports.get("InertLibrary")?;
     for name in ["DockWidgetPluginGuiInfo", "PluginDrag", "CellId"] {
         shared.raw_set(name, inert.call::<LuaValue>(name)?)?;

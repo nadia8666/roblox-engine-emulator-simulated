@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 loose size a:Size,a:AssemblyMass,a:Mass
 loose size-same-mass a:Size,a:AssemblyMass,a:Mass
 loose position a:CFrame,a:Position,a:AssemblyCenterOfMass,a:Orientation,a:Rotation

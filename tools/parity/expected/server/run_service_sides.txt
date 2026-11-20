@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 sides IsClient=ok false | IsServer=ok true | IsStudio=ok true | IsRunning=ok true | IsRunMode=ok false | IsEdit=error The current thread cannot call 'IsEdit' (lacking capability PluginOrOpenCloud) | local-player false
 event RenderStepped read ok RBXScriptSignal | connect error RenderStepped event can only be used from local scripts | once error RenderStepped event can only be used from local scripts
 event PreRender read ok RBXScriptSignal | connect ok true | once ok true

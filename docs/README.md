@@ -1,13 +1,12 @@
-# Documentation
+# ree documentation
 
-- [Building](building.md): release binaries (platforms, where they keep state, verifying them), requirements, the
-  build, cargo features, the allocator.
-- [Command line](cli.md): `ree record`, `ree run` and `ree serve`; harnesses and their `Context`, engine options,
-  limits and guards, what a recording holds, animation, what is not simulated, the warm service, profiles and caches,
-  environment variables.
-- [Rust API](api.md): `Engine`, mounting, running Luau, the clock, the 3D world, recording, layers and extensions,
-  bundles, models; using the crate from another crate.
-- [Engine contract](engine.md): how the engine works inside, the rules it follows and the formats it reads and writes,
-  with its known limitations.
-- [Verification](verification.md): the tests and the downstream checks.
-- [Source layout](layout.md): where things are in the source tree.
+Reference guides for building, running, embedding, and verifying `roblox-engine-emulator`. For an overview and quick start, see the [README](../README.md).
+
+| Guide | Covers |
+|---|---|
+| [building.md](building.md) | Release binaries, supported platforms, state paths, source builds, Cargo features, mimalloc, and updating Luau |
+| [cli.md](cli.md) | `ree run`, `ree record`, `ree serve`, harnesses and `Context`, engine flags, watchdogs, 3D recordings, animation, profiling, profile viewer, what-if comparisons, and env vars |
+| [api.md](api.md) | Embedding `roblox_engine_emulator` in Rust, custom `Layer`/`Extension` hooks, bundles, model plans, and Cargo git dependencies |
+| [engine.md](engine.md) | Engine contract: internal architecture, Studio-measured rules, recording formats, and known limitations |
+| [verification.md](verification.md) | Unit tests, parity probes, loopback tests, and downstream checks |
+| [layout.md](layout.md) | Repository source tree layout |

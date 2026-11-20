@@ -499,3 +499,57 @@ fn an_erroring_heartbeat_handler_does_not_stop_the_others() {
     let errors = engine.state.borrow().output.entries.iter().filter(|entry| entry.kind == "error" && entry.message.contains("spring step failed")).count();
     assert_eq!(errors as f64, failing, "every failure is reported");
 }
+
+#[test]
+fn a_task_delay_counts_from_the_moment_of_its_call() {
+    // Measured in roblox-sim's Studio 0.746 client and server (tools/parity/probes/task_delay_time.luau and 5,000 delays
+    // and waits timed with os.clock): a task.delay / task.wait counts from the call, and resumes at the first resumption
+    // phase at least that far on. A delay of whole frames started in a RenderStepped handler (late in its frame) or after
+    // a Heartbeat handler's work takes one frame more; 3 ms short of whole frames it does not. The legacy delay keeps the
+    // frame's time.
+    let engine = Engine::new(Options { mode: "play".into(), ..Options::default() }).expect("engine");
+    let lua = Lua::new();
+    engine_lua::start(&lua, &engine).expect("start");
+    engine.state.borrow_mut().sched.set_main_thread(&lua.current_thread());
+    run(
+        &lua,
+        &engine,
+        r#"
+        local RunService = game:GetService("RunService")
+        _G.Log = {}
+        local Frames = 0
+        RunService.Heartbeat:Connect(function() Frames += 1 end)
+        local function Start(Label, Delay)
+            local From = Frames
+            task.delay(Delay, function() table.insert(_G.Log, Label .. "=" .. (Frames - From)) end)
+            task.spawn(function()
+                local Begin = Frames
+                local Elapsed = task.wait(Delay)
+                table.insert(_G.Log, Label .. "-wait=" .. (Frames - Begin) .. (if Elapsed >= Delay and Elapsed < Delay + 1 / 60 then "" else " elapsed " .. Elapsed))
+            end)
+        end
+        local Started = false
+        RunService.RenderStepped:Connect(function()
+            if Started then return end
+            Started = true
+            Start("render", 2 / 60)
+        end)
+        local Beat
+        Beat = RunService.Heartbeat:Connect(function()
+            Beat:Disconnect()
+            Start("short", 2 / 60 - 0.003)
+            Start("whole", 2 / 60)
+        end)
+        "#,
+    );
+    for _ in 0..8 {
+        scheduler::step(&lua, &engine, Some(1.0 / 60.0)).unwrap();
+    }
+    let mut log: Vec<String> = match global(&engine, "Log") {
+        LuaValue::Table(table) => table.sequence_values::<String>().map(Result::unwrap).collect(),
+        other => panic!("{other:?}"),
+    };
+    log.sort();
+    // (the Heartbeat handler runs before the counter: newest connection first; render counts from its own frame's count)
+    assert_eq!(log.join(" "), "render-wait=2 render=2 short-wait=2 short=2 whole-wait=3 whole=3");
+}

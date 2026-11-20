@@ -5,17 +5,17 @@
 
 use std::{
     cell::{Cell, RefCell},
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 
 use mlua::prelude::*;
 
 use super::{
-    Args, Flow, Ret, enum_item_value, enum_value, lock_metatable, none, raise, raise_plain,
+    Args, Flow, Ret, enum_item_value, enum_value, lock_metatable, none, raise, raise_at_caller, raise_plain,
     refs::{self, Hold}, signal_value, typeof_value, values, wrapped,
 };
 use crate::{
-    Engine, ScriptError,
+    Engine, InstanceId, ScriptError,
     reflection::{EnumId, EnumItemId},
     scheduler,
     signal::{ConnectionId, SignalId},
@@ -30,7 +30,86 @@ pub struct LEnums;
 pub struct LSignal(pub SignalId, pub u32);
 pub struct LConnection(pub ConnectionId);
 pub struct LFont(pub RefCell<FontValue>);
-pub struct LContent(pub ContentValue);
+/// A script's Content. One that holds an Object keeps it alive while the value lives, as Roblox's does (measured in a
+/// 0.747 client: an EditableImage only a Content holds stays usable after the collector ran; the Luau wrapper of the
+/// object is collected and `Object` answers a new one): the object is pinned until the value is collected.
+pub struct LContent(pub ContentValue, ObjectPin);
+
+impl LContent {
+    /// A Content value of `lua`'s engine (an Object's is pinned while the value lives).
+    pub fn new(lua: &Lua, content: ContentValue) -> Self {
+        let pin = match &content {
+            ContentValue::Object(id) => ObjectPin::new(lua, *id),
+            _ => ObjectPin(None),
+        };
+        LContent(content, pin)
+    }
+}
+
+/// Keeps a Content's object pinned while the Content value lives. A pin or unpin that finds the engine's state in use
+/// (the collector of the Luau heap drops a value wherever it runs) waits in [`PENDING_PINS`] until the next instance
+/// collection, which applies it before it looks for garbage.
+pub struct ObjectPin(Option<(Weak<Engine>, InstanceId)>);
+
+thread_local! {
+    static PENDING_PINS: RefCell<Vec<(Weak<Engine>, InstanceId, bool)>> = const { RefCell::new(Vec::new()) };
+}
+
+impl ObjectPin {
+    fn new(lua: &Lua, id: InstanceId) -> Self {
+        let Some(engine) = lua.app_data_ref::<Rc<Engine>>().map(|engine| Rc::downgrade(&engine)) else { return ObjectPin(None) };
+        pin(&engine, id, true);
+        ObjectPin(Some((engine, id)))
+    }
+}
+
+impl Drop for ObjectPin {
+    fn drop(&mut self) {
+        if let Some((engine, id)) = self.0.take() {
+            pin(&engine, id, false);
+        }
+    }
+}
+
+fn pin(engine: &Weak<Engine>, id: InstanceId, on: bool) {
+    let Some(strong) = engine.upgrade() else { return };
+    match strong.state.try_borrow_mut() {
+        Ok(mut state) if on => state.dom.pin(id),
+        Ok(mut state) => state.dom.unpin(id),
+        Err(_) => PENDING_PINS.with(|pending| pending.borrow_mut().push((engine.clone(), id, on))),
+    }
+}
+
+/// Applies the Content pins and unpins that waited for `engine`'s state (lua::raw::collect, before it looks for garbage).
+pub fn apply_pending_pins(engine: &Engine) {
+    let mine: Vec<(InstanceId, bool)> = PENDING_PINS.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        if pending.is_empty() {
+            return Vec::new();
+        }
+        let mut mine = Vec::new();
+        pending.retain(|(owner, id, on)| {
+            if std::ptr::eq(owner.as_ptr(), engine) {
+                mine.push((*id, *on));
+                false
+            } else {
+                owner.strong_count() > 0
+            }
+        });
+        mine
+    });
+    if mine.is_empty() {
+        return;
+    }
+    let mut state = engine.state.borrow_mut();
+    for (id, on) in mine {
+        if on {
+            state.dom.pin(id);
+        } else {
+            state.dom.unpin(id);
+        }
+    }
+}
 
 pub struct LTweenInfo {
     pub time: LuaValue,
@@ -65,11 +144,9 @@ fn number_of(value: &LuaValue) -> f64 {
 
 pub struct LDateTime(pub f64);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct RandomState {
     state: u64,
-    /// A non-finite seed made the Luau runtime's state NaN: every draw is 0
-    dead: bool,
 }
 
 pub struct LRandom(pub Rc<Cell<RandomState>>);
@@ -112,6 +189,11 @@ fn mix_seed(base: u64, ordinal: u64) -> f64 {
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^= z >> 31;
     (z >> 12) as f64
+}
+
+/// A Random that continues from `state`, registered in `engine` (a loopback run's remote argument: loopback/wire.rs)
+pub(crate) fn random_with_state(engine: &Engine, state: RandomState) -> LRandom {
+    new_random(engine, state)
 }
 
 fn new_random(engine: &Engine, state: RandomState) -> LRandom {
@@ -439,6 +521,8 @@ fn connect_as(lua: &Lua, engine: &Rc<Engine>, args: LuaMultiValue, once: bool, p
         if engine.options.server() && engine.state.borrow().signals.get(id).label.as_bytes() == b"RunService.RenderStepped" {
             return raise("RenderStepped event can only be used from local scripts");
         }
+        // (a loopback run refuses the other side's remote event)
+        crate::loopback::remotes::connecting(engine, id)?;
     }
     let LuaValue::Function(callback) = args.get(1).clone() else {
         // Roblox raises nothing: it logs the message and returns a connection that is not connected, which firing the
@@ -466,6 +550,12 @@ fn connect_as(lua: &Lua, engine: &Rc<Engine>, args: LuaMultiValue, once: bool, p
     };
     if let Some(callback) = noted {
         crate::census::connected(lua, connection, &callback);
+    }
+    // (a loopback run's remote hands the events that waited for a first connection to this one)
+    if let Some(signal) = signal
+        && connection != ConnectionId::DISCONNECTED
+    {
+        crate::loopback::remotes::connected(engine, signal, connection);
     }
     // (a profile keeps where it was connected: its handlers' dispatch and runs are reported by that site)
     if crate::profiler::attribution::on()
@@ -882,8 +972,10 @@ fn register_content(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
                     }]));
                 }
                 b"Object" => {
+                    // (a Content keeps its object; one that is gone anyway answers nil, never a dead instance)
+                    let live = matches!(content, ContentValue::Object(id) if e.state.borrow().dom.get(id).is_some());
                     return Ok(values([match content {
-                        ContentValue::Object(id) => super::instance_value(lua, &e, id)?,
+                        ContentValue::Object(id) if live => super::instance_value(lua, &e, id)?,
                         _ => LuaValue::Nil,
                     }]));
                 }
@@ -891,6 +983,7 @@ fn register_content(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
                     let name = match content {
                         ContentValue::Uri(_) => "Uri",
                         ContentValue::Object(_) => "Object",
+                        ContentValue::Opaque(..) => "Opaque",
                         ContentValue::None => "None",
                     };
                     return Ok(values([match e.reflection.enum_item("ContentSourceType", name) {
@@ -911,6 +1004,7 @@ fn register_content(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
                 let name = engine.state.borrow().dom.get(*id).map(|i| i.name.to_string()).unwrap_or_default();
                 format!("Content{{SourceType=Object, Object={name}}}")
             }
+            ContentValue::Opaque(..) => "Content{SourceType=Opaque}".into(),
             ContentValue::None => "Content{SourceType=None}".into(),
         })
     })?;
@@ -928,10 +1022,10 @@ fn register_content(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
         "fromUri",
         lua.create_function(|lua, uri: LuaValue| {
             let text = string_of(lua, &uri)?;
-            lua.create_any_userdata(LContent(ContentValue::Uri(Str::from(text))))
+            lua.create_any_userdata(LContent::new(lua, ContentValue::Uri(Str::from(text))))
         })?,
     )?;
-    let none_value = lua.create_any_userdata(LContent(ContentValue::None))?;
+    let none_value = lua.create_any_userdata(LContent::new(lua, ContentValue::None))?;
     lock_metatable(lua, &none_value)?;
     // Roblox's documentation: fromAssetId(0) is Content.none, a non-finite id and fromObject(nil)
     // throw (the messages are not measured in Studio)
@@ -951,7 +1045,7 @@ fn register_content(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
             }
             let text = string_of(lua, id)?;
             Ok(values([LuaValue::UserData(
-                lua.create_any_userdata(LContent(ContentValue::Uri(Str::from(format!("rbxassetid://{text}")))))?,
+                lua.create_any_userdata(LContent::new(lua, ContentValue::Uri(Str::from(format!("rbxassetid://{text}")))))?,
             )]))
         })?,
     )?;
@@ -967,7 +1061,7 @@ fn register_content(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
                 },
                 _ => ContentValue::None,
             };
-            Ok(values([LuaValue::UserData(lua.create_any_userdata(LContent(content))?)]))
+            Ok(values([LuaValue::UserData(lua.create_any_userdata(LContent::new(lua, content))?)]))
         })?,
     )?;
     library.set("none", none_value)?;
@@ -1036,28 +1130,82 @@ fn register_tween_info(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
     })?;
     let library = lua.create_table()?;
     let e = engine.clone();
+    // TweenInfo.new(time, easingStyle, easingDirection, repeatCount, reverses, delayTime), measured in Studio 0.747: an
+    // argument that is passed must be of its type, nil included (`TweenInfo.new(1, nil)` raises as `TweenInfo.new(1, "Quad")`
+    // does; only the arguments left off take their defaults), checked in order. A number is a number value (no string, no
+    // boolean); a style or a direction is an item of its enum or a number, cut to a whole one, that is an item's value (2.5
+    // is Back, 13 and -1 are refused); RepeatCount is cut to a whole number (2.7 reads 2). Spring and Bezier are refused
+    // once the style is known, before the direction is looked at. A seventh argument is ignored.
     library.set(
         "new",
-        lua.create_function(move |lua, args: LuaMultiValue| {
+        wrapped(lua, engine, move |lua, args| {
             let args = Args::new(args);
-            let or = |value: &LuaValue, default: f64| match value {
-                LuaValue::Nil | LuaValue::Boolean(false) => LuaValue::Number(default),
-                other => other.clone(),
+            let count = args.len();
+            let number = |index: usize| match args.get(index) {
+                LuaValue::Number(n) => Some(*n),
+                LuaValue::Integer(n) => Some(*n as f64),
+                _ => None,
             };
-            let style = if args.get(1).is_nil() { None } else { coerce_named_enum(lua, &e, "EasingStyle", args.get(1)) };
-            let direction =
-                if args.get(2).is_nil() { None } else { coerce_named_enum(lua, &e, "EasingDirection", args.get(2)) };
+            let item = |enum_name: &str, value: &LuaValue| -> Option<EnumItemId> {
+                let id = e.reflection.enum_id(enum_name)?;
+                let by_value = |n: f64| n.is_finite().then(|| e.reflection.enums[id as usize].by_value.get(&(n.trunc() as i64)).copied()).flatten();
+                match value {
+                    LuaValue::UserData(_) => super::convert::coerce_enum(lua, &e, id, value),
+                    LuaValue::Number(n) => by_value(*n),
+                    LuaValue::Integer(n) => by_value(*n as f64),
+                    _ => None,
+                }
+            };
+            let time = match number(0) {
+                Some(time) => time,
+                None if count == 0 => 1.0,
+                None => return raise_plain("TweenInfo.new first argument expects a number for time."),
+            };
+            let easing_style = if count > 1 {
+                let Some(style) = item("EasingStyle", args.get(1)) else {
+                    return raise_plain("TweenInfo.new second argument expects Enum.EasingStyle input");
+                };
+                if matches!(&*e.reflection.enum_item_info(style).name, "Spring" | "Bezier") {
+                    return raise_plain("TweenInfo.new does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier");
+                }
+                style
+            } else {
+                e.reflection.enum_item("EasingStyle", "Quad").unwrap_or(0)
+            };
+            let easing_direction = if count > 2 {
+                let Some(direction) = item("EasingDirection", args.get(2)) else {
+                    return raise_plain("TweenInfo.new third argument expects Enum.EasingDirection input");
+                };
+                direction
+            } else {
+                e.reflection.enum_item("EasingDirection", "Out").unwrap_or(0)
+            };
+            let repeat_count = match number(3) {
+                Some(count) => count.trunc(),
+                None if count <= 3 => 0.0,
+                None => return raise_plain("TweenInfo.new fourth arg should be a number for RepeatCount."),
+            };
+            let reverses = match args.get(4) {
+                LuaValue::Boolean(reverses) => *reverses,
+                _ if count <= 4 => false,
+                _ => return raise_plain("TweenInfo.new fifth arg should be a boolean for Reverses."),
+            };
+            let delay_time = match number(5) {
+                Some(delay) => delay,
+                None if count <= 5 => 0.0,
+                None => return raise_plain("TweenInfo.new sixth arg should be a number for DelayTime."),
+            };
             let info = LTweenInfo {
-                time: or(args.get(0), 1.0),
-                easing_style: style.or_else(|| e.reflection.enum_item("EasingStyle", "Quad")).unwrap_or(0),
-                easing_direction: direction.or_else(|| e.reflection.enum_item("EasingDirection", "Out")).unwrap_or(0),
-                repeat_count: or(args.get(3), 0.0),
-                reverses: matches!(args.get(4), LuaValue::Boolean(true)),
-                delay_time: or(args.get(5), 0.0),
+                time: LuaValue::Number(time),
+                easing_style,
+                easing_direction,
+                repeat_count: LuaValue::Number(repeat_count),
+                reverses,
+                delay_time: LuaValue::Number(delay_time),
             };
             let userdata = lua.create_any_userdata(info)?;
             lock_metatable(lua, &userdata)?;
-            Ok(userdata)
+            Ok(values([LuaValue::UserData(userdata)]))
         })?,
     )?;
     engine.lua.borrow_mut().libraries.insert("TweenInfo", library);
@@ -1073,9 +1221,6 @@ const TWO32: f64 = 4294967296.0;
 
 impl RandomState {
     fn next_u32(&mut self) -> u32 {
-        if self.dead {
-            return 0;
-        }
         let old = self.state;
         self.state = old.wrapping_mul(MULTIPLIER).wrapping_add(INCREMENT);
         let xorshifted = (((old >> 18) ^ old) >> 27) as u32;
@@ -1098,22 +1243,32 @@ impl RandomState {
         low * (1.0 - unit) + high * unit
     }
 
-    /// NextInteger: the floored bounds as 64-bit integers (a C cast on x86-64: out of range, the least one), in order;
-    /// a range under 2^32 draws once, as math.random does, a wider one is `floor(min * (1 - u) + max * u)` (measured
-    /// likewise: NextInteger(-2^40, 2^40) for 10 seeds, where a 64-bit multiply gave one more for 7; NextInteger(-2^63,
-    /// 2^63) is -2^63. Not measured: where between 2^32 and 2^41 the wider draw starts).
+    /// NextInteger: each bound as a C cast makes it a 64-bit integer (toward zero, so -1.5 is -1; NaN, infinities and
+    /// values out of range the least one), in order, and `count` = high - low + 1 values. Up to 2^32 - 2 values take one
+    /// draw, `low + (count * draw >> 32)`, as math.random does; from 2^32 - 1 values on, two draws make one 64-bit number
+    /// `x` (the first draw its low half, as for NextNumber), and the value is `low` plus the high half of `count * x`
+    /// from 32-bit halves, leaving out the product of the two low halves: `ch*xh + (ch*xl >> 32) + (cl*xh >> 32)`,
+    /// rounded to a double (measured in a playing client, Studio 0.747, tools/parity/probes/random.luau: the draw counts
+    /// from 2^32 - 3 to 2^32 + 1 values, 31 wide ranges for 20 seeds, 300 random calls, and 15 fractional bounds,
+    /// negative and reversed, for 2 seeds, where flooring them gave another value or draw count for 9; before that
+    /// 2,048 two-draw values of 32 seeds and 64 ranges, where the float interpolation ree used matched 1,235 and the
+    /// exact 128-bit product 1,211, and 1,000 random calls).
     fn next_integer(&mut self, min: f64, max: f64) -> f64 {
-        let (mut low, mut high) = (int64_cast(min.floor()), int64_cast(max.floor()));
+        let (mut low, mut high) = (int64_cast(min), int64_cast(max));
         if low > high {
             std::mem::swap(&mut low, &mut high);
         }
-        let range = high as i128 - low as i128 + 1;
-        if range < 1i128 << 32 {
-            let product = (range as u64) * (self.next_u32() as u64);
-            return (low as i128 + (product >> 32) as i128) as f64;
+        // (at most 2^64 - 1023 values: the widest bounds are -2^63 and 2^63 - 1024)
+        let count = (high as i128 - low as i128 + 1) as u64;
+        if count < u32::MAX as u64 {
+            let offset = (count * self.next_u32() as u64) >> 32;
+            return low.wrapping_add(offset as i64) as f64;
         }
-        let unit = self.next_unit();
-        (low as f64 * (1.0 - unit) + high as f64 * unit).floor()
+        let (x_low, x_high) = (self.next_u32() as u64, self.next_u32() as u64);
+        let (count_low, count_high) = (count & 0xFFFF_FFFF, count >> 32);
+        // (below 2^64: each product is under 2^64 - 2^33 + 2, each shifted one under 2^32)
+        let offset = count_high * x_high + ((count_high * x_low) >> 32) + ((count_low * x_high) >> 32);
+        low.wrapping_add(offset as i64) as f64
     }
 }
 
@@ -1126,7 +1281,7 @@ fn int64_cast(value: f64) -> i64 {
     }
 }
 
-/// Luau's `%` and `//` on doubles, for the seeding arithmetic.
+/// Luau's `%` on doubles.
 fn luau_mod(a: f64, b: f64) -> f64 {
     a - (a / b).floor() * b
 }
@@ -1140,138 +1295,168 @@ fn luau_u32(value: f64) -> u32 {
     }
 }
 
-/// Measured seeding (pcg32_seed): s = 0; step; s += seed as int64 two's complement (fractional
-/// seeds truncate toward zero); step.
-pub fn seed_random(seed: f64) -> RandomState {
-    let value = if seed < 0.0 { seed.ceil() } else { seed.floor() };
-    let (seed_hi, seed_lo) = if value >= 0.0 {
-        (luau_mod((value / TWO32).floor(), TWO32), luau_mod(value, TWO32))
+/// The 64-bit number Random.new(seed) seeds with: the seed toward zero as a two's complement integer; a seed of 2^53 or
+/// more either way, infinities too, is 0, and NaN (any payload) 0x8000000000000000, as a C cast makes it (measured in a
+/// playing client, Studio 0.747, tools/parity/probes/random.luau Random-seeds-*: 41 of 41 seeds in an exploratory
+/// capture, where ree's wrapped bits gave other streams from 2^53 up, and -1's for NaN and -inf, and zeros for inf).
+fn seed_bits(seed: f64) -> u64 {
+    if seed.is_nan() {
+        1 << 63
+    } else if seed.abs() >= 9_007_199_254_740_992.0 {
+        0
     } else {
-        let n = -value - 1.0;
-        (!luau_u32(luau_mod((n / TWO32).floor(), TWO32)) as f64, !luau_u32(luau_mod(n, TWO32)) as f64)
-    };
-    let lo = 105.0 + seed_lo;
-    let hi = seed_hi + (lo / TWO32).floor();
-    let (hi, lo) = (luau_mod(hi, TWO32), luau_mod(lo, TWO32));
-    if hi.is_nan() || lo.is_nan() {
-        return RandomState { state: 0, dead: true };
+        seed as i64 as u64
     }
-    let mut state = RandomState { state: ((hi as u64) << 32) | lo as u64, dead: false };
-    state.next_u32();
-    state
 }
 
-fn random_of(value: &LuaValue) -> Option<RandomState> {
+/// Measured seeding (pcg32_seed): s = 0; step; s += the seed's bits; step.
+pub fn seed_random(seed: f64) -> RandomState {
+    let mut random = RandomState { state: 0 };
+    random.next_u32();
+    random.state = random.state.wrapping_add(seed_bits(seed));
+    random.next_u32();
+    random
+}
+
+/// A number argument of Random's as Luau's checks read it: a number, or a string Luau reads as one, hex and spaces
+/// included (measured in a playing client, Studio 0.747, tools/parity/probes/random.luau Random-strings and
+/// Random-string-seeds: NextInteger("0x10", "20") is 20, Random.new(" 7 ") is Random.new(7)).
+fn random_number(lua: &Lua, value: &LuaValue) -> LuaResult<Option<f64>> {
     match value {
-        LuaValue::UserData(ud) => ud.borrow::<LRandom>().ok().map(|r| r.0.get()),
-        _ => None,
+        LuaValue::Number(n) => Ok(Some(*n)),
+        LuaValue::Integer(n) => Ok(Some(*n as f64)),
+        LuaValue::String(_) => lua.coerce_number(value.clone()),
+        _ => Ok(None),
     }
 }
 
-fn with_random<T>(value: &LuaValue, f: impl FnOnce(&mut RandomState) -> T) -> Option<T> {
-    let LuaValue::UserData(ud) = value else { return None };
-    let random = ud.borrow::<LRandom>().ok()?;
-    let mut state = random.0.get();
-    let result = f(&mut state);
-    random.0.set(state);
-    Some(result)
+/// A call of a Random method: its name, and whether it came by `.` (the type's __index) or by `:` (its __namecall).
+/// A client raises Luau's own argument errors at the calling line, counting self as #1, and names the method in a `.`
+/// call only (measured in a playing client, Studio 0.747, tools/parity/probes/random.luau Random-arguments-*:
+/// `invalid argument #2 to 'NextInteger' (number expected, got nil)` and `missing argument #3 to 'NextInteger' (number
+/// expected)` by `.`, `invalid argument #2 (number expected, got nil)` by `:`).
+#[derive(Clone, Copy)]
+struct RandomCall {
+    name: &'static str,
+    dotted: bool,
+}
+
+impl RandomCall {
+    /// Argument `index` (0 is self) is not a `expected`: `invalid argument #n ... got <type>`, or `missing argument #n`
+    /// past the last argument.
+    fn bad<T>(self, engine: &Engine, args: &Args, index: usize, expected: &str) -> Result<T, Flow> {
+        let to = if self.dotted { format!(" to '{}'", self.name) } else { String::new() };
+        if index >= args.len() {
+            raise_at_caller(format!("missing argument #{}{to} ({expected} expected)", index + 1))
+        } else {
+            raise_at_caller(format!("invalid argument #{}{to} ({expected} expected, got {})", index + 1, typeof_value(engine, args.get(index))))
+        }
+    }
+
+    /// Self (`invalid argument #1 to 'Clone' (Random expected, got number)`; a `:` call's self always is a Random).
+    fn this(self, engine: &Engine, args: &Args) -> Result<Rc<Cell<RandomState>>, Flow> {
+        if let LuaValue::UserData(ud) = args.get(0)
+            && let Ok(random) = ud.borrow::<LRandom>()
+        {
+            return Ok(random.0.clone());
+        }
+        self.bad(engine, args, 0, "Random")
+    }
+
+    fn number(self, lua: &Lua, engine: &Engine, args: &Args, index: usize) -> Result<f64, Flow> {
+        match random_number(lua, args.get(index))? {
+            Some(n) => Ok(n),
+            None => self.bad(engine, args, index, "number"),
+        }
+    }
+}
+
+/// Registers a Random method twice: wrapped in `dotted` for `.` (the type's __index), and raw in `called` for `:` (the
+/// type's __namecall, which runs it without the Luau wrapper).
+fn random_method(
+    lua: &Lua,
+    engine: &Rc<Engine>,
+    (dotted, called): (&LuaTable, &LuaTable),
+    name: &'static str,
+    method: impl Fn(&Lua, &Engine, &Args, RandomCall) -> Ret + Clone + 'static,
+) -> LuaResult<()> {
+    let (by_dot, owner) = (method.clone(), engine.clone());
+    dotted.raw_set(name, wrapped(lua, engine, move |lua, args| by_dot(lua, &owner, &Args::new(args), RandomCall { name, dotted: true }))?)?;
+    let owner = engine.clone();
+    let raw = lua.create_function(move |lua, args: LuaMultiValue| super::encode(lua, method(lua, &owner, &Args::new(args), RandomCall { name, dotted: false })))?;
+    called.raw_set(name, raw)
 }
 
 fn register_random(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
     let methods = lua.create_table()?;
-    let arg_number = |args: &Args, index: usize, default: f64, name: &str| -> Result<f64, Flow> {
-        match args.get(index) {
-            LuaValue::Nil => Ok(default),
-            LuaValue::Number(n) => Ok(*n),
-            LuaValue::Integer(n) => Ok(*n as f64),
-            other => raise_plain(format!(
-                "invalid argument #{} to '{name}' (number expected, got {})",
-                index,
-                other.type_name()
-            )),
+    let calls = lua.create_table()?;
+    let tables = (&methods, &calls);
+    random_method(lua, engine, tables, "NextNumber", |lua, engine, args, call| {
+        let random = call.this(engine, args)?;
+        // (no bounds is [0, 1); one argument, nil too, raises this, also at the calling line; a third is ignored)
+        let (min, max) = match args.len() {
+            1 => (0.0, 1.0),
+            2 => return raise_at_caller("Random:NextNumber requires 0 or 2 arguments"),
+            _ => (call.number(lua, engine, args, 1)?, call.number(lua, engine, args, 2)?),
+        };
+        let mut state = random.get();
+        let value = state.next_number(min, max);
+        random.set(state);
+        Ok(values([LuaValue::Number(value)]))
+    })?;
+    random_method(lua, engine, tables, "NextInteger", |lua, engine, args, call| {
+        let random = call.this(engine, args)?;
+        let (min, max) = (call.number(lua, engine, args, 1)?, call.number(lua, engine, args, 2)?);
+        let mut state = random.get();
+        let value = state.next_integer(min, max);
+        random.set(state);
+        Ok(values([LuaValue::Number(value)]))
+    })?;
+    random_method(lua, engine, tables, "NextUnitVector", |_, engine, args, call| {
+        let random = call.this(engine, args)?;
+        // Two 32-bit draws in float arithmetic: the angle from the first, z from the second (measured in a playing
+        // client, Studio 0.744, tools/parity/probes/random.luau: every component for 10 seeds; ree drew two
+        // 64-bit numbers, which also moved every draw after it)
+        let mut state = random.get();
+        let (first, second) = (state.next_u32(), state.next_u32());
+        random.set(state);
+        let (u, v) = ((first as f64 / TWO32) as f32, (second as f64 / TWO32) as f32);
+        let angle = std::f32::consts::TAU * u;
+        let z = 2.0f32 * v - 1.0;
+        let radius = (1.0f32 - z * z).max(0.0).sqrt();
+        let (x, y) = (radius * ((angle as f64).cos() as f32), radius * ((angle as f64).sin() as f32));
+        Ok(values([LuaValue::Vector(mlua::Vector::new(x, y, z))]))
+    })?;
+    random_method(lua, engine, tables, "Shuffle", |_, engine, args, call| {
+        let random = call.this(engine, args)?;
+        let LuaValue::Table(list) = args.get(1).clone() else {
+            return call.bad(engine, args, 1, "table");
+        };
+        let length = list.len()?;
+        // (measured likewise: Shuffle({1, nil, 3}) raises this, without a position, and draws nothing)
+        for index in 1..=length {
+            if list.get::<LuaValue>(index)?.is_nil() {
+                return raise_plain("Attempted to shuffle table containing nil values. This is not allowed because the table length may change.");
+            }
         }
-    };
-    methods.set(
-        "NextNumber",
-        wrapped(lua, engine, move |_, args| {
-            let args = Args::new(args);
-            let min = arg_number(&args, 1, 0.0, "NextNumber")?;
-            let max = arg_number(&args, 2, 1.0, "NextNumber")?;
-            let value = with_random(args.get(0), |r| r.next_number(min, max));
-            match value {
-                Some(value) => Ok(values([LuaValue::Number(value)])),
-                None => raise("Expected ':' not '.' calling member function NextNumber"),
-            }
-        })?,
-    )?;
-    methods.set(
-        "NextInteger",
-        wrapped(lua, engine, move |_, args| {
-            let args = Args::new(args);
-            let (Some(min), Some(max)) = (args.number(1), args.number(2)) else {
-                return raise_plain("invalid argument #2 to 'NextInteger' (number expected)");
-            };
-            match with_random(args.get(0), |r| r.next_integer(min, max)) {
-                Some(value) => Ok(values([LuaValue::Number(value)])),
-                None => raise("Expected ':' not '.' calling member function NextInteger"),
-            }
-        })?,
-    )?;
-    methods.set(
-        "NextUnitVector",
-        wrapped(lua, engine, move |_, args| {
-            let args = Args::new(args);
-            // Two 32-bit draws in float arithmetic: the angle from the first, z from the second (measured in a playing
-            // client, Studio 0.744, tools/parity/probes/random.luau: every component for 10 seeds; ree drew two
-            // 64-bit numbers, which also moved every draw after it)
-            let Some((first, second)) = with_random(args.get(0), |r| (r.next_u32(), r.next_u32())) else {
-                return raise("Expected ':' not '.' calling member function NextUnitVector");
-            };
-            let (u, v) = ((first as f64 / TWO32) as f32, (second as f64 / TWO32) as f32);
-            let angle = std::f32::consts::TAU * u;
-            let z = 2.0f32 * v - 1.0;
-            let radius = (1.0f32 - z * z).max(0.0).sqrt();
-            let (x, y) = (radius * ((angle as f64).cos() as f32), radius * ((angle as f64).sin() as f32));
-            Ok(values([LuaValue::Vector(mlua::Vector::new(x, y, z))]))
-        })?,
-    )?;
-    methods.set(
-        "Shuffle",
-        wrapped(lua, engine, move |_, args| {
-            let args = Args::new(args);
-            let LuaValue::Table(list) = args.get(1).clone() else {
-                return raise_plain("invalid argument #1 to 'Shuffle' (table expected)");
-            };
-            let length = list.len()? as i64;
-            // (measured likewise: Shuffle({1, nil, 3}) raises this, without a position, and draws nothing)
-            for index in 1..=length {
-                if list.get::<LuaValue>(index)?.is_nil() {
-                    return raise_plain("Attempted to shuffle table containing nil values. This is not allowed because the table length may change.");
-                }
-            }
-            let mut index = length;
-            while index >= 2 {
-                let Some(other) = with_random(args.get(0), |r| r.next_integer(1.0, index as f64)) else {
-                    return raise("Expected ':' not '.' calling member function Shuffle");
-                };
-                let other = other as i64;
-                let a: LuaValue = list.get(index)?;
-                let b: LuaValue = list.get(other)?;
-                list.set(index, b)?;
-                list.set(other, a)?;
-                index -= 1;
-            }
-            Ok(none())
-        })?,
-    )?;
-    let cloning = engine.clone();
-    methods.set(
-        "Clone",
-        lua.create_function(move |lua, this: LuaValue| {
-            let state = random_of(&this).ok_or_else(|| LuaError::runtime("Expected ':' not '.' calling member function Clone"))?;
-            lua.create_any_userdata(new_random(&cloning, state))
-        })?,
-    )?;
+        let mut index = length;
+        while index >= 2 {
+            let mut state = random.get();
+            let other = state.next_integer(1.0, index as f64) as i64;
+            random.set(state);
+            let a: LuaValue = list.get(index)?;
+            let b: LuaValue = list.get(other)?;
+            list.set(index, b)?;
+            list.set(other, a)?;
+            index -= 1;
+        }
+        Ok(none())
+    })?;
+    random_method(lua, engine, tables, "Clone", |lua, engine, args, call| {
+        let random = call.this(engine, args)?;
+        let copy = lua.create_any_userdata(new_random(engine, random.get()))?;
+        Ok(values([LuaValue::UserData(copy)]))
+    })?;
     let index = wrapped(lua, engine, move |_, args| {
         let args = Args::new(args);
         let member: LuaValue = match args.get(1) {
@@ -1293,6 +1478,7 @@ fn register_random(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
     })?;
     let sample = lua.create_any_userdata(LRandom(Rc::new(Cell::new(seed_random(0.0)))))?;
     lock_metatable(lua, &sample)?;
+    super::raw::set_table_namecall(lua, &sample, calls, "Random", lua.create_table()?)?;
 
     // Random.new() without a seed: Studio seeds from entropy; offline runs stay deterministic, from
     // the run's seed (the default seed 1 keeps the sequence it always had); the sequence's state is the
@@ -1313,14 +1499,11 @@ fn register_random(lua: &Lua, engine: &Rc<Engine>) -> LuaResult<()> {
                     state.sched.unseeded_random = Some(next);
                     next
                 }
-                LuaValue::Number(n) => *n,
-                LuaValue::Integer(n) => *n as f64,
-                other => {
-                    return raise_plain(format!(
-                        "invalid argument #1 to 'new' (number expected, got {})",
-                        other.type_name()
-                    ));
-                }
+                // (measured likewise, Random-new-arguments: raised at the calling line, a vector named Vector3)
+                other => match random_number(lua, other)? {
+                    Some(n) => n,
+                    None => return raise_at_caller(format!("invalid argument #1 to 'new' (number expected, got {})", typeof_value(&seeded, other))),
+                },
             };
             let userdata = lua.create_any_userdata(new_random(&seeded, seed_random(seed)))?;
             Ok(values([LuaValue::UserData(userdata)]))
@@ -1835,15 +2018,16 @@ mod tests {
 
     #[test]
     fn random_matches_the_luau_oracle() {
-        // runtime/tests/random.luau vectors; the wide NextInteger as measured in a playing client (Studio 0.744:
-        // floor(min * (1 - u) + max * u), one less than that oracle's 64-bit multiply for seeds 7, -1.9 and -2^53 + 1)
+        // runtime/tests/random.luau vectors; the wide NextInteger as a playing client gives it (Studio 0.747,
+        // tools/parity/expected/random.txt Random-test-vectors: the floats ree interpolated gave one less for seeds 7, -3
+        // and 4294967303)
         let vectors: &[(f64, [f64; 3], f64, f64)] = &[
             (0.0, [0.5514556904749074, 0.01723102436113014, 0.883376920906403], 73.0, 72384586732.0),
-            (7.0, [0.8737085924861333, 0.4321572161309693, 0.3089922198934871], 5.0, 482964445446.0),
-            (-3.0, [0.23554798859579634, 0.32381286642224644, 0.14705557445875167], 28.0, -493285887950.0),
+            (7.0, [0.8737085924861333, 0.4321572161309693, 0.3089922198934871], 5.0, 482964445447.0),
+            (-3.0, [0.23554798859579634, 0.32381286642224644, 0.14705557445875167], 28.0, -493285887951.0),
             (1.9, [0.9484344206192203, 0.061285879733742145, 0.8770159548057006], 9.0, -497511649161.0),
             (-1.9, [0.0037155688242635435, 0.5469862230236278, 0.31011551315193603], 67.0, 1062967531246.0),
-            (4294967303.0, [0.9971430285879401, 0.5584106571948971, 0.05136057646030647], 58.0, -943718980273.0),
+            (4294967303.0, [0.9971430285879401, 0.5584106571948971, 0.05136057646030647], 58.0, -943718980274.0),
             (9007199254740991.0, [0.027684032073451197, 0.09103798432822455, 0.9869885996197573], 53.0, 502533245394.0),
             (-9007199254740991.0, [0.22788703655698744, 0.9425859688069043, 0.06775640206431996], 38.0, -518359285893.0),
         ];
@@ -1855,9 +2039,10 @@ mod tests {
             assert_eq!(random.next_integer(1.0, 100.0), *small);
             assert_eq!(random.next_integer(-1099511627776.0, 1099511628776.0), *large);
         }
-        assert_eq!(seed_random(f64::INFINITY).next_unit(), 0.0);
-        assert_eq!(seed_random(f64::NEG_INFINITY).next_unit(), 0.0037155688242635435);
-        assert_eq!(seed_random(f64::NAN).next_unit(), 0.0037155688242635435);
+        // (tools/parity/expected/random.txt, Studio 0.747: Random-seeds-large and Random-seeds-nan-fraction)
+        assert_eq!(seed_random(f64::INFINITY).next_unit(), 0.5514556904749074);
+        assert_eq!(seed_random(f64::NEG_INFINITY).next_unit(), 0.5514556904749074);
+        assert_eq!(seed_random(f64::NAN).next_unit(), 0.20012743358005303);
         assert_eq!(seed_random(-0.0).next_unit(), seed_random(0.0).next_unit());
         // Unseeded sequence
         let mut counter = 0x9E3779B9u32 as f64;
@@ -1865,6 +2050,52 @@ mod tests {
             counter = luau_u32(counter * 1103515245.0 + 12345.0) as f64;
             assert_eq!(seed_random(counter).next_unit(), expected);
         }
+    }
+
+    #[test]
+    fn next_integer_takes_two_draws_from_2_32_minus_1_values() {
+        // tools/parity/expected/random.txt (Studio 0.747): Random-draws seed 7, the value and the NextNumber after it
+        let draws = |count: f64| {
+            let mut random = seed_random(7.0);
+            let value = random.next_integer(0.0, count - 1.0);
+            (value, random.next_number(0.0, 1.0))
+        };
+        assert_eq!(draws(4294967294.0), (4132333491.0, 0.01291674651990379));
+        assert_eq!(draws(4294967295.0), (3752549829.0, 0.4321572161309693));
+        assert_eq!(draws(4294967296.0), (3752549830.0, 0.4321572161309693));
+        // Random-wide 0 8589934591, seed 42: the high half of count * x without the low halves' product (floats gave
+        // 1896055670); and the widest range there is, rounded to a double (Random-wide -2^63 2^63 - 1024, seed 0)
+        assert_eq!(seed_random(42.0).next_integer(0.0, 8589934591.0), 1896055671.0);
+        assert_eq!(seed_random(0.0).next_integer(-9223372036854775808.0, 9223372036854774784.0), 9.491899533266309e17);
+    }
+
+    #[test]
+    fn seeds_of_2_53_or_more_are_0_and_nan_the_integer_indefinite() {
+        // tools/parity/expected/random.txt (Studio 0.747): Random-seeds-large and Random-seeds-nan-fraction
+        let first = |seed: f64| seed_random(seed).next_number(0.0, 1.0);
+        assert_eq!(first(9007199254740991.0), 0.027684032073451197);
+        assert_eq!(first(-9007199254740991.0), 0.22788703655698744);
+        for seed in [9007199254740992.0, -9007199254740992.0, 2f64.powi(55), 2f64.powi(63), -2f64.powi(64), 1e19, -1e19, 1e300, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(first(seed), 0.5514556904749074, "seed {seed}");
+        }
+        for bits in [0x7FF8_0000_0000_0000u64, 0xFFF8_0000_0000_0000, 0x7FF0_0000_0000_0001] {
+            assert_eq!(first(f64::from_bits(bits)), 0.20012743358005303, "NaN {bits:#x}");
+        }
+        assert_eq!(first(4503599627370495.5), 0.911891985182802);
+        assert_eq!(first(-0.5), 0.5514556904749074);
+    }
+
+    #[test]
+    fn next_integer_truncates_fractional_bounds() {
+        // tools/parity/expected/random.txt (Studio 0.747), Random-fraction, seed 7: toward zero, so -1.5 is -1 and
+        // (-0.5, 2^32 - 3) holds 2^32 - 2 values (one draw)
+        assert_eq!(seed_random(7.0).next_integer(-1.5, -1.5), -1.0);
+        assert_eq!(seed_random(7.0).next_integer(-0.5, -0.25), 0.0);
+        assert_eq!(seed_random(7.0).next_integer(-2.7, -2.2), -2.0);
+        assert_eq!(seed_random(7.0).next_integer(10.9, -4.2), 10.0);
+        let mut random = seed_random(7.0);
+        assert_eq!(random.next_integer(-0.5, 4294967293.0), 4132333491.0);
+        assert_eq!(random.next_number(0.0, 1.0), 0.01291674651990379);
     }
 
     #[test]

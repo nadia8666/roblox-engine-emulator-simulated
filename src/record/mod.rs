@@ -162,6 +162,9 @@ const SWITCHABLE: &[&str] = &["ParticleEmitter", "Trail", "Beam", "PointLight", 
 const CLEARABLE: &[&str] = &["ParticleEmitter", "Trail"];
 /// What a child of Lighting adds to the look.
 const LIGHTING_CHILDREN: &[&str] = &["Sky", "Atmosphere", "ColorCorrectionEffect", "BloomEffect", "BlurEffect", "SunRaysEffect", "DepthOfFieldEffect", "ColorGradingEffect"];
+/// What draws nothing itself but changes how its parent draws (a part's shape, a GUI's corners or layout, a
+/// character's clothing), with no property that hides it: out of the world while it is gone.
+const MODIFIERS: &[&str] = &["DataModelMesh", "UIComponent", "CharacterAppearance"];
 /// Never recorded, with everything under them: code, sounds, values and the like draw nothing (and
 /// the Terrain's Clouds play on [`CLOUDS`]).
 const SKIPPED: &[&str] = &[
@@ -191,10 +194,12 @@ enum Visibility {
     Visible,
     /// Parented out of Lighting (skies, atmospheres, post effects)
     Lighting,
-    /// Parented out of the world (SurfaceAppearances: a part shows the one it holds; Glass parts,
-    /// which still draw at Transparency 1: [`is_glass`])
+    /// Parented out of the world (SurfaceAppearances: a part shows the one it holds; meshes, UI
+    /// components and character appearances: [`MODIFIERS`]; Glass parts, which still draw at
+    /// Transparency 1: [`is_glass`])
     Detach,
-    /// Cannot be hidden (folders, models, attachments, layouts...)
+    /// Never hidden: draws nothing and changes nothing its descendants do not hide themselves
+    /// (folders, models, attachments, joints...)
     None,
 }
 
@@ -635,6 +640,10 @@ fn event_json(entry: &crate::output::Entry) -> Json {
     if let Some(trace) = &entry.trace {
         item["trace"] = json!(trace);
     }
+    // (a loopback run's line names its side; no other run's has one)
+    if let Some(side) = entry.side {
+        item["side"] = json!(side);
+    }
     item
 }
 
@@ -735,6 +744,8 @@ fn visibility_of(engine: &Engine, class: ClassId) -> Visibility {
         Visibility::Enabled
     } else if is_a(engine, class, "GuiObject") {
         Visibility::Visible
+    } else if MODIFIERS.iter().any(|c| is_a(engine, class, c)) {
+        Visibility::Detach
     } else {
         Visibility::None
     }
@@ -824,14 +835,22 @@ fn current(state: &State, engine: &Engine, id: InstanceId, name: NameId, track: 
         return Some(json!(round(effective_transparency(state, engine, id))));
     }
     // a Content property is a view of its string asset id (MeshPart.TextureContent: TextureID)
-    if let Some(sibling) = engine.reflection.content_sibling(state.dom.at(id).class, name) {
-        return Some(json!(state.dom.raw_get(id, sibling).and_then(|value| match value {
+    let class = state.dom.at(id).class;
+    if let Some(sibling) = engine.reflection.content_sibling(class, name) {
+        let uri = state.dom.raw_get(id, sibling).and_then(|value| match value {
             Value::String(uri) => Some(uri.to_string()),
             _ => None,
-        }).unwrap_or_default()));
+        }).unwrap_or_default();
+        // (a relative local file as the file the engine read: encode::local_uri)
+        return Some(json!(encode::local_uri(engine, &uri).unwrap_or(uri)));
     }
     let value = state.dom.raw_get(id, name)?;
-    to_json(engine, value)
+    let content = matches!(value, Value::Content(_))
+        || engine.reflection.class_property(class, name).is_some_and(|property| property.engine_type == crate::reflection::EngineType::ContentId);
+    match to_json(engine, value)? {
+        Json::String(uri) if content => Some(json!(encode::local_uri(engine, &uri).unwrap_or(uri))),
+        other => Some(other),
+    }
 }
 
 /// The tracked Content views of a string asset id a script wrote (TextureID: TextureContent), which
@@ -904,6 +923,18 @@ fn snapshot(state: &State, engine: &Engine, id: InstanceId, class: ClassId) -> (
     let class_name = class_name(engine, class);
     // the builder sets the name, the parent and the class, and the attributes and tags are written below
     let reserved = |property: &str| matches!(property, "Parent" | "Name" | "ClassName" | "Tags" | "Attributes" | "Source");
+    // a Content property the engine keeps as its string sibling (TextureContent: Texture,
+    // MeshContent: MeshId); reading the sibling covers both rbx-dom's database and Studio
+    // properties newer than it (ParticleEmitter, Beam and Trail TextureContent)
+    let read_property = |name: NameId, stored: NameId| -> Option<Value> {
+        if let Some(sibling) = engine.reflection.content_sibling(class, name) {
+            if let Some(Value::String(uri)) = state.dom.raw_get(id, sibling) {
+                let content = if uri.is_empty() { crate::value::ContentValue::None } else { crate::value::ContentValue::Uri(uri.clone()) };
+                return Some(Value::Content(std::rc::Rc::new(content)));
+            }
+        }
+        state.dom.raw_get(id, stored).cloned()
+    };
     for (property, data_type) in encode::serialized_properties(class_name) {
         if reserved(&property) {
             continue;
@@ -912,17 +943,7 @@ fn snapshot(state: &State, engine: &Engine, id: InstanceId, class: ClassId) -> (
         // a view whose value lives in another property: UICorner's CornerRadius reads TopLeftRadius
         // (services/mod.rs, measured)
         let stored = if class_name == "UICorner" && &*property == "CornerRadius" { K::TopLeftRadius as NameId } else { name };
-        // a Content property the engine keeps as its string sibling (TextureContent: Texture,
-        // MeshContent: MeshId)
-        let mut value = state.dom.raw_get(id, stored).cloned();
-        if let Some(sibling) = engine.reflection.content_sibling(class, name) {
-            if let Some(Value::String(uri)) = state.dom.raw_get(id, sibling) {
-                if !uri.is_empty() {
-                    value = Some(Value::String(uri.clone()));
-                }
-            }
-        }
-        let Some(value) = value else { continue };
+        let Some(value) = read_property(name, stored) else { continue };
         if matches!(data_type, rbx_reflection::DataType::Value(dom::VariantType::Ref)) {
             if let Value::Instance(target) = value {
                 references.push((property.to_string(), target));
@@ -949,7 +970,7 @@ fn snapshot(state: &State, engine: &Engine, id: InstanceId, class: ClassId) -> (
     extra.sort_by(|a, b| a.0.cmp(b.0));
     for (text, name, index) in extra {
         let property = engine.reflection.property(index);
-        if let Some(variant) = state.dom.raw_get(id, name).and_then(|value| encode::untyped_variant(engine, value, property.engine_type)) {
+        if let Some(variant) = read_property(name, name).and_then(|value| encode::untyped_variant(engine, &value, property.engine_type)) {
             properties.push((text.to_string(), variant));
         }
     }
@@ -961,6 +982,10 @@ fn snapshot(state: &State, engine: &Engine, id: InstanceId, class: ClassId) -> (
                 properties.push((name.to_string(), value));
             }
         }
+    }
+    // a Content or content ID naming a relative local file names the file the engine read (encode::local_uri)
+    for (_, variant) in properties.iter_mut() {
+        encode::localize(engine, variant);
     }
     // rbx-binary writes attributes and tags only through its database's Instance entry
     let known = encode::dom_property(class_name, "Attributes").is_some();

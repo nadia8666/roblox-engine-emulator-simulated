@@ -2,8 +2,10 @@
 //! `ree run` do); without it every track plays without keyframes, as before tracks ran (rur's
 //! golden runs, a WebAssembly host). An AnimationId resolves, first match wins, to:
 //!
-//! 1. a clip registered in this engine (KeyframeSequenceProvider:RegisterKeyframeSequence,
-//!    AnimationClipProvider:RegisterAnimationClip and their Active forms);
+//! 1. a clip registered in this engine: KeyframeSequenceProvider:RegisterKeyframeSequence and
+//!    AnimationClipProvider:RegisterAnimationClip keep the clip as it is then ([`register`]);
+//!    AnimationClipProvider:RegisterActiveAnimationClip's `active://N` is the instance itself, which the track
+//!    follows ([`active_clip`]);
 //! 2. `<id>.rbxm` / `<id>.rbxmx` in a mounted directory ([`Loading::directories`], `--animations`);
 //! 3. the download cache, `<state dir>/animations/<id>.rbxm`;
 //! 4. a download through the asset worker (its `asset` command, [`crate::project::model_assets::AssetWorker`],
@@ -15,10 +17,10 @@
 //!
 //! The file's clip is a KeyframeSequence or a CurveAnimation ([`super::curve_clip`]).
 //!
-//! KeyframeSequenceProvider:GetKeyframeSequenceAsync resolves the same way ([`sequence`]): a clone
-//! of the registered sequence, else the file's KeyframeSequence made as new instances (its plan
-//! kept per process like the clips); of a CurveAnimation, the KeyframeSequence made of it.
-//! AnimationClipProvider:GetAnimationClipAsync ([`animation_clip`]) gives the clip as it is.
+//! KeyframeSequenceProvider:GetKeyframeSequenceAsync resolves the same way ([`sequence`]): a copy
+//! of the registered sequence as it was registered, else the file's KeyframeSequence made as new
+//! instances (its plan kept per process like the clips); of a CurveAnimation, the KeyframeSequence made
+//! of it. AnimationClipProvider:GetAnimationClipAsync ([`animation_clip`]) gives the clip as it is.
 
 use std::{
     cell::RefCell,
@@ -30,7 +32,7 @@ use std::{
 use rbx_dom_weak::WeakDom;
 use rustc_hash::FxHashMap;
 
-use super::clip::{self, Clip, EngineTree, FileTree};
+use super::clip::{self, Clip, EngineTree, FileTree, Tree};
 use crate::{Engine, InstanceId, files, project::ModelPlan};
 
 /// How an engine loads keyframes ([`enable`]).
@@ -45,15 +47,24 @@ pub struct Loading {
 #[derive(Default)]
 pub(crate) struct Loader {
     loading: Option<Loading>,
-    /// The ids of clips registered in this engine (RegisterKeyframeSequence, RegisterAnimationClip and their Active forms)
+    /// The ids of clips registered in this engine (RegisterKeyframeSequence, RegisterAnimationClip)
     pub registered: FxHashMap<String, InstanceId>,
     pub next_registered: u64,
+    /// AnimationClipProvider:RegisterActiveAnimationClip's instances: `active://N` is number N
+    pub active_clips: Vec<InstanceId>,
+    /// KeyframeSequenceProvider:RegisterActiveKeyframeSequence's, counted apart
+    pub active_sequences: Vec<InstanceId>,
+    /// Each registered clip as it was when registered, with the digest of that content: what the Get...Async members
+    /// copy
+    kept: FxHashMap<String, (u128, crate::instance::KeptTree)>,
+    /// The copy GetKeyframeSequenceAsync made of each registered id, and GetAnimationClipAsync's: each gives the same
+    /// instance every time
+    sequence_copies: FxHashMap<String, InstanceId>,
+    clip_copies: FxHashMap<String, InstanceId>,
     /// What each id that is not Active plays: the clip as it was when registered, None for an instance that is no clip
     snapshots: FxHashMap<String, Option<Arc<Clip>>>,
     /// The id of each content registered ([`digest`])
     digests: FxHashMap<u128, String>,
-    /// The next `active://N`
-    pub next_active: u64,
     /// When each animation asset asked for arrives (by asset id)
     fetches: FxHashMap<String, f64>,
     /// Ids already warned about
@@ -161,6 +172,9 @@ fn locate_unnoted(engine: &Engine, uri: &str) -> Result<Found, String> {
         return Ok(Found::Nothing);
     }
     let slot = loader(engine);
+    if let Some(found) = active_clip(engine, uri) {
+        return found.map(Found::Registered);
+    }
     let registered = slot.borrow().registered.get(uri).copied();
     if let Some(sequence) = registered {
         if engine.state.borrow().dom.get(sequence).is_none() {
@@ -218,6 +232,34 @@ fn digest(state: &crate::State, reflection: &crate::Reflection, root: InstanceId
     (first.finish() as u128) << 64 | second.finish() as u128
 }
 
+/// The number of an `active://N` id: None for an id of another kind, Err for one that is not a whole number
+/// (measured: "active://x", "active://-1" and "active://" raise this from LoadAnimation).
+fn active_number(uri: &str) -> Option<Result<usize, String>> {
+    let digits = uri.trim().strip_prefix("active://")?;
+    Some(match digits.parse::<usize>() {
+        Ok(number) if digits.bytes().all(|byte| byte.is_ascii_digit()) => Ok(number),
+        _ => Err("Invalid 'active' animation format: it should be active://ID".to_string()),
+    })
+}
+
+fn unknown_active(uri: &str) -> String {
+    format!("Unknown 'active' animation: '{}'", uri.trim())
+}
+
+/// The clip an `active://N` id plays: the instance AnimationClipProvider:RegisterActiveAnimationClip registered as
+/// number N, a CurveAnimation or a KeyframeSequence. None for an id of another kind; Err is what LoadAnimation and
+/// GetAnimationClipAsync raise. Measured in Studio 0.747: the two providers count their active ids apart and a
+/// track looks only here, so the id KeyframeSequenceProvider:RegisterActiveKeyframeSequence returned plays the
+/// AnimationClipProvider's clip of that number, or raises when there is none.
+pub(crate) fn active_clip(engine: &Engine, uri: &str) -> Option<Result<InstanceId, String>> {
+    Some(active_number(uri)?.and_then(|number| loader(engine).borrow().active_clips.get(number).copied().ok_or_else(|| unknown_active(uri))))
+}
+
+/// The same in KeyframeSequenceProvider's own list (GetKeyframeSequenceAsync).
+fn active_sequence(engine: &Engine, uri: &str) -> Option<Result<InstanceId, String>> {
+    Some(active_number(uri)?.and_then(|number| loader(engine).borrow().active_sequences.get(number).copied().ok_or_else(|| unknown_active(uri))))
+}
+
 /// KeyframeSequenceProvider:RegisterKeyframeSequence and AnimationClipProvider:RegisterAnimationClip: the id of
 /// `instance`, a CurveAnimation (`curve` Some(true)), a KeyframeSequence (Some(false)) or something that is no clip
 /// (None; the first of the two takes one). Measured in Studio 0.747: the id stands for the content. Registering the
@@ -225,14 +267,24 @@ fn digest(state: &crate::State, reflection: &crate::Reflection, root: InstanceId
 /// key, its name, an attribute) gives another; a track of the id plays the clip as it was when registered, whatever
 /// became of the instance since. Studio's id is 32 hexadecimal digits of that content; here the ids count up, one
 /// per content. The id of what is no clip plays nothing (a track of Length 0 that stays at 0 s).
+///
+/// GetKeyframeSequenceAsync and GetAnimationClipAsync give the clip as it was registered too (measured). So a clip is
+/// kept here as data when it is registered (instance::KeptTree: its classes, names and stored properties, which
+/// share what they hold with the instance's): no instance is made, no id or signal is used and no cost is charged,
+/// so a script sees nothing of it (`registering_a_clip_makes_nothing_a_script_sees` times it). A clip that is not
+/// Archivable is registered as what is no clip (measured: its track has Length 0, GetKeyframeSequenceAsync gives an
+/// empty KeyframeSequence after raising once ([`sequence`]) and GetAnimationClipAsync never answers), and a
+/// descendant that is not Archivable is left out of the copies.
 pub(crate) fn register(engine: &Engine, instance: InstanceId, curve: Option<bool>) -> String {
     let slot = loader(engine);
     let state = engine.state.borrow();
-    let content = digest(&state, &engine.reflection, instance);
+    let kept = curve.and_then(|_| crate::instance::KeptTree::of(&state, instance));
+    // (measured: two different sequences that are not Archivable get one id, which is not the id of a Part)
+    let content = if curve.is_some() && kept.is_none() { 0 } else { digest(&state, &engine.reflection, instance) };
     if let Some(uri) = slot.borrow().digests.get(&content) {
         return uri.clone();
     }
-    let clip = curve.map(|curve| Arc::new(Clip::of(&EngineTree { state: &state, reflection: &engine.reflection }, instance, curve)));
+    let clip = curve.filter(|_| kept.is_some()).map(|curve| Arc::new(Clip::of(&EngineTree { state: &state, reflection: &engine.reflection }, instance, curve)));
     drop(state);
     let uri = {
         let mut loader = slot.borrow_mut();
@@ -240,6 +292,9 @@ pub(crate) fn register(engine: &Engine, instance: InstanceId, curve: Option<bool
         let uri = format!("rbxtemp://{}", loader.next_registered);
         loader.registered.insert(uri.clone(), instance);
         loader.snapshots.insert(uri.clone(), clip);
+        if let Some(kept) = kept {
+            loader.kept.insert(uri.clone(), (content, kept));
+        }
         loader.digests.insert(content, uri.clone());
         uri
     };
@@ -251,6 +306,9 @@ pub(crate) fn register(engine: &Engine, instance: InstanceId, curve: Option<bool
 fn no_clip(engine: &Engine, uri: &str) -> bool {
     matches!(loader(engine).borrow().snapshots.get(uri.trim()), Some(None))
 }
+
+/// GetKeyframeSequenceAsync's error for the id of what is no clip, the first time ([`sequence`]): Studio's text.
+pub const NOT_VALID: &str = "KeyframeSequence loaded is not valid.";
 
 /// GetAnimationClipAsync's error for an id that never answers ([`animation_clip`]).
 pub const NEVER: &str = "never";
@@ -272,39 +330,112 @@ pub(crate) fn resolve(engine: &Engine, uri: &str) -> Result<Option<Arc<Clip>>, S
     }
 }
 
-fn is_curve(engine: &Engine, state: &crate::State, clip: InstanceId) -> bool {
-    engine.reflection.class(state.dom.at(clip).class).name.as_ref() == "CurveAnimation"
+pub(crate) fn is_curve(engine: &Engine, state: &crate::State, clip: InstanceId) -> bool {
+    state.dom.get(clip).is_some_and(|instance| engine.reflection.class(instance.class).name.as_ref() == "CurveAnimation")
+}
+
+/// Whether the registered clip `uri` names no longer has the content it was registered with.
+fn changed_since(engine: &Engine, uri: &str, registered: InstanceId) -> bool {
+    let state = engine.state.borrow();
+    if state.dom.get(registered).is_none() {
+        return true;
+    }
+    let now = digest(&state, &engine.reflection, registered);
+    loader(engine).borrow().kept.get(uri.trim()).is_some_and(|(then, _)| *then != now)
+}
+
+/// A copy of the registered clip `uri` names as it was registered, as new unparented instances. GetAnimationClipAsync's
+/// (`bare` false) is a clone of the instance while that still has the content it was registered with, as before
+/// clips were kept, else made from what was kept; GetKeyframeSequenceAsync's (`bare`) is always made from what was
+/// kept, without the clip's own Name, attributes and tags (measured: a sequence named "Seq" with an attribute and a
+/// tag comes back named "KeyframeSequence" with neither, its Loop, Priority and everything below it as they were).
+fn copy_of_registered(engine: &Engine, uri: &str, registered: InstanceId, bare: bool) -> Option<InstanceId> {
+    if !bare && !changed_since(engine, uri, registered) {
+        return crate::lua::instance::clone(engine, registered);
+    }
+    let slot = loader(engine).borrow();
+    let (_, kept) = slot.kept.get(uri.trim())?;
+    let mut state = engine.state.borrow_mut();
+    let copy = kept.make(&mut state, &engine.reflection, bare);
+    // (priced as the clone it stands for, without the first-of-a-frame and cold-source parts: cost.rs)
+    let work: f64 = kept.nodes().iter().map(|node| crate::cost::cloned(&engine.reflection, node.class)).sum();
+    state.sched.charge(work);
+    crate::boundary::add_cost(work);
+    Some(copy)
+}
+
+/// The copy one of the two Get...Async members gave of registered id `uri` before, if it did (measured: each gives
+/// the same instance every time, also after a script changed or destroyed it; the two members' copies are two).
+fn earlier_copy(engine: &Engine, uri: &str, sequences: bool) -> Option<InstanceId> {
+    let slot = loader(engine).borrow();
+    let found = if sequences { &slot.sequence_copies } else { &slot.clip_copies }.get(uri.trim()).copied()?;
+    engine.state.borrow().dom.get(found).map(|_| found)
+}
+
+/// Keeps `copy` as the one [`earlier_copy`] returns for `uri` from now on (kept alive without script references).
+fn keep_copy(engine: &Engine, uri: &str, sequences: bool, copy: InstanceId) -> InstanceId {
+    let mut slot = loader(engine).borrow_mut();
+    if !slot.registered.contains_key(uri.trim()) {
+        return copy;
+    }
+    if sequences { &mut slot.sequence_copies } else { &mut slot.clip_copies }.insert(uri.trim().to_string(), copy);
+    engine.state.borrow_mut().dom.pin(copy);
+    copy
 }
 
 /// A new, unparented copy of the KeyframeSequence the AnimationId `uri` names
 /// (KeyframeSequenceProvider:GetKeyframeSequenceAsync): the registered sequence cloned, else the
 /// file's sequence made as instances. Err when it could not load or there is nothing to load.
 pub fn sequence(engine: &Engine, uri: &str) -> Result<InstanceId, String> {
-    // (measured: the id of an instance that is no clip gives a new KeyframeSequence without keyframes)
+    // (measured: the id of an instance that is no clip raises [`NOT_VALID`] the first time it is asked for in a
+    // session, and from then on gives one KeyframeSequence without keyframes, the same instance every time)
     if no_clip(engine, uri) {
+        if let Some(copy) = earlier_copy(engine, uri, true) {
+            return Ok(copy);
+        }
         let dom = WeakDom::new(rbx_dom_weak::InstanceBuilder::new("KeyframeSequence"));
         let plan = ModelPlan::new(&engine.reflection, &dom, &[dom.root_ref()]);
-        return plan.instantiate(engine, None).first().copied().ok_or_else(|| format!("{uri}: no KeyframeSequence could be made of it"));
+        let made = plan.instantiate(engine, None).first().copied().ok_or_else(|| format!("{uri}: no KeyframeSequence could be made of it"))?;
+        keep_copy(engine, uri, true, made);
+        return Err(NOT_VALID.into());
     }
+    // (measured: an `active://` id is looked up among KeyframeSequenceProvider's own, whose instance itself comes back;
+    // one of AnimationClipProvider's is unknown here)
+    if let Some(found) = active_sequence(engine, uri) {
+        return found;
+    }
+    if let Some(copy) = earlier_copy(engine, uri, true) {
+        return Ok(copy);
+    }
+    sequence_made(engine, uri).map(|copy| keep_copy(engine, uri, true, copy))
+}
+
+fn sequence_made(engine: &Engine, uri: &str) -> Result<InstanceId, String> {
     match locate(engine, uri)? {
         Found::Nothing if uri.trim().is_empty() => Err("no animation id".into()),
         Found::Nothing => Err(format!("{uri}: this engine loads no animation files")),
         Found::Registered(registered) => {
             let made = {
                 let state = engine.state.borrow();
-                is_curve(engine, &state, registered).then(|| {
-                    let tree = EngineTree { state: &state, reflection: &engine.reflection };
-                    super::curve_clip::sequence(&tree, registered)
-                })
+                let slot = loader(engine).borrow();
+                // (of the clip as it was registered)
+                match slot.kept.get(uri.trim()).map(|(_, kept)| kept) {
+                    Some(kept) => {
+                        let tree = clip::KeptView { tree: kept, reflection: &engine.reflection };
+                        (tree.class(0) == "CurveAnimation").then(|| super::curve_clip::sequence(&tree, 0))
+                    }
+                    None => is_curve(engine, &state, registered).then(|| {
+                        let tree = EngineTree { state: &state, reflection: &engine.reflection };
+                        super::curve_clip::sequence(&tree, registered)
+                    }),
+                }
             };
             match made {
-                // (measured: an `active://` CurveAnimation is unknown to GetKeyframeSequenceAsync)
-                Some(_) if uri.trim().starts_with("active://") => Err(format!("Unknown 'active' animation: '{}'", uri.trim())),
                 Some((dom, sequence)) => {
                     let plan = ModelPlan::new(&engine.reflection, &dom, &[sequence]);
                     plan.instantiate(engine, None).first().copied().ok_or_else(|| format!("{uri}: no KeyframeSequence could be made of it"))
                 }
-                None => crate::lua::instance::clone(engine, registered).ok_or_else(|| format!("{uri}: its registered KeyframeSequence is not Archivable")),
+                None => copy_of_registered(engine, uri, registered, true).ok_or_else(|| format!("{uri}: its registered KeyframeSequence was not kept")),
             }
         }
         Found::File(file) => {
@@ -323,18 +454,28 @@ pub fn animation_clip(engine: &Engine, uri: &str) -> Result<InstanceId, String> 
     if no_clip(engine, uri) {
         return Err(NEVER.into());
     }
+    if let Some(copy) = earlier_copy(engine, uri, false) {
+        return Ok(copy);
+    }
+    animation_clip_made(engine, uri).map(|copy| keep_copy(engine, uri, false, copy))
+}
+
+fn animation_clip_made(engine: &Engine, uri: &str) -> Result<InstanceId, String> {
     match locate(engine, uri)? {
         Found::Nothing if uri.trim().is_empty() => Err("no animation id".into()),
         Found::Nothing => Err(format!("{uri}: this engine loads no animation files")),
         Found::Registered(registered) if uri.trim().starts_with("active://") => Ok(registered),
-        Found::Registered(registered) => {
-            crate::lua::instance::clone(engine, registered).ok_or_else(|| format!("{uri}: its registered clip is not Archivable"))
-        }
+        Found::Registered(registered) => copy_of_registered(engine, uri, registered, false).ok_or_else(|| format!("{uri}: its registered clip was not kept")),
         Found::File(file) => {
             let plan = animation_clip_from_file(engine, &file)?;
             plan.instantiate(engine, None).first().copied().ok_or_else(|| format!("{}: the asset holds no animation clip", file.display()))
         }
     }
+}
+
+/// Whether `uri` is an id this engine gave out: a registered clip's, or an `active://` one.
+pub(crate) fn is_registered(engine: &Engine, uri: &str) -> bool {
+    uri.trim().starts_with("active://") || loader(engine).borrow().registered.contains_key(uri.trim())
 }
 
 /// When the animation asset `uri` arrives in this engine: its first request starts its fetch
@@ -348,7 +489,7 @@ pub(crate) fn arrival(engine: &Engine, uri: &str) -> f64 {
 /// Whether the AnimationId `uri` names an asset to fetch: a file found (a registered sequence is the
 /// engine's own; nothing found loads nothing).
 pub(crate) fn fetched_from_file(engine: &Engine, uri: &str) -> bool {
-    !uri.trim().is_empty() && !loader(engine).borrow().registered.contains_key(uri.trim()) && matches!(locate_unnoted(engine, uri), Ok(Found::File(_)))
+    !uri.trim().is_empty() && !is_registered(engine, uri) && matches!(locate_unnoted(engine, uri), Ok(Found::File(_)))
 }
 
 /// Downloads asset `uri` into `cached` the way keyframes download (the same switch and worker): what

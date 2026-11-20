@@ -48,7 +48,7 @@ fn cast_name(engine: &Engine, value: &LuaValue) -> String {
 /// The filter argument at `index`: nil or a dictionary (measured: a number "Unable to cast double to Dictionary", `{ "BasePart" }` and
 /// `{ 1, IsA = "BasePart" }` "Unable to cast Array to Dictionary"; a field of the wrong type "ReflectionClassFilter's IsA field is
 /// expected to be type string", "... ExcludeDisplay field is expected to be type bool").
-fn filter(engine: &Engine, args: &Args, index: usize) -> Result<Filter, Flow> {
+fn filter(lua: &Lua, engine: &Engine, args: &Args, index: usize) -> Result<Filter, Flow> {
     let table = match args.get(index) {
         LuaValue::Nil => return Ok(Filter { is_a: None, display: true }),
         LuaValue::Table(table) if table.raw_len() == 0 => table.clone(),
@@ -68,7 +68,7 @@ fn filter(engine: &Engine, args: &Args, index: usize) -> Result<Filter, Flow> {
     match table.raw_get::<LuaValue>("Security")? {
         LuaValue::Nil => {}
         value if typeof_value(engine, &value) == "SecurityCapabilities" => {
-            engine.state.borrow_mut().output.missing("ReflectionClassFilter", "Security");
+            engine.missing(Some(lua), "ReflectionClassFilter", "Security");
         }
         _ => return raise("ReflectionClassFilter's Security field is expected to be type SecurityCapabilities"),
     }
@@ -92,7 +92,7 @@ fn permits_meta(lua: &Lua) -> LuaResult<LuaTable> {
     }
     fn report(lua: &Lua) {
         if let Some(engine) = lua.app_data_ref::<Rc<Engine>>() {
-            engine.state.borrow_mut().output.missing("ReflectedClass", "Permits");
+            engine.missing(Some(lua), "ReflectedClass", "Permits");
         }
     }
     let meta = lua.create_table()?;
@@ -160,7 +160,7 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
     let Some(service) = reflection.class_id("ReflectionService") else { return };
     if let Some(n) = reflection.name_id("GetClasses") {
         behaviors.add_method(service, n, method(|lua, engine, _, args| {
-            let filter = filter(engine, args, 1)?;
+            let filter = filter(lua, engine, args, 1)?;
             let classes = &engine.reflection.classes;
             let mut found: Vec<ClassId> = classes.iter().map(|class| class.id).filter(|&class| matches(engine, class, &filter)).collect();
             found.sort_unstable_by(|&a, &b| classes[a as usize].name.cmp(&classes[b as usize].name));
@@ -181,7 +181,7 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
                 LuaValue::Number(_) | LuaValue::Integer(_) => lua.coerce_string(args.get(1).clone())?.map(|text| text.to_string_lossy()),
                 _ => None,
             };
-            let filter = filter(engine, args, 2)?;
+            let filter = filter(lua, engine, args, 2)?;
             let class = name.and_then(|name| engine.reflection.class_id(&name)).filter(|&class| matches(engine, class, &filter));
             let Some(class) = class else { return Ok(values([LuaValue::Nil])) };
             charge(engine, 1, 0, filter.display);

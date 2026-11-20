@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, a headless playing client (script identity 2 unless the probe asks for another; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 render-step bind-first,bind-camera,bind-500a,bind-500b,bind-last,RenderStepped,PreRender,d<RenderStepped,d<PreRender
 simulation-step PreAnimation,d<PreAnimation,Stepped,PreSimulation,d<Stepped,d<PreSimulation,PostSimulation,d<PostSimulation,wait,delay,d<wait,Heartbeat,d<Heartbeat
 minimums task.wait(0)=1,task.wait(0.001)=1,task.wait(0.01)=1,task.wait(0.02)=2,task.wait(0.025)=2,task.wait(0.04)=3,task.wait(0.06)=4,task.wait(0.09)=6,task.wait(0.11)=7,wait(0)=2,wait(0.02)=2,wait(0.04)=3,task.delay(0)=0,task.delay(0.02)=2,task.delay(0.04)=3,delay(0)=2,delay(0.02)=2,spawn=2

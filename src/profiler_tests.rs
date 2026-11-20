@@ -257,6 +257,12 @@ fn opcode_names_and_type_tags_follow_the_vendored_headers() {
     }
     let tag = |name: &str| tags.iter().position(|found| found == name).unwrap_or_else(|| panic!("LUA_T{name} in {tags:?}")) as i32;
     let ours = [
+        // (the value types as mlua binds them: mlua-sys's tags, patched where the vendored release moved them)
+        ("NIL", mlua::ffi::LUA_TNIL),
+        ("BOOLEAN", mlua::ffi::LUA_TBOOLEAN),
+        ("LIGHTUSERDATA", mlua::ffi::LUA_TLIGHTUSERDATA),
+        ("NUMBER", mlua::ffi::LUA_TNUMBER),
+        ("VECTOR", mlua::ffi::LUA_TVECTOR),
         ("STRING", vm::T_STRING),
         ("TABLE", vm::T_TABLE),
         ("FUNCTION", vm::T_FUNCTION),

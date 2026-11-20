@@ -310,15 +310,16 @@ pub fn install(engine: &Rc<Engine>) {
     });
     derive(&mut views, "Model", "WorldPivot", "WorldPivotData", ViewEvents::None, read, write);
 
-    // Content views of string asset ids: every non-serialized Content property with a string sibling
+    // Content views of string asset ids: every Content property with a string sibling
     // (Reflection::content_sibling: Image, AnimationId, TextureID, Sound's SoundId). Measured: events
     // ImageContent, Image; each readable and settable through the other (Animation, SpecialMesh,
-    // Sound, MeshPart, Sky, 2026-10-12).
+    // Sound, MeshPart, Sky, 2026-10-12). Which of the two a file holds does not matter here: Studio 0.740's
+    // dump marked the string as the serialized one, 0.747's marks the Content, and the pairs are the same.
     let mut content_views: Vec<(String, String, String)> = Vec::new();
     for class in &reflection.classes {
         for (&property_name, &index) in &class.properties {
             let property = reflection.property(index);
-            if property.owner != class.id || property.script_type != ScriptType::Content || property.serialized {
+            if property.owner != class.id || property.script_type != ScriptType::Content {
                 continue;
             }
             let Some(source) = reflection.content_sibling(class.id, property_name) else { continue };

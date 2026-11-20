@@ -1,7 +1,9 @@
 //! The Camera's projections: WorldToViewportPoint / WorldToScreenPoint and ViewportPointToRay /
 //! ScreenPointToRay, from the camera's CFrame, its vertical FieldOfView and the ViewportSize the
-//! Camera reports (the screen forms shifted by GuiService's inset). A perspective camera as Roblox
-//! documents it; not Studio-measured.
+//! Camera reports. A perspective camera as Roblox documents it; not Studio-measured. The screen forms
+//! are measured from below GuiService's top inset, where GUI positions are (AbsolutePosition,
+//! InputObject.Position): WorldToScreenPoint's Y is WorldToViewportPoint's less the inset, and
+//! ScreenPointToRay(x, y) is ViewportPointToRay(x, y + inset).
 
 use std::rc::Rc;
 
@@ -86,7 +88,7 @@ pub fn install(engine: &Rc<Engine>) {
     }));
     add("WorldToScreenPoint", method(move |_, engine, id, args| {
         let (at, visible) = view(engine, id).project(world_point(args)?);
-        Ok(point(at + Vec3::new(0.0, inset, 0.0), visible)?)
+        Ok(point(at - Vec3::new(0.0, inset, 0.0), visible)?)
     }));
     add("ViewportPointToRay", method(|lua, engine, id, args| {
         let (x, y, depth) = (args.number(1).unwrap_or(0.0) as f32, args.number(2).unwrap_or(0.0) as f32, args.number(3).unwrap_or(0.0) as f32);
@@ -94,6 +96,6 @@ pub fn install(engine: &Rc<Engine>) {
     }));
     add("ScreenPointToRay", method(move |lua, engine, id, args| {
         let (x, y, depth) = (args.number(1).unwrap_or(0.0) as f32, args.number(2).unwrap_or(0.0) as f32, args.number(3).unwrap_or(0.0) as f32);
-        Ok(ray(lua, view(engine, id).ray(x, y - inset, depth))?)
+        Ok(ray(lua, view(engine, id).ray(x, y + inset, depth))?)
     }));
 }

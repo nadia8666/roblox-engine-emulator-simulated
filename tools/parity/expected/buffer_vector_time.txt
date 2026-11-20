@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, a headless playing client (script identity 2 unless the probe asks for another; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 buffer-reads 255 -1 65535 -1 -123456 4294843840 0.3333333432674408
 buffer-nan nan bytes "\000\000\000\000\000\000\xF8\xFF"
 buffer-f32-nan-bytes 0,0,192,255

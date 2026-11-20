@@ -3,7 +3,7 @@
 use core::fmt;
 use std::{ops, sync::Arc};
 
-use glam::{Mat3, Mat4, Quat, Vec3, Vec4};
+use glam::{Mat3, Mat4, Vec3, Vec4};
 use mlua::{Variadic, prelude::*};
 use rbx_dom_weak::types::{CFrame as DomCFrame, Matrix3 as DomMatrix3, Vector3 as DomVector3};
 
@@ -17,8 +17,7 @@ use super::{super::*, Vector3, VectorArg, charge_host_nanos, float32 as f32m, na
     An implementation of the [CFrame](https://create.roblox.com/docs/reference/engine/datatypes/CFrame)
     Roblox datatype, backed by [`glam::Mat4`].
 
-    This implements most documented properties, methods & constructors of the `CFrame` class as of October 2025,
-    notably missing `CFrame.fromRotationBetweenVectors` and `CFrame:AngleBetween()`.
+    This implements most documented properties, methods & constructors of the `CFrame` class as of October 2025.
 */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CFrame(pub Mat4);
@@ -91,6 +90,8 @@ pub mod price {
     /// (a Studio playtest client read Angles at 27-29 ns, below what the call counts here; a client of the match place 49.6)
     pub const ANGLES: i32 = 18;
     pub const FROM_AXIS_ANGLE: i32 = 48;
+    /// (not measured)
+    pub const ROTATION_BETWEEN: i32 = 0;
     pub const LOOK_AT: i32 = 55;
     /// `:FuzzyEq` comparing both parts, and answering from the position alone (a client stops at a position that differs). The
     /// parity bench's rows (a rendered client of a game's match place, six sessions of the whole corpus on a busy machine, each
@@ -99,6 +100,8 @@ pub mod price {
     /// 15.9 here; held out, two CFrames apart in both with an eps given 17.7 (ree 16.4).
     pub const FUZZY_EQ: i32 = 11;
     pub const FUZZY_EQ_MOVED: i32 = 0;
+    /// (not measured)
+    pub const ANGLE_BETWEEN: i32 = 0;
 }
 
 /// `CFrame:FuzzyEq(other, eps = 1e-5)` as a client answers it (measured in a playing client, Studio 0.744: 16,784 pairs at the
@@ -252,6 +255,69 @@ unsafe extern "C-unwind" fn fuzzy_eq_c(state: *mut mlua::ffi::lua_State) -> std:
             ffi::lua_insert(state, -2);
             ffi::lua_concat(state, 2);
         }
+        ffi::lua_error(state)
+    }
+}
+
+/// The script-facing `AngleBetween` (types::float32 `angle_between`): a C function, as [`FuzzyEqMethod`] is, so that its
+/// errors are the client's plain strings (measured in a playing client, 0.747: tools/parity/probes/cframe_angle_between.luau).
+/// Any count but two raises `Invalid number of arguments. CFrame:AngleBetween expected 2, got <n>.` without a position; a
+/// non-CFrame raises from the calling line, argument #1 naming the method (only a `.` call can pass one) and argument #2
+/// without the name, as a `:` call's does (a client names it in a `.` call too, which a method found through `__index`
+/// cannot tell apart). Its upvalue checks the two values and answers `(0, angle)` or `(n, nil)` for a bad argument `n`.
+struct AngleBetweenMethod;
+
+impl IntoLua for AngleBetweenMethod {
+    fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
+        let checked = lua.create_function(angle_between_checked)?;
+        let method = unsafe {
+            lua.exec_raw::<LuaFunction>(checked, |state| {
+                mlua::ffi::lua_pushcclosurek(state, angle_between_c, c"AngleBetween".as_ptr(), 1, None);
+            })?
+        };
+        Ok(LuaValue::Function(method))
+    }
+}
+
+fn angle_between_checked(lua: &Lua, (this, other): (LuaValue, LuaValue)) -> LuaResult<(i64, LuaValue)> {
+    let cframe = |value: &LuaValue| match value {
+        LuaValue::UserData(ud) => ud.borrow::<CFrame>().ok().map(|cf| *cf),
+        _ => None,
+    };
+    let Some(this) = cframe(&this) else { return Ok((1, LuaValue::Nil)) };
+    let Some(other) = cframe(&other) else { return Ok((2, LuaValue::Nil)) };
+    charge_host_nanos(lua, price::ANGLE_BETWEEN);
+    Ok((0, LuaValue::Number(f32m::angle_between(&this.rot(), &other.rot()))))
+}
+
+unsafe extern "C-unwind" fn angle_between_c(state: *mut mlua::ffi::lua_State) -> std::ffi::c_int {
+    use mlua::ffi;
+    unsafe {
+        let count = ffi::lua_gettop(state);
+        if count != 2 {
+            let message = format!("Invalid number of arguments. CFrame:AngleBetween expected 2, got {count}.");
+            ffi::lua_pushlstring(state, message.as_ptr().cast(), message.len());
+            drop(message);
+            ffi::lua_error(state);
+        }
+        ffi::lua_pushvalue(state, ffi::lua_upvalueindex(1));
+        ffi::lua_pushvalue(state, 1);
+        ffi::lua_pushvalue(state, 2);
+        ffi::lua_call(state, 2, 2);
+        let status = ffi::lua_tointeger(state, -2);
+        if status == 0 {
+            return 1;
+        }
+        let message = if status == 1 {
+            format!("invalid argument #1 to 'AngleBetween' (CFrame expected, got {})", fuzzy_eq_type_name(state, 1))
+        } else {
+            format!("invalid argument #2 (CFrame expected, got {})", fuzzy_eq_type_name(state, 2))
+        };
+        ffi::lua_pushlstring(state, message.as_ptr().cast(), message.len());
+        drop(message);
+        ffi::luaL_where(state, 1);
+        ffi::lua_insert(state, -2);
+        ffi::lua_concat(state, 2);
         ffi::lua_error(state)
     }
 }
@@ -410,6 +476,12 @@ impl LuaExportsTable for CFrame {
             Ok(CFrame::from_parts([0.0; 3], f32m::from_euler("YXZ", rx, ry, rz)))
         };
 
+        // (types::float32 `rotation_between`: the vectors as given, measured to the bit in a playing client)
+        let cframe_from_rotation_between_vectors = |lua: &Lua, (a, b): (VectorArg, VectorArg)| {
+            charge_host_nanos(lua, price::ROTATION_BETWEEN);
+            Ok(CFrame::from_parts([0.0; 3], f32m::rotation_between(array(a.0), array(b.0))))
+        };
+
         let cframe_look_at = |lua: &Lua, (from, to, up): (VectorArg, VectorArg, Option<VectorArg>)| {
             charge_host_nanos(lua, price::LOOK_AT);
             Ok(look_at(from.0, to.0, up.map_or(Vec3::Y, |up| up.0)))
@@ -488,11 +560,11 @@ impl LuaExportsTable for CFrame {
                 }
             }
 
+            // The quaternion made unit first, then the matrix (types::float32 `rot_from_quat`, as Lerp makes one; a playing
+            // client, 0.747, 134 quaternions to the bit: tools/parity/probes/cframe_new_quat.luau). A zero quaternion gives
+            // not-a-number.
             7 => match ArgsPosXYZQuat::from_lua_multi(args, lua) {
-                Ok((x, y, z, qx, qy, qz, qw)) => Ok(CFrame(Mat4::from_rotation_translation(
-                    Quat::from_array([qx, qy, qz, qw]),
-                    Vec3::new(x, y, z),
-                ))),
+                Ok((x, y, z, qx, qy, qz, qw)) => Ok(CFrame::from_parts([x, y, z], f32m::rot_from_quat([qx, qy, qz, qw]))),
                 Err(err) => Err(err),
             },
 
@@ -524,6 +596,7 @@ impl LuaExportsTable for CFrame {
             .with_function("fromEulerAnglesYXZ", cframe_from_euler_angles_yxz)?
             .with_function("fromMatrix", cframe_from_matrix)?
             .with_function("fromOrientation", cframe_from_orientation)?
+            .with_function("fromRotationBetweenVectors", cframe_from_rotation_between_vectors)?
             .with_function("lookAlong", cframe_look_along)?
             .with_function("lookAt", cframe_look_at)?
             .with_function("new", cframe_new)?
@@ -596,6 +669,7 @@ impl LuaUserData for CFrame {
         }
         // (a C function in the methods table: see FuzzyEqMethod)
         fields.add_field("FuzzyEq", FuzzyEqMethod);
+        fields.add_field("AngleBetween", AngleBetweenMethod);
     }
 
     #[allow(clippy::too_many_lines)]

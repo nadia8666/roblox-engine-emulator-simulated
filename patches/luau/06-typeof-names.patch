@@ -6,10 +6,10 @@
 # Why upstream lacks it: the builtin reads only a value's own type name (and a userdata metatable's __type).
 
 diff --git a/luau/VM/include/lua.h b/luau/VM/include/lua.h
-index 7ecf17e..80a85ef 100644
+index fd05437..c112348 100644
 --- a/luau/VM/include/lua.h
 +++ b/luau/VM/include/lua.h
-@@ -395,6 +395,11 @@ LUA_API void lua_workmute(lua_State* L, int on);
+@@ -403,6 +403,11 @@ LUA_API void lua_workmute(lua_State* L, int on);
  // that must collect at the same points in every run gives it a clock of the work done instead. NULL restores the wall clock.
  LUA_API void lua_setgcclock(lua_State* L, double (*clock)(void* ud), void* ud);
  
@@ -22,10 +22,10 @@ index 7ecf17e..80a85ef 100644
  ** all allocated bytes are attributed to the memory category of the running thread (0..LUA_MEMORY_CATEGORIES-1)
  */
 diff --git a/luau/VM/src/lapi.cpp b/luau/VM/src/lapi.cpp
-index d591190..a99f723 100644
+index 28a7a44..b521aad 100644
 --- a/luau/VM/src/lapi.cpp
 +++ b/luau/VM/src/lapi.cpp
-@@ -1472,6 +1472,14 @@ void lua_setgcclock(lua_State* L, double (*clock)(void* ud), void* ud)
+@@ -1448,6 +1448,14 @@ void lua_setgcclock(lua_State* L, double (*clock)(void* ud), void* ud)
      L->global->gcclockud = ud;
  }
  
@@ -41,7 +41,7 @@ index d591190..a99f723 100644
  {
      int res = 0;
 diff --git a/luau/VM/src/lbuiltins.cpp b/luau/VM/src/lbuiltins.cpp
-index 758d8e9..d64b3c5 100644
+index 9f37260..2f70681 100644
 --- a/luau/VM/src/lbuiltins.cpp
 +++ b/luau/VM/src/lbuiltins.cpp
 @@ -888,6 +888,23 @@ static int luauF_typeof(lua_State* L, StkId res, TValue* arg0, int nresults, Stk
@@ -69,10 +69,10 @@ index 758d8e9..d64b3c5 100644
  
          setsvalue(L, res, ttname);
 diff --git a/luau/VM/src/lgc.cpp b/luau/VM/src/lgc.cpp
-index bc04f29..303b54a 100644
+index cf94090..dcf97b6 100644
 --- a/luau/VM/src/lgc.cpp
 +++ b/luau/VM/src/lgc.cpp
-@@ -973,6 +973,11 @@ static void markroot(lua_State* L)
+@@ -979,6 +979,11 @@ static void markroot(lua_State* L)
  
      marktaggetmt(g);
  
@@ -85,10 +85,10 @@ index bc04f29..303b54a 100644
  }
  
 diff --git a/luau/VM/src/lstate.cpp b/luau/VM/src/lstate.cpp
-index 21e3f1e..6ef02d9 100644
+index 7a3b590..724a947 100644
 --- a/luau/VM/src/lstate.cpp
 +++ b/luau/VM/src/lstate.cpp
-@@ -230,6 +230,10 @@ lua_State* lua_newstate(lua_Alloc allocator, void* ud)
+@@ -229,6 +229,10 @@ lua_State* lua_newstate(lua_Alloc allocator, void* ud)
      g->work = lua_WorkCounters();
      g->gcclock = NULL;
      g->gcclockud = NULL;

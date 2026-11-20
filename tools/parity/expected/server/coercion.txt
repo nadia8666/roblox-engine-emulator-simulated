@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 coerce IntValue.Value 3 -3 3 -3 1 2 -1 2147483648 2147483649 -2147483649 9007199254740992 0 0 0 0 5 3 5 16 1000 0 0 0 0 0 1 0 0
 coerce NumberValue.Value 2.7000000000000002 -2.7000000000000002 2.5 -2.5 0.5 1.5 -0.5 2147483648 2147483648.5 -2147483649 9007199254740992 1e+20 nan inf -inf 5 2.7000000000000002 5 16 1000 0 0 0 0 0 1 0 0
 coerce Frame.ZIndex 2 -2 2 -2 0 1 0 -2147483648 -2147483648 -2147483648 -2147483648 -2147483648 -2147483648 -2147483648 -2147483648 5 2 5 16 1000 0 0 0 0 0 1 0 0

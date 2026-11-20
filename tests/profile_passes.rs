@@ -44,29 +44,55 @@ fn profile(root: &Path, kinds: &str, out: &str) -> Json {
     serde_json::from_str(&std::fs::read_to_string(root.join(out).join("profile.json")).unwrap()).unwrap()
 }
 
-/// The mean of a timeline's or the cpu frames' host_ms column
-fn mean_host(table: &Json) -> f64 {
-    let index = table["columns"].as_array().unwrap().iter().position(|column| column == "host_ms").unwrap();
-    let values: Vec<f64> = table["rows"].as_array().unwrap().iter().map(|row| row[index].as_f64().unwrap_or_else(|| panic!("a frame without host time: {row}"))).collect();
-    values.iter().sum::<f64>() / values.len() as f64
+/// A table's (a timeline's, the cpu frames') rows, each cut to the named columns
+fn columns(table: &Json, names: &[&str]) -> Vec<Vec<Json>> {
+    let index = |name: &str| table["columns"].as_array().unwrap().iter().position(|column| column == name).unwrap_or_else(|| panic!("no column {name}: {}", table["columns"]));
+    let indices: Vec<usize> = names.iter().map(|name| index(name)).collect();
+    table["rows"].as_array().unwrap().iter().map(|row| indices.iter().map(|&at| row[at].clone()).collect()).collect()
+}
+
+/// A profile's kinds
+fn kinds(profile: &Json) -> Vec<&str> {
+    profile["kinds"].as_array().unwrap().iter().map(|kind| kind.as_str().unwrap()).collect()
 }
 
 /// `--profile all` steps the VM (about five times slower), so its own host time a frame is not the run's: the CPU's figures and
-/// the timeline's host time come from a pass of their own, which reads as `--profile cpu` alone does
+/// the timeline's host time come from a pass of their own, a `--profile cpu` run of the same harness, as `--profile cpu` alone
+/// takes it. The test checks where the figures come from, not how fast they read: the pass and a run of `--profile cpu` alone
+/// are two processes at two moments, and the pass runs beside this file's other tests' runs, so on a busy machine their host
+/// time a frame is apart by more than any margin stepping's five times leaves (a 4-core GitHub runner read the pass 2.7 times
+/// cpu alone; bursty load on this file's tests read up to 4.2 times)
 #[test]
 fn cpu_figures_come_from_a_pass_of_their_own_when_a_kind_slows_the_run() {
     let root = scratch("cpu");
     std::fs::write(root.join("Busy.luau"), BUSY).unwrap();
     let all = profile(&root, "all", "all");
     let alone = profile(&root, "cpu", "alone");
-    assert!(root.join("all").join("cpu-pass").join("profile.json").is_file(), "the pass's profile");
-    let kept: Vec<String> = std::fs::read_dir(root.join("all").join("cpu-pass")).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let folder = root.join("all").join("cpu-pass");
+    assert!(folder.join("profile.json").is_file(), "the pass's profile");
+    let kept: Vec<String> = std::fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
     assert_eq!(kept, vec!["profile.json".to_string()], "the pass keeps only what it is for");
+    let pass: Json = serde_json::from_str(&std::fs::read_to_string(folder.join("profile.json")).unwrap()).unwrap();
     assert!(all["cpu"]["pass"].as_str().is_some_and(|pass| pass.contains("a run of its own")), "{}", all["cpu"]);
+    assert!(all["cpu"]["pass_differs"].is_null(), "the pass went the profiled run's way: {}", all["cpu"]);
     assert!(alone["cpu"]["pass"].is_null(), "cpu alone is its own pass: {}", alone["cpu"]);
-    // the timeline's host time is the pass's, near what cpu alone reads (stepping alone makes it several times more)
-    let (stepped, own) = (mean_host(&all["timeline"]), mean_host(&alone["cpu"]["frames"]));
-    assert!(stepped < 2.5 * own && own < 2.5 * stepped, "host a frame: all {stepped:.3} ms, cpu alone {own:.3} ms");
+    // all's kinds step the VM; the pass is cpu alone over the same run (its harness, its frames), as the run of cpu alone is
+    assert!(kinds(&all).contains(&"work") && kinds(&all).contains(&"timeline"), "{:?}", kinds(&all));
+    assert_eq!(kinds(&pass), ["cpu"], "the pass's kinds");
+    assert_eq!(kinds(&alone), ["cpu"], "cpu alone's kinds");
+    for key in ["harness_hash", "frames", "status"] {
+        assert_eq!(pass["run"][key], all["run"][key], "the pass's run: {key}");
+    }
+    assert_eq!(columns(&pass["cpu"]["frames"], &["frame", "phase"]), columns(&alone["cpu"]["frames"], &["frame", "phase"]), "the pass's frames are the ones cpu alone takes");
+    // the CPU's figures are the pass's, as its profile has them
+    let mut cpu = all["cpu"].clone();
+    cpu.as_object_mut().unwrap().remove("pass");
+    assert_eq!(cpu, pass["cpu"], "the CPU's figures are the pass's");
+    // the timeline's host time and cycles are the pass's, frame by frame and to the digit: the stepped run's own (several times
+    // slower) are in no frame, and no frame goes without
+    let (timeline, theirs) = (columns(&all["timeline"], &["frame", "host_ms", "cycles"]), columns(&pass["cpu"]["frames"], &["frame", "host_ms", "cycles"]));
+    assert!(timeline.len() >= 25 && timeline.iter().all(|row| row[1].as_f64().is_some_and(|ms| ms > 0.0)), "a host time each frame: {timeline:?}");
+    assert_eq!(timeline, theirs, "the timeline's host time a frame is the pass's");
     // the run's figures: the thread's CPU by phase and frame, memory from the run's start
     for cpu in [&all["cpu"], &alone["cpu"]] {
         assert!(cpu["thread_ms"].as_f64().is_some_and(|ms| ms > 0.0) || !cfg!(windows), "{cpu}");

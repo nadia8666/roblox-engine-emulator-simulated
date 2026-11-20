@@ -535,7 +535,7 @@ local function MakeStubTree(Name)
 	})
 end
 
--- Roblox's utf8 additions: graphemes and the normalization functions (identity here)
+-- Roblox's utf8 additions: graphemes, and the normalization functions (lua/normalize.rs: a client's rules, not Unicode's)
 local Utf8Table = table.clone(utf8)
 local function Extends(Code)
 	return (Code >= 0x0300 and Code <= 0x036F)
@@ -583,12 +583,12 @@ Utf8Table.graphemes = function(Text, First, Last)
 		return nil
 	end
 end
-Utf8Table.nfcnormalize = function(Text)
-	return Text
-end
-Utf8Table.nfdnormalize = function(Text)
-	return Text
-end
+-- (Rust, lua/normalize.rs: nfc composes each code point with the one before it in the output only, nfd writes full
+-- canonical decompositions in place, unordered, a U+0000 after a singleton's; measured in a 0.747 client and server,
+-- tools/parity/probes/utf8_normalize.luau. As many lines as the identity stubs had: the lines below keep their
+-- numbers, which tracebacks through the prelude record)
+Utf8Table.nfcnormalize = Wrap(R.NfcNormalize)
+Utf8Table.nfdnormalize = Wrap(R.NfdNormalize)
 
 local DebugTable = table.clone(debug)
 DebugTable.profilebegin = function() end

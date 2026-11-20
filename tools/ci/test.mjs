@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { command } from "../release/common.mjs";
 import { cacheKey, checked, download, parseEnvironment, stop } from "./compile-cache.mjs";
-import { OWN_JOBS, jobOf, parseTestList, partition, run } from "./test-runner.mjs";
+import { OWN_JOBS, RUN_MS, jobOf, parseTestList, partition, readWeights, run, shares } from "./test-runner.mjs";
 
 const WORKFLOW = fs.readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
 
@@ -40,6 +40,35 @@ test("the slices of the live list hold every test exactly once, for new and simi
 		const slices = Array.from({ length: count }, (_, index) => partition(names, index, count));
 		assert.deepEqual(slices.flat().sort(), names);
 		assert.equal(new Set(slices.flat()).size, names.length);
+	}
+});
+
+test("the slow tests are dealt out longest first, each to the shard with the least time so far", () => {
+	const names = parseTestList(["s1", "s2", "s3", "s4", "f1", "f2"].map(name => `${name}: test`).join("\n"));
+	const weights = new Map([["s1", 100000], ["s2", 60000], ["s3", 50000], ["s4", 40000]]);
+	const [first, second] = shares(names, weights, 2);
+	// 100 alone; 60 + 50 beside it; 40 to the first (100 < 110); the two fast ones to the second (110 + 2 x RUN_MS < 140)
+	assert.deepEqual(first.names, ["s1", "s4"]);
+	assert.deepEqual(second.names, ["f1", "f2", "s2", "s3"]);
+	assert.equal(second.ms, 110000 + 2 * RUN_MS);
+	// a time for a test that is gone changes nothing, and every listed test is in exactly one slice
+	const withGone = new Map([...weights, ["gone", 500000]]);
+	assert.deepEqual(shares(names, withGone, 2), shares(names, weights, 2));
+	for (const count of [1, 3, 5, 9]) assert.deepEqual(shares(names, weights, count).flatMap(share => share.names).sort(), names);
+});
+
+test("the measured times are read per binary as milliseconds, and a time that is not a number of seconds fails", () => {
+	const weights = readWeights();
+	assert.deepEqual(Object.keys(weights).sort(), Object.keys(OWN_JOBS).sort());
+	assert.ok(weights.planted.size >= 10 && weights.standalone.size >= 2, "the slow tests have times");
+	for (const table of Object.values(weights)) for (const ms of table.values()) assert.ok(Number.isInteger(ms) && ms >= 0);
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ree-ci-weights-"));
+	try {
+		const bad = path.join(dir, "weights.json");
+		fs.writeFileSync(bad, JSON.stringify({ planted: { "a::b": "slow" } }));
+		assert.throws(() => readWeights(bad), /planted a::b/);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });
 
@@ -103,17 +132,22 @@ test("core runs the planted binary when cargo gives no package name, and a shard
 	checkRunsInCoreOnly({});
 });
 
-test("the standalone job runs its test binary as cargo asked and rejects any other", () => {
-	const ran = fakeSpawn({ status: 23 });
-	const options = { cwd: path.resolve("."), env: engineEnv, spawn: ran.spawn };
-	assert.equal(run(["standalone", standalone, "--list", "--format", "terse"], options), 23);
-	assert.deepEqual(ran.calls, [["--list", "--format", "terse"]]);
-	// planted's binary, a standalone target of another package or of no known package, and standalone's binary in a shard
-	assert.throws(() => run(["standalone", planted], { ...options, env }), /different test target/);
-	assert.throws(() => run(["standalone", standalone], { ...options, env: { CARGO_PKG_NAME: "another-package" } }), /different test target/);
-	assert.throws(() => run(["standalone", standalone], { ...options, env: {} }), /different test target/);
+test("a standalone shard runs its slice by exact name on libtest's threads and rejects any other test binary", () => {
+	const calls = [];
+	const spawn = (file, args) => {
+		calls.push(args);
+		return calls.length === 1 ? { status: 0, stdout: "slow: test\nquick: test\nquicker: test\n" } : { status: 23 };
+	};
+	const options = { cwd: path.resolve("."), env: engineEnv, spawn, log() {}, weights: { planted: new Map(), standalone: new Map([["slow", 120000]]) } };
+	assert.equal(run(["standalone", "1", "2", standalone], options), 23);
+	assert.deepEqual(calls, [["--list", "--format", "terse"], ["--exact", "quick", "quicker"]]);
+	// planted's binary, a standalone target of another package or of no known package, and standalone's binary in a planted shard
+	assert.throws(() => run(["standalone", "0", "2", planted], { ...options, env }), /different test target/);
+	assert.throws(() => run(["standalone", "0", "2", standalone], { ...options, env: { CARGO_PKG_NAME: "another-package" } }), /different test target/);
+	assert.throws(() => run(["standalone", "0", "2", standalone], { ...options, env: {} }), /different test target/);
 	assert.throws(() => run(["planted", "0", "3", standalone], options), /different test target/);
-	assert.equal(ran.calls.length, 1);
+	assert.throws(() => run(["standalone", "2", "2", standalone], options), /shard index/);
+	assert.equal(calls.length, 2);
 });
 
 test("a shard lists the binary, runs its slice by exact name one test at a time and exits with the tests' code", () => {

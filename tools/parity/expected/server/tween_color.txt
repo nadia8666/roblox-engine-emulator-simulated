@@ -1,0 +1,121 @@
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
+blend 0.15 Linear In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Linear Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Linear InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Sine In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Sine Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Sine InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Back In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Back Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Back InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Quad In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Quad Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Quad InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Quart In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Quart Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Quart InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Quint In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Quint Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Quint InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Bounce In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Bounce Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Bounce InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Elastic In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Elastic Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Elastic InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Exponential In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Exponential Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Exponential InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Circular In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Circular Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Circular InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Cubic In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Cubic Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.15 Cubic InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Linear In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Linear Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Linear InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Sine In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Sine Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Sine InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Back In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Back Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Back InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Quad In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Quad Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Quad InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Quart In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Quart Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Quart InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Quint In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Quint Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Quint InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Bounce In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Bounce Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Bounce InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Elastic In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Elastic Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Elastic InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Exponential In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Exponential Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Exponential InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Circular In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Circular Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Circular InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Cubic In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Cubic Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.5 Cubic InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Linear In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Linear Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Linear InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Sine In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Sine Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Sine InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Back In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Back Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Back InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Quad In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Quad Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Quad InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Quart In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Quart Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Quart InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Quint In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Quint Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Quint InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Bounce In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Bounce Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Bounce InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Elastic In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Elastic Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Elastic InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Exponential In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Exponential Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Exponential InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Circular In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Circular Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Circular InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Cubic In lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Cubic Out lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+blend 0.85 Cubic InOut lin,sq,lin lin,lin,lin lin,lin,lin lin,lin,lin sq,lin,lin
+overshoot back-in lin,lin,lin below-0
+overshoot back-out lin,lin,lin below-0
+class Frame.BackgroundColor3 lin,sq,lin
+class Frame.BorderColor3 lin,sq,lin
+class TextLabel.TextColor3 lin,sq,lin
+class TextLabel.TextStrokeColor3 lin,sq,lin
+class ImageLabel.ImageColor3 lin,sq,lin
+class UIStroke.Color lin,sq,lin
+class PointLight.Color lin,sq,lin
+class Highlight.FillColor lin,sq,lin
+class Color3Value.Value lin,sq,lin
+class SelectionBox.Color3 lin,sq,lin
+class Texture.Color3 lin,sq,lin
+class Fire.Color lin,sq,lin
+class Atmosphere.Color lin,sq,lin
+class Part.Color floor(lin),floor(lin),floor(lin)
+untweened error TweenService:Create property named 'Color' on object 'UIGradient' is not a data type that can be tweened | error TweenService:Create property named 'BrickColor' on object 'Part' is not a data type that can be tweened | error TweenService:Create property named 'Value' on object 'Value' is not a data type that can be tweened | error TweenService:Create property named 'Color' on object 'Beam' is not a data type that can be tweened
+end 0.156862736 0.156862751 0.784313738 goal 0.156862751 0.156862751 0.784313738
+reversed-end -0.5 0.300000012 2
+lerp 0.470588237 0.156862751 0.470588267

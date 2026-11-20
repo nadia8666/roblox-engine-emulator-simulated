@@ -8,7 +8,6 @@ use mlua::{chunk::Compiler, Function, Lua, LuaSerdeExt, Result, Table, Value};
 
 const TABLE_FIND: &str = include_str!("luau/table_find.luau");
 const NATIVE_BUILTINS: &str = include_str!("luau/native_builtins.luau");
-const BUFFER_VECTOR: &str = include_str!("luau/buffer_vector.luau");
 
 fn codegen_supported() -> bool {
     unsafe { mlua::ffi::luau_codegen_supported() != 0 }
@@ -27,16 +26,35 @@ fn table_find_fast_path() -> Result<()> {
     Ok(())
 }
 
-/// buffer.readvectorf32x2/x3 and buffer.writevectorf32x2/x3 (Roblox release 747): the builtin, the library function and
-/// the float32 calls they stand for agree on every outcome, error message and byte; interpreted, and in native code
-/// when the CPU supports it.
+/// Luau 0.747 as a live 0.747 client runs it (its flag values, data/luau-flags.json): the buffer.readvectorf32x* and
+/// writevectorf32x* functions are behind debug flags the client leaves off, so they do not exist and a call raises as any
+/// missing function's does (the client's own capture: tools/parity/expected/buffer_vector_f32.txt); the integer type and
+/// library are gone, and mlua's default libraries open none; mlua reads every value type by 0.747's tags
+/// (patches/mlua-sys.patch: 0.747 moved each tag after LUA_TNUMBER down by one). Interpreted, and in native code when the
+/// CPU supports it.
 #[test]
-fn buffer_vector_functions_match_their_float32_equivalents() -> Result<()> {
+fn release_747_library_and_type_tags_follow_the_client() -> Result<()> {
     for jit in [false, true] {
         let lua = Lua::new();
         lua.enable_jit(jit && codegen_supported());
-        let cases: i64 = lua.load(BUFFER_VECTOR).set_name("buffer_vector").eval()?;
-        assert_eq!(cases, 8568);
+        let report: String = lua
+            .load(
+                r#"
+                local Names = {}
+                for _, Name in { "readvectorf32x2", "readvectorf32x3", "readvectorf32x4", "writevectorf32x2", "writevectorf32x3", "writevectorf32x4" } do
+                    table.insert(Names, Name .. "=" .. tostring(buffer[Name]))
+                end
+                local Ok, Message = pcall(function() return buffer.readvectorf32x3(buffer.create(12), 0) end)
+                local Called = Ok and "ok" or (string.find(Message, "attempt to call a nil value", 1, true) and "missing" or Message)
+                return table.concat(Names, " ") .. " | " .. Called .. " | integer=" .. tostring(integer)
+            "#,
+            )
+            .set_name("release_747")
+            .eval()?;
+        assert_eq!(report, "readvectorf32x2=nil readvectorf32x3=nil readvectorf32x4=nil writevectorf32x2=nil writevectorf32x3=nil writevectorf32x4=nil | missing | integer=nil");
+        let values: mlua::MultiValue = lua.load("return nil, true, 1.5, vector.create(1, 2, 3), 'text', {}, print, coroutine.create(print), buffer.create(2)").eval()?;
+        let kinds: Vec<&str> = values.iter().map(|value| value.type_name()).collect();
+        assert_eq!(kinds, ["nil", "boolean", "number", "vector", "string", "table", "function", "thread", "buffer"]);
     }
     Ok(())
 }

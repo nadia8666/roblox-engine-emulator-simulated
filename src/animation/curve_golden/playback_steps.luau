@@ -1,7 +1,7 @@
 -- A CurveAnimation's track stepped with Animator:StepAnimations: its time, what it fires and when it ends, forwards
 -- and backwards, looped and not, landing on markers and on the clip's ends, with TimePosition set, and stopped. Runs
 -- unchanged in Studio (the command bar or a plugin, in an edit session) and here in edit mode; playback_steps.txt is
--- what Studio 0.747 returned (2026-11-11). Poses are printed to four decimals.
+-- what Studio 0.747 returned (2026-11-11).
 local out = {}
 local function S(v) if type(v) == "number" then return string.format("%.9g", v) elseif type(v) == "table" then local t = {} for i, x in v do t[#t+1] = S(x) end local n = 0 for _ in v do n += 1 end return "{" .. table.concat(t, ", ") .. "}" .. (n ~= #v and "#" .. n or "") else return tostring(v) end end
 local function P(...) local t = table.pack(...) for i = 1, t.n do t[i] = S(t[i]) end table.insert(out, table.concat(t, " ")) end
@@ -52,7 +52,7 @@ local function watch(track, names)
 	for _, n in names or {} do track:GetMarkerReachedSignal(n):Connect(function(v) table.insert(log, "M:" .. n .. "=" .. typeof(v) .. ":" .. tostring(v)) end) end
 	return function() task.wait() local s = table.concat(log, ",") table.clear(log) return "<" .. s .. ">" end
 end
-local function state(track, j) return S(track.TimePosition) .. " " .. tostring(track.IsPlaying) .. " x=" .. S(math.round(j.Transform.X * 1e4) / 1e4 + 0) end
+local function state(track, j) return S(track.TimePosition) .. " " .. tostring(track.IsPlaying) .. " x=" .. S(j.Transform.X) end
 local function marker(parent, name, list) local m = Instance.new("MarkerCurve") m.Name = name for _, e in list do m:InsertMarkerAtTime(e[1], e[2]) end m.Parent = parent return m end
 local function clip(loop, markers, keys)
 	local c = Instance.new("CurveAnimation") c.Loop = loop
@@ -118,6 +118,8 @@ for _, kind in {"curve"} do
 			t.TimePosition = 1 animator:StepAnimations(0.1) P(tag, "speed 0 set end", state(t, j1), ev())
 			t.TimePosition = 0.25 animator:StepAnimations(0.1) P(tag, "speed 0 set marker", state(t, j1), ev())
 			t:AdjustSpeed(1) animator:StepAnimations(0.1) P(tag, "then speed 1", state(t, j1), ev())
+			animator:StepAnimations(-0.2) P(tag, "negative delta", state(t, j1), ev())
+			animator:StepAnimations(3.5) P(tag, "long step", state(t, j1), ev())
 		end)
 	end
 end

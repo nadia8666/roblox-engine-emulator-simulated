@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 math-keys abs acos asin atan atan2 ceil clamp cos cosh deg e exp floor fmod frexp huge isfinite isinf isnan ldexp lerp log log10 map max min modf nan noise phi pi pow rad random randomseed round sign sin sinh sqrt sqrt2 tan tanh tau
 math-member isnan function ok [C] -1 isnan 0 true
 math-member isinf function ok [C] -1 isinf 0 true

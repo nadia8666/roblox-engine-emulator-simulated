@@ -1,0 +1,73 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless play session of one server and one client in processes of their own (the server's half a server Script from the server's start, the client's half a job in the client; script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-19
+# repeated: 3 captures, the same lines
+server: send 13 bool-key error Invalid table key type used
+server: send 22 deep-cycle error tables cannot be cyclic
+server: send 33 nest-1000 error Max lua stack size reached
+server: case 1 empty {}
+server: case 2 array {[n1]=1,[n2]=2,[n3]=3}
+server: case 3 hole-middle {[n1]=1}
+server: case 4 hole-start {[s2]=2,[s3]=3}
+server: case 5 hole-end {[n1]=1,[n2]=2}
+server: case 6 sparse-far {[n1]=1}
+server: case 7 zero-negative {[n1]=1}
+server: case 8 fraction-key {[n1]=2}
+server: case 9 big-key {[s2147483648]=1,[s9007199254740992]=2}
+server: case 10 dictionary {[sa]=1,[sb]='x'}
+server: case 11 mixed {[n1]=1,[n2]=2}
+server: case 12 mixed-hole {[n1]=1}
+server: case 14 vector-key {[s<Vector3> (1, 2, 3)]=1}
+server: case 15 instance-key {[s<Instance> (Shared)]=1}
+server: case 16 table-key {[s<Table> (table: ADDR)]=1}
+server: case 17 collide {[n1]='number'}
+server: case 18 nul-key {[sa\x00b]=1}
+server: case 19 nested {[sa]={[sb]={[sc]=1}}}
+server: case 20 shared {[sa]={[n1]=9},[sb]={[n1]=9}}
+server: case 21 cycle {[n1]=1}
+server: case 23 metatable {[sx]=1}
+server: case 24 frozen {[sx]=1}
+server: case 25 function-value {[sg]=1}
+server: case 26 function-array {[n1]=1,[n3]=3}
+server: case 27 thread-value {[sg]=1}
+server: case 28 instance-array {[n1]=<Shared>,[n3]=<Shared>}
+server: case 29 instance-value {[sa]=<Shared>}
+server: case 30 vectors {[n1]=V(1 2 3),[n2]=V(4 5 6)}
+server: case 31 nest-20 height 20
+server: case 32 nest-100 height 100
+server: case 0 changed-after {[sv]=1}
+server: handlers share the table: false
+client: case 1 empty {}
+client: case 2 array {[n1]=1,[n2]=2,[n3]=3}
+client: case 3 hole-middle {[n1]=1}
+client: case 4 hole-start {[s2]=2,[s3]=3}
+client: case 5 hole-end {[n1]=1,[n2]=2}
+client: case 6 sparse-far {[n1]=1}
+client: case 7 zero-negative {[n1]=1}
+client: case 8 fraction-key {[n1]=2}
+client: case 9 big-key {[s2147483648]=1,[s9007199254740992]=2}
+client: case 10 dictionary {[sa]=1,[sb]='x'}
+client: case 11 mixed {[n1]=1,[n2]=2}
+client: case 12 mixed-hole {[n1]=1}
+client: case 14 vector-key {[s<Vector3> (1, 2, 3)]=1}
+client: case 15 instance-key {[s<Instance> (Shared)]=1}
+client: case 16 table-key {[s<Table> (table: ADDR)]=1}
+client: case 17 collide {[n1]='number'}
+client: case 18 nul-key {[sa\x00b]=1}
+client: case 19 nested {[sa]={[sb]={[sc]=1}}}
+client: case 20 shared {[sa]={[n1]=9},[sb]={[n1]=9}}
+client: case 21 cycle {[n1]=1}
+client: case 23 metatable {[sx]=1}
+client: case 24 frozen {[sx]=1}
+client: case 25 function-value {[sg]=1}
+client: case 26 function-array {[n1]=1,[n3]=3}
+client: case 27 thread-value {[sg]=1}
+client: case 28 instance-array {[n1]=<Shared>,[n3]=<Shared>}
+client: case 29 instance-value {[sa]=<Shared>}
+client: case 30 vectors {[n1]=V(1 2 3),[n2]=V(4 5 6)}
+client: case 31 nest-20 height 20
+client: case 32 nest-100 height 100
+client: case 0 changed-after {[sv]=1}
+client: handlers share the table: false
+client: send 13 bool-key error Invalid table key type used
+client: send 22 deep-cycle error tables cannot be cyclic
+client: send 33 nest-1000 error Max lua stack size reached

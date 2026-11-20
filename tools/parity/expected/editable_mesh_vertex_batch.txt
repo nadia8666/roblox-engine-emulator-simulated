@@ -1,0 +1,266 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-19
+vertex-attributes-Vertex error BatchGetVertexAttributes: Enum.MeshAttribute.Vertex is not supported
+vertex-attributes-Normal ok {{2:6,2:1},{2:2,2:2},{2:3,2:3,2:3},{2:4},{2:5},{}}
+vertex-attributes-Color ok {{3:6,3:1},{3:2,3:2},{3:3,3:3,3:3},{3:4},{3:5},{}}
+vertex-attributes-UV ok {{4:6,4:1},{4:2,4:2},{4:3,4:3,4:3},{4:4},{4:5},{}}
+vertex-attributes-Face ok {{5:2,5:1},{5:3,5:1},{5:3,5:2,5:1},{5:2},{5:3},{}}
+vertex-singles ok string:v1 f{5:2,5:1} n{2:6,2:1} u{4:6,4:1} c{3:6,3:1} a{1:4,1:3,1:2}; v2 f{5:3,5:1} n{2:2,2:2} u{4:2,4:2} c{3:2,3:2} a{1:5,1:3,1:1,1:3}; v3 f{5:3,5:2,5:1} n{2:3,2:3,2:3} u{4:3,4:3,4:3} c{3:3,3:3,3:3} a{1:2,1:5,1:1,1:4,1:2}; v4 f{5:2} n{2:4} u{4:4} c{3:4} a{1:3,1:1}; v5 f{5:3} n{2:5} u{4:5} c{3:5} a{1:3,1:2}; v6 f{} n{} u{} c{} a{}
+vertex-attributes-order ok {{2:1,2:2}} {2:1,2:2} {{5:2,5:1}} {5:2,5:1} 5:1 5:2
+vertex-attributes-batchadd ok {5:3,5:2,5:1} {{5:3,5:1,5:2}} {5:3,5:1,5:2} {{2:7,2:6,2:1}} {2:7,2:6,2:1}
+vertex-attributes-twice-in-face ok {{2:1,2:1},{2:2}} {{5:1,5:1}} string:v{1:1,1:1,1:2} n{2:1,2:1,2:2} u{4:1,4:1,4:2} c{3:1,3:1,3:2}
+vertex-attributes-repeat ok {{2:3,2:3,2:3},{2:3,2:3,2:3},{}}
+vertex-attributes-empty ok {}
+vertex-attributes-fixed ok boolean:true {{2:6,2:1},{2:2,2:2},{2:3,2:3,2:3},{2:4},{2:5},{}} {{5:2,5:1},{5:3,5:1},{5:3,5:2,5:1},{5:2},{5:3},{}}
+vertex-attributes-fixed-new ok boolean:false {{4:6,4:1},{4:2,4:2},{4:3,4:3,4:3},{4:4},{4:5},{}}
+vertex-attributes-unused-after-remove ok {{},{2:2}} {{},{5:1}}
+vertex-attributes-gone error Invalid id
+vertex-attributes-past error Invalid id
+vertex-attributes-normal-id error Unexpected EditableMesh id type. Expected Vertex id, received Normal id
+vertex-attributes-face-id error Unexpected EditableMesh id type. Expected Vertex id, received Face id
+vertex-attributes-no-id error Unexpected EditableMesh id type. Expected Vertex id, received value that doesn't appear to be an id
+vertex-attributes-zero error Invalid id
+vertex-attributes-string ok {{2:6,2:1}}
+vertex-attributes-word error BatchGetVertexAttributes: id at index 1 is not a number
+vertex-attributes-hole error BatchGetVertexAttributes: id at index 2 is not a number
+vertex-attributes-keyed ok {}
+vertex-attributes-fraction ok {{2:6,2:1}}
+vertex-attributes-attribute-string error Invalid value for enum 'MeshAttribute'
+vertex-attributes-attribute-number error Invalid value for enum 'MeshAttribute'
+vertex-attributes-attribute-nil error Invalid value for enum 'MeshAttribute'
+vertex-attributes-attribute-other-enum error Invalid type 'KeyCode' for enum 'MeshAttribute'
+vertex-attributes-ids-number error BatchGetVertexAttributes: ids must be an array
+vertex-attributes-ids-nil error BatchGetVertexAttributes: expects 2 arguments (attr, vertexIds)
+vertex-attributes-dot ok {{2:6,2:1}}
+vertex-face-attributes-Vertex error BatchGetVertexFaceAttributes: Enum.MeshAttribute.Vertex is not supported
+vertex-face-attributes-Normal ok {2:1,2:2,2:3,2:6,2:3,2:5}
+vertex-face-attributes-Color ok {3:1,3:2,3:3,3:6,3:3,3:5}
+vertex-face-attributes-UV ok {4:1,4:2,4:3,4:6,4:3,4:5}
+vertex-face-attributes-Face error BatchGetVertexFaceAttributes: Enum.MeshAttribute.Face is not supported
+vertex-face-singles ok 2:6 4:6 3:6 2:1
+vertex-face-single-not-in-face error vertexId not found on requested face
+vertex-face-twice-in-face ok {2:1,2:2} string:v{1:1,1:1,1:2} n{2:1,2:1,2:2} u{4:1,4:1,4:2} c{3:1,3:1,3:2}
+vertex-face-empty ok {}
+vertex-face-fixed ok {2:1,2:6}
+vertex-face-not-in-face error BatchGetVertexFaceAttributes: vertexId not found on requested face at index 2
+vertex-face-short-faces error BatchGetVertexFaceAttributes: vertexIds and faceIds arrays must be the same length
+vertex-face-short-vertices error BatchGetVertexFaceAttributes: vertexIds and faceIds arrays must be the same length
+vertex-face-gone-face error Invalid id
+vertex-face-gone-vertex error Invalid id
+vertex-face-swapped error Unexpected EditableMesh id type. Expected Vertex id, received Face id
+vertex-face-normal-as-vertex error Unexpected EditableMesh id type. Expected Vertex id, received Normal id
+vertex-face-no-id-vertex error Unexpected EditableMesh id type. Expected Vertex id, received value that doesn't appear to be an id
+vertex-face-no-id-face error Unexpected EditableMesh id type. Expected Face id, received value that doesn't appear to be an id
+vertex-face-past-face error Invalid id
+vertex-face-word error BatchGetVertexFaceAttributes: vertexId at index 1 is not a number
+vertex-face-attribute-nil error Invalid value for enum 'MeshAttribute'
+vertex-face-faces-nil error BatchGetVertexFaceAttributes: expects 3 arguments (attr, vertexIds, faceIds)
+vertex-face-vertices-number error BatchGetVertexFaceAttributes: vertexIds must be an array
+set-normal ok nil:nil string:v{1:1,1:2,1:3} n{2:7,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:v{1:2,1:3,1:5} n{2:2,2:7,2:5} u{4:2,4:3,4:5} c{3:2,3:3,3:5} {2:7,2:7} string:6v 7n 6u 6c 3f 0b
+set-uv-color error Unexpected EditableMesh id type. Expected UV id, received Color id
+set-then-triangle ok string:v{1:4,1:5,1:6} n{2:7,2:5,2:8} u{4:4,4:5,4:7} c{3:4,3:5,3:7}
+set-old-unused ok string:6v 7n 6u 6c 3f 0b {1:6,2:5} string:5v 6n 6u 6c 3f 0b
+set-fixed ok string:v{1:1,1:2,1:3} n{2:1,2:1,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3}
+set-twice-in-face ok string:v{1:1,1:1,1:2} n{2:3,2:1,2:2} u{4:1,4:1,4:2} c{3:1,3:1,3:2}
+set-empty ok 
+set-vertex-id ok string:BatchSetVertexFaceAttributes: unsupported attribute ID type 1 string:v{1:1,1:2,1:3} n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-face-id ok string:BatchSetVertexFaceAttributes: unsupported attribute ID type 5 string:v{1:1,1:2,1:3} n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-bone-id ok string:BatchSetVertexFaceAttributes: unsupported attribute ID type 6 string:v{1:1,1:2,1:3} n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 1b
+set-no-id ok string:BatchSetVertexFaceAttributes: unsupported attribute ID type 0 string:v{1:1,1:2,1:3} n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-gone-normal ok string:Invalid id string:v{1:1,1:2,1:3} n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:5v 6n 6u 6c 3f 0b
+set-past-normal ok string:Invalid id string:v{1:1,1:2,1:3} n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-not-in-face ok string:BatchSetVertexFaceAttributes: vertexId not found on requested face at index 1 string:v{1:1,1:2,1:3} n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-short ok string:BatchSetVertexFaceAttributes: attributeIds must be an array the same size as vertexIds string:v{1:1,1:2,1:3} n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-short-faces ok string:BatchSetVertexFaceAttributes: faceIds must be an array the same size as vertexIds string:v{1:1,1:2,1:3} n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-gone-face ok string:Invalid id string:v{1:1,1:2,1:3} n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 2f 0b
+set-partial ok string:BatchSetVertexFaceAttributes: vertexId not found on requested face at index 2 string:v{1:1,1:2,1:3} n{2:1,2:6,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-word ok string:BatchSetVertexFaceAttributes: attributeId at index 1 is not a number string:v{1:1,1:2,1:3} n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-ids-nil error BatchSetVertexFaceAttributes: expects 3 arguments (vertexIds, faceIds, attributeIds)
+set-single ok string:v{1:1,1:2,1:3} n{2:1,2:7,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3}
+remove-faces ok nil:nil string:6v 6n 6u 6c 1f 0b {5:2} {} {{},{}}
+remove-twice ok string:Invalid faceId string:6v 6n 6u 6c 2f 0b
+remove-same-twice ok string:ok string:6v 6n 6u 6c 2f 0b
+remove-then-add ok 13:3 1:7 string:7v 7n 7u 7c 3f 0b
+remove-unused-after ok string:6v 6n 6u 6c 2f 0b {1:5,1:6,2:5,3:5,4:5} string:4v 5n 5u 5c 2f 0b
+remove-vertex-free ok string:Unexpected EditableMesh id type. Expected Face id, received Vertex id string:6v 6n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-vertex-used ok string:Unexpected EditableMesh id type. Expected Face id, received Vertex id string:6v 6n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-vertex-shared ok string:Unexpected EditableMesh id type. Expected Face id, received Vertex id string:6v 6n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-normal-free ok string:Unexpected EditableMesh id type. Expected Face id, received Normal id string:6v 7n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-normal-used ok string:Unexpected EditableMesh id type. Expected Face id, received Normal id string:6v 6n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-uv-used ok string:Unexpected EditableMesh id type. Expected Face id, received UV id string:6v 6n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-color-used ok string:Unexpected EditableMesh id type. Expected Face id, received Color id string:6v 6n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-uv-free ok string:Unexpected EditableMesh id type. Expected Face id, received UV id string:6v 6n 7u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-color-free ok string:Unexpected EditableMesh id type. Expected Face id, received Color id string:6v 6n 6u 7c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-bone ok string:Unexpected EditableMesh id type. Expected Face id, received Bone id string:6v 6n 6u 6c 3f 1b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-mixed ok string:Unexpected EditableMesh id type. Expected Face id, received Vertex id string:6v 7n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-face-then-its-vertex ok string:Unexpected EditableMesh id type. Expected Face id, received Vertex id string:6v 6n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-no-id ok string:Unexpected EditableMesh id type. Expected Face id, received value that doesn't appear to be an id string:6v 6n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-zero ok string:Unexpected EditableMesh id type. Expected Face id, received value that doesn't appear to be an id string:6v 6n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-past ok string:Invalid faceId string:6v 6n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-partial ok string:Unexpected EditableMesh id type. Expected Face id, received value that doesn't appear to be an id string:6v 6n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-partial-gone ok string:Invalid faceId string:6v 6n 6u 6c 2f 0b {5:1,5:2} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-word ok string:Unexpected EditableMesh id type. Expected Face id, received value that doesn't appear to be an id string:6v 6n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-hole ok string:Unexpected EditableMesh id type. Expected Face id, received value that doesn't appear to be an id string:6v 6n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-keyed ok string:ok string:6v 6n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-empty ok string:ok string:6v 6n 6u 6c 3f 0b {5:1,5:2,5:3} string:v{1:1,1:3,1:4} n{2:6,2:3,2:4} u{4:6,4:3,4:4} c{3:6,3:3,3:4}
+remove-fixed-face ok string:ok string:6v 6n 6u 6c 2f 0b
+remove-fixed-copy ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+remove-not-table error BatchRemove: faceIds must be an array
+remove-nil error BatchRemove: expects 1 argument (faceIds)
+remove-face-single-twice ok string:Invalid faceId string:6v 6n 6u 6c 2f 0b
+remove-face-single-vertex-id error Unexpected EditableMesh id type. Expected Face id, received Vertex id
+vertex-attributes-moved-face ok 5:1 5:2 5:3 {{5:1,5:2},{5:3},{5:1,5:3,5:2},{5:1,5:3}} {{2:2,2:5}}
+vertex-attributes-index-zero error Invalid id
+vertex-attributes-kind-seven error Unexpected EditableMesh id type. Expected Vertex id, received Unknown id
+vertex-attributes-generation error Invalid id
+vertex-attributes-negative error Unexpected EditableMesh id type. Expected Vertex id, received Unknown id
+vertex-attributes-huge error Unexpected EditableMesh id type. Expected Vertex id, received value that doesn't appear to be an id
+vertex-attributes-nan error Unexpected EditableMesh id type. Expected Vertex id, received value that doesn't appear to be an id
+vertex-attributes-boolean error BatchGetVertexAttributes: id at index 1 is not a number
+vertex-attributes-vector error BatchGetVertexAttributes: id at index 1 is not a number
+vertex-attributes-ids-explicit-nil error BatchGetVertexAttributes: ids must be an array
+vertex-attributes-extra error BatchGetVertexAttributes: expects 2 arguments (attr, vertexIds)
+vertex-attributes-none error BatchGetVertexAttributes: expects 2 arguments (attr, vertexIds)
+vertex-attributes-bad-attribute-no-ids error BatchGetVertexAttributes: expects 2 arguments (attr, vertexIds)
+vertex-attributes-bad-attribute-bad-ids error Invalid value for enum 'MeshAttribute'
+vertex-attributes-vertex-bad-ids error BatchGetVertexAttributes: Enum.MeshAttribute.Vertex is not supported
+vertex-attributes-vertex-not-array error BatchGetVertexAttributes: Enum.MeshAttribute.Vertex is not supported
+vertex-attributes-bad-then-word error Unexpected EditableMesh id type. Expected Vertex id, received value that doesn't appear to be an id
+batchadd-other-enum error Invalid type 'KeyCode' for enum 'MeshAttribute'
+vertex-face-twice-corners ok {2:3,2:4,2:5} {2:3} 2:3 {{2:4,2:3}}
+vertex-face-word-short error BatchGetVertexFaceAttributes: vertexIds and faceIds arrays must be the same length
+vertex-face-bad-short error BatchGetVertexFaceAttributes: vertexIds and faceIds arrays must be the same length
+vertex-face-face-word error BatchGetVertexFaceAttributes: faceId at index 1 is not a number
+vertex-face-face-word-second error BatchGetVertexFaceAttributes: faceId at index 2 is not a number
+vertex-face-vertex-word-second error BatchGetVertexFaceAttributes: vertexId at index 2 is not a number
+vertex-face-not-in-face-then-bad error BatchGetVertexFaceAttributes: vertexId not found on requested face at index 1
+vertex-face-not-in-face-then-word error BatchGetVertexFaceAttributes: vertexId not found on requested face at index 1
+vertex-face-bad-face-then-bad-vertex error Unexpected EditableMesh id type. Expected Face id, received value that doesn't appear to be an id
+vertex-face-zero-vertex error Invalid id
+vertex-face-zero-face error Invalid id
+vertex-face-string-ids ok {2:1}
+vertex-face-keyed ok {}
+vertex-face-vertex-bad-ids error BatchGetVertexFaceAttributes: Enum.MeshAttribute.Vertex is not supported
+vertex-face-faces-explicit-nil error BatchGetVertexFaceAttributes: faceIds must be an array
+vertex-face-faces-number error BatchGetVertexFaceAttributes: faceIds must be an array
+vertex-face-single-uv-not-in-face error vertexId not found on requested face
+vertex-face-single-gone-face error Invalid id
+vertex-face-single-swapped error Unexpected EditableMesh id type. Expected Face id, received Vertex id
+vertex-face-single-no-id-face error Unexpected EditableMesh id type. Expected Face id, received value that doesn't appear to be an id
+vertex-face-single-zero error vertexId not found on requested face
+vertex-face-single-word error Unable to cast string to int64
+vertex-face-single-nil error Argument 2 missing or nil
+vertex-face-single-string ok 2:1
+vertex-face-single-fraction ok 2:2
+vertex-face-single-set-uv ok string:v{1:1,1:2,1:3} n{2:1,2:2,2:3} u{4:6,4:2,4:3} c{3:1,3:2,3:3}
+vertex-face-single-set-color ok string:v{1:2,1:3,1:5} n{2:2,2:3,2:5} u{4:2,4:3,4:5} c{3:2,3:6,3:5}
+vertex-face-single-set-wrong-kind error Unexpected EditableMesh id type. Expected Normal id, received UV id
+vertex-face-single-set-not-in-face error vertexId not found on requested face
+vertex-face-single-set-gone-normal error Invalid id
+vertex-face-single-set-vertex-id error Unexpected EditableMesh id type. Expected Normal id, received Vertex id
+vertex-face-single-set-no-id error Unexpected EditableMesh id type. Expected UV id, received value that doesn't appear to be an id
+vertex-face-single-set-zero error Invalid id
+vertex-face-single-set-returns ok 
+vertex-face-single-set-twice-in-face ok string:v{1:6,1:6,1:5} n{2:6,2:7,2:5} u{4:7,4:7,4:5} c{3:7,3:7,3:5}
+set-mixed-kinds ok string:Unexpected EditableMesh id type. Expected UV id, received Color id string:v{1:1,1:2,1:3} n{2:1,2:2,2:3} u{4:1,4:6,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-word-second ok string:BatchSetVertexFaceAttributes: attributeId at index 2 is not a number string:v{1:1,1:2,1:3} n{2:1,2:6,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-gone-second ok string:Invalid id string:v{1:1,1:2,1:3} n{2:1,2:6,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:5v 6n 6u 6c 3f 0b
+set-vertex-id-second ok string:Unexpected EditableMesh id type. Expected Normal id, received Vertex id string:v{1:1,1:2,1:3} n{2:1,2:6,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-vertex-word-second ok string:BatchSetVertexFaceAttributes: vertexId at index 2 is not a number string:v{1:1,1:2,1:3} n{2:1,2:6,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-face-word-second ok string:BatchSetVertexFaceAttributes: faceId at index 2 is not a number string:v{1:1,1:2,1:3} n{2:1,2:6,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-bad-vertex-second ok string:Unexpected EditableMesh id type. Expected Vertex id, received value that doesn't appear to be an id string:v{1:1,1:2,1:3} n{2:1,2:6,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-gone-face-second ok string:Invalid id string:v{1:1,1:2,1:3} n{2:1,2:6,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 2f 0b
+set-zero-second ok string:Invalid id string:v{1:1,1:2,1:3} n{2:1,2:6,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-repeat ok string:ok string:v{1:1,1:2,1:3} n{2:1,2:7,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 7n 6u 6c 3f 0b
+set-generation ok string:Invalid id string:v{1:1,1:2,1:3} n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-zero-vertex ok string:Invalid id string:v{1:1,1:2,1:3} n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-string-ids ok string:ok string:v{1:1,1:2,1:3} n{2:1,2:6,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+set-attributes-number error BatchSetVertexFaceAttributes: attributeIds must be an array the same size as vertexIds
+set-vertices-number error BatchSetVertexFaceAttributes: vertexIds must be an array
+set-faces-number error BatchSetVertexFaceAttributes: faceIds must be an array the same size as vertexIds
+set-attributes-explicit-nil error BatchSetVertexFaceAttributes: attributeIds must be an array the same size as vertexIds
+remove-returns ok 
+remove-string-id ok string:6v 6n 6u 6c 1f 0b
+remove-generation ok string:Invalid faceId string:6v 6n 6u 6c 3f 0b
+remove-index-zero ok string:Invalid faceId
+remove-word-then-bad ok string:Unexpected EditableMesh id type. Expected Face id, received value that doesn't appear to be an id
+remove-gone-then-bad ok string:Invalid faceId
+remove-explicit-nil error BatchRemove: faceIds must be an array
+remove-extra error BatchRemove: expects 1 argument (faceIds)
+reuse-one ok 13:2 {5:1,5:3,13:2} string:v{1:1,1:3,1:4} n{2:1,2:3,2:7} u{4:1,4:3,4:7} c{3:1,3:3,3:7} {{13:2,5:1},{13:2,5:3,5:1}}
+reuse-order ok {13:1,13:3,5:4} {5:2,13:1,13:3,5:4}
+reuse-order-reversed ok {13:1,13:3,5:4} {5:2,13:1,13:3,5:4}
+reuse-singles ok {13:3,13:1,5:4} {5:2,13:3,13:1,5:4}
+reuse-batchadd ok {5:5,5:4,13:1} {5:3,5:2,5:5,5:4,13:1}
+reuse-batchadd-two-free ok {13:1} {5:4,13:3} {5:2,13:1,5:4,13:3}
+reuse-twice ok 13:3 21:3 string:Invalid faceId {5:1,5:2,21:3}
+reuse-old-id ok 13:3 string:Invalid id string:Invalid id
+reuse-vertices ok {1:6} 9:6 1:7 {1:1,1:2,1:3,1:4,1:5,9:6,1:7}
+reuse-vertices-batch ok {1:5,1:6,2:5,3:5,4:5} {9:6,9:5,1:7} {1:1,1:2,1:3,1:4,9:6,9:5,1:7}
+reuse-normals ok {1:5,1:6,2:5,3:5,4:5} 10:5 12:5 11:5 {2:1,2:2,2:3,2:4,2:6,10:5}
+reuse-triangle-attributes ok 9:6 13:3 string:v{9:6,1:2,1:4} n{10:5,2:2,2:4} u{12:5,4:2,4:4} c{11:5,3:2,3:4}
+remove-all-then-unused ok string:6v 6n 6u 6c 0f 0b {1:1,1:2,1:3,1:4,1:5,1:6,2:1,2:2,2:3,2:4,2:5,2:6,3:1,3:2,3:3,3:4,3:5,3:6,4:1,4:2,4:3,4:4,4:5,4:6} string:0v 0n 0u 0c 0f 0b
+fixed-option ok boolean:false boolean:false boolean:true
+fixed-add-vertex ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-add-triangle ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-batchadd-vertex ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-batchadd-face ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-add-normal ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-add-uv ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-add-color ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-remove-unused ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-remove-empty ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-set-face-vertices ok string:string:v{1:4,1:5,1:6} n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:6v 6n 6u 6c 3f 0b
+touch-normals ok {{5:1,5:2},{5:1},{5:2,5:1}} string:v{1:1,1:5,1:6} n{2:5,2:6,2:7} u{4:1,4:6,4:7} c{3:1,3:6,3:7}
+touch-normals-same ok {{5:2,5:1},{5:1},{5:2,5:1}} string:v{1:1,1:5,1:6} n{2:1,2:6,2:7} u{4:1,4:6,4:7} c{3:1,3:6,3:7}
+touch-normals-other-corner ok {{5:2,5:1},{5:1},{5:2,5:1}} string:v{1:1,1:5,1:6} n{2:1,2:6,2:7} u{4:1,4:6,4:7} c{3:1,3:6,3:7}
+touch-uvs ok {{5:1,5:2},{5:1},{5:2,5:1}} string:v{1:1,1:5,1:6} n{2:1,2:6,2:7} u{4:5,4:6,4:7} c{3:1,3:6,3:7}
+touch-colors ok {{5:1,5:2},{5:1},{5:2,5:1}} string:v{1:1,1:5,1:6} n{2:1,2:6,2:7} u{4:1,4:6,4:7} c{3:5,3:6,3:7}
+touch-vertices-same ok {{5:1,5:2},{5:1},{5:1,5:2}} string:v{1:1,1:5,1:6} n{2:1,2:6,2:7} u{4:1,4:6,4:7} c{3:1,3:6,3:7}
+touch-vertex-face-normal ok {{5:1,5:2},{5:1},{5:2,5:1}} string:v{1:1,1:5,1:6} n{2:5,2:6,2:7} u{4:1,4:6,4:7} c{3:1,3:6,3:7}
+touch-vertex-face-normal-same ok {{5:2,5:1},{5:1},{5:2,5:1}} string:v{1:1,1:5,1:6} n{2:1,2:6,2:7} u{4:1,4:6,4:7} c{3:1,3:6,3:7}
+touch-vertex-face-uv ok {{5:1,5:2},{5:1},{5:2,5:1}} string:v{1:1,1:5,1:6} n{2:1,2:6,2:7} u{4:5,4:6,4:7} c{3:1,3:6,3:7}
+touch-batch-vertex-face ok {{5:1,5:2},{5:1},{5:2,5:1}} string:v{1:1,1:5,1:6} n{2:5,2:6,2:7} u{4:1,4:6,4:7} c{3:1,3:6,3:7}
+touch-batch-vertex-face-same ok {{5:2,5:1},{5:1},{5:2,5:1}} string:v{1:1,1:5,1:6} n{2:1,2:6,2:7} u{4:1,4:6,4:7} c{3:1,3:6,3:7}
+touch-batch-face ok {{5:1,5:2},{5:1},{5:2,5:1}} string:v{1:1,1:5,1:6} n{2:5,2:6,2:7} u{4:1,4:6,4:7} c{3:1,3:6,3:7}
+touch-set-normal-value ok {{5:2,5:1},{5:1},{5:2,5:1}} string:v{1:1,1:5,1:6} n{2:1,2:6,2:7} u{4:1,4:6,4:7} c{3:1,3:6,3:7}
+touch-remove-other ok {{5:1},{5:1},{5:1}} string:v{1:1,1:5,1:6} n{2:1,2:6,2:7} u{4:1,4:6,4:7} c{3:1,3:6,3:7}
+remove-order-batchadd ok {5:4,5:3,5:2,5:1} {5:1,5:3} {13:4,13:2,5:5} {5:1,5:3,13:4,13:2,5:5}
+remove-order-moved ok 13:1 {5:3,5:2,13:1} {5:2} 13:3 21:1 {5:2,13:3,21:1}
+unused-middle ok {1:2} {1:1,1:6,1:3,1:4,1:5} 9:2 {1:1,1:6,1:3,1:4,1:5,9:2}
+unused-order ok {2:1,2:2,2:3,2:4,2:5,2:6} {1:1,1:6,1:3,1:4,1:5,9:2} {1:6,1:5,9:2,2:4,2:5,2:6,3:4,3:5,3:6,4:4,4:5,4:6} {1:1,1:4,1:3} {2:1,2:2,2:3}
+unused-middle-normals ok {2:2,2:3} {2:1,2:5,2:6,2:4} 10:3 {2:1,2:5,2:6,2:4,10:3}
+single-round ok 2:3 2:2 2:3
+single-set-check-order error vertexId not found on requested face
+set-not-in-face-bad-kind error BatchSetVertexFaceAttributes: unsupported attribute ID type 1
+set-zero-first error BatchSetVertexFaceAttributes: unsupported attribute ID type 0
+set-both-short error BatchSetVertexFaceAttributes: faceIds must be an array the same size as vertexIds
+set-bad-vertex-bad-kind error BatchSetVertexFaceAttributes: unsupported attribute ID type 1
+set-bad-face-bad-kind error BatchSetVertexFaceAttributes: unsupported attribute ID type 1
+fixed-batchadd-empty ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-batchadd-not-array ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-batchadd-faces-empty ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-remove-not-array ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-remove-bad ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-remove-face-bad ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-add-triangle-bad ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-add-bone ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+fixed-remove-bone ok string:EditableMesh is fixed-size, adding or removing elements is not allowed in-experience string:6v 6n 6u 6c 3f 0b
+bone-empty error Missing bone Name value
+bone-no-name error Missing bone Name value
+bone-no-virtual error Missing bone Virtual value
+bone-no-cframe error Missing bone CFrame value
+bone-name-number error Variant cast failed
+bone-full ok 6:1 string:b boolean:true
+vertex-face-bad-vertex-face-word error BatchGetVertexFaceAttributes: faceId at index 1 is not a number
+set-bad-vertex-face-word error BatchSetVertexFaceAttributes: faceId at index 1 is not a number
+set-not-in-face-attribute-word error BatchSetVertexFaceAttributes: attributeId at index 2 is not a number
+single-remove-face-zero error Unexpected EditableMesh id type. Expected Face id, received value that doesn't appear to be an id
+single-remove-face-word error Unable to cast string to int64
+single-vertex-face-boolean error vertexId not found on requested face
+single-vertex-face-zero-face error Invalid id
+single-vertex-faces-gone error Invalid id
+single-vertex-normals-no-id error Unexpected EditableMesh id type. Expected Vertex id, received value that doesn't appear to be an id
+single-vertex-uvs-face-id error Unexpected EditableMesh id type. Expected Vertex id, received Face id
+single-vertex-colors-zero error Invalid id
+single-adjacent-gone error Invalid id

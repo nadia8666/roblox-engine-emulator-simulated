@@ -49,6 +49,8 @@ pub struct Entry {
     /// Virtual time (Scheduler.Now) when it was written
     pub time: f64,
     pub trace: Option<String>,
+    /// A loopback run's side that wrote it ("server", "client"); none in every other run
+    pub side: Option<&'static str>,
 }
 
 impl Entry {
@@ -58,6 +60,9 @@ impl Entry {
         if let Some(trace) = &self.trace {
             line["trace"] = serde_json::json!(trace);
         }
+        if let Some(side) = self.side {
+            line["side"] = serde_json::json!(side);
+        }
         line
     }
 }
@@ -66,8 +71,11 @@ impl Entry {
 pub struct Output {
     pub entries: Vec<Entry>,
     pub verbose: bool,
-    /// `Class.Member` of unemulated methods scripts called, with call counts (first-call order)
+    /// `Class.Member` of unemulated members scripts used, with use counts (first-use order)
     pub missing: Vec<(String, u64)>,
+    /// Beside each of `missing`: where a script first used it (`<chunk>:<line>`, the chunk the script's path in the
+    /// DataModel; none when no script's Luau was running) and the virtual time it did
+    pub missing_first: Vec<(Option<String>, f64)>,
     missing_index: FxHashMap<String, usize>,
     /// Where lines go instead of `entries` while one is set ([`Output::spool`])
     spool: Option<Box<Spool>>,
@@ -75,6 +83,19 @@ pub struct Output {
     log_error: Option<String>,
     /// A script printed a line that is exactly [`DONE`]: `ree run` / `ree record` stop at the end of the frame
     pub done: bool,
+    /// A loopback run's side: its lines carry it ([`Entry::side`])
+    pub side: Option<&'static str>,
+    /// A loopback run's server: its lines go to the client's list, which holds both sides' in the order written
+    pub forward: Option<Forward>,
+}
+
+/// The engine whose list a loopback server's lines go to ([`Output::forward`])
+pub struct Forward(pub std::rc::Weak<crate::Engine>);
+
+impl std::fmt::Debug for Forward {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Forward")
+    }
 }
 
 /// The line a harness prints to end its run early (record/run.rs).
@@ -92,11 +113,32 @@ impl Output {
                 diagnostic(trace);
             }
         }
-        let entry = Entry { kind, message, time, trace };
+        self.deliver(Entry { kind, message, time, trace, side: self.side });
+    }
+
+    /// Keeps a line: in a loopback server's, in the client's list
+    fn deliver(&mut self, entry: Entry) {
+        if let Some(client) = self.forward.as_ref().and_then(|forward| forward.0.upgrade()) {
+            // (the client's own list is never borrowed while the server runs: the pair steps one side at a time)
+            if let Ok(mut state) = client.state.try_borrow_mut() {
+                state.output.push(entry);
+                return;
+            }
+        }
+        self.push(entry);
+    }
+
+    /// Keeps a line written (a loopback server's, forwarded: its `done` counts here too), and streams it to the output log
+    /// (`--output-log`) when one is set: a write error stops the log and is reported by [`Output::log_error`]
+    fn push(&mut self, entry: Entry) {
         let log_error = self.log.as_mut().and_then(|log| log.write(&entry).err());
         if let Some(error) = log_error {
             self.log_error = Some(error.to_string());
             self.log = None;
+        }
+        if entry.kind == "print" && entry.message == DONE {
+            self.done = true;
+        }
         }
         match &mut self.spool {
             Some(spool) => spool.write(&entry),
@@ -150,8 +192,11 @@ impl Output {
         self.spool.take()
     }
 
-    /// Output.Missing: an unemulated member was used.
-    pub fn missing(&mut self, class: &str, member: &str) {
+    /// Output.Missing: an unemulated member was used, at virtual time `time`. Its first use writes a line of kind `missing`
+    /// (`<Class.Member> is not emulated`, its trace where the script used it: `at`, asked then only); every use counts.
+    /// Hosts call [`crate::Engine::missing`], which finds the script's position. The line is not one a script logged:
+    /// LogService (MessageOut, GetLogHistory) never gets it.
+    pub fn missing(&mut self, class: &str, member: &str, time: f64, at: impl FnOnce() -> Option<String>) {
         let key = format!("{class}.{member}");
         if let Some(&index) = self.missing_index.get(&key) {
             self.missing[index].1 += 1;
@@ -160,9 +205,56 @@ impl Output {
         if self.verbose {
             diagnostic(&format!("[stub] {key} is not emulated; returned nil"));
         }
+        let at = at();
         self.missing_index.insert(key.clone(), self.missing.len());
+        self.missing_first.push((at.clone(), time));
+        let message = format!("{key} is not emulated");
         self.missing.push((key, 1));
+        // (the verbose line above stands for it: hosts' recorded verbose output keeps that one)
+        self.deliver(Entry { kind: MISSING, message, time, trace: at, side: self.side });
     }
+
+    /// The unemulated members used, as `ree run` and `ree record` summaries list them ([`unemulated`]).
+    pub fn unemulated(&self) -> Vec<Unemulated> {
+        self.missing.iter().zip(&self.missing_first).map(|((member, count), (at, time))| Unemulated { member: member.clone(), count: *count, first: at.clone(), time: *time }).collect()
+    }
+}
+
+/// The kind of an [`Output::missing`] line
+pub const MISSING: &str = "missing";
+
+/// An unemulated member a run used: how many times, and where and when a script first did ([`Output::missing`])
+#[derive(Clone, Debug, PartialEq)]
+pub struct Unemulated {
+    pub member: String,
+    pub count: u64,
+    pub first: Option<String>,
+    pub time: f64,
+}
+
+/// A summary's `unemulated` list from the members each side used (one list; a loopback run's two sides' merged: counts summed,
+/// the earlier first use kept): `{member, count, first}` objects (`first`: `<script path>:<line>`, or null when no script's Luau
+/// was running), most used first, then by member. None when nothing was used: the key is left out.
+pub fn unemulated(sides: &[Vec<Unemulated>]) -> Option<serde_json::Value> {
+    let mut merged: Vec<Unemulated> = Vec::new();
+    for side in sides {
+        for entry in side {
+            match merged.iter_mut().find(|known| known.member == entry.member) {
+                Some(known) => {
+                    known.count += entry.count;
+                    if entry.time < known.time {
+                        (known.first, known.time) = (entry.first.clone(), entry.time);
+                    }
+                }
+                None => merged.push(entry.clone()),
+            }
+        }
+    }
+    if merged.is_empty() {
+        return None;
+    }
+    merged.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.member.cmp(&b.member)));
+    Some(serde_json::Value::Array(merged.into_iter().map(|entry| serde_json::json!({ "member": entry.member, "count": entry.count, "first": entry.first })).collect()))
 }
 
 #[derive(Debug)]

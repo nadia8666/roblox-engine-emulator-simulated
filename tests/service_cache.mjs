@@ -169,6 +169,37 @@ for (const manual of [false, true]) check(`relative XDG_CACHE_HOME keeps the per
 	}
 });
 
+// A failed job exits 1 through the service as it does on its own, with the same summary: the client exits with the job's
+// code. A run its script timeouts stop keeps 126 there too.
+check("a failed job exits 1 through the service with its summary", async ({ project, env, ree, run, executable }) => {
+	fs.writeFileSync(path.join(project, "Fails.luau"), 'return function() print("before") task.wait(0.1) error("boom") end');
+	fs.writeFileSync(path.join(project, "Spins.luau"), 'return function() game:GetService("RunService").Heartbeat:Connect(function() while true do end end) end');
+	const failing = ["--harness", "Fails.luau", "--seconds", "0.5", "--offline"];
+	const spinning = ["--harness", "Spins.luau", "--seconds", "5", "--fps", "10", "--script-timeout", "0.02", "--max-script-timeouts", "2", "--offline"];
+	const direct = run(["run", ...failing]);
+	assert.equal(direct.status, 1, direct.stderr);
+	const summary = JSON.parse(direct.stdout);
+	assert.equal(summary.status, "error");
+	assert.match(summary.failure, /boom/);
+	const started = startManualService(executable, project, env);
+	try {
+		await started.listening;
+		for (const [job, code] of [[failing, 1], [spinning, 126]]) {
+			const exits = (args) => {
+				const result = run(args);
+				assert.equal(result.status, code, result.stderr || result.stdout);
+				return result.stdout;
+			};
+			// (the service ran it, not the client: it counts the job under `failed`)
+			const printed = JSON.parse(await servedRun(ree, ["run", "--service", ...job], started.service.pid, { run: exits, counted: "failed" }));
+			assert.equal(printed.status, "error");
+			if (job === failing) assert.deepEqual(printed.output, summary.output);
+		}
+	} finally {
+		await stopAllServices(ree, started);
+	}
+});
+
 for (const kind of ["work,cpu", "boundary", "environment"]) {
 	check(`unnamed ${kind} profiles stay in standalone state`, ({ root, inputs, env, run }) => {
 		env.RUR_STATE_DIR = path.join(root, "state");

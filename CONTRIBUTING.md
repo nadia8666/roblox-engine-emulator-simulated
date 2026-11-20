@@ -1,90 +1,78 @@
 # Contributing to roblox-engine-emulator
 
-Thanks for helping out! This guide covers how changes get in, what we need from you, and what we can't accept.
+Thanks for contributing. This guide covers how pull requests are merged, how to set up a local build, and what we can accept.
 
-## How changes land here
+## How pull requests are merged
 
-This repository is published from the maintainers' internal repository by an automated sync, so `main` only moves through sync commits.
+This public repository is published from an internal repository via an automated sync tool, so `main` only advances through sync commits.
 
-Pull requests are still the way in, and they're reviewed here like anywhere else. Once a maintainer accepts yours, they apply it internally. It then comes back in the next sync commit with you as its author, and the PR is closed with a link to that commit. So a closed PR with a "Landed in ..." comment means it was merged.
+Open pull requests here as usual. Once approved, a maintainer imports your diff internally; the next sync pushes it back to public `main` with you preserved as the author and closes your PR with a `"Landed in ..."` link.
 
-## Before you start
+## Before you open a PR
 
-- **Small fixes** (typos, an obvious bug with a test): open a PR straight away.
-- **Anything bigger** (new features, new flags, behavior changes, refactors): open an issue first and wait for a maintainer to agree on the approach. PRs that skip this step may be closed so nobody's time is wasted.
-- **Differences from Roblox Studio**: use the "Looks different from Studio" issue form, and include Studio's output next to ours. Parity claims need evidence; see [Measuring against Studio](#measuring-against-studio).
-- **Security problems**: never in a public issue. See [SECURITY.md](SECURITY.md).
+- **Small fixes** (typos, clear bugs with a test): open a PR directly.
+- **Larger changes** (new features, CLI flags, behavior changes, refactors): open an issue first to agree on the approach. Unsolicited large PRs may be closed to avoid wasted work.
+- **Differences from Roblox Studio:** use the "Looks different from Studio" issue template with side-by-side Studio output ([Measuring against Studio](#measuring-against-studio)).
+- **Security problems:** never report publicly—follow [SECURITY.md](SECURITY.md).
 
-Search existing issues before filing. A thumbs-up on an existing issue helps more than a duplicate.
+Search open issues before filing a duplicate.
 
 ## Development setup
 
-1. Install Rust 1.90 or later (`rustup`), a C++ toolchain for the Luau VM (on Windows, the Visual Studio Build
-   Tools with the C++ workload) and Git. Node.js 20 or later is needed only to re-vendor the VM.
-2. Clone, build and test:
-
+1. Install **Rust 1.90+** (`rustup`), a **C++ toolchain** for the Luau VM (Visual Studio Build Tools with C++ workload on Windows), and **Git**. **Node.js 20+** is only needed when re-vendoring the VM or running parity/release scripts.
+2. Clone, build, and test:
    ```sh
    git clone https://github.com/Anime-Vanguards/roblox-engine-emulator
    cd roblox-engine-emulator
    cargo build --release
    cargo test --release
    ```
+   The first build compiles Luau's C++ sources and takes a few minutes; subsequent `--release` builds are incremental.
+3. `cargo test --release` requires ~2 GB of free RAM (for `ree serve` tests) and runs `tests/process_guards.rs` against the compiled `ree` binary. No test requires Roblox Studio, a GPU, or network access.
+4. **Editing VM/datatype patches:** Never edit `vendor/` directly. Edit the topic patches under `patches/luau/` (or `patches/lune.patch`, `patches/mlua-sys.patch`), rebuild with `node tools/vendor.mjs`, verify with `node tools/vendor.mjs --check`, and commit both `patches/` and `vendor/`. See [docs/building.md](docs/building.md#updating-luau).
 
-   The first build compiles Luau's C++ and takes a few minutes; later `--release` builds are incremental.
-3. The tests need about 2 GB of free memory (the `ree serve` tests check for it) and run the built `ree`
-   (tests/process_guards.rs). None needs Roblox Studio, a game checkout, a GPU or the network.
-4. If you change a file in `patches/`, run `node tools/vendor.mjs` and commit `vendor/` with it;
-   `node tools/vendor.mjs --check` must pass. Never edit `vendor/` by hand. The Luau VM's patches are a
-   topic series (`patches/luau/`, one topic a file; docs/building.md "Updating Luau").
+Read the relevant section of [docs/engine.md](docs/engine.md) before changing engine behavior, and update it in the same commit.
 
-[docs/engine.md](docs/engine.md) describes how the engine works inside; read the section for the part you change.
+## Pull request guidelines
 
-## Making a change
-
-- Keep a PR to one change. Unrelated fixes go in their own PRs.
-- Add or update tests for every change in behavior. Run the whole test command above before you push, and say in the PR what you ran.
-- Follow the style of the surrounding code (its indentation and naming). Rust here uses 4 spaces and long lines and is not rustfmt-formatted, so don't run `cargo fmt` on the tree; Luau, JavaScript and JSON use tabs. A comment that states a Roblox rule cites the Studio measurement or the documentation page behind it.
-- Update the docs (README, `docs/`) when flags, outputs or behavior change.
-- Write commit messages and PR titles as one plain sentence saying what changed ("Particles with ZOffset move by view depth").
-- Don't commit generated output, build folders, renders or logs.
+- **One focused change per PR.** Split unrelated changes into separate PRs.
+- **Add tests for behavior changes.** Run `cargo test --release` before pushing and note what you ran in the PR.
+- **Match existing style.** Rust uses 4 spaces and long lines with no `rustfmt` config—do **not** run `cargo fmt` across the tree. Luau, JavaScript, and JSON use tabs. Cite the Studio measurement or Roblox doc page in comments explaining engine rules.
+- **Update documentation.** Keep `README.md` and `docs/` in sync when flags, outputs, or engine rules change.
+- **Plain commit and PR titles.** One clear sentence describing the change.
+- **Keep the tree clean.** Never commit build outputs, renders, logs, or generated scratch files.
 
 ### Measuring against Studio
 
-These tools aim to match Roblox Studio exactly, so a change that claims parity needs:
+Parity PRs must include:
+- The Roblox Studio version and graphics settings compared against.
+- A minimal, self-contained scene or Luau script built from scratch.
+- Before-and-after measurements or output compared side by side with Studio.
 
-- the Studio version and graphics settings you compared against;
-- a minimal scene or script that shows the difference, built from scratch (parts, a script, a small .rbxm you made yourself);
-- the numbers or images before and after, side by side with Studio's.
+Never copy code, shaders, tables, or data from Roblox binaries or install directories. Derive constants from black-box measurements instead.
 
-Never copy code, shaders, tables or other data out of Roblox's binaries or installed files. Fit values from measurements instead.
+## What we cannot accept
 
-## Content and code we can't accept
-
-- Models, places, images, meshes, audio, fonts or text you don't own or have the right to share. That includes assets from Roblox games (ours included) and Roblox's own fonts and textures. Tests and fixtures build their own scenes.
-- Code copied from Roblox, decompiled or reverse-engineered from Roblox's binaries, or taken from projects whose license isn't compatible with GPL-2.0-or-later.
-- Network calls to anything other than the Roblox endpoints the tools already use, telemetry, or anything that sends user data elsewhere.
-- Credentials of any kind in code, tests, logs or screenshots (never paste a `.ROBLOSECURITY` cookie anywhere).
+- Models, places, images, meshes, audio, fonts, or text you do not own or cannot legally share (including assets from Roblox games or Roblox's built-in content). Tests must construct their own scenes.
+- Code copied, decompiled, or reverse-engineered from Roblox binaries, or code under licenses incompatible with GPL-2.0-or-later.
+- Telemetry or outbound network calls to hosts other than Roblox endpoints already used.
+- Credentials or secrets anywhere in code, tests, logs, or screenshots (never paste `.ROBLOSECURITY`).
 
 ## AI-assisted contributions
 
-You're welcome to use AI tools. The maintainers use coding agents heavily too. The rules:
+AI coding tools are welcome—the maintainers use them heavily as well—under these rules:
+- **You own every line.** Read, understand, and verify your changes before opening a PR.
+- **Disclose AI use** in the PR template.
+- **No unattended bulk PRs.** Drive-by batch PRs without a backing issue will be closed without review.
+- **Point agents at [AGENTS.md](AGENTS.md).**
+- **Tests are required.** Generated fixes without a test that fails prior to the fix will not be merged.
 
-- **You're responsible for every line.** Read and understand the change before you open the PR, and be ready to explain it. Don't submit code you couldn't defend in review.
-- **Say so in the PR.** The template asks which tool you used and how.
-- **No unattended bulk PRs.** Agent-generated drive-by PRs across many files, or PRs opened in batches with no issue behind them, will be closed without review.
-- **Agents follow [AGENTS.md](AGENTS.md).** Point your agent at it.
-- **Tests are required.** Generated code with no test, or tests that don't fail without the fix, won't be merged.
+## Review process
 
-## Review
+Issues and PRs receive an initial automated triage/review (usually within an hour), escalating to a maintainer when needed. For bugs or feature requests filed as issues, maintainers handle fixes directly—you don't need to submit a PR.
 
-Issues and pull requests are triaged and reviewed by the maintainers' automated review, so a first reply usually comes within the hour; anything it can't decide goes to a maintainer. Bugs and requests filed as issues are fixed by the maintainers: you don't need to send a pull request for them.
+PRs are screened for security first, then reviewed for quality and fit. Push requested edits to the same PR branch for re-review. Edits to build scripts, CI workflows, dependencies, or agent instructions always require maintainer sign-off.
 
-Every pull request is screened for security first, then reviewed for quality and fit with the project. You make the changes a review asks for: push them to the same PR, which is reviewed again. Changes to build scripts, CI, dependencies or agent instructions always need a maintainer's sign-off.
+## License and conduct
 
-## License
-
-roblox-engine-emulator is licensed under the GNU General Public License, version 2 or (at your option) any later version ([LICENSE](LICENSE)). By submitting a contribution you agree that it's licensed under the same terms, and you confirm that you have the right to submit it.
-
-## Code of conduct
-
-Everyone taking part follows our [Code of Conduct](CODE_OF_CONDUCT.md).
+`roblox-engine-emulator` is licensed under GPL-2.0-or-later ([LICENSE](LICENSE)). By contributing, you confirm you have the right to submit your work under those terms. All participants follow the [Code of Conduct](CODE_OF_CONDUCT.md).

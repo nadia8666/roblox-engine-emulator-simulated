@@ -247,14 +247,39 @@ pub mod float32 {
     }
 
     /// ToAxisAngle: `angle = acosf(0.5 * (((R00 + R11) + R22) - 1))`, `axis = (R21 - R12, R02 - R20, R10 - R01).Unit`.
-    /// At angle 0 the axis is X (not measured: G3D's and glam's choice, and ree's before).
+    /// The angle is only as fine as that cosine: within a float step of 1 it reads 0 (a 0.0003 rad turn does), then
+    /// 2^-11, and so on (measured). At angle 0 the axis is X (measured); skew terms that are all zero under another
+    /// angle give the axis 0, 0, 0 (measured). At a half turn (the cosine is -1) the skew terms say nothing, and the axis
+    /// comes from the largest diagonal term `d`: that component is `0.5 sqrtf(((d - e) - f) + 1)` and the other two
+    /// `0.5 / component` times a term of the upper triangle (G3D's Matrix3::toAxisAngle; it fits the measured lines).
     pub fn to_axis_angle(r: &Rot) -> (Vec3, f32) {
         let cos = (0.5 * (((r[0][0] + r[1][1]) + r[2][2]) - 1.0)).clamp(-1.0, 1.0);
         let angle = cos.acos();
         if angle == 0.0 {
             return ([1.0, 0.0, 0.0], 0.0);
         }
-        (unit3([r[2][1] - r[1][2], r[0][2] - r[2][0], r[1][0] - r[0][1]]), angle)
+        if angle < std::f32::consts::PI {
+            let skew = [r[2][1] - r[1][2], r[0][2] - r[2][0], r[1][0] - r[0][1]];
+            if skew == [0.0, 0.0, 0.0] {
+                return (skew, angle);
+            }
+            return (unit3(skew), angle);
+        }
+        let (d0, d1, d2) = (r[0][0], r[1][1], r[2][2]);
+        let axis = if d0 >= d1 && d0 >= d2 {
+            let x = 0.5 * (((d0 - d1) - d2) + 1.0).sqrt();
+            let half = 0.5 / x;
+            [x, half * r[0][1], half * r[0][2]]
+        } else if d1 > d0 && d1 >= d2 {
+            let y = 0.5 * (((d1 - d0) - d2) + 1.0).sqrt();
+            let half = 0.5 / y;
+            [half * r[0][1], y, half * r[1][2]]
+        } else {
+            let z = 0.5 * (((d2 - d0) - d1) + 1.0).sqrt();
+            let half = 0.5 / z;
+            [half * r[0][2], half * r[1][2], z]
+        };
+        (axis, angle)
     }
 
     /// lookAt / lookAlong: `look = dir.Unit`, `right = (look x up).Unit`, or `(look x X).Unit` when `|look x up|^2`
@@ -335,7 +360,9 @@ pub mod float32 {
         (a[0] * b[0] + a[1] * b[1]) + (a[2] * b[2] + a[3] * b[3])
     }
 
-    fn rot_from_quat(q: Quat) -> Rot {
+    /// A quaternion's rotation: made a unit quaternion first (`q * (1 / sqrtf(dot(q, q)))`, so a zero one gives
+    /// not-a-number), then the matrix in single precision
+    pub fn rot_from_quat(q: Quat) -> Rot {
         let k = 1.0 / quat_dot(q, q).sqrt();
         let [x, y, z, w] = q.map(|c| c * k);
         let (x2, y2, z2) = (x + x, y + y, z + z);
@@ -347,6 +374,39 @@ pub mod float32 {
             [xy + wz, 1.0 - (xx + zz), yz - wx],
             [xz - wy, yz + wx, 1.0 - (xx + yy)],
         ]
+    }
+
+    /// CFrame.fromRotationBetweenVectors(a, b), for the vectors as given (not made unit; measured in a playing client,
+    /// 0.747, 478 pairs to the bit): the quaternion `(a x b, w)` with `w = sqrtf(|a|^2 |b|^2) + a . b`, or a half turn
+    /// `(axis, 0)` when `w < 1e-5 sqrtf(|a|^2 |b|^2)` (vectors within about a quarter of a degree of opposite) with the
+    /// axis `(0, -a.z, a.y)` if `|a.x| <= |a.y|`, else `(-a.z, 0, a.x)`; made a unit quaternion
+    /// (`q * (1 / sqrtf(dot(q, q)))`) and then a matrix by [`rot_from_quat`], which makes it unit a second time (so
+    /// X to Y reads R01 = -1.0000001). A zero vector, or squared lengths whose product leaves the float range, give
+    /// not-a-number.
+    pub fn rotation_between(a: Vec3, b: Vec3) -> Rot {
+        let length = (dot3(a, a) * dot3(b, b)).sqrt();
+        let w = length + dot3(a, b);
+        let q = if w < 1e-5 * length {
+            let axis = if a[0].abs() <= a[1].abs() { [0.0, -a[2], a[1]] } else { [-a[2], 0.0, a[0]] };
+            [axis[0], axis[1], axis[2], 0.0]
+        } else {
+            let c = cross3(a, b);
+            [c[0], c[1], c[2], w]
+        };
+        let k = 1.0 / quat_dot(q, q).sqrt();
+        rot_from_quat(q.map(|c| c * k))
+    }
+
+    /// CFrame:AngleBetween, in doubles from the stored floats (measured in a playing client, 0.747, 213 pairs to the
+    /// bit): the cosine `x = (trace(A^T B) - 1) / 2`, the trace summed column by column
+    /// (`d_c = (A0c B0c + A1c B1c) + A2c B2c`, then `(d0 + d1) + d2`), clamped to [-1, 1] (a rotation against itself
+    /// can read a trace past 3), and the angle `atan2(sqrt(1 - x^2), x)` (acos differs in the last bits on a quarter
+    /// of the pairs, single precision by up to 3e-4 near the identity). Positions do not count; not-a-number stays so.
+    pub fn angle_between(a: &Rot, b: &Rot) -> f64 {
+        let product = |i: usize, j: usize| f64::from(a[i][j]) * f64::from(b[i][j]);
+        let column = |c: usize| (product(0, c) + product(1, c)) + product(2, c);
+        let x = ((((column(0) + column(1)) + column(2)) - 1.0) / 2.0).clamp(-1.0, 1.0);
+        (1.0 - x * x).sqrt().atan2(x)
     }
 
     /// CFrame:Lerp blends two rotations' quaternions when their dot is above this, rotations within about 2.2 degrees

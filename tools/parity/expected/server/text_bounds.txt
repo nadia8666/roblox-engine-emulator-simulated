@@ -1,0 +1,173 @@
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-19
+first call of a face: dead error Typesetting is not enabled in this DataModel
+first call returned: error Typesetting is not enabled in this DataModel
+the same face again: dead error Typesetting is not enabled in this DataModel
+the same face from a metamethod: error Typesetting is not enabled in this DataModel
+a face not loaded, from a metamethod: error Typesetting is not enabled in this DataModel
+the same face 30 frames later: error Typesetting is not enabled in this DataModel
+SourceSansPro Medium from a metamethod: error Typesetting is not enabled in this DataModel
+SourceSansPro Thin from a metamethod: error Typesetting is not enabled in this DataModel
+SourceSansPro Heavy from a metamethod: error Typesetting is not enabled in this DataModel
+Enum.Font faces ready: 
+FredokaOne: error Typesetting is not enabled in this DataModel
+FredokaOne Bold from a metamethod: error Typesetting is not enabled in this DataModel
+FredokaOne Italic from a metamethod: error Typesetting is not enabled in this DataModel
+defaults: "" SourceSansPro.json Regular Normal 20 0 false
+default bounds: error Typesetting is not enabled in this DataModel
+Size = 14.5 reads 14 measures error Typesetting is not enabled in this DataModel
+Size = 14.99 reads 14 measures error Typesetting is not enabled in this DataModel
+Size = 15.5 reads 15 measures error Typesetting is not enabled in this DataModel
+Size = 0.5 reads 1 measures error Typesetting is not enabled in this DataModel
+Size = 0.20000000000000001 reads 1 measures error Typesetting is not enabled in this DataModel
+Size = 0 reads 1 measures error Typesetting is not enabled in this DataModel
+Size = -3 reads 1 measures error Typesetting is not enabled in this DataModel
+Size = 99.900000000000006 reads 99 measures error Typesetting is not enabled in this DataModel
+Size = 100.40000000000001 reads 100 measures error Typesetting is not enabled in this DataModel
+Size = 500 reads 100 measures error Typesetting is not enabled in this DataModel
+Size = nan reads -2147483648 measures error Typesetting is not enabled in this DataModel
+Size = 2147483648 reads 100 measures error Typesetting is not enabled in this DataModel
+Size = inf reads 100 measures error Typesetting is not enabled in this DataModel
+Size = -inf reads 1 measures error Typesetting is not enabled in this DataModel
+Size = 12 reads 12 measures error Typesetting is not enabled in this DataModel
+Size = x reads 1 measures error Typesetting is not enabled in this DataModel
+Width = -3 reads -3
+Width = 0.5 reads 0.5
+Width = 99.5 reads 99.5
+Width = inf reads inf
+Width = nan reads nan
+returns: error Typesetting is not enabled in this DataModel
+Enum.Font.Legacy measures otherwise
+Enum.Font.Arial measures otherwise
+Enum.Font.ArialBold measures otherwise
+Enum.Font.SourceSans measures otherwise
+Enum.Font.SourceSansBold measures otherwise
+Enum.Font.SourceSansLight measures otherwise
+Enum.Font.SourceSansItalic measures otherwise
+Enum.Font.Bodoni measures otherwise
+Enum.Font.Garamond measures otherwise
+Enum.Font.Cartoon measures otherwise
+Enum.Font.Code measures otherwise
+Enum.Font.Highway measures otherwise
+Enum.Font.SciFi measures otherwise
+Enum.Font.Arcade measures otherwise
+Enum.Font.Fantasy measures otherwise
+Enum.Font.Antique measures otherwise
+Enum.Font.SourceSansSemibold measures otherwise
+Enum.Font.Gotham measures otherwise
+Enum.Font.GothamMedium measures otherwise
+Enum.Font.GothamBold measures otherwise
+Enum.Font.GothamBlack measures otherwise
+Enum.Font.AmaticSC measures otherwise
+Enum.Font.Bangers measures otherwise
+Enum.Font.Creepster measures otherwise
+Enum.Font.DenkOne measures otherwise
+Enum.Font.Fondamento measures otherwise
+Enum.Font.FredokaOne measures otherwise
+Enum.Font.GrenzeGotisch measures otherwise
+Enum.Font.IndieFlower measures otherwise
+Enum.Font.JosefinSans measures otherwise
+Enum.Font.Jura measures otherwise
+Enum.Font.Kalam measures otherwise
+Enum.Font.LuckiestGuy measures otherwise
+Enum.Font.Merriweather measures otherwise
+Enum.Font.Michroma measures otherwise
+Enum.Font.Nunito measures otherwise
+Enum.Font.Oswald measures otherwise
+Enum.Font.PatrickHand measures otherwise
+Enum.Font.PermanentMarker measures otherwise
+Enum.Font.Roboto measures otherwise
+Enum.Font.RobotoCondensed measures otherwise
+Enum.Font.RobotoMono measures otherwise
+Enum.Font.Sarpanch measures otherwise
+Enum.Font.SpecialElite measures otherwise
+Enum.Font.TitilliumWeb measures otherwise
+Enum.Font.Ubuntu measures otherwise
+Enum.Font.BuilderSans measures otherwise
+Enum.Font.BuilderSansMedium measures otherwise
+Enum.Font.BuilderSansBold measures otherwise
+Enum.Font.BuilderSansExtraBold measures otherwise
+Enum.Font.Arimo measures otherwise
+Enum.Font.ArimoBold measures otherwise
+face FredokaOne.json Bold Normal measures as Enum.Font.FredokaOne
+face FredokaOne.json Heavy Italic measures as Enum.Font.FredokaOne
+face SourceSansPro.json Medium Normal measures as Enum.Font.SourceSans
+face SourceSansPro.json Thin Normal measures as Enum.Font.SourceSans
+face SourceSansPro.json ExtraBold Normal measures as Enum.Font.SourceSans
+face SourceSansPro.json Heavy Normal measures as Enum.Font.SourceSans
+face SourceSansPro.json Bold Italic measures as Enum.Font.SourceSans
+face GothamSSm.json Light Normal measures as Enum.Font.Gotham
+face GothamSSm.json SemiBold Normal measures as Enum.Font.Gotham
+face BuilderSans.json Heavy Normal measures as Enum.Font.BuilderSans
+face BuilderSans.json SemiBold Normal measures as Enum.Font.BuilderSans
+face Bangers.json Bold Italic measures as Enum.Font.Bangers
+face Arial.json Regular Italic measures as Enum.Font.Arial
+face Roboto.json Bold Normal measures as Enum.Font.Roboto
+FredokaOne Bold: error Typesetting is not enabled in this DataModel
+size 8 error Typesetting is not enabled in this DataModel
+size 10 error Typesetting is not enabled in this DataModel
+size 13 error Typesetting is not enabled in this DataModel
+size 15 error Typesetting is not enabled in this DataModel
+size 16 error Typesetting is not enabled in this DataModel
+size 24 error Typesetting is not enabled in this DataModel
+size 36 error Typesetting is not enabled in this DataModel
+size 48 error Typesetting is not enabled in this DataModel
+size 100 error Typesetting is not enabled in this DataModel
+width 0 error Typesetting is not enabled in this DataModel not as GetTextSize
+width 1 error Typesetting is not enabled in this DataModel not as GetTextSize
+width 10 error Typesetting is not enabled in this DataModel not as GetTextSize
+width 40 error Typesetting is not enabled in this DataModel not as GetTextSize
+width 100 error Typesetting is not enabled in this DataModel not as GetTextSize
+width 150 error Typesetting is not enabled in this DataModel not as GetTextSize
+width 220 error Typesetting is not enabled in this DataModel not as GetTextSize
+width 1000 error Typesetting is not enabled in this DataModel not as GetTextSize
+width -10 error Typesetting is not enabled in this DataModel not as GetTextSize
+width inf error Typesetting is not enabled in this DataModel not as GetTextSize
+width 99.5 error Typesetting is not enabled in this DataModel not as GetTextSize
+text "" 0 error Typesetting is not enabled in this DataModel
+text "" 30 error Typesetting is not enabled in this DataModel
+text "\x0A" 0 error Typesetting is not enabled in this DataModel
+text "\x0A" 30 error Typesetting is not enabled in this DataModel
+text "a\x0Ab" 0 error Typesetting is not enabled in this DataModel
+text "a\x0Ab" 30 error Typesetting is not enabled in this DataModel
+text "Hello\x0A" 0 error Typesetting is not enabled in this DataModel
+text "Hello\x0A" 30 error Typesetting is not enabled in this DataModel
+text "\x0AHello" 0 error Typesetting is not enabled in this DataModel
+text "\x0AHello" 30 error Typesetting is not enabled in this DataModel
+text "a\x0A\x0Ab" 0 error Typesetting is not enabled in this DataModel
+text "a\x0A\x0Ab" 30 error Typesetting is not enabled in this DataModel
+text "  Hello  " 0 error Typesetting is not enabled in this DataModel
+text "  Hello  " 30 error Typesetting is not enabled in this DataModel
+text "Hello " 0 error Typesetting is not enabled in this DataModel
+text "Hello " 30 error Typesetting is not enabled in this DataModel
+text " " 0 error Typesetting is not enabled in this DataModel
+text " " 30 error Typesetting is not enabled in this DataModel
+text "Hello world again and again" 0 error Typesetting is not enabled in this DataModel
+text "Hello world again and again" 30 error Typesetting is not enabled in this DataModel
+text "a	b" 0 not as GetTextSize
+text "a	b" 30 not as GetTextSize
+text "héllo" 0 not as GetTextSize
+text "héllo" 30 not as GetTextSize
+text "日本" 0 not as GetTextSize
+text "日本" 30 not as GetTextSize
+text "a\x0Db" 0 not as GetTextSize
+text "a\x0Db" 30 not as GetTextSize
+rich "Hello" error Typesetting is not enabled in this DataModel | error Typesetting is not enabled in this DataModel
+rich "<b>Hello</b>" error Typesetting is not enabled in this DataModel | error Typesetting is not enabled in this DataModel
+rich "a &amp; b" error Typesetting is not enabled in this DataModel | error Typesetting is not enabled in this DataModel
+rich "<font size="30">Big</font> small" error Typesetting is not enabled in this DataModel | error Typesetting is not enabled in this DataModel
+rich "x<br/>y" error Typesetting is not enabled in this DataModel | error Typesetting is not enabled in this DataModel
+rich "<b>Hello" error Typesetting is not enabled in this DataModel | error Typesetting is not enabled in this DataModel
+rich "a < b" error Typesetting is not enabled in this DataModel | error Typesetting is not enabled in this DataModel
+nil: error Argument 1 missing or nil
+no argument: error Argument 1 missing or nil
+a Part: error Argument 1 is invalid: expected 'GetTextBoundsParams' instance type
+a table: error Unable to cast value to Object
+a string: error Unable to cast value to Object
+a number: error Unable to cast value to Object
+a '.' call: error Expected ':' not '.' calling member function GetTextBoundsAsync
+a '.' call with the service: error Typesetting is not enabled in this DataModel
+an empty family: error Typesetting is not enabled in this DataModel
+a family that is no file: error Typesetting is not enabled in this DataModel
+destroyed params: error Typesetting is not enabled in this DataModel
+a Font assigned an Enum.Font: error Unable to assign property Font. Font expected, got EnumItem

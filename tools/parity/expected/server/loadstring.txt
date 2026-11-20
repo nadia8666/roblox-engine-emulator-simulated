@@ -1,0 +1,65 @@
+# engine: Roblox Studio 0.747.0.7471481, the server of a headless play session (a Script in ServerScriptService, script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-17
+type function
+plain function nil results=1 [string "return 1, 'two', ..."] n=[] l=1
+plain call ok 1 two three
+named function nil results=1 [string "Name"] n=[] l=1
+named call error [string "Name"]:1: boom
+named-equals function nil results=1 Name n=[] l=1
+named-equals call error Name:1: boom
+named-at function nil results=1 Name n=[] l=1
+named-at call error Name:1: boom
+named-empty function nil results=1 [string ""] n=[] l=1
+named-empty call error [string ""]:1: boom
+named-number function nil results=1 [string "12"] n=[] l=1
+named-number call error [string "12"]:1: boom
+unnamed function nil results=1 [string "error('boom')"] n=[] l=1
+unnamed call error [string "error('boom')"]:1: boom
+unnamed-lines function nil results=1 [string "local A = 1..."] n=[] l=1
+unnamed-lines call error [string "local A = 1..."]:2: boom
+unnamed-long function nil results=1 [string "local Long = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' error('boom')"] n=[] l=1
+unnamed-long call error [string "local Long = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' error('boom')"]:1: boom
+named-long function nil results=1 [string "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"] n=[] l=1
+named-long call error [string "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"]:1: boom
+index function nil results=1 Name n=[] l=1
+index call error Name:2: attempt to index nil with 'Field'
+traceback function nil results=1 Name n=[] l=1
+traceback call ok t
+inner-info function nil results=1 Name n=[] l=1
+inner-info call ok Name 1 1
+empty function nil results=1 [string ""] n=[] l=1
+empty call ok 
+comment function nil results=1 [string "--!strict..."] n=[] l=1
+comment call ok 1
+syntax nil [string "local = 1"]:1: Expected identifier when parsing variable name, got '=' results=2
+syntax-named nil Name:1: Expected identifier when parsing variable name, got '=' results=2
+syntax-plain-name nil [string "Name"]:1: Expected identifier when parsing expression, got '+' results=2
+syntax-lines nil [string "local A = 1..."]:3: Expected identifier when parsing expression, got 'return' results=2
+bytecode nil [string "\x1BLua"]:1: Expected identifier when parsing expression, got '\x1B' results=2
+bytecode-zero function nil results=1 [string ""] n=[] l=1
+no-argument raised missing argument #1 to 'loadstring' (string expected)
+nil raised invalid argument #1 to 'loadstring' (string expected, got nil)
+number nil [string "12"]:1: Expected identifier when parsing expression, got '12' results=2
+table raised invalid argument #1 to 'loadstring' (string expected, got table)
+function raised invalid argument #1 to 'loadstring' (string expected, got function)
+boolean raised invalid argument #1 to 'loadstring' (string expected, got boolean)
+not-run function nil results=1 [string "ParityRan = (ParityRan or 0) + 1 return ParityRan"] n=[] l=1
+not-run before nil
+not-run call ok 1
+not-run again call ok 2
+not-run after 2 raw 2
+env function nil results=1 [string "return getfenv(1), script, getfenv(0), _G, shared, require"] n=[] l=1
+env same-as-caller true script true thread-env true thread-is-env true _G true shared true require true
+env getfenv(f) true
+again function nil results=1 [string "return 1"] n=[] l=1
+again function nil results=1 [string "return 1"] n=[] l=1
+again same-function false
+setfenv function nil results=1 [string "return Marker, type(print), script"] n=[] l=1
+setfenv ok true
+setfenv call ok replaced nil nil
+setfenv caller-untouched nil function
+setfenv layered ok layered function true
+no-upvalues function nil results=1 [string "return Local"] n=[] l=1
+no-upvalues call ok nil
+yields function nil results=1 [string "task.wait() return 'waited'"] n=[] l=1
+yields call ok waited

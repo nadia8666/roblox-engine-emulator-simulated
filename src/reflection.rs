@@ -269,7 +269,8 @@ pub struct Reflection {
 /// methods are not in it), interned at load so behaviours can register them.
 const BEHAVIOR_ONLY_NAMES: &[&str] = &[
     "DistanceFromCharacter", "GetFriendsOnline", "GetJoinData", "GetMouse", "GetNetworkPing", "GetRankInGroup",
-    "GetRoleInGroup", "HasAppearanceLoaded", "IsFriendsWith", "IsInGroup", "IsVerified", "LoadCharacter", "LoadCharacterAsync",
+    "GetRankInGroupAsync", "GetRoleInGroup", "GetRoleInGroupAsync", "HasAppearanceLoaded", "IsFriendsWith", "IsInGroup",
+    "IsInGroupAsync", "IsVerified", "LoadCharacter", "LoadCharacterAsync",
     "RequestStreamAroundAsync", "Kick", "Move", "AddReplicationFocus", "RemoveReplicationFocus",
 ];
 
@@ -289,20 +290,35 @@ const RENAMED_CONTENT: &[(&str, &str, &str)] = &[
     ("Decal", "ColorMapContent", "Texture"),
 ];
 
-// Measured deprecated item names that resolve but are not enumerated (enums.luau ItemAliases).
+// Legacy item names: each resolves to the item beside it, which reports its current name, and no enumeration, FromName
+// or FromValue answers a legacy one. The names are the LegacyNames of Roblox's published API dump (0.747); all 73 measured
+// in a 0.747 client (tools/parity/probes/enum_legacy.luau). KeyCode's value 0 is None there, and Unknown its legacy name.
+#[rustfmt::skip]
 const ITEM_ALIASES: &[(&str, &[(&str, &str)])] = &[
-    (
-        "Font",
-        &[
-            ("GothamSemibold", "GothamMedium"),
-            ("Montserrat", "Gotham"),
-            ("MontserratMedium", "GothamMedium"),
-            ("MontserratBold", "GothamBold"),
-            ("MontserratBlack", "GothamBlack"),
-        ],
-    ),
+    ("AccessoryType", &[("TeeShirt", "TShirt")]),
+    ("AssetType", &[("TeeShirt", "TShirt"), ("TeeShirtAccessory", "TShirtAccessory")]),
+    ("AvatarAssetType", &[("TeeShirtAccessory", "TShirtAccessory")]),
+    ("Axis", &[("Left", "X"), ("Right", "X"), ("Bottom", "Y"), ("Top", "Y"), ("Back", "Z"), ("Front", "Z")]),
+    ("BinType", &[("Laser", "Script"), ("Rocket", "Script"), ("Slingshot", "Script")]),
+    ("CatalogSortType", &[("RecentlyUpdated", "RecentlyCreated")]),
+    ("ConnectionError", &[("DisconnectNoResponse", "DisconnectRaknetErrors")]),
+    ("ContextActionPriority", &[("Default", "Medium")]),
+    ("ControlMode", &[("Mouse Lock Switch", "MouseLockSwitch")]),
+    ("DeveloperMemoryTag", &[("PhysicsParts", "BaseParts")]),
+    ("ExplosionType", &[("CratersAndDebris", "Craters")]),
+    ("ExternalEditorMode", &[("CustomEditor", "UserSelectedEditor")]),
+    ("FluidForces", &[("Enabled", "Experimental")]),
+    ("Font", &[("Montserrat", "Gotham"), ("GothamSemibold", "GothamMedium"), ("MontserratMedium", "GothamMedium"), ("MontserratBold", "GothamBold"), ("MontserratBlack", "GothamBlack")]),
+    ("FormFactor", &[("Block", "Brick")]),
+    ("InputType", &[("Action1", "NoInput"), ("Action2", "NoInput"), ("Action3", "NoInput"), ("Action4", "NoInput"), ("Action5", "NoInput"), ("LeftTread", "NoInput"), ("RightTread", "NoInput"), ("Steer", "NoInput"), ("Throtle", "NoInput"), ("Throttle", "NoInput"), ("UpDown", "NoInput")]),
+    ("KeyCode", &[("Unknown", "None"), ("Touch", "TouchPosition")]),
+    ("Material", &[("Corroded Metal", "CorrodedMetal"), ("Aluminum", "Foil")]),
+    ("ModelLevelOfDetail", &[("Deactivated", "Disabled")]),
+    ("QualityLevel", &[("Level  1", "Level01"), ("Level  2", "Level02"), ("Level  3", "Level03"), ("Level  4", "Level04"), ("Level  5", "Level05"), ("Level  6", "Level06"), ("Level  7", "Level07"), ("Level  8", "Level08"), ("Level  9", "Level09"), ("Level 10", "Level10"), ("Level 11", "Level11"), ("Level 12", "Level12"), ("Level 13", "Level13"), ("Level 14", "Level14"), ("Level 15", "Level15"), ("Level 16", "Level16"), ("Level 17", "Level17"), ("Level 18", "Level18"), ("Level 19", "Level19"), ("Level 20", "Level20"), ("Level 21", "Level21")]),
     ("RaycastFilterType", &[("Blacklist", "Exclude"), ("Whitelist", "Include")]),
-    ("KeyCode", &[("Unknown", "None")]),
+    ("Style", &[("Alternating Supports", "AlternatingSupports"), ("Bridge Style Supports", "BridgeStyleSupports"), ("No Supports", "NoSupports")]),
+    ("SurfaceType", &[("Spawn", "Smooth"), ("Unjoinable", "Smooth"), ("Bumps", "Glue")]),
+    ("ThreadPoolConfig", &[("PartialThread", "Auto")]),
 ];
 
 // Events of classes only rbx-dom describes (reflection.luau EventSupplement).
@@ -320,33 +336,111 @@ const EVENT_SUPPLEMENT: &[(&str, &[&str])] = &[
         ],
     ),
     ("UserGameSettings", &["FullscreenChanged", "StudioModeChanged"]),
+    // (settings().Studio's theme never changes offline: a signal that never fires; services/settings.rs)
+    ("Studio", &["ThemeChanged"]),
 ];
 
 // Methods of classes only rbx-dom describes (it lists properties alone): UserGameSettings's, which
-// Roblox's PlayerModule calls (behaviours in lua/services.luau)
-const METHOD_SUPPLEMENT: &[(&str, &[&str])] = &[(
-    "UserGameSettings",
-    &[
-        "GetCameraYInvert",
-        "GetCameraYInvertValue",
-        "GetOnboardingCompleted",
-        "InFullScreen",
-        "InStudioMode",
-        "SetCameraYInvertVisible",
-        "SetGamepadCameraSensitivityVisible",
-        "SetOnboardingCompleted",
-    ],
-)];
+// Roblox's PlayerModule calls (behaviours in lua/services.luau), and settings()' (services/settings.rs: GetMaxQualityLevel
+// answers; GetFFlag and GetFVariable are not emulated, since ree knows no flag values)
+const METHOD_SUPPLEMENT: &[(&str, &[&str])] = &[
+    (
+        "UserGameSettings",
+        &[
+            "GetCameraYInvertValue",
+            "GetOnboardingCompleted",
+            "InFullScreen",
+            "InStudioMode",
+            "SetCameraYInvertVisible",
+            "SetGamepadCameraSensitivityVisible",
+            "SetOnboardingCompleted",
+        ],
+    ),
+    ("GlobalSettings", &["GetFFlag", "GetFVariable"]),
+    ("RenderSettings", &["GetMaxQualityLevel"]),
+];
 
-// Properties the dump leaves out: (class, name, script type, engine type, scriptable, serialized). Path2D keeps its
+// Properties the dump leaves out: (class, name, script type, engine type or enum, scriptable, serialized). Path2D keeps its
 // control points in PropertiesSerialize, a BinaryString only files see, and a Transparency that only the engine's own
 // scripts reach, like its selection (path2d.rs; measured in Studio 0.747 and a playing client, Studio 0.744).
+// The streaming and player settings below are properties place files hold and the engine reads (world/gravity.rs):
+// Studio 0.740's ReflectionService listed them with no permits, 0.747's lists them no more, and they are still there
+// (0.747 reads Workspace.StreamingMinRadius 64 and Players.BanningEnabled true at plugin identity). They are stored, and
+// members a game script may not use ([`CAPABILITY_ONLY`]).
 const PROPERTY_SUPPLEMENT: &[(&str, &str, &str, &str, bool, bool)] = &[
     ("Path2D", "PropertiesSerialize", "any", "BinaryString", false, true),
     ("Path2D", "Transparency", "number", "float", true, true),
     ("Path2D", "SelectedControlPoint", "number", "int", true, false),
     ("Path2D", "SelectedControlPointData", "any", "", true, false),
     ("GuiService", "CoreGuiNavigationEnabled", "boolean", "bool", true, false),
+    ("Workspace", "StreamingMinRadius", "number", "int", true, true),
+    ("Workspace", "StreamingTargetRadius", "number", "int", true, true),
+    ("Workspace", "StreamOutBehavior", "EnumItem", "StreamOutBehavior", true, true),
+    ("Workspace", "StreamingIntegrityMode", "EnumItem", "StreamingIntegrityMode", true, true),
+    ("Workspace", "PredictiveStreamingMode", "EnumItem", "PredictiveStreamingMode", true, true),
+    ("Workspace", "PlayerScriptsUseInputActionSystem", "EnumItem", "RolloutState", true, true),
+    ("Players", "BanningEnabled", "boolean", "bool", true, true),
+    ("Players", "UseStrafingAnimations", "boolean", "bool", true, true),
+    ("StarterPlayer", "CreateDefaultPlayerModule", "boolean", "bool", true, true),
+];
+
+/// Properties a game script may neither read nor write: (class, name, the capability it lacks). A playing client and a
+/// server's game script (script identity 2, Studio 0.746) raise "The current thread cannot read 'StreamingMinRadius' (lacking
+/// capability PluginOrOpenCloud)", and "cannot write" for an assignment, where 0.740's dump (no permits) made ree answer
+/// "is not a valid member" (tools/parity/probes/api_747.luau). services::install gives each its getter and setter.
+pub const CAPABILITY_ONLY: &[(&str, &str, &str)] = &[
+    ("Workspace", "StreamingMinRadius", "PluginOrOpenCloud"),
+    ("Workspace", "StreamingTargetRadius", "PluginOrOpenCloud"),
+    ("Workspace", "StreamOutBehavior", "PluginOrOpenCloud"),
+    ("Workspace", "StreamingIntegrityMode", "PluginOrOpenCloud"),
+    ("Workspace", "PredictiveStreamingMode", "PluginOrOpenCloud"),
+    ("Workspace", "PlayerScriptsUseInputActionSystem", "RobloxScript"),
+    ("Players", "BanningEnabled", "PluginOrOpenCloud"),
+    ("Players", "UseStrafingAnimations", "PluginOrOpenCloud"),
+    ("StarterPlayer", "CreateDefaultPlayerModule", "PluginOrOpenCloud"),
+    // settings().Physics' debug drawing settings rbx-dom lists as not scriptable: a plugin's read raises as well (identity 4,
+    // tools/parity/probes/global_settings_tree.luau; services/settings.rs)
+    ("PhysicsSettings", "AreAssemblyCentersOfMassShown", "RobloxScript"),
+    ("PhysicsSettings", "AreCollisionCostsShown", "RobloxScript"),
+    ("PhysicsSettings", "AreConstraintForcesShownForSelectedOrHoveredInstances", "RobloxScript"),
+    ("PhysicsSettings", "AreConstraintTorquesShownForSelectedOrHoveredInstances", "RobloxScript"),
+    ("PhysicsSettings", "AreContactForcesShownForSelectedOrHoveredAssemblies", "RobloxScript"),
+    ("PhysicsSettings", "AreGravityForcesShownForSelectedOrHoveredAssemblies", "RobloxScript"),
+    ("PhysicsSettings", "AreMagnitudesShownForDrawnForcesAndTorques", "RobloxScript"),
+    ("PhysicsSettings", "AreSolverIslandsShown", "RobloxScript"),
+    ("PhysicsSettings", "AreTimestepsShown", "RobloxScript"),
+    ("PhysicsSettings", "DrawConstraintsNetForce", "RobloxScript"),
+    ("PhysicsSettings", "DrawContactsNetForce", "RobloxScript"),
+    ("PhysicsSettings", "DrawTotalNetForce", "RobloxScript"),
+    ("PhysicsSettings", "EnableForceVisualizationSmoothing", "RobloxScript"),
+    ("PhysicsSettings", "FluidForceDrawScale", "RobloxScript"),
+    ("PhysicsSettings", "ForceDrawScale", "RobloxScript"),
+    ("PhysicsSettings", "ForceVisualizationSmoothingSteps", "RobloxScript"),
+    ("PhysicsSettings", "ShowFluidForcesForSelectedOrHoveredMechanisms", "RobloxScript"),
+    ("PhysicsSettings", "ShowInstanceNamesForDrawnForcesAndTorques", "RobloxScript"),
+    ("PhysicsSettings", "SolverConvergenceMetricType", "RobloxScript"),
+    ("PhysicsSettings", "SolverConvergenceVisualizationMode", "RobloxScript"),
+    ("PhysicsSettings", "TorqueDrawScale", "RobloxScript"),
+];
+
+/// Methods a game script may not call: (class, name, the capability it lacks). A playing client's and a server's game
+/// script (script identity 2, Studio 0.747) read each as a function, and a call raises "The current thread cannot call
+/// 'DefineFastInt' (lacking capability RobloxScript)", a string error pcall catches, before the arguments or the
+/// instance are looked at: with none, with tables, on another instance or on no instance at all it is the same error
+/// (tools/parity/probes/engine_capabilities.luau). ree answered nil (not emulated), so a settings helper that falls back
+/// on its default when the define raises went on with nil. At identity 4 (the command bar's) the RobloxScript ones raise
+/// the same and the LocalUser ones answer; a plugin lacks LocalUser too (the developer forum's identity table, not
+/// measured), and the edit run context, where plugin code runs, raises them all. services::install_capability_calls
+/// gives each its function.
+pub const CAPABILITY_CALLS: &[(&str, &str, &str)] = &[
+    ("DataModel", "DefineFastFlag", "RobloxScript"),
+    ("DataModel", "DefineFastInt", "RobloxScript"),
+    ("DataModel", "DefineFastString", "RobloxScript"),
+    ("DataModel", "GetFastFlag", "LocalUser"),
+    ("DataModel", "GetFastInt", "LocalUser"),
+    ("DataModel", "GetFastString", "LocalUser"),
+    ("DataModel", "GetEngineFeature", "LocalUser"),
+    ("GuiService", "GetResolutionScale", "RobloxScript"),
 ];
 
 // Callbacks the dump leaves out (it lists none for any class): every callback Roblox's API dump lets
@@ -603,7 +697,9 @@ impl Reflection {
             if let Some(&id) = reflection.class_ids.get(*class) {
                 let known = reflection.classes[id as usize].own_properties.iter().any(|&index| reflection.names[reflection.properties[index as usize].name as usize].as_ref() == *name);
                 if !known {
-                    let index = reflection.add_property(name, script_type, engine_type, None, false, *scriptable, *serialized, id);
+                    // an enum property names its enum where the others name their engine type
+                    let (engine_type, enum_name) = if *script_type == "EnumItem" { ("Enum", Some(*engine_type)) } else { (*engine_type, None) };
+                    let index = reflection.add_property(name, script_type, engine_type, enum_name, false, *scriptable, *serialized, id);
                     reflection.classes[id as usize].own_properties.push(index);
                 }
             }

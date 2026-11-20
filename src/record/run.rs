@@ -79,6 +79,11 @@ pub struct RecordArgs {
     pub timing_check: bool,
     /// This run is one of its probes: the in-frame clock's multiple of the modelled work (Options::clock_probe)
     pub clock_probe: Option<f64>,
+    /// `--latency <frames>` (`--run-context loopback`): frames each way between the server and its client (loopback.rs;
+    /// 1, the measured minimum, by default)
+    pub latency: Option<u32>,
+    /// `--record-side server` (`record --run-context loopback`): record the server's world instead of the client's
+    pub record_server: bool,
 }
 
 impl RecordArgs {
@@ -261,7 +266,25 @@ pub fn parse(args: &[String], record: bool) -> Result<RecordArgs, String> {
         engine.place = Some("game".into());
     }
     let value = |key: &str| args.iter().position(|a| a == key).and_then(|i| args.get(i + 1)).cloned();
-    let harness = value("--harness").ok_or("--harness <file.luau> is required")?;
+    let loopback = engine.run_context.as_deref() == Some("loopback");
+    // (a loopback run without a harness boots both sides from the place's own scripts: an empty path)
+    let harness = match value("--harness") {
+        Some(harness) => harness,
+        None if loopback => String::new(),
+        None => return Err("--harness <file.luau> is required".into()),
+    };
+    let latency = value("--latency")
+        .map(|text| text.parse::<u32>().ok().filter(|frames| *frames >= 1).ok_or("--latency: a whole number of frames, 1 or more"))
+        .transpose()?;
+    if latency.is_some() && !loopback {
+        return Err("--latency is a loopback run's (--run-context loopback)".into());
+    }
+    let record_server = match value("--record-side").as_deref() {
+        None | Some("client") => false,
+        Some("server") if loopback && record => true,
+        Some("server") => return Err("--record-side is a loopback recording's (record --run-context loopback)".into()),
+        Some(other) => return Err(format!("--record-side must be client or server, not {other}")),
+    };
     let out = value("--dir").or_else(|| value("--out")).or_else(|| value("--dump-scene")).map(PathBuf::from);
     let output_log = value("--output-log").map(PathBuf::from);
     if record && out.is_none() {
@@ -287,7 +310,7 @@ pub fn parse(args: &[String], record: bool) -> Result<RecordArgs, String> {
         None => None,
     };
     // (the scene: which bundles the last run like it imported, decoded ahead the next time)
-    let scene = json!([std::path::absolute(&harness).unwrap_or_else(|_| PathBuf::from(&harness)).to_string_lossy(), engine.place, engine.roots, context]).to_string();
+    let scene = json!([if harness.is_empty() { String::new() } else { std::path::absolute(&harness).unwrap_or_else(|_| PathBuf::from(&harness)).to_string_lossy().into_owned() }, engine.place, engine.roots, context]).to_string();
     let model_assets = project::ModelAssetsOverride {
         mount: value("--assets-at"),
         prefixes: value("--assets").map(|list| list.split(',').map(|p| p.trim().trim_matches('/').to_string()).filter(|p| !p.is_empty()).collect()),
@@ -306,8 +329,12 @@ pub fn parse(args: &[String], record: bool) -> Result<RecordArgs, String> {
         .transpose()?;
     let script_timeouts = value("--max-script-timeouts").map(|text| text.parse::<u32>().map_err(|_| "--max-script-timeouts: not a count")).transpose()?;
     let timing_check = record && (args.iter().any(|arg| arg == "--timing-check") || std::env::var("REE_TIMING_CHECK").as_deref() == Ok("1"));
-    Ok(RecordArgs { engine, harness, out, seconds, fps, context, model_assets, animations, frame_times, script_timeout, script_timeouts, timing_check, output_log, clock_probe: None })
+    Ok(RecordArgs { engine, harness, out, seconds, fps, context, model_assets, animations, frame_times, script_timeout, script_timeouts, timing_check, output_log, clock_probe: None, latency, record_server })
 }
+
+/// The exit code of a run whose status is `error` (its harness or a frame failed), with its summary printed and
+/// written as any run's: a caller that checks the exit code first sees the failure (docs/cli.md "Exit codes")
+pub const EXIT_RUN_ERROR: i32 = 1;
 
 /// What a command produced: the summary (printed on stdout) and its status line (stderr).
 pub struct Done {
@@ -319,7 +346,8 @@ pub struct Done {
     pub split: bool,
     /// Its checkpoint came between frames (Context.FrameCheckpoint): a prepared run is for its `--fps`
     pub framed: bool,
-    /// The command's exit code: 0, or [`crate::watchdog::EXIT_SCRIPT_TIMEOUTS`] / [`crate::watchdog::EXIT_ORPHANED`] when stopped
+    /// The command's exit code: 0, [`EXIT_RUN_ERROR`] when the run's status is `error`, or
+    /// [`crate::watchdog::EXIT_SCRIPT_TIMEOUTS`] / [`crate::watchdog::EXIT_ORPHANED`] when stopped
     pub code: i32,
     /// Why a run prepared up to its checkpoint would fail the same way (it read a mesh, an image... first)
     pub unpreparable: Option<String>,
@@ -406,7 +434,11 @@ pub(crate) fn finished(emulator: &Emulator, history: &History) {
 /// `listings`, the mount keeps the directory listings it made (record/prepare.rs checks them again).
 pub(crate) fn start(args: &RecordArgs, host: &Host, listings: bool) -> Result<(Emulator, History), String> {
     let prepared = crate::timing::time("prepare", || launch::prepare(&args.engine, &host.repo))?;
-    let history = History::new(host, args, &prepared.roots);
+    // (a loopback run's two sides require the same modules: each file is compiled once, its bytecode loaded by both)
+    if prepared.options.run_context == crate::RunContext::Loopback {
+        modules::share_compiled_modules();
+    }
+    let history = History::new(host, args, &prepared.place_roots());
     // (a process that keeps compiled modules compiles the ones it lacks into them)
     let prefetch = match &history.modules {
         Some(files) if modules::reusing_compiled_modules() => {
@@ -418,6 +450,17 @@ pub(crate) fn start(args: &RecordArgs, host: &Host, listings: bool) -> Result<(E
     };
     let mut options = prepared.options.clone();
     options.clock_probe = args.clock_probe;
+    let spec = mount::ProjectSpec {
+        roots: prepared.roots.clone(),
+        snapshots: args.engine.snapshots.clone(),
+        snapshot_dir: prepared.snapshot_dir.clone(),
+        mounts: prepared.mounts.clone(),
+        model_assets: args.model_assets.clone(),
+        rojo: prepared.rojo.clone(),
+    };
+    if options.run_context == crate::RunContext::Loopback {
+        return start_loopback(args, host, &options, &spec, prefetch, listings).map(|emulator| (emulator, history));
+    }
     let engine = crate::timing::time("engine (reflection)", || (host.new_engine)(options))?;
     if let Some(prefetch) = prefetch {
         modules::use_prefetch(&engine, prefetch);
@@ -428,13 +471,6 @@ pub(crate) fn start(args: &RecordArgs, host: &Host, listings: bool) -> Result<(E
     if listings {
         engine.state.borrow_mut().project.listings = Some(Vec::new());
     }
-    let spec = mount::ProjectSpec {
-        roots: prepared.roots.clone(),
-        snapshots: args.engine.snapshots.clone(),
-        snapshot_dir: prepared.snapshot_dir.clone(),
-        mounts: prepared.mounts.clone(),
-        model_assets: args.model_assets.clone(),
-    };
     let emulator = Emulator::start(engine, &spec)?;
     crate::luau_profile::install(&emulator.lua);
     // Roblox's script execution timeout (watchdog.rs): a script that never yields errors instead of spinning for good
@@ -442,6 +478,35 @@ pub(crate) fn start(args: &RecordArgs, host: &Host, listings: bool) -> Result<(E
     let timeout = crate::watchdog::ScriptTimeout::install(&emulator.lua, &emulator.engine, limit, crate::watchdog::stop_after(args.script_timeouts));
     emulator.engine.state.borrow_mut().sched.timeout = timeout;
     Ok((emulator, history))
+}
+
+/// A loopback run's pair (src/loopback): the server's engine with the project mounted, as a server run mounts it, then the
+/// client's engine started (Engine.Start only: its DataModel comes from the server at the join; its engine Luau interpreted,
+/// which is not charged, so no output changes, and nothing compiled to native code), each with the script timeout; the
+/// client's Emulator, which holds the server.
+fn start_loopback(args: &RecordArgs, host: &Host, options: &crate::Options, spec: &mount::ProjectSpec, prefetch: Option<std::sync::Arc<modules::Prefetch>>, listings: bool) -> Result<Emulator, String> {
+    use crate::loopback::{self, Side};
+    let limit = crate::watchdog::script_timeout_seconds(args.script_timeout);
+    let prefetch = std::cell::RefCell::new(prefetch);
+    let loopback_spec = loopback::Spec { latency: args.latency.unwrap_or(1), record_server: args.record_server };
+    let client = loopback::start(&*host.new_engine, options, spec, loopback_spec, &|engine, side| {
+        if side == Side::Server {
+            if let Some(prefetch) = prefetch.borrow_mut().take() {
+                modules::use_prefetch(engine, prefetch);
+            }
+            if listings {
+                engine.state.borrow_mut().project.listings = Some(Vec::new());
+            }
+        }
+        crate::animation::enable(engine, crate::animation::Loading { directories: args.animations.clone(), download: true });
+    })?;
+    crate::luau_profile::install(&client.lua);
+    let (server_lua, server) = client.engine.peer_server().ok_or("not a loopback client")?;
+    for (lua, engine) in [(&server_lua, &server), (&*client.lua, &client.engine)] {
+        let timeout = crate::watchdog::ScriptTimeout::install(lua, engine, limit, crate::watchdog::stop_after(args.script_timeouts));
+        engine.state.borrow_mut().sched.timeout = timeout;
+    }
+    Ok(client)
 }
 
 /// Ends an emulator in a process that exits next: the bundle worker is stopped and the rest is
@@ -462,7 +527,7 @@ pub fn record(args: &RecordArgs, host: &Host) -> Result<Json, String> {
 }
 
 fn record_in(emulator: &Emulator, args: &RecordArgs, host: &Host) -> Result<Done, String> {
-    let recorder = Recorder::install(&emulator.engine, args.fps);
+    let recorder = Recorder::install(&crate::loopback::recorded(&emulator.engine), args.fps);
     recorder.set_frame_times(args);
     // (a timing check compares the work each frame did between the recording and its probes)
     if args.timing_check || args.clock_probe.is_some() {
@@ -489,6 +554,10 @@ pub(crate) fn record_done(emulator: &Emulator, args: &RecordArgs, host: &Host, r
     if engine.options.server() {
         extra.insert("runContext".into(), json!("server"));
     }
+    if let Some(loopback) = crate::loopback::summary(engine) {
+        extra.insert("runContext".into(), json!("loopback"));
+        extra.insert("loopback".into(), loopback);
+    }
     extra.insert("out".into(), json!(std::path::absolute(&out).unwrap_or(out.clone()).to_string_lossy()));
     // (a service's job whose client has gone: nobody reads its files)
     if ran.code == crate::watchdog::EXIT_ORPHANED {
@@ -496,9 +565,14 @@ pub(crate) fn record_done(emulator: &Emulator, args: &RecordArgs, host: &Host, r
         let line = format!("{}: record {}; {} frames; not written: {}", host.name, ran.status, ran.frames + 1, crate::watchdog::CALLER_GONE);
         return Ok(Done { summary: Json::Object(extra), line, checkpoint: ran.checkpoint, split: ran.split, framed: ran.framed, code: ran.code, unpreparable: ran.unchecked.clone(), output: None });
     }
+    let unemulated = unemulated(engine);
+    let used = unemulated_count(&unemulated);
+    if let Some(list) = unemulated {
+        extra.insert("unemulated".into(), list);
+    }
     let summary = crate::timing::time("write", || recorder.write(engine, &out, extra))?;
     let line = format!(
-        "{}: record {}; {} frames; {} instances; {} errors; {:.2}s -> {}",
+        "{}: record {}; {} frames; {} instances; {} errors{used}; {:.2}s -> {}",
         host.name,
         ran.status,
         ran.frames + 1,
@@ -539,7 +613,9 @@ pub(crate) fn run_done(emulator: &Emulator, args: &RecordArgs, host: &Host, ran:
     if let Some(error) = state.output.log_error() {
         return Err(format!("output log: {error}"));
     }
-    let line = format!("{}: run {}; {} frames; {lines} output lines; {errors} errors; {:.2}s", host.name, ran.status, ran.frames + 1, started.elapsed().as_secs_f64());
+    let unemulated = unemulated(engine);
+    let used = unemulated_count(&unemulated);
+    let line = format!("{}: run {}; {} frames; {lines} output lines; {errors} errors{used}; {:.2}s", host.name, ran.status, ran.frames + 1, started.elapsed().as_secs_f64());
     let mut summary = json!({
         "status": ran.status,
         "harness": ran.harness.to_string_lossy(),
@@ -553,14 +629,39 @@ pub(crate) fn run_done(emulator: &Emulator, args: &RecordArgs, host: &Host, ran:
     if let Some(failure) = ran.failure {
         summary["failure"] = json!(failure);
     }
+    if let Some(list) = unemulated {
+        summary["unemulated"] = list;
+    }
     if ran.done {
         summary["done"] = json!(true);
     }
     if engine.options.server() {
         summary["runContext"] = json!("server");
     }
+    if let Some(loopback) = crate::loopback::summary(engine) {
+        summary["runContext"] = json!("loopback");
+        summary["loopback"] = loopback;
+    }
     let output = spooled.map(|spool| spool.finish()).transpose()?;
     Ok(Done { summary, line, checkpoint: ran.checkpoint, split: ran.split, framed: ran.framed, code: ran.code, unpreparable: ran.unchecked.clone(), output })
+}
+
+/// A summary's `unemulated` list (crate::output::unemulated): the members the run's scripts used that the engine does not
+/// emulate, a loopback client's beside its server's. None (the key left out) when they used none.
+fn unemulated(engine: &Rc<crate::Engine>) -> Option<Json> {
+    let mut sides = vec![engine.state.borrow().output.unemulated()];
+    if let Some((_, server)) = engine.peer_server() {
+        sides.push(server.state.borrow().output.unemulated());
+    }
+    crate::output::unemulated(&sides)
+}
+
+/// The status line's count of [`unemulated`] members (`; 2 unemulated`), empty when there are none.
+fn unemulated_count(list: &Option<Json>) -> String {
+    match list.as_ref().and_then(Json::as_array) {
+        Some(list) => format!("; {} unemulated", list.len()),
+        None => String::new(),
+    }
 }
 
 /// `ree serve --warm [engine options, --assets-at, --assets]`: what a first recording of the project
@@ -587,15 +688,15 @@ pub fn warm(args: &[String], host: &Host) -> Result<Json, String> {
         scene: None,
     };
     let prepared = launch::prepare(&engine_args, &host.repo)?;
-    let files = project_module_lists(&crate::state_dir(&host.repo).join("record"), &prepared.roots);
+    let files = project_module_lists(&crate::state_dir(&host.repo).join("record"), &prepared.place_roots());
     let files: Vec<String> = files.into_iter().filter(|file| crate::files::is_file(std::path::Path::new(file))).collect();
     let modules_read = modules::precompile_now(&files);
     let engine = (host.new_engine)(prepared.options.clone())?;
     #[cfg(feature = "bundles")]
-    let (bundles, bundles_read) = project::model_assets::warm(&host.repo, &prepared.roots, &model_assets, &engine.reflection);
+    let (bundles, bundles_read) = project::model_assets::warm(&host.repo, &prepared.place_roots(), &model_assets, &engine.reflection);
     #[cfg(not(feature = "bundles"))]
     let (bundles, bundles_read) = (0, 0);
-    let spec = mount::ProjectSpec { roots: prepared.roots.clone(), snapshots: engine_args.snapshots.clone(), snapshot_dir: prepared.snapshot_dir.clone(), mounts: prepared.mounts.clone(), model_assets };
+    let spec = mount::ProjectSpec { roots: prepared.roots.clone(), snapshots: engine_args.snapshots.clone(), snapshot_dir: prepared.snapshot_dir.clone(), mounts: prepared.mounts.clone(), model_assets, rojo: prepared.rojo.clone() };
     let emulator = Emulator::start(engine, &spec)?;
     #[cfg(feature = "bundles")]
     project::model_assets::stop(&emulator.engine);
@@ -656,7 +757,13 @@ impl History {
     fn save(&self, engine: &Engine) {
         #[cfg(feature = "bundles")]
         project::model_assets::remember(engine);
-        let files = modules::required_files(engine);
+        let mut files = modules::required_files(engine);
+        // (a loopback run's server requires most of what both sides do)
+        if let Some((_, server)) = engine.peer_server() {
+            files.extend(modules::required_files(&server));
+            files.sort();
+            files.dedup();
+        }
         if self.modules.as_ref() == Some(&files) || files.is_empty() {
             return;
         }
@@ -758,14 +865,121 @@ impl Begun {
 
 /// The harness, frame 0, then the frames (each sampled by `recorder`).
 pub fn run(lua: &Lua, engine: &Rc<Engine>, args: &RecordArgs, recorder: Option<&Recorder>) -> Result<Ran, String> {
+    if engine.peer.borrow().is_some() {
+        return run_loopback(lua, engine, args, recorder);
+    }
     let begun = begin_run(lua, engine, args, false)?;
     finish_run(lua, engine, args, recorder, begun)
+}
+
+/// A loopback run (src/loopback): the server's harness starts (its `Server`) and runs to its first yield, the player joins,
+/// then the client's harness starts (its `Client`) and the frames run, the pair stepped together. When the server's
+/// harness held the join (Context.HoldJoin), the server steps alone until it calls Context.Join, and the player joins at
+/// that frame's end. The run fails when either side's harness does.
+fn run_loopback(lua: &Lua, engine: &Rc<Engine>, args: &RecordArgs, recorder: Option<&Recorder>) -> Result<Ran, String> {
+    use crate::loopback::{self, Side};
+    let (server_lua, server) = engine.peer_server().ok_or("not a loopback client")?;
+    let endpoint = engine.loopback().ok_or("not a loopback client")?;
+    let bridge = endpoint.bridge.clone();
+    let server_begun = begin_side(&server_lua, &server, args, Side::Server)?;
+    let mut held = Steps::default();
+    let schedule = args.frame_schedule();
+    if bridge.hold_join.get() && !bridge.join_asked.get() {
+        // the server alone, until its harness lets the player in
+        scheduler::flush_deferred(&server_lua, &server).map_err(|error| error.to_string())?;
+        while held.next < schedule.len() && !bridge.join_asked.get() && !engine.state.borrow().output.done {
+            let at = schedule[held.next];
+            let delta = at - held.previous;
+            held.previous = at;
+            held.next += 1;
+            scheduler::step_one(&server_lua, &server, Some(delta)).map_err(|error| error.to_string())?;
+            loopback::replicate::flush(&server, &bridge);
+            held.stepped = held.next as u32;
+        }
+    }
+    let ahead = held.next > 0;
+    if !ahead || bridge.join_asked.get() {
+        crate::timing::time("loopback: join", || loopback::join(lua, engine))?;
+    }
+    // (a join held to the run's end: the client never joined, and nothing of it runs)
+    let mut client_begun = if bridge.joined.get() { begin_side(lua, engine, args, Side::Client)? } else { idle_begun(lua, engine)? };
+    if ahead {
+        client_begun.framed = Some(held);
+    }
+    let mut ran = finish_run(lua, engine, args, recorder, client_begun)?;
+    // (a loopback run is not prepared ahead by a service: v1 runs its jobs cold, so its checkpoint is not reported)
+    ran.checkpoint = false;
+    if let CallOutcome::Failed(message, trace) = server_begun.harness_call.outcome().map_err(|error| error.to_string())? {
+        server.output("error", message.clone(), trace);
+        if ran.status == "ok" || ran.status == "yielded" {
+            ran.status = "error".into();
+        }
+        ran.failure.get_or_insert(message);
+    }
+    Ok(ran)
+}
+
+/// A host's own loopback client (rur's stories, which mount on the client themselves) after [`loopback::link`]: the server's
+/// part of the loopback `harness` (`{ Server = ... }`; none: the place's own server scripts) starts on the pair's server
+/// as `ree run` starts it, then the player joins, at once or, when that harness held the join (Context.HoldJoin), once it
+/// calls Context.Join (the server steps alone meanwhile, `frame` seconds a step, `max_frames` at most). An error the
+/// harness raises before its first yield is returned; later ones are output lines, as in a run.
+///
+/// [`loopback::link`]: crate::loopback::link
+pub fn begin_server(client_lua: &Lua, client: &Rc<Engine>, harness: Option<&std::path::Path>, frame: f64, max_frames: u32) -> Result<(), String> {
+    use crate::loopback::{self, Side};
+    let (server_lua, server) = client.peer_server().ok_or("not a loopback client")?;
+    let bridge = client.loopback().ok_or("not a loopback client")?.bridge.clone();
+    let mut words: Vec<String> = vec!["--run-context".into(), "loopback".into(), "--roots".into(), String::new()];
+    if let Some(harness) = harness {
+        words.extend(["--harness".into(), harness.to_string_lossy().into_owned()]);
+    }
+    let args = parse(&words, false)?;
+    let begun = begin_side(&server_lua, &server, &args, Side::Server)?;
+    if let CallOutcome::Failed(message, _) = begun.harness_call.outcome().map_err(|error| error.to_string())? {
+        return Err(message);
+    }
+    if bridge.hold_join.get() && !bridge.join_asked.get() {
+        scheduler::flush_deferred(&server_lua, &server).map_err(|error| error.to_string())?;
+        let mut stepped = 0;
+        while stepped < max_frames && !bridge.join_asked.get() {
+            scheduler::step_one(&server_lua, &server, Some(frame)).map_err(|error| error.to_string())?;
+            loopback::replicate::flush(&server, &bridge);
+            stepped += 1;
+        }
+    }
+    if !bridge.hold_join.get() || bridge.join_asked.get() {
+        crate::timing::time("loopback: join", || loopback::join(client_lua, client))?;
+    }
+    Ok(())
+}
+
+/// A loopback run's side's harness started: its part of a `{ Server, Client }` harness, or the place's own scripts with no
+/// harness (loopback.rs `boot`)
+fn begin_side(lua: &Lua, engine: &Rc<Engine>, args: &RecordArgs, side: crate::loopback::Side) -> Result<Begun, String> {
+    if args.harness.is_empty() {
+        crate::loopback::boot(lua, engine, side)?;
+        return idle_begun(lua, engine);
+    }
+    begin_run_as(lua, engine, args, false, Some(side))
+}
+
+/// A side with no harness of its own: a call that has finished
+fn idle_begun(lua: &Lua, engine: &Rc<Engine>) -> Result<Begun, String> {
+    let function = lua.create_function(|_, ()| Ok(())).map_err(|error| error.to_string())?;
+    let call = crate::lua::globals::call(lua, engine, function, LuaMultiValue::new()).map_err(|error| error.to_string())?;
+    Ok(Begun { harness_call: call, harness: PathBuf::new(), checkpoint: Rc::new(Checkpoint::default()), starting: crate::timing::start("harness start"), framed: None })
 }
 
 /// The harness mounted and started, up to its first yield, or, when `park`, up to its checkpoint
 /// (Context.Checkpoint) when it calls it before that: then nothing after the call has run, not even
 /// the deferred flush that follows a harness's first resumption.
 pub(crate) fn begin_run(lua: &Lua, engine: &Rc<Engine>, args: &RecordArgs, park: bool) -> Result<Begun, String> {
+    begin_run_as(lua, engine, args, park, None)
+}
+
+/// [`begin_run`] of a loopback run's `side` (its part of the harness), or of a plain run (None)
+fn begin_run_as(lua: &Lua, engine: &Rc<Engine>, args: &RecordArgs, park: bool, side: Option<crate::loopback::Side>) -> Result<Begun, String> {
     let lua_error = |error: LuaError| error.to_string();
     let starting = crate::timing::start("harness start");
     let harness = std::path::absolute(&args.harness).map_err(|e| format!("{}: {e}", args.harness))?;
@@ -779,9 +993,14 @@ pub(crate) fn begin_run(lua: &Lua, engine: &Rc<Engine>, args: &RecordArgs, park:
     // fields until Prepare has returned and the checkpoint passed, when Fill gives it them)
     let runner: LuaFunction = lua
         .load(
-            "local Require, Module, MakeContext, Fill, Arm = ... \
+            "local Require, Module, MakeContext, Fill, Arm, Side = ... \
              Arm() \
              local Harness = Require(Module) \
+             if Side ~= nil then \
+             assert(type(Harness) == 'table' and (Harness.Server ~= nil or Harness.Client ~= nil), 'a loopback harness returns { Server = function(Context) or { Prepare, Run }, Client = function(Context) or { Prepare, Run } } (either may be left out)') \
+             Harness = Harness[Side] \
+             if Harness == nil then return end \
+             end \
              if type(Harness) == 'table' and Harness.Prepare ~= nil then \
              assert(type(Harness.Prepare) == 'function' and type(Harness.Run) == 'function', 'a record harness with Prepare returns { Prepare = function(Context), Run = function(Context) }') \
              local Context = MakeContext(true) \
@@ -823,7 +1042,12 @@ pub(crate) fn begin_run(lua: &Lua, engine: &Rc<Engine>, args: &RecordArgs, park:
     };
     checkpoint.armed.set(true);
     let parked = checkpoint.clone();
-    let arguments = LuaMultiValue::from_iter([LuaValue::Function(require), module_value, LuaValue::Function(make_context), LuaValue::Function(fill), LuaValue::Function(arm)]);
+    let side_value = match side {
+        Some(crate::loopback::Side::Server) => LuaValue::String(lua.create_string("Server").map_err(lua_error)?),
+        Some(crate::loopback::Side::Client) => LuaValue::String(lua.create_string("Client").map_err(lua_error)?),
+        None => LuaValue::Nil,
+    };
+    let arguments = LuaMultiValue::from_iter([LuaValue::Function(require), module_value, LuaValue::Function(make_context), LuaValue::Function(fill), LuaValue::Function(arm), side_value]);
     let harness_call = call_then(lua, engine, runner, arguments, || !parked.parked.get()).map_err(lua_error)?;
     if !checkpoint.parked.get() {
         checkpoint.armed.set(false);
@@ -859,7 +1083,8 @@ pub(crate) fn finish_run(lua: &Lua, engine: &Rc<Engine>, args: &RecordArgs, reco
         }
         scheduler::flush_deferred(lua, engine).map_err(lua_error)?;
         if let Some(recorder) = recorder {
-            crate::timing::time("recorder: first walk", || crate::luau_profile::engine_step("recorder", || recorder.sample(engine, 0)));
+            let sampled = crate::loopback::recorded(engine);
+            crate::timing::time("recorder: first walk", || crate::luau_profile::engine_step("recorder", || recorder.sample(&sampled, 0)));
         }
     }
     starting.stop();
@@ -884,6 +1109,8 @@ pub(crate) fn finish_run(lua: &Lua, engine: &Rc<Engine>, args: &RecordArgs, reco
     }
     let done = engine.state.borrow().output.done;
     let Steps { status, failure, stepped, code, .. } = steps;
+    // (a failed run exits as a failed command does; a guard that stopped it keeps its own code)
+    let code = if code == 0 && status == "error" { EXIT_RUN_ERROR } else { code };
     Ok(Ran { status, failure, frames: stepped, harness, checkpoint: checkpoint.reached.get(), split: checkpoint.split.get(), framed: checkpoint.framed.get(), code, done, unchecked: checkpoint.unchecked.borrow().clone() })
 }
 
@@ -966,7 +1193,8 @@ fn step_frames(lua: &Lua, engine: &Rc<Engine>, args: &RecordArgs, recorder: Opti
             return Ok(false);
         }
         if let Some(recorder) = recorder {
-            crate::timing::time("frames: sample", || crate::luau_profile::engine_step("recorder", || recorder.sample(engine, frame)));
+            let sampled = crate::loopback::recorded(engine);
+            crate::timing::time("frames: sample", || crate::luau_profile::engine_step("recorder", || recorder.sample(&sampled, frame)));
         }
         steps.stepped = frame;
     }
@@ -1004,6 +1232,12 @@ pub(crate) fn advance_to_frame_checkpoint(lua: &Lua, engine: &Rc<Engine>, args: 
 
 /// The failure of a run its script timeouts stop after frame `stepped` (watchdog.rs `ScriptTimeout::stopped`)
 fn timeouts_stop(engine: &Rc<Engine>, stepped: u32) -> Option<String> {
+    // (a loopback run stops at the third timeout of either side's VM)
+    if let Some((_, server)) = engine.peer_server()
+        && let Some(why) = server.state.borrow().sched.timeout.clone().and_then(|timeout| timeout.stopped())
+    {
+        return Some(format!("after frame {stepped}: the server: {why}"));
+    }
     let timeout = engine.state.borrow().sched.timeout.clone()?;
     timeout.stopped().map(|why| format!("after frame {stepped}: {why}"))
 }
@@ -1028,7 +1262,9 @@ pub fn harness_layout(path: &std::path::Path) -> (String, Option<PathBuf>) {
 /// ([`harness_layout`]), so it can require them through `script`.
 fn mount_harness(engine: &Rc<Engine>, path: &std::path::Path) -> Result<crate::InstanceId, String> {
     crate::files::note(path);
-    let source = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // (a loopback run's two sides load the one compile of it)
+    let source = if engine.loopback().is_some() { modules::read_kept(&path.to_string_lossy()) } else { std::fs::read(path) };
+    let source = source.map_err(|e| format!("{}: {e}", path.display()))?;
     let (name, children) = harness_layout(path);
     let game = engine.world().game;
     let storage = services::get_service(engine, game, "ReplicatedStorage").map_err(|_| "ReplicatedStorage")?;
@@ -1218,11 +1454,12 @@ fn context_table(lua: &Lua, engine: &Rc<Engine>, checkpoint: &Rc<Checkpoint>, sp
     context.set("WorkSeconds", lua.create_function(move |_, ()| Ok(e.state.borrow().sched.work_total()))?)?;
     // Context.FireEvent(Instance, Event, ...): fires an engine event the emulator does not raise itself, to the
     // connections made to it (Humanoid.Running while a harness walks a character, which nothing simulates here);
-    // nil, booleans, numbers, strings and instances, as a BindableEvent carries them
+    // nil, booleans, numbers, strings, instances and buffers, as a remote carries them (a buffer arrives as a copy, as a
+    // remote's does)
     let e = engine.clone();
     context.set(
         "FireEvent",
-        lua.create_function(move |_, (target, event, rest): (LuaValue, String, LuaMultiValue)| {
+        lua.create_function(move |lua, (target, event, rest): (LuaValue, String, LuaMultiValue)| {
             let id = engine_lua::instance_id(&target).ok_or_else(|| LuaError::runtime("Context.FireEvent: an Instance first"))?;
             let name = e.reflection.name_id(&event).ok_or_else(|| LuaError::runtime(format!("Context.FireEvent: no event named {event}")))?;
             let mut arguments = Vec::with_capacity(rest.len());
@@ -1233,8 +1470,10 @@ fn context_table(lua: &Lua, engine: &Rc<Engine>, checkpoint: &Rc<Checkpoint>, sp
                     LuaValue::Integer(number) => Value::Number(number as f64),
                     LuaValue::Number(number) => Value::Number(number),
                     LuaValue::String(text) => Value::String(Str::new(&*text.as_bytes())),
+                    LuaValue::Buffer(buffer) => Value::Lua(Box::new(LuaValue::Buffer(lua.create_buffer(buffer.to_vec())?))),
                     other => Value::Instance(
-                        engine_lua::instance_id(&other).ok_or_else(|| LuaError::runtime("Context.FireEvent: arguments are nil, booleans, numbers, strings or instances"))?,
+                        engine_lua::instance_id(&other)
+                            .ok_or_else(|| LuaError::runtime("Context.FireEvent: arguments are nil, booleans, numbers, strings, buffers or instances"))?,
                     ),
                 });
             }
@@ -1271,6 +1510,35 @@ fn context_table(lua: &Lua, engine: &Rc<Engine>, checkpoint: &Rc<Checkpoint>, sp
             Ok(serde_json::to_string(&report).unwrap_or_default())
         })?,
     )?;
+    // A loopback run's sides (src/loopback): Context.Side is "server" or "client"; the server's harness also gets the player
+    // that is to join (Context.Player, a Player not in Players yet: Context.SetJoinData works on it), HoldJoin() (the player
+    // joins when the harness calls Join(), at that frame's end, not before frame 1) and Leave() (the player leaves at the
+    // next frame boundary: PlayerRemoving on the server, the client steps no more, its waiting InvokeClient calls raise)
+    if let Some(endpoint) = engine.loopback() {
+        context.set("Side", endpoint.side.name())?;
+        if endpoint.side == crate::loopback::Side::Server {
+            if let Some((player, _)) = endpoint.bridge.player.get() {
+                context.set("Player", instance_value(lua, engine, player)?)?;
+            }
+            let bridge = endpoint.bridge.clone();
+            context.set("HoldJoin", lua.create_function(move |_, ()| {
+                if !bridge.joined.get() {
+                    bridge.hold_join.set(true);
+                }
+                Ok(())
+            })?)?;
+            let bridge = endpoint.bridge.clone();
+            context.set("Join", lua.create_function(move |_, ()| {
+                bridge.join_asked.set(true);
+                Ok(())
+            })?)?;
+            let bridge = endpoint.bridge.clone();
+            context.set("Leave", lua.create_function(move |_, ()| {
+                bridge.leave_asked.set(true);
+                Ok(())
+            })?)?;
+        }
+    }
     // Context.Mount(Path, File): `--mount Path=File` from the harness (what a run varies, a bundle
     // say, mounted after its checkpoint); the instance at Path, nil when the mount made none there
     let e = engine.clone();

@@ -3682,7 +3682,7 @@
          methods.add_method("ToHex", |_, this, ()| {
 --- a/crates/lune-roblox/src/datatypes/types/mod.rs
 +++ b/crates/lune-roblox/src/datatypes/types/mod.rs
-@@ -87,3 +87,327 @@ pub fn format_g(value: f64, precision: usize) -> String {
+@@ -87,3 +87,352 @@ pub fn format_g(value: f64, precision: usize) -> String {
  fn trim_fraction(text: &str) -> &str {
      if text.contains('.') { text.trim_end_matches('0').trim_end_matches('.') } else { text }
  }
@@ -3846,14 +3846,39 @@
 +    }
 +
 +    /// ToAxisAngle: `angle = acosf(0.5 * (((R00 + R11) + R22) - 1))`, `axis = (R21 - R12, R02 - R20, R10 - R01).Unit`.
-+    /// At angle 0 the axis is X (not measured: G3D's and glam's choice, and ree's before).
++    /// The angle is only as fine as that cosine: within a float step of 1 it reads 0 (a 0.0003 rad turn does), then
++    /// 2^-11, and so on (measured). At angle 0 the axis is X (measured); skew terms that are all zero under another
++    /// angle give the axis 0, 0, 0 (measured). At a half turn (the cosine is -1) the skew terms say nothing, and the axis
++    /// comes from the largest diagonal term `d`: that component is `0.5 sqrtf(((d - e) - f) + 1)` and the other two
++    /// `0.5 / component` times a term of the upper triangle (G3D's Matrix3::toAxisAngle; it fits the measured lines).
 +    pub fn to_axis_angle(r: &Rot) -> (Vec3, f32) {
 +        let cos = (0.5 * (((r[0][0] + r[1][1]) + r[2][2]) - 1.0)).clamp(-1.0, 1.0);
 +        let angle = cos.acos();
 +        if angle == 0.0 {
 +            return ([1.0, 0.0, 0.0], 0.0);
 +        }
-+        (unit3([r[2][1] - r[1][2], r[0][2] - r[2][0], r[1][0] - r[0][1]]), angle)
++        if angle < std::f32::consts::PI {
++            let skew = [r[2][1] - r[1][2], r[0][2] - r[2][0], r[1][0] - r[0][1]];
++            if skew == [0.0, 0.0, 0.0] {
++                return (skew, angle);
++            }
++            return (unit3(skew), angle);
++        }
++        let (d0, d1, d2) = (r[0][0], r[1][1], r[2][2]);
++        let axis = if d0 >= d1 && d0 >= d2 {
++            let x = 0.5 * (((d0 - d1) - d2) + 1.0).sqrt();
++            let half = 0.5 / x;
++            [x, half * r[0][1], half * r[0][2]]
++        } else if d1 > d0 && d1 >= d2 {
++            let y = 0.5 * (((d1 - d0) - d2) + 1.0).sqrt();
++            let half = 0.5 / y;
++            [half * r[0][1], y, half * r[1][2]]
++        } else {
++            let z = 0.5 * (((d2 - d0) - d1) + 1.0).sqrt();
++            let half = 0.5 / z;
++            [half * r[0][2], half * r[1][2], z]
++        };
++        (axis, angle)
 +    }
 +
 +    /// lookAt / lookAlong: `look = dir.Unit`, `right = (look x up).Unit`, or `(look x X).Unit` when `|look x up|^2`
@@ -4304,3 +4329,241 @@
          }
      }
  }
+--- a/crates/lune-roblox/src/datatypes/types/cframe.rs
++++ b/crates/lune-roblox/src/datatypes/types/cframe.rs
+@@ -18,7 +18,7 @@ use super::{super::*, Vector3, VectorArg, charge_host_nanos, float32 as f32m, na
+     Roblox datatype, backed by [`glam::Mat4`].
+ 
+     This implements most documented properties, methods & constructors of the `CFrame` class as of October 2025,
+-    notably missing `CFrame.fromRotationBetweenVectors` and `CFrame:AngleBetween()`.
++    notably missing `CFrame:AngleBetween()`.
+ */
+ #[derive(Debug, Clone, Copy, PartialEq)]
+ pub struct CFrame(pub Mat4);
+@@ -91,6 +91,8 @@ pub mod price {
+     /// (a Studio playtest client read Angles at 27-29 ns, below what the call counts here; a client of the match place 49.6)
+     pub const ANGLES: i32 = 18;
+     pub const FROM_AXIS_ANGLE: i32 = 48;
++    /// (not measured)
++    pub const ROTATION_BETWEEN: i32 = 0;
+     pub const LOOK_AT: i32 = 55;
+     /// `:FuzzyEq` comparing both parts, and answering from the position alone (a client stops at a position that differs). The
+     /// parity bench's rows (a rendered client of a game's match place, six sessions of the whole corpus on a busy machine, each
+@@ -410,6 +412,12 @@ impl LuaExportsTable for CFrame {
+             Ok(CFrame::from_parts([0.0; 3], f32m::from_euler("YXZ", rx, ry, rz)))
+         };
+ 
++        // (types::float32 `rotation_between`: the vectors as given, measured to the bit in a playing client)
++        let cframe_from_rotation_between_vectors = |lua: &Lua, (a, b): (VectorArg, VectorArg)| {
++            charge_host_nanos(lua, price::ROTATION_BETWEEN);
++            Ok(CFrame::from_parts([0.0; 3], f32m::rotation_between(array(a.0), array(b.0))))
++        };
++
+         let cframe_look_at = |lua: &Lua, (from, to, up): (VectorArg, VectorArg, Option<VectorArg>)| {
+             charge_host_nanos(lua, price::LOOK_AT);
+             Ok(look_at(from.0, to.0, up.map_or(Vec3::Y, |up| up.0)))
+@@ -524,6 +532,7 @@ impl LuaExportsTable for CFrame {
+             .with_function("fromEulerAnglesYXZ", cframe_from_euler_angles_yxz)?
+             .with_function("fromMatrix", cframe_from_matrix)?
+             .with_function("fromOrientation", cframe_from_orientation)?
++            .with_function("fromRotationBetweenVectors", cframe_from_rotation_between_vectors)?
+             .with_function("lookAlong", cframe_look_along)?
+             .with_function("lookAt", cframe_look_at)?
+             .with_function("new", cframe_new)?
+--- a/crates/lune-roblox/src/datatypes/types/mod.rs
++++ b/crates/lune-roblox/src/datatypes/types/mod.rs
+@@ -360,6 +360,8 @@ pub mod float32 {
+         (a[0] * b[0] + a[1] * b[1]) + (a[2] * b[2] + a[3] * b[3])
+     }
+ 
++    /// A quaternion's rotation: made a unit quaternion first (`q * (1 / sqrtf(dot(q, q)))`, so a zero one gives
++    /// not-a-number), then the matrix in single precision
+     fn rot_from_quat(q: Quat) -> Rot {
+         let k = 1.0 / quat_dot(q, q).sqrt();
+         let [x, y, z, w] = q.map(|c| c * k);
+@@ -374,6 +376,27 @@ pub mod float32 {
+         ]
+     }
+ 
++    /// CFrame.fromRotationBetweenVectors(a, b), for the vectors as given (not made unit; measured in a playing client,
++    /// 0.747, 478 pairs to the bit): the quaternion `(a x b, w)` with `w = sqrtf(|a|^2 |b|^2) + a . b`, or a half turn
++    /// `(axis, 0)` when `w < 1e-5 sqrtf(|a|^2 |b|^2)` (vectors within about a quarter of a degree of opposite) with the
++    /// axis `(0, -a.z, a.y)` if `|a.x| <= |a.y|`, else `(-a.z, 0, a.x)`; made a unit quaternion
++    /// (`q * (1 / sqrtf(dot(q, q)))`) and then a matrix by [`rot_from_quat`], which makes it unit a second time (so
++    /// X to Y reads R01 = -1.0000001). A zero vector, or squared lengths whose product leaves the float range, give
++    /// not-a-number.
++    pub fn rotation_between(a: Vec3, b: Vec3) -> Rot {
++        let length = (dot3(a, a) * dot3(b, b)).sqrt();
++        let w = length + dot3(a, b);
++        let q = if w < 1e-5 * length {
++            let axis = if a[0].abs() <= a[1].abs() { [0.0, -a[2], a[1]] } else { [-a[2], 0.0, a[0]] };
++            [axis[0], axis[1], axis[2], 0.0]
++        } else {
++            let c = cross3(a, b);
++            [c[0], c[1], c[2], w]
++        };
++        let k = 1.0 / quat_dot(q, q).sqrt();
++        rot_from_quat(q.map(|c| c * k))
++    }
++
+     /// CFrame:Lerp blends two rotations' quaternions when their dot is above this, rotations within about 2.2 degrees
+     /// (measured in Studio 0.746: a dot of 0.99981022 blended, 0.99980998 slerped)
+     const BLEND_ABOVE: f32 = 0.99981;
+--- a/crates/lune-roblox/src/datatypes/types/cframe.rs
++++ b/crates/lune-roblox/src/datatypes/types/cframe.rs
+@@ -17,8 +17,7 @@ use super::{super::*, Vector3, VectorArg, charge_host_nanos, float32 as f32m, na
+     An implementation of the [CFrame](https://create.roblox.com/docs/reference/engine/datatypes/CFrame)
+     Roblox datatype, backed by [`glam::Mat4`].
+ 
+-    This implements most documented properties, methods & constructors of the `CFrame` class as of October 2025,
+-    notably missing `CFrame:AngleBetween()`.
++    This implements most documented properties, methods & constructors of the `CFrame` class as of October 2025.
+ */
+ #[derive(Debug, Clone, Copy, PartialEq)]
+ pub struct CFrame(pub Mat4);
+@@ -101,6 +100,8 @@ pub mod price {
+     /// 15.9 here; held out, two CFrames apart in both with an eps given 17.7 (ree 16.4).
+     pub const FUZZY_EQ: i32 = 11;
+     pub const FUZZY_EQ_MOVED: i32 = 0;
++    /// (not measured)
++    pub const ANGLE_BETWEEN: i32 = 0;
+ }
+ 
+ /// `CFrame:FuzzyEq(other, eps = 1e-5)` as a client answers it (measured in a playing client, Studio 0.744: 16,784 pairs at the
+@@ -258,6 +259,69 @@ unsafe extern "C-unwind" fn fuzzy_eq_c(state: *mut mlua::ffi::lua_State) -> std:
+     }
+ }
+ 
++/// The script-facing `AngleBetween` (types::float32 `angle_between`): a C function, as [`FuzzyEqMethod`] is, so that its
++/// errors are the client's plain strings (measured in a playing client, 0.747: tools/parity/probes/cframe_angle_between.luau).
++/// Any count but two raises `Invalid number of arguments. CFrame:AngleBetween expected 2, got <n>.` without a position; a
++/// non-CFrame raises from the calling line, argument #1 naming the method (only a `.` call can pass one) and argument #2
++/// without the name, as a `:` call's does (a client names it in a `.` call too, which a method found through `__index`
++/// cannot tell apart). Its upvalue checks the two values and answers `(0, angle)` or `(n, nil)` for a bad argument `n`.
++struct AngleBetweenMethod;
++
++impl IntoLua for AngleBetweenMethod {
++    fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
++        let checked = lua.create_function(angle_between_checked)?;
++        let method = unsafe {
++            lua.exec_raw::<LuaFunction>(checked, |state| {
++                mlua::ffi::lua_pushcclosurek(state, angle_between_c, c"AngleBetween".as_ptr(), 1, None);
++            })?
++        };
++        Ok(LuaValue::Function(method))
++    }
++}
++
++fn angle_between_checked(lua: &Lua, (this, other): (LuaValue, LuaValue)) -> LuaResult<(i64, LuaValue)> {
++    let cframe = |value: &LuaValue| match value {
++        LuaValue::UserData(ud) => ud.borrow::<CFrame>().ok().map(|cf| *cf),
++        _ => None,
++    };
++    let Some(this) = cframe(&this) else { return Ok((1, LuaValue::Nil)) };
++    let Some(other) = cframe(&other) else { return Ok((2, LuaValue::Nil)) };
++    charge_host_nanos(lua, price::ANGLE_BETWEEN);
++    Ok((0, LuaValue::Number(f32m::angle_between(&this.rot(), &other.rot()))))
++}
++
++unsafe extern "C-unwind" fn angle_between_c(state: *mut mlua::ffi::lua_State) -> std::ffi::c_int {
++    use mlua::ffi;
++    unsafe {
++        let count = ffi::lua_gettop(state);
++        if count != 2 {
++            let message = format!("Invalid number of arguments. CFrame:AngleBetween expected 2, got {count}.");
++            ffi::lua_pushlstring(state, message.as_ptr().cast(), message.len());
++            drop(message);
++            ffi::lua_error(state);
++        }
++        ffi::lua_pushvalue(state, ffi::lua_upvalueindex(1));
++        ffi::lua_pushvalue(state, 1);
++        ffi::lua_pushvalue(state, 2);
++        ffi::lua_call(state, 2, 2);
++        let status = ffi::lua_tointeger(state, -2);
++        if status == 0 {
++            return 1;
++        }
++        let message = if status == 1 {
++            format!("invalid argument #1 to 'AngleBetween' (CFrame expected, got {})", fuzzy_eq_type_name(state, 1))
++        } else {
++            format!("invalid argument #2 (CFrame expected, got {})", fuzzy_eq_type_name(state, 2))
++        };
++        ffi::lua_pushlstring(state, message.as_ptr().cast(), message.len());
++        drop(message);
++        ffi::luaL_where(state, 1);
++        ffi::lua_insert(state, -2);
++        ffi::lua_concat(state, 2);
++        ffi::lua_error(state)
++    }
++}
++
+ /// A method under each of its names, charged `price` nanoseconds
+ macro_rules! aliased {
+     ($methods:ident, $price:expr, [$($name:literal),+], $function:expr) => {
+@@ -605,6 +669,7 @@ impl LuaUserData for CFrame {
+         }
+         // (a C function in the methods table: see FuzzyEqMethod)
+         fields.add_field("FuzzyEq", FuzzyEqMethod);
++        fields.add_field("AngleBetween", AngleBetweenMethod);
+     }
+ 
+     #[allow(clippy::too_many_lines)]
+--- a/crates/lune-roblox/src/datatypes/types/mod.rs
++++ b/crates/lune-roblox/src/datatypes/types/mod.rs
+@@ -397,6 +397,18 @@ pub mod float32 {
+         rot_from_quat(q.map(|c| c * k))
+     }
+ 
++    /// CFrame:AngleBetween, in doubles from the stored floats (measured in a playing client, 0.747, 213 pairs to the
++    /// bit): the cosine `x = (trace(A^T B) - 1) / 2`, the trace summed column by column
++    /// (`d_c = (A0c B0c + A1c B1c) + A2c B2c`, then `(d0 + d1) + d2`), clamped to [-1, 1] (a rotation against itself
++    /// can read a trace past 3), and the angle `atan2(sqrt(1 - x^2), x)` (acos differs in the last bits on a quarter
++    /// of the pairs, single precision by up to 3e-4 near the identity). Positions do not count; not-a-number stays so.
++    pub fn angle_between(a: &Rot, b: &Rot) -> f64 {
++        let product = |i: usize, j: usize| f64::from(a[i][j]) * f64::from(b[i][j]);
++        let column = |c: usize| (product(0, c) + product(1, c)) + product(2, c);
++        let x = ((((column(0) + column(1)) + column(2)) - 1.0) / 2.0).clamp(-1.0, 1.0);
++        (1.0 - x * x).sqrt().atan2(x)
++    }
++
+     /// CFrame:Lerp blends two rotations' quaternions when their dot is above this, rotations within about 2.2 degrees
+     /// (measured in Studio 0.746: a dot of 0.99981022 blended, 0.99980998 slerped)
+     const BLEND_ABOVE: f32 = 0.99981;
+--- a/crates/lune-roblox/src/datatypes/types/cframe.rs
++++ b/crates/lune-roblox/src/datatypes/types/cframe.rs
+@@ -3,7 +3,7 @@
+ use core::fmt;
+ use std::{ops, sync::Arc};
+ 
+-use glam::{Mat3, Mat4, Quat, Vec3, Vec4};
++use glam::{Mat3, Mat4, Vec3, Vec4};
+ use mlua::{Variadic, prelude::*};
+ use rbx_dom_weak::types::{CFrame as DomCFrame, Matrix3 as DomMatrix3, Vector3 as DomVector3};
+ 
+@@ -560,11 +560,11 @@ impl LuaExportsTable for CFrame {
+                 }
+             }
+ 
++            // The quaternion made unit first, then the matrix (types::float32 `rot_from_quat`, as Lerp makes one; a playing
++            // client, 0.747, 134 quaternions to the bit: tools/parity/probes/cframe_new_quat.luau). A zero quaternion gives
++            // not-a-number.
+             7 => match ArgsPosXYZQuat::from_lua_multi(args, lua) {
+-                Ok((x, y, z, qx, qy, qz, qw)) => Ok(CFrame(Mat4::from_rotation_translation(
+-                    Quat::from_array([qx, qy, qz, qw]),
+-                    Vec3::new(x, y, z),
+-                ))),
++                Ok((x, y, z, qx, qy, qz, qw)) => Ok(CFrame::from_parts([x, y, z], f32m::rot_from_quat([qx, qy, qz, qw]))),
+                 Err(err) => Err(err),
+             },
+ 
+--- a/crates/lune-roblox/src/datatypes/types/mod.rs
++++ b/crates/lune-roblox/src/datatypes/types/mod.rs
+@@ -362,7 +362,7 @@ pub mod float32 {
+ 
+     /// A quaternion's rotation: made a unit quaternion first (`q * (1 / sqrtf(dot(q, q)))`, so a zero one gives
+     /// not-a-number), then the matrix in single precision
+-    fn rot_from_quat(q: Quat) -> Rot {
++    pub fn rot_from_quat(q: Quat) -> Rot {
+         let k = 1.0 / quat_dot(q, q).sqrt();
+         let [x, y, z, w] = q.map(|c| c * k);
+         let (x2, y2, z2) = (x + x, y + y, z + z);

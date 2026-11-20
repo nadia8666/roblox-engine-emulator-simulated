@@ -1,0 +1,210 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-18
+default Bool boolean:false
+default Direction1D number:0
+default Direction2D Vector2:0 0
+default Direction3D Vector3:0 0 0
+default ViewportPosition Vector2:-1 -1
+default-type Enum.InputActionType.Bool
+fire no-context ok boolean:false 0
+after no-context: defer-marker
+fire-false no-context ok boolean:false 0
+after-false no-context: (nothing)
+fire context-nil ok boolean:true 0
+after context-nil: context-nil Pressed(0) now boolean:true | context-nil StateChanged(1) boolean:true now boolean:true | defer-marker
+fire-false context-nil ok boolean:false 0
+after-false context-nil: context-nil Released(0) now boolean:false | context-nil StateChanged(1) boolean:false now boolean:false
+fire ReplicatedStorage ok boolean:true 0
+after ReplicatedStorage: ReplicatedStorage Pressed(0) now boolean:true | ReplicatedStorage StateChanged(1) boolean:true now boolean:true | defer-marker
+fire-false ReplicatedStorage ok boolean:false 0
+after-false ReplicatedStorage: ReplicatedStorage Released(0) now boolean:false | ReplicatedStorage StateChanged(1) boolean:false now boolean:false
+fire Workspace ok boolean:true 0
+after Workspace: Workspace Pressed(0) now boolean:true | Workspace StateChanged(1) boolean:true now boolean:true | defer-marker
+fire-false Workspace ok boolean:false 0
+after-false Workspace: Workspace Released(0) now boolean:false | Workspace StateChanged(1) boolean:false now boolean:false
+fire PlayerGui ok boolean:true 0
+after PlayerGui: PlayerGui Pressed(0) now boolean:true | PlayerGui StateChanged(1) boolean:true now boolean:true | defer-marker
+fire-false PlayerGui ok boolean:false 0
+after-false PlayerGui: PlayerGui Released(0) now boolean:false | PlayerGui StateChanged(1) boolean:false now boolean:false
+fire LocalPlayer ok boolean:true 0
+after LocalPlayer: LocalPlayer Pressed(0) now boolean:true | LocalPlayer StateChanged(1) boolean:true now boolean:true | defer-marker
+fire-false LocalPlayer ok boolean:false 0
+after-false LocalPlayer: LocalPlayer Released(0) now boolean:false | LocalPlayer StateChanged(1) boolean:false now boolean:false
+fire StarterGui ok boolean:true 0
+after StarterGui: StarterGui Pressed(0) now boolean:true | StarterGui StateChanged(1) boolean:true now boolean:true | defer-marker
+fire-false StarterGui ok boolean:false 0
+after-false StarterGui: StarterGui Released(0) now boolean:false | StarterGui StateChanged(1) boolean:false now boolean:false
+fire Lighting ok boolean:true 0
+after Lighting: Lighting Pressed(0) now boolean:true | Lighting StateChanged(1) boolean:true now boolean:true | defer-marker
+fire-false Lighting ok boolean:false 0
+after-false Lighting: Lighting Released(0) now boolean:false | Lighting StateChanged(1) boolean:false now boolean:false
+ctx-off fire ok boolean:false
+ctx-off: (nothing)
+ctx-on-again state boolean:false
+ctx-on-again: (nothing)
+ctx-on fire: ctx-off Pressed(0) now boolean:true | ctx-off StateChanged(1) boolean:true now boolean:true
+ctx-disabled-while-pressed state boolean:false
+ctx-disabled-while-pressed: ctx-off Released(0) now boolean:false | ctx-off StateChanged(1) boolean:false now boolean:false
+ctx-disabled-while-pressed later boolean:false
+act-enabled-write ok false
+act-off fire ok boolean:false
+act-off: (nothing)
+act-on-again state boolean:false
+act-on-again: (nothing)
+moved fire: moved Pressed(0) now boolean:true | moved StateChanged(1) boolean:true now boolean:true
+moved state boolean:false
+moved away: moved Released(0) now boolean:false | moved StateChanged(1) boolean:false now boolean:false
+moved back state boolean:false
+moved back: (nothing)
+Bool fire boolean:true ok boolean:true
+Bool boolean:true: Bool Pressed(0) now boolean:true | Bool StateChanged(1) boolean:true now boolean:true
+Bool fire boolean:true ok boolean:true
+Bool boolean:true: (nothing)
+Bool fire boolean:false ok boolean:false
+Bool boolean:false: Bool Released(0) now boolean:false | Bool StateChanged(1) boolean:false now boolean:false
+Bool fire boolean:false ok boolean:false
+Bool boolean:false: (nothing)
+Bool fire number:1 error Action:Fire() on InputActionType.Bool should be called with a bool state
+Bool number:1: (nothing)
+Bool fire number:0 error Action:Fire() on InputActionType.Bool should be called with a bool state
+Bool number:0: (nothing)
+Bool fire string:x error Action:Fire() on InputActionType.Bool should be called with a bool state
+Bool string:x: (nothing)
+Bool fire Vector2:1 0 error Action:Fire() on InputActionType.Bool should be called with a bool state
+Bool Vector2:1 0: (nothing)
+Bool fire-nil error Argument 1 missing or nil
+Bool nil: (nothing)
+Bool fire-noarg error Argument 1 missing or nil
+Bool noarg: (nothing)
+Direction1D fire number:0.69999999999999996 ok number:0.69999998807907104
+Direction1D number:0.69999999999999996: Direction1D StateChanged(1) number:0.69999998807907104 now number:0.69999998807907104
+Direction1D fire number:0.69999999999999996 ok number:0.69999998807907104
+Direction1D number:0.69999999999999996: (nothing)
+Direction1D fire number:0.29999999999999999 ok number:0.30000001192092896
+Direction1D number:0.29999999999999999: Direction1D StateChanged(1) number:0.30000001192092896 now number:0.30000001192092896
+Direction1D fire number:0 ok number:0
+Direction1D number:0: Direction1D StateChanged(1) number:0 now number:0
+Direction1D fire number:-0.69999999999999996 ok number:-0.69999998807907104
+Direction1D number:-0.69999999999999996: Direction1D StateChanged(1) number:-0.69999998807907104 now number:-0.69999998807907104
+Direction1D fire number:2 ok number:2
+Direction1D number:2: Direction1D StateChanged(1) number:2 now number:2
+Direction1D fire number:-3 ok number:-3
+Direction1D number:-3: Direction1D StateChanged(1) number:-3 now number:-3
+Direction1D fire boolean:true error Action:Fire() on InputActionType.Direction1D should be called with a number state
+Direction1D boolean:true: (nothing)
+Direction1D fire boolean:false error Action:Fire() on InputActionType.Direction1D should be called with a number state
+Direction1D boolean:false: (nothing)
+Direction1D fire Vector2:1 0 error Action:Fire() on InputActionType.Direction1D should be called with a number state
+Direction1D Vector2:1 0: (nothing)
+Direction1D fire number:0 ok number:0
+Direction1D number:0: Direction1D StateChanged(1) number:0 now number:0
+Direction1D fire-nil error Argument 1 missing or nil
+Direction1D nil: (nothing)
+Direction1D fire-noarg error Argument 1 missing or nil
+Direction1D noarg: (nothing)
+Direction2D fire Vector2:0.600000024 0.800000012 ok Vector2:0.600000024 0.800000012
+Direction2D Vector2:0.600000024 0.800000012: Direction2D StateChanged(1) Vector2:0.600000024 0.800000012 now Vector2:0.600000024 0.800000012
+Direction2D fire Vector2:3 4 ok Vector2:3 4
+Direction2D Vector2:3 4: Direction2D StateChanged(1) Vector2:3 4 now Vector2:3 4
+Direction2D fire Vector2:0 0 ok Vector2:0 0
+Direction2D Vector2:0 0: Direction2D StateChanged(1) Vector2:0 0 now Vector2:0 0
+Direction2D fire Vector3:1 2 3 error Action:Fire() on InputActionType.Direction2D should be called with a Vector2 state
+Direction2D Vector3:1 2 3: (nothing)
+Direction2D fire number:1 error Action:Fire() on InputActionType.Direction2D should be called with a Vector2 state
+Direction2D number:1: (nothing)
+Direction2D fire boolean:true error Action:Fire() on InputActionType.Direction2D should be called with a Vector2 state
+Direction2D boolean:true: (nothing)
+Direction2D fire-nil error Argument 1 missing or nil
+Direction2D nil: (nothing)
+Direction2D fire-noarg error Argument 1 missing or nil
+Direction2D noarg: (nothing)
+Direction3D fire Vector3:1 2 2 ok Vector3:1 2 2
+Direction3D Vector3:1 2 2: Direction3D StateChanged(1) Vector3:1 2 2 now Vector3:1 2 2
+Direction3D fire Vector3:0.100000001 0 0 ok Vector3:0.100000001 0 0
+Direction3D Vector3:0.100000001 0 0: Direction3D StateChanged(1) Vector3:0.100000001 0 0 now Vector3:0.100000001 0 0
+Direction3D fire Vector3:0 0 0 ok Vector3:0 0 0
+Direction3D Vector3:0 0 0: Direction3D StateChanged(1) Vector3:0 0 0 now Vector3:0 0 0
+Direction3D fire Vector2:1 1 error Action:Fire() on InputActionType.Direction3D should be called with a Vector3 state
+Direction3D Vector2:1 1: (nothing)
+Direction3D fire number:1 error Action:Fire() on InputActionType.Direction3D should be called with a Vector3 state
+Direction3D number:1: (nothing)
+Direction3D fire-nil error Argument 1 missing or nil
+Direction3D nil: (nothing)
+Direction3D fire-noarg error Argument 1 missing or nil
+Direction3D noarg: (nothing)
+ViewportPosition fire Vector2:100 200 ok Vector2:100 200
+ViewportPosition Vector2:100 200: ViewportPosition StateChanged(1) Vector2:100 200 now Vector2:100 200
+ViewportPosition fire Vector2:-5 5000 ok Vector2:-5 5000
+ViewportPosition Vector2:-5 5000: ViewportPosition StateChanged(1) Vector2:-5 5000 now Vector2:-5 5000
+ViewportPosition fire Vector3:1 2 3 error Action:Fire() on InputActionType.ViewportPosition should be called with a Vector2 state
+ViewportPosition Vector3:1 2 3: (nothing)
+ViewportPosition fire number:1 error Action:Fire() on InputActionType.ViewportPosition should be called with a Vector2 state
+ViewportPosition number:1: (nothing)
+ViewportPosition fire-nil error Argument 1 missing or nil
+ViewportPosition nil: (nothing)
+ViewportPosition fire-noarg error Argument 1 missing or nil
+ViewportPosition noarg: (nothing)
+twice state boolean:false
+twice: twice Pressed(0) now boolean:false | twice StateChanged(1) boolean:true now boolean:false | twice Released(0) now boolean:false | twice StateChanged(1) boolean:false now boolean:false
+twice1d: twice1d StateChanged(1) number:0.40000000596046448 now number:0.20000000298023224 | twice1d StateChanged(1) number:0.89999997615814209 now number:0.20000000298023224 | twice1d StateChanged(1) number:0.20000000298023224 now number:0.20000000298023224
+bind-bool fire boolean:true error InputBinding:Fire() can only be called when Type is Scriptable
+bind-bool boolean:true: (nothing)
+bind-bool fire boolean:false error InputBinding:Fire() can only be called when Type is Scriptable
+bind-bool boolean:false: (nothing)
+bind-bool fire number:0.69999999999999996 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-bool number:0.69999999999999996: (nothing)
+bind-bool fire number:0.29999999999999999 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-bool number:0.29999999999999999: (nothing)
+bind-bool fire number:0.10000000000000001 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-bool number:0.10000000000000001: (nothing)
+bind-bool fire number:1 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-bool number:1: (nothing)
+bind-bool fire number:0 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-bool number:0: (nothing)
+bind-bool fire Vector2:1 0 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-bool Vector2:1 0: (nothing)
+bind-bool fire string:x error InputBinding:Fire() can only be called when Type is Scriptable
+bind-bool string:x: (nothing)
+bind-1d fire number:0.25 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-1d number:0.25: (nothing)
+bind-1d fire number:0.050000000000000003 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-1d number:0.050000000000000003: (nothing)
+bind-1d fire number:0.59999999999999998 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-1d number:0.59999999999999998: (nothing)
+bind-1d fire boolean:true error InputBinding:Fire() can only be called when Type is Scriptable
+bind-1d boolean:true: (nothing)
+bind-1d fire boolean:false error InputBinding:Fire() can only be called when Type is Scriptable
+bind-1d boolean:false: (nothing)
+bind-1d fire number:-0.29999999999999999 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-1d number:-0.29999999999999999: (nothing)
+bind-1d fire number:0 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-1d number:0: (nothing)
+bind-1d-curve fire number:0.5 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-1d-curve number:0.5: (nothing)
+bind-1d-curve fire number:0.050000000000000003 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-1d-curve number:0.050000000000000003: (nothing)
+bind-1d-curve fire number:1 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-1d-curve number:1: (nothing)
+bind-2d fire Vector2:0.300000012 0.400000006 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-2d Vector2:0.300000012 0.400000006: (nothing)
+bind-2d fire Vector2:0.0500000007 0 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-2d Vector2:0.0500000007 0: (nothing)
+bind-2d fire Vector2:3 4 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-2d Vector2:3 4: (nothing)
+bind-2d fire number:0.5 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-2d number:0.5: (nothing)
+bind-2d fire boolean:true error InputBinding:Fire() can only be called when Type is Scriptable
+bind-2d boolean:true: (nothing)
+bind-thresh fire number:0.69999999999999996 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-thresh number:0.69999999999999996: (nothing)
+bind-thresh fire number:0.84999999999999998 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-thresh number:0.84999999999999998: (nothing)
+bind-thresh fire number:0.5 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-thresh number:0.5: (nothing)
+bind-thresh fire number:0.29999999999999999 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-thresh number:0.29999999999999999: (nothing)
+bind-thresh fire number:0.90000000000000002 error InputBinding:Fire() can only be called when Type is Scriptable
+bind-thresh number:0.90000000000000002: (nothing)
+bind-thresh fire boolean:false error InputBinding:Fire() can only be called when Type is Scriptable
+bind-thresh boolean:false: (nothing)
+binding-type-default Enum.InputBindingType.Automatic

@@ -3,8 +3,8 @@
 //
 //   vendor/luau0-src      the Luau release pinned in patches/luau/upstream.json (the sources mlua-sys compiles, with
 //                         luau0-src's build logic) and the topic series patches/luau/NN-<topic>.patch
-//   vendor/mlua-sys       mlua-sys, the FFI layer under mlua, as Cargo.toml pins it, with the vendored Luau's bytecode
-//                         version range
+//   vendor/mlua-sys       mlua-sys, the FFI layer under mlua, as Cargo.toml pins it, with patches/mlua-sys.patch (the
+//                         vendored Luau's C API where it moved) and the vendored Luau's bytecode version range
 //   vendor/lune-roblox    Lune 0.10.4's lune-roblox (Roblox datatypes as Luau values) with patches/lune.patch
 //   vendor/lune-utils     its lune-utils, with the same patch
 //
@@ -211,7 +211,8 @@ function writeFlagValues(luau) {
 		lines.join("\n") + "\n");
 }
 
-// vendor/mlua-sys: the crate Cargo.toml pins, its bytecode version range the vendored Luau's (`luau`, the luau0-src tree)
+// vendor/mlua-sys: the crate Cargo.toml pins with patches/mlua-sys.patch (the C API where the vendored Luau moved it past the
+// one the crate binds), its bytecode version range the vendored Luau's (`luau`, the luau0-src tree)
 async function mluaSysTree(luau, out) {
 	const pinned = /^mlua-sys = "=([^"]+)"/m.exec(fs.readFileSync(path.join(ROOT, "Cargo.toml"), "utf8"))?.[1];
 	const version = /^mlua-sys-(.+)\.crate$/.exec(MLUA_SYS.file)[1];
@@ -221,6 +222,9 @@ async function mluaSysTree(luau, out) {
 	run(TAR, ["-xzf", await archive(MLUA), "--strip-components=1", "-C", out, `${MLUA.file.replace(/\.crate$/, "")}/LICENSE`], out);
 	// cargo never reads a dependency's lockfile
 	fs.rmSync(path.join(out, "Cargo.lock"), { force: true });
+	const patch = path.join(ROOT, "patches", "mlua-sys.patch");
+	if (fs.existsSync(patch))
+		applyPatchText(fs.readFileSync(patch, "utf8"), out, "patches/mlua-sys.patch");
 	const header = fs.readFileSync(path.join(luau, "luau", "Common", "include", "Luau", "Bytecode.h"), "utf8");
 	const compat = path.join(out, "src", "luau", "compat.rs");
 	let text = fs.readFileSync(compat, "utf8");

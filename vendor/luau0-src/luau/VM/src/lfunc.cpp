@@ -5,6 +5,7 @@
 #include "lstate.h"
 #include "lmem.h"
 #include "lgc.h"
+#include "lvm.h"
 #include "Luau/BytecodeUtils.h"
 
 LUAU_FASTINTVARIABLE(LuauInlineHitsThreshold, 32)
@@ -65,6 +66,7 @@ Proto* luaF_newproto(lua_State* L)
     f->optimized = nullptr;
     f->deoptimized = nullptr;
     f->cost = 0;
+    f->lazychunk = nullptr;
 
     return f;
 }
@@ -264,7 +266,11 @@ void luaF_freeproto(lua_State* L, Proto* f, lua_Page* page)
     // (a run of its cold code this frame forgets it: lgc.cpp)
     if (f->coldslot)
         luaC_coldfreed(L, f);
-    luaM_freearray(L, f->code, f->sizecode, Instruction, f->memcat);
+    // a lazy-load stub's code is a static instruction
+    if (f->lazychunk)
+        luaV_releaselazychunk(L, f->lazychunk);
+    else
+        luaM_freearray(L, f->code, f->sizecode, Instruction, f->memcat);
     luaM_freearray(L, f->p, f->sizep, Proto*, f->memcat);
     luaM_freearray(L, f->k, f->sizek, TValue, f->memcat);
     if (f->lineinfo)

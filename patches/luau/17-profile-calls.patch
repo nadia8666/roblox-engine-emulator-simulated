@@ -19,10 +19,10 @@
 # call's entry and return; a hardware-counter profile needs both, and cheaply enough to skip most calls.
 
 diff --git a/luau/VM/include/lua.h b/luau/VM/include/lua.h
-index 445f8c2..e07ff0c 100644
+index 0241628..51ad5b8 100644
 --- a/luau/VM/include/lua.h
 +++ b/luau/VM/include/lua.h
-@@ -658,6 +658,21 @@ LUA_API int lua_profileentries(lua_State* L, int* incfunction);
+@@ -666,6 +666,21 @@ LUA_API int lua_profileentries(lua_State* L, int* incfunction);
  // registers a chunk's functions when it first runs one
  LUA_API void lua_profilechunks(lua_State* L, int on);
  
@@ -45,10 +45,10 @@ index 445f8c2..e07ff0c 100644
  #define LUA_ALLOC_OTHER 0
  #define LUA_ALLOC_OBJECT 1 // a collectable object: lua_allocblock returns its block
 diff --git a/luau/VM/src/ldo.cpp b/luau/VM/src/ldo.cpp
-index 1266530..f72a239 100644
+index 95d4a32..fe8e129 100644
 --- a/luau/VM/src/ldo.cpp
 +++ b/luau/VM/src/ldo.cpp
-@@ -731,7 +731,9 @@ static void resume_handle(lua_State* L, void* ud)
+@@ -712,7 +712,9 @@ static void resume_handle(lua_State* L, void* ud)
      // restore nCcalls to base for the continuation
      L->nCcalls = L->baseCcalls;
  
@@ -59,7 +59,7 @@ index 1266530..f72a239 100644
  
      // restore the stack frame to the frame with continuation
      L->ci = ci;
-@@ -865,6 +867,10 @@ int lua_resume(lua_State* L, lua_State* from, int nargs)
+@@ -846,6 +848,10 @@ int lua_resume(lua_State* L, lua_State* from, int nargs)
  
      int result = resume_finish(L, status, oldnCcalls);
  
@@ -70,7 +70,7 @@ index 1266530..f72a239 100644
      if (LUAU_UNLIKELY(!!L->global->cb.postresume))
          L->global->cb.postresume(L);
  
-@@ -897,6 +903,10 @@ int lua_resumeerror(lua_State* L, lua_State* from)
+@@ -878,6 +884,10 @@ int lua_resumeerror(lua_State* L, lua_State* from)
  
      int result = resume_finish(L, status, oldnCcalls);
  
@@ -81,7 +81,7 @@ index 1266530..f72a239 100644
      if (LUAU_UNLIKELY(!!L->global->cb.postresume))
          L->global->cb.postresume(L);
  
-@@ -986,8 +996,9 @@ int luaD_pcall(lua_State* L, Pfunc func, void* u, ptrdiff_t old_top, ptrdiff_t e
+@@ -967,8 +977,9 @@ int luaD_pcall(lua_State* L, Pfunc func, void* u, ptrdiff_t old_top, ptrdiff_t e
          StkId oldtop = restorestack(L, old_top);
          luaF_close(L, oldtop); // close eventual pending closures
          luaD_seterrorobj(L, errstatus, oldtop);
@@ -94,12 +94,12 @@ index 1266530..f72a239 100644
          L->base = L->ci->base;
          restore_stack_limit(L);
 diff --git a/luau/VM/src/lprofile.cpp b/luau/VM/src/lprofile.cpp
-index 0f734f6..cf68546 100644
+index 890b9a3..f5520cc 100644
 --- a/luau/VM/src/lprofile.cpp
 +++ b/luau/VM/src/lprofile.cpp
-@@ -475,6 +475,31 @@ const BuiltinShape kBuiltins[] = {
+@@ -445,6 +445,31 @@ const BuiltinShape kBuiltins[] = {
  const int kBuiltinCount = int(sizeof(kBuiltins) / sizeof(kBuiltins[0]));
- static_assert(sizeof(kBuiltins) / sizeof(kBuiltins[0]) == LBF_TABLE_CLEAR + 1, "a builtin shape for each LBF_* id, in order");
+ static_assert(sizeof(kBuiltins) / sizeof(kBuiltins[0]) == LBF_BUFFER_WRITEVECTORF32X4 + 1, "a builtin shape for each LBF_* id, in order");
  
 +// a function's calls as the call hook samples them: each with a chance of one in `every`; with `every` 0 none, and one
 +// call after every `remeasure` read for its length alone (`left` of those calls still to come). `open` of its sampled
@@ -129,7 +129,7 @@ index 0f734f6..cf68546 100644
  } // namespace
  
  struct lua_ProfileState
-@@ -584,6 +609,14 @@ struct lua_ProfileState
+@@ -554,6 +579,14 @@ struct lua_ProfileState
      std::unordered_map<GCObject*, ColdRecord> coldframe;
      std::unordered_map<uint64_t, ColdTotal> coldtotals;
      std::unordered_map<const void*, uint64_t> tablesites;
@@ -144,7 +144,7 @@ index 0f734f6..cf68546 100644
  };
  
  static lua_ProfileState* stateof(lua_State* L)
-@@ -2280,6 +2313,16 @@ void luaP_threadgone(lua_State* L, lua_State* L1)
+@@ -2245,6 +2278,16 @@ void luaP_threadgone(lua_State* L, lua_State* L1)
              s->namecalls.erase(s->namecalls.begin() + i);
      s->threads.erase(L1);
      s->resumes.erase(L1);
@@ -161,7 +161,7 @@ index 0f734f6..cf68546 100644
  }
  
  void luaP_resumed(lua_State* L)
-@@ -2664,9 +2707,119 @@ void lua_profilefree(lua_State* L)
+@@ -2629,9 +2672,119 @@ void lua_profilefree(lua_State* L)
      if (!s)
          return;
      luaP_state = NULL;
@@ -309,7 +309,7 @@ index 0805d3d..48c1f2a 100644
  // profile, luaP_unwound)
  struct luaP_Execute
 diff --git a/luau/VM/src/lstate.cpp b/luau/VM/src/lstate.cpp
-index 4c47b00..07ca91a 100644
+index a4206ba..68c7753 100644
 --- a/luau/VM/src/lstate.cpp
 +++ b/luau/VM/src/lstate.cpp
 @@ -157,6 +157,9 @@ void lua_resetthread(lua_State* L)
@@ -322,7 +322,7 @@ index 4c47b00..07ca91a 100644
      if (luaP_state)
          luaP_threadgone(L, L);
      // close upvalues before clearing anything
-@@ -245,6 +248,7 @@ lua_State* lua_newstate(lua_Alloc allocator, void* ud)
+@@ -244,6 +247,7 @@ lua_State* lua_newstate(lua_Alloc allocator, void* ud)
      g->typeofnames = NULL;
      g->vectortypename = NULL;
      g->coldon = 0;
@@ -351,7 +351,7 @@ index 041f2bb..10187c7 100644
      GCObject* gray;      // list of gray objects
      GCObject* grayagain; // list of objects to be traversed atomically
 diff --git a/luau/VM/src/lvmexecute.cpp b/luau/VM/src/lvmexecute.cpp
-index 9a9b6a7..0b47de9 100644
+index 97b7050..00817cd 100644
 --- a/luau/VM/src/lvmexecute.cpp
 +++ b/luau/VM/src/lvmexecute.cpp
 @@ -19,8 +19,15 @@
@@ -367,10 +367,10 @@ index 9a9b6a7..0b47de9 100644
 +LUAU_FASTFLAG(DebugLuauUserDefinedClassesRuntime)
 +LUAU_FASTFLAG(LuauPromoteProto)
 +#endif
- LUAU_FASTFLAG(LuauFastpcall)
  LUAU_FASTFLAG(LuauRuntimeFeedback)
  
-@@ -160,6 +167,7 @@ static_assert(LOP__COUNT + LUAU_INSN_COLD <= LUA_WORK_FIRSTSLOT, "cold opcode al
+ // Disable c99-designator to avoid the warning in computed goto dispatch table
+@@ -159,6 +166,7 @@ static_assert(LOP__COUNT + LUAU_INSN_COLD <= LUA_WORK_FIRSTSLOT, "cold opcode al
  // Does VM support native execution via ExecutionCallbacks? We mostly assume it does but keep the define to make it easy to quantify the cost.
  #define VM_HAS_NATIVE 1
  
@@ -378,7 +378,7 @@ index 9a9b6a7..0b47de9 100644
  LUAU_NOINLINE void luau_callhook(lua_State* L, lua_Hook hook, void* userdata)
  {
      ptrdiff_t base = savestack(L, L->base);
-@@ -213,6 +221,7 @@ LUAU_NOINLINE void luau_callhook(lua_State* L, lua_Hook hook, void* userdata)
+@@ -212,12 +220,15 @@ LUAU_NOINLINE void luau_callhook(lua_State* L, lua_Hook hook, void* userdata)
          L->base = restorestack(L, base);
      }
  }
@@ -386,8 +386,24 @@ index 9a9b6a7..0b47de9 100644
  
  inline bool luau_skipstep(uint8_t op)
  {
-@@ -248,10 +257,12 @@ static void luau_addexeccount(Proto* p, double count)
-     p->execcount += count < double(space) ? uint32_t(count) : space;
+     return op == LOP_PREPVARARGS || op == LOP_BREAK;
+ }
+ 
++// (lvm.h exports it to native code: defined in the plain unit only, the profiled one calls it)
++#ifndef LUAU_EXECUTE_PROFILED_UNIT
+ LUAU_NOINLINE void luau_setupcci(lua_State* L, int nresults, StkId fun)
+ {
+     CallInfo* ci = incr_ci(L);
+@@ -237,6 +248,7 @@ LUAU_NOINLINE void luau_setupcci(lua_State* L, int nresults, StkId fun)
+     LUAU_ASSERT(ci->top <= L->stack_last);
+     LUAU_ASSERT(ttisfunction(ci->func));
+ }
++#endif
+ 
+ // Batch addition of loop execution counter increments
+ static void luau_addexeccount(Proto* p, double count)
+@@ -250,10 +262,12 @@ static void luau_addexeccount(Proto* p, double count)
+     }
  }
  
 +// (ProfileCalls: a host's profile samples calls, lprofile.cpp; without it the CALL paths do not ask)
@@ -401,7 +417,7 @@ index 9a9b6a7..0b47de9 100644
  #if VM_USE_CGOTO
      static_assert(LOP__COUNT == 95, "update the dispatch table padding after an opcode change");
      static const void* kDispatchTable[256] = {
-@@ -1153,6 +1164,10 @@ reentry:
+@@ -1155,6 +1169,10 @@ reentry:
                          setnilvalue(argi++); // complete missing arguments
                      L->top = p->is_vararg ? argi : ci->top;
  
@@ -412,7 +428,7 @@ index 9a9b6a7..0b47de9 100644
                      // reentry
                      // codeentry may point to NATIVECALL instruction when proto is compiled to native code
                      // this will result in execution continuing in native code, and is equivalent to if (p->execdata) but has no additional overhead
-@@ -1280,6 +1295,10 @@ reentry:
+@@ -1282,6 +1300,10 @@ reentry:
                          setnilvalue(argi++); // complete missing arguments
                      L->top = p->is_vararg ? argi : ci->top;
  
@@ -423,7 +439,7 @@ index 9a9b6a7..0b47de9 100644
                      // reentry
                      // codeentry may point to NATIVECALL instruction when proto is compiled to native code
                      // this will result in execution continuing in native code, and is equivalent to if (p->execdata) but has no additional overhead
-@@ -1354,6 +1373,10 @@ reentry:
+@@ -1356,6 +1378,10 @@ reentry:
                  CallInfo* ci = L->ci;
                  CallInfo* cip = ci - 1;
  
@@ -434,7 +450,7 @@ index 9a9b6a7..0b47de9 100644
                  StkId res = ci->func; // note: we assume CALL always puts func+args and expects results to start at func
  
                  StkId vali = ra;
-@@ -4095,30 +4118,45 @@ exit:;
+@@ -4098,30 +4124,45 @@ exit:;
      return false;
  }
  
@@ -487,7 +503,7 @@ index 9a9b6a7..0b47de9 100644
  
  void luau_finishop(lua_State* L)
  {
-@@ -4198,6 +4236,10 @@ int luau_precall(lua_State* L, StkId func, int nresults)
+@@ -4201,6 +4242,10 @@ int luau_precall(lua_State* L, StkId func, int nresults)
              ci->flags = LUA_CALLINFO_NATIVE;
  #endif
  
@@ -498,7 +514,7 @@ index 9a9b6a7..0b47de9 100644
          return PCRLUA;
      }
      else
-@@ -4314,3 +4356,4 @@ void luau_pospcallsuccess(lua_State* L)
+@@ -4317,3 +4362,4 @@ void luau_pospcallsuccess(lua_State* L)
      L->base = cip->base;
      L->top = (calleeresults == LUA_MULTRET) ? res : cip->top;
  }
@@ -517,7 +533,7 @@ index 0000000..b28f503
 +#define LUAU_EXECUTE_PROFILED_UNIT 1
 +#include "lvmexecute.cpp"
 diff --git a/luau/VM/src/lvmutils.cpp b/luau/VM/src/lvmutils.cpp
-index 9c3ac18..20d6bf9 100644
+index 5b1b357..512ec2c 100644
 --- a/luau/VM/src/lvmutils.cpp
 +++ b/luau/VM/src/lvmutils.cpp
 @@ -3,6 +3,7 @@

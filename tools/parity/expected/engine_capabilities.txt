@@ -1,0 +1,17 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-19
+DefineFastFlag read ok function | call error The current thread cannot call 'DefineFastFlag' (lacking capability RobloxScript) | no-args error The current thread cannot call 'DefineFastFlag' (lacking capability RobloxScript) | tables error The current thread cannot call 'DefineFastFlag' (lacking capability RobloxScript) | caught ok false string
+DefineFastInt read ok function | call error The current thread cannot call 'DefineFastInt' (lacking capability RobloxScript) | no-args error The current thread cannot call 'DefineFastInt' (lacking capability RobloxScript) | tables error The current thread cannot call 'DefineFastInt' (lacking capability RobloxScript) | caught ok false string
+DefineFastString read ok function | call error The current thread cannot call 'DefineFastString' (lacking capability RobloxScript) | no-args error The current thread cannot call 'DefineFastString' (lacking capability RobloxScript) | tables error The current thread cannot call 'DefineFastString' (lacking capability RobloxScript) | caught ok false string
+GetFastFlag read ok function | call error The current thread cannot call 'GetFastFlag' (lacking capability LocalUser) | no-args error The current thread cannot call 'GetFastFlag' (lacking capability LocalUser) | tables error The current thread cannot call 'GetFastFlag' (lacking capability LocalUser) | caught ok false string
+GetFastInt read ok function | call error The current thread cannot call 'GetFastInt' (lacking capability LocalUser) | no-args error The current thread cannot call 'GetFastInt' (lacking capability LocalUser) | tables error The current thread cannot call 'GetFastInt' (lacking capability LocalUser) | caught ok false string
+GetFastString read ok function | call error The current thread cannot call 'GetFastString' (lacking capability LocalUser) | no-args error The current thread cannot call 'GetFastString' (lacking capability LocalUser) | tables error The current thread cannot call 'GetFastString' (lacking capability LocalUser) | caught ok false string
+GetEngineFeature read ok function | call error The current thread cannot call 'GetEngineFeature' (lacking capability LocalUser) | no-args error The current thread cannot call 'GetEngineFeature' (lacking capability LocalUser) | tables error The current thread cannot call 'GetEngineFeature' (lacking capability LocalUser) | caught ok false string
+GetResolutionScale read ok function | call error The current thread cannot call 'GetResolutionScale' (lacking capability RobloxScript) | no-args error The current thread cannot call 'GetResolutionScale' (lacking capability RobloxScript) | tables error The current thread cannot call 'GetResolutionScale' (lacking capability RobloxScript) | caught ok false string
+other-self error The current thread cannot call 'GetFastInt' (lacking capability LocalUser) | error The current thread cannot call 'GetResolutionScale' (lacking capability RobloxScript)
+no-self error The current thread cannot call 'DefineFastInt' (lacking capability RobloxScript) | error The current thread cannot call 'GetResolutionScale' (lacking capability RobloxScript)
+same true false
+define FastInt 5 default
+define FastFlag true default
+define FastString on default
+frame ok 200

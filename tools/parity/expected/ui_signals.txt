@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, a rendered desktop playing client (script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, a rendered desktop playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 mount-read 300,200 10,162 300,600
 mount scroller.AbsolutePosition=10,-38 scroller.AbsoluteSize=300,200 scroller.AbsoluteCanvasSize=300,600 scroller.AbsoluteWindowSize=287,200 list.AbsoluteContentSize=300,600 row5.AbsolutePosition=10,162 row5.AbsoluteSize=300,50
 scroll-read canvas 0,120 row5 10,42

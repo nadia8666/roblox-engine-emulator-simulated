@@ -1,0 +1,30 @@
+class FaceControls FaceControls 0
+length 1
+values 0: jaw=0 left=1 x=0  0.1: jaw=0.100000009 left=1 x=1.00000012  0.25: jaw=0.25 left=1 x=2.5  0.5: jaw=0.5 left=0.5 x=5  0.75: jaw=0.75 left=0 x=7.5  1: jaw=1 left=0 x=10
+script write then step 1
+unanimated property kept 0.699999988
+weight 0.5 at 1 s 1 0 10
+stopped at once 1 0.699999988
+a step later 0.666666687 0.699999988
+folder under the joint 0.5
+folder under Root 0.5
+folder under the clip 0.5
+folder under Hand 0.5
+folder under a Folder no joint has 0.5
+folder of another name 0
+face under Hand, folder under Arm 0.5
+face under Hand, folder under Hand 0.5
+face under the model 0.5 0.5
+two under one part 0.5/0
+one under each part 0.5/0
+renamed instance 0
+length of a face-only tail 3
+clamp 1/0
+cubic and constant 0.167911127/0.25
+every name 51 driven; not: Archivable=true CheekPuff=false Jawdrop=false Name=FaceControls
+blend a=0.800000012  a+b=0.5  b weight 3=0.350000024  both 0.25=0.25  higher at 0.5=0.449999988  higher at 1=0.400000006  higher below 0.001=0.25  half over a written 0.3=0.400000006  weight below 0.001=0.400000006  fading=0.400000006  faded=0.400000006  ended=0.400000006
+a property no playing track has, while another plays 0.300000012 0.600000024
+while a track without face curves plays 0.300000012 0.300000012
+sequence face poses 0: jaw=0 pucker=1 x=0  0.1: jaw=0.100000001 pucker=1 x=1  0.5: jaw=0.5 pucker=1 x=5  1: jaw=1 pucker=1 x=10
+sequence made of a curve clip 31 Pose:Root Pose:Arm Folder:FaceControls NumberPose:JawDrop=0.0333333351
+face fading out w=0.666666687 jaw=0.600000024  w=0.333333373 jaw=0.300000012  w=4.96705326e-08 jaw=0.300000012  w=0 jaw=0.300000012  w=0 jaw=0.300000012

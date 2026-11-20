@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, a headless playing client (script identity 2 unless the probe asks for another; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 move-subtree Root.ChildRemoved(A),B.DescendantAdded(A),B.DescendantAdded(A1),B.DescendantAdded(A2),B.DescendantAdded(A21),B.ChildAdded(A),A1.AncestryChanged(A,B),A21.AncestryChanged(A,B),A2.AncestryChanged(A,B),A.AncestryChanged(A,B),A.Parent
 remove-subtree B.DescendantRemoving(A),Root.DescendantRemoving(A),B.DescendantRemoving(A1),Root.DescendantRemoving(A1),B.DescendantRemoving(A2),Root.DescendantRemoving(A2),B.DescendantRemoving(A21),Root.DescendantRemoving(A21),B.ChildRemoved(A),A1.AncestryChanged(A,nil),A21.AncestryChanged(A,nil),A2.AncestryChanged(A,nil),A.AncestryChanged(A,nil),A.Parent
 insert-subtree Root.DescendantAdded(A),Root.DescendantAdded(A1),Root.DescendantAdded(A2),Root.DescendantAdded(A21),Root.ChildAdded(A),A1.AncestryChanged(A,Root),A21.AncestryChanged(A,Root),A2.AncestryChanged(A,Root),A.AncestryChanged(A,Root),A.Parent

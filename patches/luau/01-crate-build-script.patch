@@ -7,12 +7,12 @@
 # old VM (mlua-sys compiles these sources in its own build script, which reruns only when this crate rebuilds).
 
 diff --git a/Cargo.toml b/Cargo.toml
-index 2b2c797..e99503b 100644
+index e751525..b8305fa 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -14,7 +14,7 @@ edition = "2024"
  name = "luau0-src"
- version = "0.22.0+luau746"
+ version = "0.22.0+luau747"
  authors = ["Aleksandr Orlenko <zxteam@protonmail.com>"]
 -build = false
 +build = "build.rs"

@@ -15,7 +15,9 @@ pub mod globals;
 pub mod holders;
 pub mod instance;
 pub mod leaks;
+pub mod loading;
 pub mod modules;
+pub mod normalize;
 pub mod raw;
 pub mod refs;
 pub mod stubs;
@@ -177,6 +179,41 @@ pub fn traceback(lua: &Lua, thread: &LuaThread) -> Option<String> {
     let engine = lua.app_data_ref::<Rc<Engine>>()?.clone();
     let prelude = engine.lua.borrow().prelude.clone()?;
     prelude.traceback.call::<Option<String>>(thread.clone()).ok().flatten()
+}
+
+/// Where the running script is: the innermost frame of a script's Luau on `lua`'s running thread (the thread of the callback
+/// now running), as `<chunk>:<line>`, the chunk being the script's path in the DataModel as error positions name it
+/// (`ReplicatedStorage.Module:3`). C functions and the engine's own Luau (the `rur.*` and `ree.*` chunks: the prelude, the
+/// service stubs, the harness wrapper) are skipped; none when no script's frame is on the stack.
+pub fn script_position(lua: &Lua) -> Option<String> {
+    // SAFETY: the running thread's state, valid while the callback runs
+    unsafe { script_position_on(lua.current_thread().state()) }
+}
+
+/// [`script_position`] on the thread `state` (a C metamethod's own: lua/raw.rs).
+///
+/// # Safety
+/// `state` must be a live thread of the running VM.
+pub unsafe fn script_position_on(state: *mut mlua::ffi::lua_State) -> Option<String> {
+    use mlua::ffi;
+    unsafe {
+        let mut debug: ffi::lua_Debug = std::mem::zeroed();
+        let mut level = 0;
+        while level < 128 && ffi::lua_getinfo(state, level, c"sl".as_ptr(), &mut debug) != 0 {
+            level += 1;
+            // (a C function has no line)
+            if debug.currentline < 0 || debug.source.is_null() {
+                continue;
+            }
+            let source = std::ffi::CStr::from_ptr(debug.source).to_string_lossy();
+            let chunk = source.strip_prefix('=').or_else(|| source.strip_prefix('@')).unwrap_or(&source);
+            if chunk == "[C]" || chunk.starts_with("rur.") || chunk.starts_with("ree.") {
+                continue;
+            }
+            return Some(format!("{chunk}:{}", debug.currentline));
+        }
+    }
+    None
 }
 
 /// typeof as scripts see it (registered table types, Vector3 for native vectors).

@@ -1,0 +1,8 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless play session of one server and one client in processes of their own (the server's half a server Script from the server's start, the client's half a job in the client; script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-19
+server: boot 2 Default=-3 LoopEarly=-2
+server: end 2 Default=-3 LoopRenamed=-2
+client: join 2 Default=-3 LoopEarly=-2
+client: late 3 Default=-3 LoopEarly=-6 LoopLate=-3
+client: late-collidable ok false
+client: changed 2 Default=-3 LoopRenamed=-2

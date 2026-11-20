@@ -114,11 +114,12 @@ pub fn named_project(mut args: Vec<String>) -> Vec<String> {
         // repeated `--roots` keeps its last value. Arguments that do not parse go to the service as they are, which
         // reports the error.
         let Ok(parsed) = launch::parse(&args) else { return args };
-        standalone_without_project = parsed.project.is_none() && parsed.roots.is_empty();
+        standalone_without_project = parsed.project.is_none() && parsed.roots.is_empty() && parsed.rojo.is_none();
     }
-    // The mounts-only check looks at the argument words only, so an empty `--roots` value counts as a project
+    // The mounts-only check looks at the argument words only, so an empty `--roots` value counts as a project. A Rojo
+    // project file names the project's folder itself (its own folder), as the client's absolute path.
     let has = |key: &str| args.iter().any(|arg| arg == key);
-    let host_mounts_without_project = !has("--project") && !has("--roots") && (has("--mount") || has("--instance"));
+    let host_mounts_without_project = !has("--project") && !has("--roots") && !has("--rojo") && (has("--mount") || has("--instance"));
     if standalone_without_project || host_mounts_without_project {
         if let Ok(dir) = std::env::current_dir() {
             args.push("--project".into());
@@ -138,7 +139,7 @@ pub fn absolute_paths(args: &[String]) -> Vec<String> {
         result.push(args[index].clone());
         let Some(value) = args.get(index + 1) else { break };
         let converted = match key {
-            "--harness" | "--out" | "--dir" | "--dump-scene" | "--project" | "--snapshot" | "--snapshot-dir" | "--repo" => Some(absolute(value)),
+            "--harness" | "--out" | "--dir" | "--dump-scene" | "--project" | "--snapshot" | "--snapshot-dir" | "--repo" | "--rojo" => Some(absolute(value)),
             // the service runs in another folder, so a standalone client's relative file name must name the client's file;
             // a host keeps forwarding it unchanged
             "--frame-times" if crate::is_standalone_binary() => Some(absolute(value)),
@@ -411,7 +412,7 @@ mod tests {
 
     #[test]
     fn paths_are_made_absolute_and_other_arguments_kept() {
-        let args: Vec<String> = ["--harness", "h.luau", "--seconds", "2", "--context", "{\"A\":1}", "--roots", "a;b", "--mount", "ReplicatedStorage/X=dir", "--verbose", "--animations", "anims", "--out", "o"]
+        let args: Vec<String> = ["--harness", "h.luau", "--seconds", "2", "--context", "{\"A\":1}", "--roots", "a;b", "--mount", "ReplicatedStorage/X=dir", "--verbose", "--animations", "anims", "--out", "o", "--rojo", "game.project.json", "--rojo-at", "ServerStorage/Game"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -424,6 +425,8 @@ mod tests {
         assert!(at("--roots").split(';').all(|root| Path::new(root).is_absolute()));
         assert!(Path::new(&at("--animations")).is_absolute());
         assert!(at("--mount").starts_with("ReplicatedStorage/X=") && Path::new(at("--mount").split_once('=').unwrap().1).is_absolute());
+        assert!(Path::new(&at("--rojo")).is_absolute());
+        assert_eq!(at("--rojo-at"), "ServerStorage/Game");
         assert!(converted.contains(&"--verbose".to_string()));
         assert_eq!(converted.len(), args.len());
     }
@@ -437,7 +440,8 @@ mod tests {
         let here = std::env::current_dir().unwrap().to_string_lossy().into_owned();
         let mounted = named_project(words(&["--harness", "h.luau", "--mount", "ReplicatedStorage/X=x"]));
         assert_eq!(mounted[mounted.len() - 2..], [String::from("--project"), here]);
-        for kept in [&["--harness", "h.luau"][..], &["--mount", "A/B=b", "--project", "p"], &["--instance", "A=A", "--roots", "r"]] {
+        // (a Rojo project file's folder is its project)
+        for kept in [&["--harness", "h.luau"][..], &["--mount", "A/B=b", "--project", "p"], &["--instance", "A=A", "--roots", "r"], &["--mount", "A/B=b", "--rojo", "g.project.json"]] {
             assert_eq!(named_project(words(kept)), words(kept), "{kept:?}");
         }
     }

@@ -1,0 +1,16 @@
+KSP copy KeyframeSequence:KeyframeSequence:true:Idle Keyframe:K0@0#1 Pose:Root=0/0/Linear/In Pose:Arm=0/1/Cubic/Out KeyframeMarker:M=v0 Folder:Stray Keyframe:K1@1#1 Pose:Root=0/0/Linear/In Pose:Arm=10/1/Cubic/Out KeyframeMarker:M=v1 Folder:Stray StringValue:Note
+KSP twice same true false nil nil false
+KSP after touching the copy true Touched 4
+KSP after destroying the copy true Touched 0
+ACP copy KeyframeSequence:Seq:true:Idle Keyframe:K0@0#1 Pose:Root=0/0/Linear/In Pose:Arm=0/1/Cubic/Out KeyframeMarker:M=v0 Folder:Stray Keyframe:K1@1#1 Pose:Root=0/0/Linear/In Pose:Arm=10/1/Cubic/Out KeyframeMarker:M=v1 Folder:Stray StringValue:Note
+ACP twice same true false false nil 1 true
+ACP curve twice same true false Clip 1
+KSP curve twice same true KeyframeSequence
+not archivable KSP E(KeyframeSequence loaded is not valid.)
+not archivable KSP again ok(KeyframeSequence:KeyframeSequence:true:Action)
+not archivable ACP NEVER RETURNED
+not archivable KSP after ACP ok(KeyframeSequence:KeyframeSequence:true:Action)
+ids of what is no clip true false false
+curve not archivable KSP ok(0)
+curve not archivable ACP NEVER RETURNED
+tracks of not archivable 0 0

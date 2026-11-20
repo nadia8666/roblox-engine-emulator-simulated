@@ -137,7 +137,7 @@ index 0000000..7053700
 +
 +} // namespace Luau
 diff --git a/luau/Compiler/src/lcode.cpp b/luau/Compiler/src/lcode.cpp
-index abda9d0..ffadef9 100644
+index ab5bc1c..ad5a92e 100644
 --- a/luau/Compiler/src/lcode.cpp
 +++ b/luau/Compiler/src/lcode.cpp
 @@ -2,6 +2,7 @@
@@ -159,7 +159,7 @@ index abda9d0..ffadef9 100644
  
      if (options)
 diff --git a/luau/VM/src/lstate.cpp b/luau/VM/src/lstate.cpp
-index 9222fe8..4c47b00 100644
+index 6cb4917..a4206ba 100644
 --- a/luau/VM/src/lstate.cpp
 +++ b/luau/VM/src/lstate.cpp
 @@ -11,6 +11,7 @@

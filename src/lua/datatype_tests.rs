@@ -43,16 +43,16 @@ fn random_streams_ranges_identity_and_seeds() {
     assert_script(
         r#"
 -- Independent integer PCG32 oracle: uint64 state = state*6364136223846793005+105,
--- two uint32 draws per double (low first), multiply-high range reduction for integers under 2^32;
--- a wider range is floor(min * (1 - u) + max * u), as measured in a playing client (Studio 0.744,
--- tools/parity/probes/random.luau; the oracle's 64-bit multiply gave one more for seeds 7, -1.9, -2^53 + 1).
+-- two uint32 draws per double (low first), multiply-high range reduction for up to 2^32 - 2 values;
+-- from 2^32 - 1 values two draws as one 64-bit x and the high half of count * x without the low halves' product, as
+-- a playing client gives them (Studio 0.747, tools/parity/expected/random.txt Random-test-vectors and Random-test-streams).
 local Vectors = {
 	{ 0, { 0.5514556904749074, 0.01723102436113014, 0.883376920906403, 73, 72384586732 } },
-	{ 7, { 0.8737085924861333, 0.4321572161309693, 0.3089922198934871, 5, 482964445446 } },
-	{ -3, { 0.23554798859579634, 0.32381286642224644, 0.14705557445875167, 28, -493285887950 } },
+	{ 7, { 0.8737085924861333, 0.4321572161309693, 0.3089922198934871, 5, 482964445447 } },
+	{ -3, { 0.23554798859579634, 0.32381286642224644, 0.14705557445875167, 28, -493285887951 } },
 	{ 1.9, { 0.9484344206192203, 0.061285879733742145, 0.8770159548057006, 9, -497511649161 } },
 	{ -1.9, { 0.0037155688242635435, 0.5469862230236278, 0.31011551315193603, 67, 1062967531246 } },
-	{ 4294967303, { 0.9971430285879401, 0.5584106571948971, 0.05136057646030647, 58, -943718980273 } },
+	{ 4294967303, { 0.9971430285879401, 0.5584106571948971, 0.05136057646030647, 58, -943718980274 } },
 	{ 9007199254740991, { 0.027684032073451197, 0.09103798432822455, 0.9869885996197573, 53, 502533245394 } },
 	{ -9007199254740991, { 0.22788703655698744, 0.9425859688069043, 0.06775640206431996, 38, -518359285893 } },
 }
@@ -92,10 +92,11 @@ for _, Seed in { 4294967295, 4294967296, 4294967297, 1e20, -1e20 } do
 		assert(First:NextNumber() == Second:NextNumber())
 	end
 end
--- Preserve the pre-cache non-finite behavior and deterministic no-seed sequence.
-assert(Random.new(math.huge):NextNumber() == 0)
-assert(Random.new(-math.huge):NextNumber() == 0.0037155688242635435)
-assert(Random.new(0 / 0):NextNumber() == 0.0037155688242635435)
+-- Non-finite seeds as a playing client takes them (Studio 0.747, tools/parity/expected/random.txt Random-seeds-*: an
+-- infinity as 0, NaN as 0x8000000000000000), and the deterministic no-seed sequence.
+assert(Random.new(math.huge):NextNumber() == 0.55145569047490739)
+assert(Random.new(-math.huge):NextNumber() == 0.55145569047490739)
+assert(Random.new(0 / 0):NextNumber() == 0.20012743358005303)
 for _, Expected in { 0.15903319831126075, 0.6648808275887605, 0.7537480905786614 } do
 	assert(Random.new():NextNumber() == Expected, "no-seed sequence")
 end
@@ -111,56 +112,57 @@ assert(getmetatable(B) == getmetatable(A) and A.NextNumber == B.NextNumber)
 local UnknownOk, UnknownError = pcall(function() return A.UnknownMember end)
 assert(not UnknownOk and string.find(tostring(UnknownError), "UnknownMember is not a valid member of Random", 1, true))
 
--- Frozen independent BigInt PCG32 oracle, 256 full-width range draws per seed.
+-- 256 draws of a range of 2^32 - 1 values per seed (two draws each), as a playing client gives them (Studio 0.747,
+-- tools/parity/expected/random.txt Random-test-streams).
 local StreamChecks = {
-	{ 0, 0xdd94bea1 },
-	{ 1, 0x6d0cb4df },
-	{ -1, 0x50a5f481 },
-	{ 65535, 0x98ec0c6c },
-	{ 65536, 0x2184b84e },
-	{ 65537, 0xbda7dee6 },
-	{ 4294967295, 0x9f8fb1a6 },
-	{ 4294967296, 0x73eaab83 },
-	{ 4294967297, 0xc4d03ce3 },
-	{ -4294967295, 0xe4cd4139 },
-	{ -4294967296, 0x7d8e01c1 },
-	{ -4294967297, 0xeecb8787 },
-	{ 9007199254740991, 0x1619fc41 },
-	{ -9007199254740991, 0x510353d4 },
-	{ 8279140260984440, 0xf54e9519 },
-	{ -3446241584225153, 0x17ed74f5 },
-	{ 7966395542197526, 0xf0e372bc },
-	{ -5430052476903239, 0x0cc85c5d },
-	{ 2935106855172324, 0xdf70efeb },
-	{ -6384148386864253, 0x92f7d8ae },
-	{ 7162472545633634, 0x83e02791 },
-	{ -4177724348780707, 0xd97a777c },
-	{ 5977007115012624, 0xd8f5a253 },
-	{ -7192467481081145, 0x806f1fde },
-	{ 8863833131590254, 0x022e02d1 },
-	{ -1769047220330431, 0x2d287eb7 },
-	{ 3184271431751164, 0x498692f5 },
-	{ -77273909666229, 0x0d23129d },
-	{ 7432852227569722, 0x0ed87406 },
-	{ -7968050973091995, 0xb0396b9a },
-	{ 5541507801188520, 0xbfbb9072 },
-	{ -188557386145265, 0x8839f308 },
-	{ 7918227809178310, 0xbaec7144 },
-	{ -556657445603127, 0x68f0b27e },
-	{ 131636434112020, 0x7ba7b392 },
-	{ -5830691134858733, 0x86112b29 },
-	{ 617780101152274, 0xcc48cde6 },
-	{ -6276599599929235, 0x4a3f2caf },
-	{ 6028669383217728, 0x2de43a6c },
-	{ -4391824743921065, 0x05a55762 },
-	{ 2734820613752350, 0x1edd24c1 },
-	{ -2778718176081327, 0x81dfb69b },
-	{ 2780458655416620, 0x81552f5c },
-	{ -4009636752066853, 0xf4634cd5 },
-	{ 1564623516530410, 0x3858b863 },
-	{ -6651977796910475, 0x20a06481 },
-	{ 924297076672216, 0x8a452956 },
-	{ -119958211812449, 0x9da42bd2 },
+	{ 0, 0x23c03fd5 },
+	{ 1, 0x676e3a3a },
+	{ -1, 0xaafe0ccb },
+	{ 65535, 0x2673851b },
+	{ 65536, 0x73f93d13 },
+	{ 65537, 0x0a109933 },
+	{ 4294967295, 0x447b33a0 },
+	{ 4294967296, 0xb3d9556d },
+	{ 4294967297, 0xaebb2b36 },
+	{ -4294967295, 0xa6e408ac },
+	{ -4294967296, 0xd9a8e22a },
+	{ -4294967297, 0x65c39b14 },
+	{ 9007199254740991, 0x92355b16 },
+	{ -9007199254740991, 0xf4d878bb },
+	{ 8279140260984440, 0xcb6f0655 },
+	{ -3446241584225153, 0x34d53ccd },
+	{ 7966395542197526, 0x6b2df047 },
+	{ -5430052476903239, 0x09e46562 },
+	{ 2935106855172324, 0x540b9179 },
+	{ -6384148386864253, 0x81ba6f11 },
+	{ 7162472545633634, 0x6a14bed7 },
+	{ -4177724348780707, 0x73914a93 },
+	{ 5977007115012624, 0x31d8b0f6 },
+	{ -7192467481081145, 0xfd4ece73 },
+	{ 8863833131590254, 0x2f566c68 },
+	{ -1769047220330431, 0x9bfd1d2b },
+	{ 3184271431751164, 0x1717b94d },
+	{ -77273909666229, 0x73ddb9d5 },
+	{ 7432852227569722, 0xaefc9801 },
+	{ -7968050973091995, 0xc2e0624b },
+	{ 5541507801188520, 0x549db012 },
+	{ -188557386145265, 0x299fc9e4 },
+	{ 7918227809178310, 0x0610a8c8 },
+	{ -556657445603127, 0x0dd12fbc },
+	{ 131636434112020, 0xd27e08a7 },
+	{ -5830691134858733, 0x06fedd02 },
+	{ 617780101152274, 0xc0221d7d },
+	{ -6276599599929235, 0xdeb3b3ff },
+	{ 6028669383217728, 0xf46c911a },
+	{ -4391824743921065, 0x6e05d8af },
+	{ 2734820613752350, 0x1b38e070 },
+	{ -2778718176081327, 0x78b760b5 },
+	{ 2780458655416620, 0x19dba424 },
+	{ -4009636752066853, 0xa7f2cd8c },
+	{ 1564623516530410, 0xac733dca },
+	{ -6651977796910475, 0xee509b77 },
+	{ 924297076672216, 0x7599e1a4 },
+	{ -119958211812449, 0x3dee9f48 },
 }
 for _, Case in StreamChecks do
 	local Generator = Random.new(Case[1])
@@ -170,12 +172,13 @@ for _, Case in StreamChecks do
 	end
 	assert(Checksum == Case[2], `PCG32 stream mismatch for seed {Case[1]}`)
 end
--- The exact-product boundary, signed/fractional bounds, and reversed bounds.
+-- The exact-product boundary, signed/fractional bounds (toward zero), and reversed bounds, as a playing client gives
+-- them (Studio 0.747, tools/parity/expected/random.txt Random-test-ranges).
 local RangeChecks = {
 	{ 0, 0, 0x00000000 },
 	{ 1, 12, 0xe9473863 },
-	{ -1.9, 1.9, 0x4aef8dba },
-	{ 10.9, -4.2, 0x0f06db22 },
+	{ -1.9, 1.9, 0x81b3e3b4 },
+	{ 10.9, -4.2, 0xdf0cbdb8 },
 	{ 0, 2097150, 0xd866f5e9 },
 	{ 0, 2097151, 0x619d6445 },
 	{ 0, 2097152, 0xc3fcced7 },
@@ -191,6 +194,94 @@ for _, Case in RangeChecks do
 	end
 	assert(Checksum == Case[3], `PCG32 range mismatch for {Case[1]}, {Case[2]}`)
 end
+"#,
+    );
+}
+
+/// Random's number arguments take numeric strings, hex and spaces included, as a playing client does (Studio 0.747,
+/// tools/parity/expected/random.txt Random-strings and Random-string-seeds).
+#[test]
+fn random_reads_numeric_strings() {
+    assert_script(
+        r#"
+local function Seven()
+	return Random.new(7)
+end
+assert(Seven():NextInteger("5", "10") == 10)
+assert(Seven():NextInteger("0x10", "20") == 20)
+assert(Seven():NextInteger(" 5 ", 10) == 10 and Seven():NextInteger(5, "1e1") == 10)
+assert(Seven():NextInteger("-1.5", "-1.5") == -1)
+assert(Seven():NextNumber("2", "3") == 2.8737085924861336)
+assert(Seven():NextNumber(" 2 ", "0x3") == 2.8737085924861336)
+assert(Random.new("5"):NextNumber() == 0.83407240584658338)
+assert(Random.new("0x10"):NextNumber() == 0.53618507228538281)
+assert(Random.new(" 7 "):NextNumber() == 0.87370859248613331)
+assert(Random.new("1e3"):NextNumber() == 0.7092995380612015)
+assert(not pcall(function()
+	return Seven():NextInteger("abc", 1)
+end))
+assert(not pcall(function()
+	return Random.new("abc")
+end))
+"#,
+    );
+}
+
+/// Random's argument errors as a playing client raises them (Studio 0.747, tools/parity/expected/random.txt
+/// Random-arguments-*, Random-self and Random-new-arguments): Luau's own messages, self counted as #1, at the calling line,
+/// the method named in a `.` call only; NextNumber with one argument; a wrong self. A failed call draws nothing.
+#[test]
+fn random_raises_luaus_argument_errors() {
+    assert_script(
+        r#"
+local G = Random.new(7)
+local function Fails(Pattern, Function, ...)
+	local Ok, Message = pcall(Function, ...)
+	assert(not Ok and string.find(tostring(Message), Pattern) ~= nil, tostring(Message))
+end
+-- `.` through pcall: no position
+Fails("^missing argument #2 to 'NextInteger' %(number expected%)$", G.NextInteger, G)
+Fails("^missing argument #3 to 'NextInteger' %(number expected%)$", G.NextInteger, G, 1)
+Fails("^invalid argument #2 to 'NextInteger' %(number expected, got nil%)$", G.NextInteger, G, nil, 5)
+Fails("^invalid argument #3 to 'NextInteger' %(number expected, got string%)$", G.NextInteger, G, 1, "abc")
+Fails("^invalid argument #2 to 'NextInteger' %(number expected, got Vector3%)$", G.NextInteger, G, Vector3.zero, 1)
+Fails("^invalid argument #2 to 'NextInteger' %(number expected, got Instance%)$", G.NextInteger, G, game, 1)
+Fails("^Random:NextNumber requires 0 or 2 arguments$", G.NextNumber, G, nil)
+Fails("^invalid argument #2 to 'NextNumber' %(number expected, got nil%)$", G.NextNumber, G, nil, 5)
+Fails("^missing argument #2 to 'Shuffle' %(table expected%)$", G.Shuffle, G)
+Fails("^invalid argument #2 to 'Shuffle' %(table expected, got number%)$", G.Shuffle, G, 5)
+Fails("^invalid argument #1 to 'NextInteger' %(Random expected, got nil%)$", G.NextInteger, nil, 1, 2)
+Fails("^missing argument #1 to 'Clone' %(Random expected%)$", G.Clone)
+Fails("^invalid argument #1 to 'NextUnitVector' %(Random expected, got table%)$", G.NextUnitVector, {})
+Fails("^invalid argument #1 to 'new' %(number expected, got Vector3%)$", Random.new, Vector3.zero)
+-- from a function: at the calling line; a `:` call leaves the method's name out
+Fails("^Test:%d+: invalid argument #2 to 'NextInteger' %(number expected, got string%)$", function()
+	return G.NextInteger(G, "abc", 1)
+end)
+Fails("^Test:%d+: invalid argument #2 %(number expected, got string%)$", function()
+	return G:NextInteger("abc", 1)
+end)
+Fails("^Test:%d+: missing argument #3 %(number expected%)$", function()
+	return G:NextInteger(1)
+end)
+Fails("^Test:%d+: Random:NextNumber requires 0 or 2 arguments$", function()
+	return G:NextNumber(5)
+end)
+Fails("^Test:%d+: missing argument #2 %(table expected%)$", function()
+	return G:Shuffle()
+end)
+Fails("^Test:%d+: invalid argument #1 to 'new' %(number expected, got string%)$", function()
+	return Random.new("abc")
+end)
+Fails("^Attempted to shuffle table containing nil values", function()
+	G:Shuffle({ 1, nil, 3 })
+end)
+Fails("^Foo is not a valid member of Random$", function()
+	return (G :: any):Foo()
+end)
+-- nothing was drawn; a third bound is ignored
+assert(G:NextNumber(1, 2, 3) == Random.new(7):NextNumber(1, 2))
+assert(G:Clone():NextInteger(1, 100) == G:NextInteger(1, 100))
 "#,
     );
 }
@@ -488,6 +579,38 @@ fn datatypes_answer_the_lowercase_names_a_client_lists() {
     );
 }
 
+/// CFrame:ToAxisAngle where the angle's cosine is a float step or two from 1 or -1: lines a Studio 0.747 playing client
+/// printed (tools/parity/probes/axis_angle_small.luau). The angle is as coarse as acosf of that cosine, a half turn takes
+/// its axis from the diagonal, and skew terms that are all zero give the axis 0, 0, 0.
+#[test]
+fn cframe_to_axis_angle_near_the_identity_and_a_half_turn_is_a_playing_clients() {
+    assert_script(
+        r#"
+local function Line(C)
+	local Axis, Angle = C:ToAxisAngle()
+	return string.format("%.9g %.9g %.9g %.17g", Axis.X, Axis.Y, Axis.Z, Angle)
+end
+local function Is(Got, Want)
+	assert(Got == Want, `got "{Got}", expected "{Want}"`)
+end
+Is(Line(CFrame.identity), "1 0 0 0")
+-- a 0.0003 rad turn reads 0, and the next angles are 2^-11 and 0.00069
+Is(Line(CFrame.Angles(0, 0.0003, 0)), "1 0 0 0")
+Is(Line(CFrame.Angles(0, 0.0005, 0)), "0 1 0 0.00048828125")
+Is(Line(CFrame.Angles(0, 0.0007, 0)), "0 1 0 0.00069053395418450236")
+Is(Line(CFrame.new(0, 0, 0, 0.99999994, 0, 0, 0, 1, 0, 0, 0, 1)), "1 0 0 0")
+Is(Line(CFrame.new(0, 0, 0, 0.99999994, 0, 0, 0, 0.99999994, 0, 0, 0, 0.99999994)), "0 0 0 0.00048828125")
+Is(Line(CFrame.Angles(math.pi - 0.0003, 0, 0)), "1 0 0 3.1412472724914551")
+-- a half turn: the axis from the largest diagonal term
+Is(Line(CFrame.Angles(math.pi - 1e-8, 0, 0)), "1 -0 0 3.1415927410125732")
+Is(Line(CFrame.Angles(0, math.pi, 0)), "0 1 0 3.1415927410125732")
+Is(Line(CFrame.new(0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, -1)), "0.707106769 0.707106769 0 3.1415927410125732")
+Is(Line(CFrame.fromAxisAngle(Vector3.new(1, 2, -3), math.pi - 0.0001)), "-0.267227888 -0.534539104 0.801783741 3.1415927410125732")
+Is(Line(CFrame.fromAxisAngle(Vector3.new(1, 2, -3), math.pi - 0.0006)), "0.267225772 0.534550846 -0.801776648 3.1411044597625732")
+"#,
+    );
+}
+
 /// CFrame, Vector2 and Color3 compute in a playing client's float order (types::float32): values a Studio 0.744
 /// playing client printed (tools/parity/probes/datatypes.luau, cframe_order.luau; tests/parity.rs guards every
 /// matching line of those probes).
@@ -555,6 +678,129 @@ Is(F(Base:Lerp(Near, 3):GetComponents()), "0 0 0 0.669367254 -0.151950628 0.7272
 Is(F(Past:GetComponents()), "0 0 0 0.723908186 -0.151950687 0.672954679 0.384907097 0.898470879 -0.211179346 -0.572541296 0.411899477 0.708897352")
 Is(F(Base:Lerp(Past, -2):GetComponents()), "0 0 0 0.797515154 -0.151950657 0.583849788 0.357623935 0.898470819 -0.254666984 -0.48587516 0.411899447 0.770885348")
 Is(F(Base:Lerp(Past, 3):GetComponents()), "0 0 0 0.669270039 -0.151950687 0.727316082 0.400191993 0.898470879 -0.180545002 -0.626038373 0.411899418 0.662129045")
+"#,
+    );
+}
+
+/// CFrame.fromRotationBetweenVectors builds its rotation from the vectors as given, as a 0.747 playing client does to the
+/// bit (the components it printed; tools/parity/probes/cframe_rotation_between.luau): the quaternion from the cross
+/// product and sqrtf(|a|^2 |b|^2) + a . b, a half turn once that is below 1e-5 of the lengths' product, made unit twice.
+/// It was nil.
+#[test]
+fn cframe_from_rotation_between_vectors_is_a_playing_clients() {
+    assert_script(
+        r#"
+local function F(...)
+	local Out = {}
+	for _, Value in { ... } do
+		table.insert(Out, string.format("%.17g", Value))
+	end
+	return table.concat(Out, " ")
+end
+local function Is(Got, Want)
+	assert(Got == Want, `got "{Got}", expected "{Want}"`)
+end
+local Between = CFrame.fromRotationBetweenVectors
+-- X to Y: the second normalization shows in the last bit
+Is(F(Between(Vector3.new(1, 0, 0), Vector3.new(0, 1, 0)):GetComponents()), "0 0 0 -1.1920928955078125e-07 -1.0000001192092896 0 1.0000001192092896 -1.1920928955078125e-07 0 0 0 1")
+-- the vectors are not made unit first
+Is(F(Between(Vector3.new(5, -1, 2), Vector3.new(5, -1, 2.001)):GetComponents()), "0 0 0 1 2.776740393173327e-09 -0.00016662759298924357 2.776740393173327e-09 1 3.3328698918921873e-05 0.00016662759298924357 -3.3328698918921873e-05 1")
+Is(F(Between(Vector3.new(-0.352783203125, -1.8609619140625, 8.59466552734375), Vector3.new(5.274658203125, -6.84051513671875, -4.91058349609375)):GetComponents()), "0 0 0 0.58208644390106201 0.4637712836265564 0.66790091991424561 0.74346202611923218 0.02909928560256958 -0.66814488172531128 -0.32930189371109009 0.88547700643539429 -0.32785797119140625")
+-- opposite: a half turn about (0, -a.z, a.y), since |a.x| <= |a.y|
+Is(F(Between(Vector3.new(1, 2, 3), Vector3.new(-1, -2, -3)):GetComponents()), "0 0 0 -1.0000002384185791 -0 0 0 0.38461536169052124 -0.92307692766189575 0 -0.92307692766189575 -0.38461554050445557")
+-- either side of the cutoff: 0.00445 rad from opposite is a half turn about Z, 0.004475 rad a rotation
+Is(F(Between(Vector3.new(1, 0, 0), Vector3.new(-0.99999010562896729, -0.0044499854557216167, 0)):GetComponents()), "0 0 0 -1 -0 0 0 -1 0 -0 0 1")
+Is(F(Between(Vector3.new(1, 0, 0), Vector3.new(-0.99998998641967773, -0.00447498494759202, 0)):GetComponents()), "0 0 0 -0.99998998641967773 0.0044753360562026501 -0 -0.0044753360562026501 -0.99998998641967773 0 0 0 1")
+-- a zero vector: not-a-number
+local Zero = { Between(Vector3.zero, Vector3.new(1, 0, 0)):GetComponents() }
+for Index = 4, 12 do
+	assert(Zero[Index] ~= Zero[Index], `component {Index} is {Zero[Index]}`)
+end
+"#,
+    );
+}
+
+/// CFrame:AngleBetween answers in doubles from the stored floats, as a 0.747 playing client does to the bit
+/// (tools/parity/probes/cframe_angle_between.luau): atan2(sqrt(1 - x^2), x) of the clamped cosine (trace(A^T B) - 1) / 2,
+/// summed column by column, with the client's argument errors. It was a missing method.
+#[test]
+fn cframe_angle_between_is_a_playing_clients() {
+    assert_script(
+        r#"
+local function Is(Got, Want)
+	assert(Got == Want, `got "{Got}", expected "{Want}"`)
+end
+local function Angle(A, B)
+	return string.format("%.17g", A:AngleBetween(B))
+end
+local function M(...)
+	return CFrame.new(0, 0, 0, ...)
+end
+Is(Angle(CFrame.identity, CFrame.Angles(0.5, 0, 0)), "0.50000002469944416")
+-- a rotation against itself: its trace reads 2.15e-8 past 3 here, so the clamp gives 0 (not-a-number without it)
+local Past = M(0.68016672134399414, 0.68180555105209351, 0.26928511261940002, 0.69895857572555542, -0.49245211482048035, -0.51860177516937256, -0.22097551822662354, 0.5409548282623291, -0.81150335073471069)
+Is(Angle(Past, Past), "0")
+-- and 8.1e-8 short of 3 here: atan2, where acos reads 0.0002853810724680844
+local Short = M(0.76375752687454224, -0.44085046648979187, 0.47151371836662292, 0.18491798639297485, -0.55041778087615967, -0.81415331363677979, 0.61844944953918457, 0.7090071439743042, -0.3388645350933075)
+Is(Angle(Short, Short), "0.00028538107245560946")
+-- positions do not count; a matrix that is not a rotation goes through the same steps
+Is(Angle(CFrame.new(1, 2, 3) * CFrame.Angles(0.3, 1.1, -0.4), CFrame.new(-5, 0, 9) * CFrame.Angles(0.2, 1.1, -0.4)), "0.099999571943821294")
+Is(Angle(M(0, 0, 0, 0, 0, 0, 0, 0, 0), CFrame.identity), "2.0943951023931957")
+Is(Angle(M(2, 0, 0, 0, 2, 0, 0, 0, 2), CFrame.identity), "0")
+-- the client's errors: the count without a position, a wrong argument at the calling line
+local Ok, Message = pcall(function()
+	return CFrame.identity:AngleBetween()
+end)
+Is(Ok, false)
+Is(Message, "Invalid number of arguments. CFrame:AngleBetween expected 2, got 1.")
+Ok, Message = pcall(function()
+	return CFrame.identity:AngleBetween(CFrame.identity, 1)
+end)
+Is(Message, "Invalid number of arguments. CFrame:AngleBetween expected 2, got 3.")
+Ok, Message = pcall(function()
+	return CFrame.identity:AngleBetween(Vector3.zero)
+end)
+assert(string.match(Message, ":%d+: invalid argument #2 %(CFrame expected, got Vector3%)$"), Message)
+Ok, Message = pcall(function()
+	return CFrame.identity.AngleBetween(5, CFrame.identity)
+end)
+assert(string.match(Message, ":%d+: invalid argument #1 to 'AngleBetween' %(CFrame expected, got number%)$"), Message)
+"#,
+    );
+}
+
+/// CFrame.new(x, y, z, qx, qy, qz, qw) makes the quaternion unit before the matrix, as a 0.747 playing client does to the
+/// bit (tools/parity/probes/cframe_new_quat.luau; types::float32 rot_from_quat, Lerp's). It took the quaternion as unit:
+/// a non-unit one gave a scaled matrix ((1, 2, 3, 4) read R00 -25), a zero one the identity, and a unit one could read
+/// a float step off.
+#[test]
+fn cframe_new_from_a_quaternion_makes_it_unit_as_a_playing_client_does() {
+    assert_script(
+        r#"
+local function F(...)
+	local Out = {}
+	for _, Value in { ... } do
+		table.insert(Out, string.format("%.17g", Value))
+	end
+	return table.concat(Out, " ")
+end
+local function Is(Got, Want)
+	assert(Got == Want, `got "{Got}", expected "{Want}"`)
+end
+Is(F(CFrame.new(1, 2, 3, 1, 2, 3, 4):GetComponents()), "1 2 3 0.13333332538604736 -0.66666668653488159 0.7333332896232605 0.93333333730697632 0.33333331346511841 0.13333335518836975 -0.33333331346511841 0.66666662693023682 0.66666668653488159")
+Is(F(CFrame.new(1, 2, 3, 0, 0, 1, 1):GetComponents()), "1 2 3 5.9604644775390625e-08 -0.99999994039535522 0 0.99999994039535522 5.9604644775390625e-08 0 0 0 1")
+-- a unit quaternion is made unit again: 90 degrees about Z reads a float step past 1
+Is(F(CFrame.new(1, 2, 3, 0, 0, 0.70710676908493042, 0.70710676908493042):GetComponents()), "1 2 3 -1.1920928955078125e-07 -1.0000001192092896 0 1.0000001192092896 -1.1920928955078125e-07 0 0 0 1")
+Is(F(CFrame.new(1, 2, 3, -0, -0, -0.70710676908493042, -0.70710676908493042):GetComponents()), "1 2 3 -1.1920928955078125e-07 -1.0000001192092896 0 1.0000001192092896 -1.1920928955078125e-07 0 0 0 1")
+Is(F(CFrame.new(90.521240234375, -85.29052734375, 24.566650390625, -0.2734495997428894, 0.62109988927841187, -0.66557836532592773, -0.3105892539024353):GetComponents()), "90.521240234375 -85.29052734375 24.566650390625 -0.65751934051513672 -0.75312197208404541 -0.021809607744216919 0.073763936758041382 -0.035538434982299805 -0.99664229154586792 0.74981820583343506 -0.65692025423049927 0.078920483589172363")
+-- a squared length past the float range scales the quaternion to zero: the identity
+Is(F(CFrame.new(0, 0, 0, -6.2588892878193584e+29, 2.3618013992074302e+28, 2.2817638041885361e+29, -7.4541315783132245e+29):GetComponents()), "0 0 0 1 0 -0 -0 1 0 0 0 1")
+-- a zero quaternion: not-a-number
+local Zero = { CFrame.new(1, 2, 3, 0, 0, 0, 0):GetComponents() }
+Is(F(Zero[1], Zero[2], Zero[3]), "1 2 3")
+for Index = 4, 12 do
+	assert(Zero[Index] ~= Zero[Index], `component {Index} is {Zero[Index]}`)
+end
 "#,
     );
 }

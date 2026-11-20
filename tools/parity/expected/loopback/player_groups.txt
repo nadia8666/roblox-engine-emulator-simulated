@@ -1,0 +1,104 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless play session of one server and one client in processes of their own (the server's half a server Script from the server's start, the client's half a job in the client; script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-19
+# repeated: 3 captures, the same lines
+server: player-added in-group ok false | yielded rank ok 0
+server: IsInGroupAsync read ok function
+server: GetRankInGroupAsync read ok function
+server: GetRoleInGroupAsync read ok function
+server: IsInGroup read ok function
+server: GetRankInGroup read ok function
+server: GetRoleInGroup read ok function
+server: fresh IsInGroupAsync ok false | yielded / again ok false
+server: fresh GetRankInGroupAsync ok 0 | yielded / again ok 0
+server: fresh GetRoleInGroupAsync ok Guest | yielded / again ok Guest
+server: fresh IsInGroup ok false | yielded / again ok false
+server: fresh GetRankInGroup ok 0 | yielded / again ok 0
+server: fresh GetRoleInGroup ok Guest | yielded / again ok Guest
+server: shared IsInGroupAsync ok false | yielded / GetRankInGroupAsync ok 0 / GetRoleInGroupAsync ok Guest / IsInGroup ok false / GetRankInGroup ok 0 / GetRoleInGroup ok Guest
+server: shared GetRankInGroupAsync ok 0 | yielded / IsInGroupAsync ok false / GetRoleInGroupAsync ok Guest / IsInGroup ok false / GetRankInGroup ok 0 / GetRoleInGroup ok Guest
+server: shared GetRoleInGroupAsync ok Guest | yielded / IsInGroupAsync ok false / GetRankInGroupAsync ok 0 / IsInGroup ok false / GetRankInGroup ok 0 / GetRoleInGroup ok Guest
+server: shared IsInGroup ok false | yielded / IsInGroupAsync ok false / GetRankInGroupAsync ok 0 / GetRoleInGroupAsync ok Guest / GetRankInGroup ok 0 / GetRoleInGroup ok Guest
+server: shared GetRankInGroup ok 0 | yielded / IsInGroupAsync ok false / GetRankInGroupAsync ok 0 / GetRoleInGroupAsync ok Guest / IsInGroup ok false / GetRoleInGroup ok Guest
+server: shared GetRoleInGroup ok Guest | yielded / IsInGroupAsync ok false / GetRankInGroupAsync ok 0 / GetRoleInGroupAsync ok Guest / IsInGroup ok false / GetRankInGroup ok 0
+server: key 11.5 ok false | yielded / 11 ok false | yielded / 12 ok false
+server: key -21.5 ok false | yielded / -21 ok false | yielded / -22 ok false
+server: key 31.4 ok false | yielded / 31 ok false
+server: key true ok false | yielded / 1 ok false
+server: key false ok false | yielded / 0 ok false
+server: key nan ok false / 0 ok false
+server: key inf ok false / 0 ok false
+server: key -inf ok false / 0 ok false
+server: key 2^63 ok false | yielded / 0 ok false / -9.2233720368547758e+18 ok false
+server: key 1e20 ok false
+server: key -1e20 ok false
+server: key 2^53 ok false | yielded / 9007199254740992 ok false
+server: key '41' ok false | yielded / 41 ok false
+server: key '-42' ok false | yielded / -42 ok false
+server: key '+43' error Unable to cast string to int64 / 43 ok false | yielded
+server: key ' 44' ok false | yielded / 44 ok false
+server: key '45 ' ok false | yielded / 45 ok false
+server: key '046' ok false | yielded / 46 ok false
+server: key '47.0' error Unable to cast string to int64 / 47 ok false | yielded
+server: key '4.8e1' error Unable to cast string to int64 / 48 ok false | yielded
+server: key '51.5' error Unable to cast string to int64 / 51 ok false | yielded / 52 ok false | yielded
+server: key '0x3d' error Unable to cast string to int64 / 61 ok false | yielded
+server: key '9007199254740993' ok false | yielded / 9007199254740992 ok false
+server: key '9223372036854775807' ok false | yielded
+server: key '9223372036854775808' error Unable to cast string to int64
+server: args IsInGroupAsync 7 ok false | -1 ok false | 7.5 ok false | '7' ok false | 'abc' error Unable to cast string to int64 | '' error Unable to cast string to int64 | true ok false | {} error Unable to cast Array to int64 | {1} error Unable to cast Array to int64 | {a=1} error Unable to cast Dictionary to int64 | Vector3 error Unable to cast Vector3 to int64 | function error Unable to cast Function to int64 | workspace error Unable to cast Instance to int64 | Enum error Unable to cast KeyCode to int64 | nil error Argument 1 missing or nil | none error Argument 1 missing or nil | 7,extra ok false | other-self error Expected ':' not '.' calling member function IsInGroupAsync | no-self error Expected ':' not '.' calling member function IsInGroupAsync
+server: args GetRankInGroupAsync 7 ok 0 | -1 ok 0 | 7.5 ok 0 | '7' ok 0 | 'abc' error Unable to cast string to int64 | '' error Unable to cast string to int64 | true ok 0 | {} error Unable to cast Array to int64 | {1} error Unable to cast Array to int64 | {a=1} error Unable to cast Dictionary to int64 | Vector3 error Unable to cast Vector3 to int64 | function error Unable to cast Function to int64 | workspace error Unable to cast Instance to int64 | Enum error Unable to cast KeyCode to int64 | nil error Argument 1 missing or nil | none error Argument 1 missing or nil | 7,extra ok 0 | other-self error Expected ':' not '.' calling member function GetRankInGroupAsync | no-self error Expected ':' not '.' calling member function GetRankInGroupAsync
+server: args GetRoleInGroupAsync 7 ok Guest | -1 ok Guest | 7.5 ok Guest | '7' ok Guest | 'abc' error Unable to cast string to int64 | '' error Unable to cast string to int64 | true ok Guest | {} error Unable to cast Array to int64 | {1} error Unable to cast Array to int64 | {a=1} error Unable to cast Dictionary to int64 | Vector3 error Unable to cast Vector3 to int64 | function error Unable to cast Function to int64 | workspace error Unable to cast Instance to int64 | Enum error Unable to cast KeyCode to int64 | nil error Argument 1 missing or nil | none error Argument 1 missing or nil | 7,extra ok Guest | other-self error Expected ':' not '.' calling member function GetRoleInGroupAsync | no-self error Expected ':' not '.' calling member function GetRoleInGroupAsync
+server: args IsInGroup 7 ok false | -1 ok false | 7.5 ok false | '7' ok false | 'abc' error Unable to cast string to int64 | '' error Unable to cast string to int64 | true ok false | {} error Unable to cast Array to int64 | {1} error Unable to cast Array to int64 | {a=1} error Unable to cast Dictionary to int64 | Vector3 error Unable to cast Vector3 to int64 | function error Unable to cast Function to int64 | workspace error Unable to cast Instance to int64 | Enum error Unable to cast KeyCode to int64 | nil error Argument 1 missing or nil | none error Argument 1 missing or nil | 7,extra ok false | other-self error Expected ':' not '.' calling member function IsInGroup | no-self error Expected ':' not '.' calling member function IsInGroup
+server: args GetRankInGroup 7 ok 0 | -1 ok 0 | 7.5 ok 0 | '7' ok 0 | 'abc' error Unable to cast string to int64 | '' error Unable to cast string to int64 | true ok 0 | {} error Unable to cast Array to int64 | {1} error Unable to cast Array to int64 | {a=1} error Unable to cast Dictionary to int64 | Vector3 error Unable to cast Vector3 to int64 | function error Unable to cast Function to int64 | workspace error Unable to cast Instance to int64 | Enum error Unable to cast KeyCode to int64 | nil error Argument 1 missing or nil | none error Argument 1 missing or nil | 7,extra ok 0 | other-self error Expected ':' not '.' calling member function GetRankInGroup | no-self error Expected ':' not '.' calling member function GetRankInGroup
+server: args GetRoleInGroup 7 ok Guest | -1 ok Guest | 7.5 ok Guest | '7' ok Guest | 'abc' error Unable to cast string to int64 | '' error Unable to cast string to int64 | true ok Guest | {} error Unable to cast Array to int64 | {1} error Unable to cast Array to int64 | {a=1} error Unable to cast Dictionary to int64 | Vector3 error Unable to cast Vector3 to int64 | function error Unable to cast Function to int64 | workspace error Unable to cast Instance to int64 | Enum error Unable to cast KeyCode to int64 | nil error Argument 1 missing or nil | none error Argument 1 missing or nil | 7,extra ok Guest | other-self error Expected ':' not '.' calling member function GetRoleInGroup | no-self error Expected ':' not '.' calling member function GetRoleInGroup
+server: same ok true false
+client: IsInGroupAsync read ok function
+client: GetRankInGroupAsync read ok function
+client: GetRoleInGroupAsync read ok function
+client: IsInGroup read ok function
+client: GetRankInGroup read ok function
+client: GetRoleInGroup read ok function
+client: fresh IsInGroupAsync ok false | yielded / again ok false
+client: fresh GetRankInGroupAsync ok 0 | yielded / again ok 0
+client: fresh GetRoleInGroupAsync ok Guest | yielded / again ok Guest
+client: fresh IsInGroup ok false | yielded / again ok false
+client: fresh GetRankInGroup ok 0 | yielded / again ok 0
+client: fresh GetRoleInGroup ok Guest | yielded / again ok Guest
+client: shared IsInGroupAsync ok false | yielded / GetRankInGroupAsync ok 0 / GetRoleInGroupAsync ok Guest / IsInGroup ok false / GetRankInGroup ok 0 / GetRoleInGroup ok Guest
+client: shared GetRankInGroupAsync ok 0 | yielded / IsInGroupAsync ok false / GetRoleInGroupAsync ok Guest / IsInGroup ok false / GetRankInGroup ok 0 / GetRoleInGroup ok Guest
+client: shared GetRoleInGroupAsync ok Guest | yielded / IsInGroupAsync ok false / GetRankInGroupAsync ok 0 / IsInGroup ok false / GetRankInGroup ok 0 / GetRoleInGroup ok Guest
+client: shared IsInGroup ok false | yielded / IsInGroupAsync ok false / GetRankInGroupAsync ok 0 / GetRoleInGroupAsync ok Guest / GetRankInGroup ok 0 / GetRoleInGroup ok Guest
+client: shared GetRankInGroup ok 0 | yielded / IsInGroupAsync ok false / GetRankInGroupAsync ok 0 / GetRoleInGroupAsync ok Guest / IsInGroup ok false / GetRoleInGroup ok Guest
+client: shared GetRoleInGroup ok Guest | yielded / IsInGroupAsync ok false / GetRankInGroupAsync ok 0 / GetRoleInGroupAsync ok Guest / IsInGroup ok false / GetRankInGroup ok 0
+client: key 11.5 ok false | yielded / 11 ok false | yielded / 12 ok false
+client: key -21.5 ok false | yielded / -21 ok false | yielded / -22 ok false
+client: key 31.4 ok false | yielded / 31 ok false
+client: key true ok false | yielded / 1 ok false
+client: key false ok false | yielded / 0 ok false
+client: key nan ok false / 0 ok false
+client: key inf ok false / 0 ok false
+client: key -inf ok false / 0 ok false
+client: key 2^63 ok false | yielded / 0 ok false / -9.2233720368547758e+18 ok false
+client: key 1e20 ok false
+client: key -1e20 ok false
+client: key 2^53 ok false | yielded / 9007199254740992 ok false
+client: key '41' ok false | yielded / 41 ok false
+client: key '-42' ok false | yielded / -42 ok false
+client: key '+43' error Unable to cast string to int64 / 43 ok false | yielded
+client: key ' 44' ok false | yielded / 44 ok false
+client: key '45 ' ok false | yielded / 45 ok false
+client: key '046' ok false | yielded / 46 ok false
+client: key '47.0' error Unable to cast string to int64 / 47 ok false | yielded
+client: key '4.8e1' error Unable to cast string to int64 / 48 ok false | yielded
+client: key '51.5' error Unable to cast string to int64 / 51 ok false | yielded / 52 ok false | yielded
+client: key '0x3d' error Unable to cast string to int64 / 61 ok false | yielded
+client: key '9007199254740993' ok false | yielded / 9007199254740992 ok false
+client: key '9223372036854775807' ok false | yielded
+client: key '9223372036854775808' error Unable to cast string to int64
+client: args IsInGroupAsync 7 ok false | -1 ok false | 7.5 ok false | '7' ok false | 'abc' error Unable to cast string to int64 | '' error Unable to cast string to int64 | true ok false | {} error Unable to cast Array to int64 | {1} error Unable to cast Array to int64 | {a=1} error Unable to cast Dictionary to int64 | Vector3 error Unable to cast Vector3 to int64 | function error Unable to cast Function to int64 | workspace error Unable to cast Instance to int64 | Enum error Unable to cast KeyCode to int64 | nil error Argument 1 missing or nil | none error Argument 1 missing or nil | 7,extra ok false | other-self error Expected ':' not '.' calling member function IsInGroupAsync | no-self error Expected ':' not '.' calling member function IsInGroupAsync
+client: args GetRankInGroupAsync 7 ok 0 | -1 ok 0 | 7.5 ok 0 | '7' ok 0 | 'abc' error Unable to cast string to int64 | '' error Unable to cast string to int64 | true ok 0 | {} error Unable to cast Array to int64 | {1} error Unable to cast Array to int64 | {a=1} error Unable to cast Dictionary to int64 | Vector3 error Unable to cast Vector3 to int64 | function error Unable to cast Function to int64 | workspace error Unable to cast Instance to int64 | Enum error Unable to cast KeyCode to int64 | nil error Argument 1 missing or nil | none error Argument 1 missing or nil | 7,extra ok 0 | other-self error Expected ':' not '.' calling member function GetRankInGroupAsync | no-self error Expected ':' not '.' calling member function GetRankInGroupAsync
+client: args GetRoleInGroupAsync 7 ok Guest | -1 ok Guest | 7.5 ok Guest | '7' ok Guest | 'abc' error Unable to cast string to int64 | '' error Unable to cast string to int64 | true ok Guest | {} error Unable to cast Array to int64 | {1} error Unable to cast Array to int64 | {a=1} error Unable to cast Dictionary to int64 | Vector3 error Unable to cast Vector3 to int64 | function error Unable to cast Function to int64 | workspace error Unable to cast Instance to int64 | Enum error Unable to cast KeyCode to int64 | nil error Argument 1 missing or nil | none error Argument 1 missing or nil | 7,extra ok Guest | other-self error Expected ':' not '.' calling member function GetRoleInGroupAsync | no-self error Expected ':' not '.' calling member function GetRoleInGroupAsync
+client: args IsInGroup 7 ok false | -1 ok false | 7.5 ok false | '7' ok false | 'abc' error Unable to cast string to int64 | '' error Unable to cast string to int64 | true ok false | {} error Unable to cast Array to int64 | {1} error Unable to cast Array to int64 | {a=1} error Unable to cast Dictionary to int64 | Vector3 error Unable to cast Vector3 to int64 | function error Unable to cast Function to int64 | workspace error Unable to cast Instance to int64 | Enum error Unable to cast KeyCode to int64 | nil error Argument 1 missing or nil | none error Argument 1 missing or nil | 7,extra ok false | other-self error Expected ':' not '.' calling member function IsInGroup | no-self error Expected ':' not '.' calling member function IsInGroup
+client: args GetRankInGroup 7 ok 0 | -1 ok 0 | 7.5 ok 0 | '7' ok 0 | 'abc' error Unable to cast string to int64 | '' error Unable to cast string to int64 | true ok 0 | {} error Unable to cast Array to int64 | {1} error Unable to cast Array to int64 | {a=1} error Unable to cast Dictionary to int64 | Vector3 error Unable to cast Vector3 to int64 | function error Unable to cast Function to int64 | workspace error Unable to cast Instance to int64 | Enum error Unable to cast KeyCode to int64 | nil error Argument 1 missing or nil | none error Argument 1 missing or nil | 7,extra ok 0 | other-self error Expected ':' not '.' calling member function GetRankInGroup | no-self error Expected ':' not '.' calling member function GetRankInGroup
+client: args GetRoleInGroup 7 ok Guest | -1 ok Guest | 7.5 ok Guest | '7' ok Guest | 'abc' error Unable to cast string to int64 | '' error Unable to cast string to int64 | true ok Guest | {} error Unable to cast Array to int64 | {1} error Unable to cast Array to int64 | {a=1} error Unable to cast Dictionary to int64 | Vector3 error Unable to cast Vector3 to int64 | function error Unable to cast Function to int64 | workspace error Unable to cast Instance to int64 | Enum error Unable to cast KeyCode to int64 | nil error Argument 1 missing or nil | none error Argument 1 missing or nil | 7,extra ok Guest | other-self error Expected ':' not '.' calling member function GetRoleInGroup | no-self error Expected ':' not '.' calling member function GetRoleInGroup
+client: same ok true false

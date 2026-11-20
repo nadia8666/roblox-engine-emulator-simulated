@@ -1,0 +1,42 @@
+{
+	"about": "Seconds each slow test of the two binaries with jobs of their own takes in CI (GitHub's Windows runner): the median of public CI runs 43101268785, 43316740332 and 43325294039. tools/ci/test-runner.mjs deals each binary's tests out to its jobs by these times; a test not listed counts as 0.5 s. A missing or stale time never drops a test, it only makes the jobs less even. To refresh: with one test thread a test runs from the verdict line (ok) of the test before it to its own, in the jobs' logs (gh run view <id> --log); list every test over a second.",
+	"planted": {
+		"fifteen_hundred_functions_over_six_hundred_frames_keep_a_small_profile": 139,
+		"a_one_off_beside_a_hot_line_ranks_the_same_at_two_seconds_and_ten": 109.7,
+		"a_big_burst_every_tenth_frame_ranks_by_its_price": 96.2,
+		"six_equal_functions_are_all_critical_and_small_transfers_conserve_the_total": 88.7,
+		"the_same_code_profiled_for_two_seconds_and_ten_ranks_the_same": 42.6,
+		"sustained_stretches_keep_their_full_rate_at_every_run_length": 41,
+		"every_function_of_game_like_cadences_is_named_with_its_own_work": 32.4,
+		"a_burst_on_top_of_steady_work_claims_what_doing_it_ahead_saves": 26.5,
+		"work_on_more_frames_moves_its_price_and_severity_steadily": 25,
+		"advised_insert_bound_covers_removed_position_work": 16.1,
+		"repeat_reads_are_priced_at_what_keeping_the_value_saves_for_every_kind_of_member": 12,
+		"a_bounded_sort_cannot_claim_the_strongest_saving": 11.6,
+		"real_uncharged_cache_outcomes_are_estimates_with_calibration_spreads": 7.6,
+		"real_comparator_declines_intersect_only_the_sort_context": 6.1,
+		"a_big_one_off_does_not_hide_a_steady_hot_function": 4.2,
+		"a_one_off_spread_over_four_functions_names_each_and_is_never_steady_work": 4.2,
+		"substring_bounds_cover_upvalue_and_register_layouts": 3.4,
+		"two_real_computations_are_priced_whole_without_subtracting_the_smaller": 3,
+		"an_unrelated_one_off_leaves_a_function_that_runs_every_fifth_frame_its_own_issue": 2.9,
+		"work_on_fifteen_percent_of_the_frames_is_never_listed_nowhere": 2.8,
+		"a_real_substring_fix_bounds_its_added_argument_instructions": 2.5,
+		"another_functions_hitch_never_changes_a_small_functions_severity": 2.4,
+		"contiguous_and_spaced_fifteen_percent_and_four_chunks_have_the_same_price": 2.3,
+		"phase_split_repeat_reads_use_physical_frames_and_the_executing_owner": 2.2,
+		"unsafe_environment_fixes_name_the_combination_and_share_fallback_work": 2.2,
+		"one_function_holding_the_games_work_is_named": 1.7,
+		"a_one_off_is_its_own_issue_never_steady_work": 1.6,
+		"a_game_spike_is_named_and_the_harnesss_or_the_setups_are_not": 1.4,
+		"reported_environment_bound_covers_environment_calls": 1.2,
+		"all_205_builtin_sites_contribute_to_the_source_edits_price": 1.1,
+		"advised_numeric_argument_bound_covers_removed_conversion": 1
+	},
+	"standalone": {
+		"standalone_checks_accept_linked_and_canonical_temporary_folders": 119.7,
+		"asset_workers_keep_the_clients_paths_through_the_service": 47.3,
+		"installed_jobs_keep_standalone_state_with_an_input_repo": 13.6,
+		"an_installed_binary_and_its_service_use_only_the_redirected_user_cache": 12.6
+	}
+}

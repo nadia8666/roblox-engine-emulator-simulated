@@ -1,0 +1,9 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-18
+UserGameSettings.MouseSensitivity ok 1
+UserGameSettings.GamepadCameraSensitivity ok 1
+UserGameSettings.RotationType ok Enum.RotationType.MovementRelative
+UserGameSettings.ComputerMovementMode ok Enum.ComputerMovementMode.Default
+UserGameSettings.ComputerCameraMovementMode ok Enum.ComputerCameraMovementMode.Default
+UserGameSettings.SavedQualityLevel ok Enum.SavedQualitySetting.Automatic
+UserInputService.MouseDeltaSensitivity ok 1

@@ -1,5 +1,5 @@
-# engine: Roblox Studio 0.744.0.7441077, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
-# captured: 2026-11-07
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-14
 bindable-order after-fire,h5,h4,h3,h2,h1
 property-order after-write,c4,c3,c2,c1,p4,p3,p2,p1
 once-connected-before true

@@ -1,0 +1,12 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless play session of one server and one client in processes of their own (the server's half a server Script from the server's start, the client's half a job in the client; script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-19
+# repeated: 3 captures, the same lines
+server: starter player scripts false
+server: added true children {Backpack:Backpack PlayerGui:PlayerGui StarterGear:StarterGear}
+server: name matches true userid positive true
+server: children {Backpack:Backpack PlayerGui:PlayerGui StarterGear:StarterGear}
+server: PlayerGui={} Backpack={} PlayerScripts=none
+server: players 1
+client: children {Backpack:Backpack PlayerGui:PlayerGui PlayerScripts:PlayerScripts StarterGear:StarterGear}
+client: PlayerGui={} Backpack={} PlayerScripts={}
+client: players 1 late PlayerAdded fired 0

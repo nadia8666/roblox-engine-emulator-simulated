@@ -1,0 +1,51 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-18
+vertices ok {1:1,1:2,1:3} 3 V3(1 0 0)
+between ok 1:1 {1:2,1:3} 1:4
+normals ok {2:1,2:2,2:3} V3(0 0 1) V3(0 1 0)
+uvs ok {4:1} V2(0.5 0.25)
+colors ok {3:1,3:2,3:3} C3(1 0 0) 0.50196081399917603 1 0
+faces ok {5:3,5:2,5:1} string:6v 5n 5u 5c 3f string:n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:n{2:1,2:3,2:4} u{4:1,4:3,4:4} c{3:1,3:3,3:4} string:n{2:2,2:3,2:5} u{4:2,4:3,4:5} c{3:2,3:3,3:5} {5:3,5:2,5:1}
+faces-then-triangle ok {5:3,5:2,5:1} 5:4 {5:6,5:5} {5:3,5:2,5:1,5:4,5:6,5:5} string:6v 6n 6u 6c 6f
+face-order ok {5:2,5:1} string:n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:n{2:4,2:2,2:5} u{4:4,4:2,4:5} c{3:4,3:2,3:5}
+face-same-vertex-twice ok {5:1} string:6v 2n 2u 2c 1f string:n{2:1,2:1,2:2} u{4:1,4:1,4:2} c{3:1,3:1,3:2}
+corner-values ok V3(0 0 1) V2(0 0) C3(1 1 1) 1
+empty ok {} {}
+partial-vertices ok string:@120: invalid argument #-1 (Vector3 expected, got string) string:V3(1 1 1) V3(0 0 0) V3(0 0 0)
+partial-normals ok string:@131: invalid argument #-1 (Vector3 expected, got number) string:0v 2n 0u 0c 0f
+partial-colors ok string:@138: invalid argument #5 (Color3 expected, got Vector3) string:0v 0n 0u 2c 0f
+partial-faces ok string:BatchAdd(Enum.MeshAttribute.Face, ...): element 2 must have 3 or 4 vertex ids, got 2 string:6v 0n 0u 0c 0f
+vertex-wrong error @175: invalid argument #-1 (Vector3 expected, got string)
+uv-wrong error @175: invalid argument #4 (Vector2 expected, got number)
+color-wrong error @173: invalid argument #5 (Color3 expected, got number)
+color-short-alphas error BatchAdd(Enum.MeshAttribute.Color, ...): colors and alphas arrays must be the same length
+color-no-alphas error BatchAdd(Enum.MeshAttribute.Color, ...): expects 2 arguments (colors, alphas)
+vertex-extra error BatchAdd(Enum.MeshAttribute.Vertex, ...): expects 1 argument (positions)
+normal-extra error BatchAdd(Enum.MeshAttribute.Normal, ...): expects 1 argument (normals)
+uv-extra error BatchAdd(Enum.MeshAttribute.UV, ...): expects 1 argument (uvs)
+face-extra error BatchAdd(Enum.MeshAttribute.Face, ...): expects 1 argument (vertexIds)
+vertex-not-array error BatchAdd(Enum.MeshAttribute.Vertex, ...): positions must be an array
+normal-not-array error BatchAdd(Enum.MeshAttribute.Normal, ...): normals must be an array
+uv-not-array error BatchAdd(Enum.MeshAttribute.UV, ...): uvs must be an array
+colors-not-array error BatchAdd(Enum.MeshAttribute.Color, ...): colors must be an array
+alphas-not-array error BatchAdd(Enum.MeshAttribute.Color, ...): alphas must be an array
+faces-not-array error BatchAdd(Enum.MeshAttribute.Face, ...): vertexIds must be a 2D array
+attribute-string error Invalid value for enum 'MeshAttribute'
+attribute-number error Invalid value for enum 'MeshAttribute'
+attribute-nil error Invalid value for enum 'MeshAttribute'
+no-data error BatchAdd: expects at least 2 arguments (attr, data)
+face-not-array error BatchAdd(Enum.MeshAttribute.Face, ...): element 1 must be an array of 3 or 4 vertex ids
+face-five error BatchAdd(Enum.MeshAttribute.Face, ...): element 1 must have 3 or 4 vertex ids, got 5
+face-normal-id error Unexpected EditableMesh id type. Expected Vertex id, received Normal id
+face-no-id error Unexpected EditableMesh id type. Expected Vertex id, received value that doesn't appear to be an id
+face-gone-vertex error Invalid id
+share-edge ok string:6v 4n 4u 4c 2f string:n{2:1,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:n{2:1,2:3,2:4} u{4:1,4:3,4:4} c{3:1,3:3,3:4} V3(0.632455528 -0.632455528 0.44721359) V3(0.392232329 -0.392232329 0.832050323) V3(0.707106769 -0.707106769 0)
+set-normal ok string:6v 5n 4u 4c 2f string:n{2:4,2:2,2:3} u{4:1,4:2,4:3} c{3:1,3:2,3:3} string:n{2:4,2:3,2:5} u{4:1,4:3,4:4} c{3:1,3:3,3:4}
+newest-face ok string:6v 6n 5u 5c 3f string:n{2:5,2:4,2:6} u{4:1,4:4,4:5} c{3:1,3:4,3:5}
+set-uv-color ok string:6v 4n 5u 5c 2f string:n{2:1,2:3,2:4} u{4:4,4:3,4:5} c{3:4,3:3,3:5}
+removed-face ok string:6v 6n 6u 6c 1f string:n{2:4,2:5,2:6} u{4:4,4:5,4:6} c{3:4,3:5,3:6}
+normals-fold ok string:v1=V3(0.632455528 -0.632455528 0.44721359) v2=V3(0 0 1) v3=V3(0.392232329 -0.392232329 0.832050323) v4=V3(0.707106769 -0.707106769 0)
+normals-box-corner ok string:v1=V3(0.577350259 0.577350259 0.577350259) v2=V3(0 0.960714161 0.2775397) v3=V3(0.747409284 0 0.664363801) v4=V3(0.309086353 0.95103395 0)
+normals-fan ok string:v1=V3(0.233906865 -0.102630466 0.966827095) v2=V3(0 -0.0853974968 0.996346891) v3=V3(0.212755531 -0.252604425 0.943888783) v4=V3(0.435769379 -0.185375333 0.880761683) v5=V3(0.294466466 0.0366027541 0.954960525)
+normals-thin ok string:v1=V3(0.00999950059 -0.999950051 9.98973846e-05) v2=V3(0 0 1) v3=V3(9.89992477e-05 -0.00989992451 0.999951005) v4=V3(0.00999949966 -0.999949932 0)
+normals-twice ok string:v1=V3(0.44721359 0 0.89442718) v2=V3(0 0 1) v3=V3(0.44721359 0 0.89442718) v4=V3(1 0 0)

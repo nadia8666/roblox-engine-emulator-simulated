@@ -57,6 +57,9 @@ pub struct ModuleRecords {
     /// Every chunk of the VM runs in the interpreter, the engine's own included ([`interpret_all`]):
     /// loading a module leaves native code generation off
     interpret_all: bool,
+    /// Module chunks this engine compiled from their text (not loaded from bytecode compiled ahead: [`Prefetch`],
+    /// [`reuse_compiled_modules`]); a loopback run's second side compiles none of the modules both sides require
+    pub text_compiles: u32,
 }
 
 impl ModuleRecords {
@@ -191,7 +194,22 @@ impl CompiledSources {
 /// without compiling them to native code (`luau_codegen_compile` costs a one-shot story more than
 /// it gains; the interpreter gives the same results).
 pub fn reuse_compiled_modules() {
+    share_compiled_modules();
+    KEEPING.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The process's compiled sources alone ([`CompiledSources`]), without what a service keeps between its runs (mount
+/// listings, file stamps, model plans: [`keeping_between_runs`]): a loopback run's two sides compile each module once
+pub fn share_compiled_modules() {
     let _ = COMPILED.set(CompiledSources { entries: std::sync::Mutex::new(Default::default()) });
+}
+
+/// The process runs many VMs one after another and keeps what their mounts read ([`reuse_compiled_modules`])
+static KEEPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this process keeps mounts' listings, stamps and plans between runs (a service: [`reuse_compiled_modules`])
+pub fn keeping_between_runs() -> bool {
+    KEEPING.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Reads and compiles `paths` into the process's compiled sources on other threads (those not
@@ -235,6 +253,25 @@ pub fn forget_stale_modules() {
     crate::profiler::caches::evicted(crate::profiler::caches::Cache::Bytecode, (before - entries.len()) as u64);
 }
 
+/// The process's bytecode of `script`'s file when it was compiled from exactly `source` ([`reuse_compiled_modules`]): a
+/// loopback run's client copy of a module the server had read already carries its text, not a read of its own
+fn kept_bytecode(engine: &Engine, script: InstanceId, source: &[u8]) -> Option<Vec<u8>> {
+    let compiled = COMPILED.get()?;
+    let path = engine.state.borrow().dom.at(script).source_path().cloned()?;
+    let entries = compiled.entries.lock().ok()?;
+    let (_, entry, _) = entries.get(&*path)?;
+    (entry.0 == source).then(|| entry.1.clone()).flatten()
+}
+
+/// A file's bytes, through the process's compiled sources when it keeps them ([`reuse_compiled_modules`]): a loopback
+/// run's harness, which both sides load, then compiles once ([`kept_bytecode`])
+pub fn read_kept(path: &str) -> std::io::Result<Vec<u8>> {
+    match COMPILED.get() {
+        Some(compiled) => compiled.read(path).map(|(bytes, _)| bytes),
+        None => std::fs::read(path),
+    }
+}
+
 /// Whether [`reuse_compiled_modules`] is on.
 pub fn reusing_compiled_modules() -> bool {
     COMPILED.get().is_some()
@@ -271,6 +308,14 @@ pub fn interpret_all(lua: &Lua, engine: &Engine) {
     lua.enable_jit(false);
     #[cfg(not(feature = "jit"))]
     let _ = lua;
+}
+
+/// [`interpret_all`] for an engine whose VM has not started yet: Engine.Start loads the engine's own Luau interpreted too (a
+/// loopback run's server: the engine's Luau is not charged to scripts, so it changes no output)
+pub fn interpret_all_from_start(engine: &Engine) {
+    let mut modules = engine.modules.borrow_mut();
+    modules.interpreted = true;
+    modules.interpret_all = true;
 }
 
 /// Whether [`interpret_all`] is on for this engine's VM
@@ -333,6 +378,56 @@ pub fn compiler() -> Compiler {
 /// The engine's own Luau (the prelude, services, vector3.luau), whose `Vector3` is Lune's.
 pub fn engine_compiler() -> Compiler {
     Compiler::new().set_optimization_level(2).set_disabled_builtins(["typeof"])
+}
+
+/// How many times this process compiled a chunk of the engine's own Luau ([`load_engine_luau`]): once per chunk
+static ENGINE_COMPILES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The engine's own Luau chunks compiled so far, by the address of their (compiled-in) source
+static ENGINE_BYTECODE: std::sync::Mutex<Vec<(usize, std::sync::Arc<[u8]>)>> = std::sync::Mutex::new(Vec::new());
+
+thread_local! {
+    /// The compiles of [`ENGINE_COMPILES`] this thread made
+    static ENGINE_COMPILES_HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many chunks of the engine's own Luau this process has compiled (each once: [`load_engine_luau`])
+pub fn engine_compiles() -> usize {
+    ENGINE_COMPILES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// How many of those this thread compiled (a test's own count, whatever other threads start meanwhile)
+pub fn engine_compiles_here() -> usize {
+    ENGINE_COMPILES_HERE.with(std::cell::Cell::get)
+}
+
+/// A chunk of the engine's own Luau (the prelude, services.luau, server.luau, vector3.luau: a compiled-in `source`) as a
+/// function named `name`, in `env` when given. Its bytecode is compiled once per process ([`engine_compiler`]) and every VM
+/// loads those bytes, which are what its own compile would have made (mlua compiles a text chunk with its compiler and loads
+/// the bytecode the same way), so a second engine in a process (a loopback run's peer, a service's next job) compiles none of
+/// it: the 137 KB of engine Luau took 8.7-9.0 ms to compile and 0.34-0.37 ms to load (docs/engine.md, Log 2026-11-19). The
+/// bytes stay in the long-lived heap (crate::alloc) for the process.
+pub fn load_engine_luau(lua: &Lua, source: &'static str, name: &str, env: Option<LuaTable>) -> LuaResult<LuaFunction> {
+    let key = source.as_ptr() as usize;
+    let kept = ENGINE_BYTECODE.lock().ok().and_then(|kept| kept.iter().find(|(at, _)| *at == key).map(|(_, bytecode)| bytecode.clone()));
+    let bytecode = match kept {
+        Some(bytecode) => bytecode,
+        None => {
+            let compiled = engine_compiler().compile(source)?;
+            ENGINE_COMPILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            ENGINE_COMPILES_HERE.with(|count| count.set(count.get() + 1));
+            let bytecode: std::sync::Arc<[u8]> = crate::alloc::long_lived(|| std::sync::Arc::from(compiled.as_slice()));
+            if let Ok(mut kept) = ENGINE_BYTECODE.lock() {
+                crate::alloc::long_lived(|| kept.push((key, bytecode.clone())));
+            }
+            bytecode
+        }
+    };
+    let chunk = lua.load(&*bytecode).set_mode(mlua::chunk::ChunkMode::Binary).set_name(name);
+    match env {
+        Some(env) => chunk.set_environment(env).into_function(),
+        None => chunk.into_function(),
+    }
 }
 
 /// Determinism patch for vide's `values()` (modules.luau DeterministicSource): its output order
@@ -405,15 +500,24 @@ pub fn compile_in(lua: &Lua, engine: &Rc<Engine>, script: InstanceId, source: &[
     }
     let source = deterministic_source(&name, source);
     let bytecode = engine.modules.borrow_mut().bytecode.remove(&script);
+    let bytecode = bytecode.or_else(|| kept_bytecode(engine, script, &source));
     let chunk = match (bytecode, &source) {
         // (the prefetcher's compile of this very source: loads as the text would)
         (Some(bytecode), std::borrow::Cow::Borrowed(_)) => lua.load(bytecode).set_mode(mlua::chunk::ChunkMode::Binary),
-        _ => lua.load(&*source).set_compiler(compiler()),
+        _ => {
+            engine.modules.borrow_mut().text_compiles += 1;
+            lua.load(&*source).set_compiler(compiler())
+        }
     };
     // A script's chunk is its full name as Roblox names it: error positions, tracebacks and debug.info(f, "s") read
     // `ReplicatedStorage.Module:3:`, not Luau's `[string "ReplicatedStorage.Module"]:3:` for an unmarked name
     // (measured in a playing client, Studio 0.744: tools/parity/probes/chunknames.luau).
-    let chunk = chunk.set_name(format!("={name}")).set_environment(env);
+    load(lua, engine, chunk.set_name(format!("={name}")).set_environment(env))
+}
+
+/// Loads a script's chunk as this engine's VM runs scripts: interpreted, or compiled to native code now or later
+/// ([`defer_codegen`], [`interpret_modules`]). A module's chunk ([`compile_in`]) and loadstring's (loading.rs).
+pub fn load(lua: &Lua, engine: &Rc<Engine>, chunk: LuaChunk) -> LuaResult<LuaFunction> {
     let (deferred, interpreted, interpret_all) = {
         let modules = engine.modules.borrow();
         (modules.deferred.is_some(), modules.interpreted, modules.interpret_all)
@@ -477,6 +581,30 @@ pub fn source_of(engine: &Engine, module: InstanceId) -> Option<Vec<u8>> {
         Some(Value::String(source)) => Some(source.as_bytes().to_vec()),
         _ => None,
     }
+}
+
+/// Lists `path` among the files this run's modules came from ([`required_files`]).
+pub fn note_required(engine: &Engine, path: &str) {
+    engine.modules.borrow_mut().files.insert(path.to_string());
+}
+
+/// A JSON module's value (Rojo `.json`): the file decoded, a new value each time.
+pub fn decode_json(lua: &Lua, engine: &Engine, path: &str) -> Result<LuaValue, String> {
+    note_read(engine, path);
+    read_file(engine, path)
+        .map(|(bytes, _)| bytes)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| error.to_string()))
+        .and_then(|value| {
+            lua.to_value_with(
+                &value,
+                LuaSerializeOptions::new()
+                    .set_array_metatable(false)
+                    .serialize_none_to_null(false)
+                    .serialize_unit_to_null(false),
+            )
+            .map_err(|error| error.to_string())
+        })
 }
 
 fn error_result(lua: &Lua, message: String, level: i64) -> LuaResult<LuaMultiValue> {
@@ -614,21 +742,7 @@ pub fn require_begin(lua: &Lua, engine: &Rc<Engine>, (target, caller, vm): (LuaV
         engine.modules.borrow_mut().files.insert(path.to_string());
     }
     if let (true, Some(path)) = (json, &path) {
-        note_read(engine, path);
-        let decoded = read_file(engine, path)
-            .map(|(bytes, _)| bytes)
-            .map_err(|error| error.to_string())
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| error.to_string()))
-            .and_then(|value| {
-                lua.to_value_with(
-                    &value,
-                    LuaSerializeOptions::new()
-                        .set_array_metatable(false)
-                        .serialize_none_to_null(false)
-                        .serialize_unit_to_null(false),
-                )
-                .map_err(|error| error.to_string())
-            });
+        let decoded = decode_json(lua, engine, path);
         let mut refs = engine.modules.borrow_mut();
         return match decoded {
             Ok(value) => {

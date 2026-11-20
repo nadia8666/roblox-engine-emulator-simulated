@@ -80,12 +80,25 @@ pub enum ContentValue {
     None,
     Uri(Str),
     Object(InstanceId),
+    /// An Opaque Content (AssetService:CreateDataModelContentAsync): a copy of an object's data as it was, which scripts
+    /// see no Uri or Object of; here the file holding the copy (its `file://` URI) and a serial (each call's Content is
+    /// its own: two of the same mesh are not equal)
+    Opaque(u64, Str),
 }
 
 impl ContentValue {
+    /// The Uri a script reads.
     pub fn uri(&self) -> Option<&Str> {
         match self {
             Self::Uri(uri) => Some(uri),
+            _ => None,
+        }
+    }
+
+    /// Where the content's data is: a Uri's URI, an Opaque Content's copy (what loads it, and what a recording names).
+    pub fn location(&self) -> Option<&Str> {
+        match self {
+            Self::Uri(uri) | Self::Opaque(_, uri) => Some(uri),
             _ => None,
         }
     }

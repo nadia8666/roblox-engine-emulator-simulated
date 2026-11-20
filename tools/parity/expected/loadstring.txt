@@ -1,0 +1,40 @@
+# engine: Roblox Studio 0.747.0.7471481, a headless playing client (script identity 2; Workspace.SignalBehavior Deferred)
+# captured: 2026-11-17
+type function
+plain raised loadstring() is not available
+named raised loadstring() is not available
+named-equals raised loadstring() is not available
+named-at raised loadstring() is not available
+named-empty raised loadstring() is not available
+named-number raised loadstring() is not available
+unnamed raised loadstring() is not available
+unnamed-lines raised loadstring() is not available
+unnamed-long raised loadstring() is not available
+named-long raised loadstring() is not available
+index raised loadstring() is not available
+traceback raised loadstring() is not available
+inner-info raised loadstring() is not available
+empty raised loadstring() is not available
+comment raised loadstring() is not available
+syntax raised loadstring() is not available
+syntax-named raised loadstring() is not available
+syntax-plain-name raised loadstring() is not available
+syntax-lines raised loadstring() is not available
+bytecode raised loadstring() is not available
+bytecode-zero raised loadstring() is not available
+no-argument raised loadstring() is not available
+nil raised loadstring() is not available
+number raised loadstring() is not available
+table raised loadstring() is not available
+function raised loadstring() is not available
+boolean raised loadstring() is not available
+not-run raised loadstring() is not available
+not-run before nil
+not-run after nil raw nil
+env raised loadstring() is not available
+again raised loadstring() is not available
+again raised loadstring() is not available
+again same-function false
+setfenv raised loadstring() is not available
+no-upvalues raised loadstring() is not available
+yields raised loadstring() is not available
