@@ -694,7 +694,7 @@ pub trait Extension: Any {
 }
 
 /// How many extension types one engine holds.
-const EXTENSIONS: usize = 12;
+const EXTENSIONS: usize = 24;
 
 pub struct Engine {
     pub reflection: Arc<Reflection>,

@@ -66,14 +66,20 @@ const MAX_GROUPS: usize = 32;
 const MAX_NAME: usize = 100;
 const DEFAULT: &[u8] = b"Default";
 
-/// One DataModel's groups.
-struct Registry {
+/// One DataModel's groups (shared with world/query.rs, whose ray casts skip the parts a ray's group does not collide with).
+pub struct Registry {
     /// The group with each id, 0 (Default) to 31
     names: [Option<Box<[u8]>>; MAX_GROUPS],
     /// Each id's mask: bit i set when the group collides with group i (a free id's is all ones)
     masks: [u32; MAX_GROUPS],
     /// The run has touched collision groups: parts' CollisionGroupId follows the registry from now on (the module's notes)
     active: bool,
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Registry {
@@ -83,8 +89,21 @@ impl Registry {
         Self { names, masks: [u32::MAX; MAX_GROUPS], active: false }
     }
 
-    fn id(&self, name: &[u8]) -> Option<usize> {
+    pub fn id(&self, name: &[u8]) -> Option<usize> {
         self.names.iter().position(|held| held.as_deref() == Some(name))
+    }
+
+    /// Whether group `a` collides with group `b` (bit b of a's mask)
+    pub fn collidable(&self, a: usize, b: usize) -> bool {
+        self.masks[a] >> b & 1 == 1
+    }
+
+    /// A group the place file defines (its id, mask and name), set without starting the parts' tracking
+    pub fn seed(&mut self, id: usize, mask: u32, name: &[u8]) {
+        if id < MAX_GROUPS {
+            self.names[id] = Some(name.into());
+            self.masks[id] = mask;
+        }
     }
 
     fn full(&self) -> bool {
@@ -136,9 +155,19 @@ impl Registry {
     }
 }
 
+/// The engine's registry, in an extension so the ray casts (world/query.rs) read the one the methods write
+#[derive(Default)]
+struct Shared(Rc<RefCell<Registry>>);
+
+impl crate::Extension for Shared {}
+
+pub fn shared(engine: &Engine) -> &Rc<RefCell<Registry>> {
+    &engine.extension_or_insert_with(Shared::default).0
+}
+
 /// What the methods, the part setters and the hierarchy hook share: one engine's registry and the names they use.
 struct Groups {
-    registry: RefCell<Registry>,
+    registry: Rc<RefCell<Registry>>,
     base_part: ClassId,
     /// BasePart.CollisionGroup and CollisionGroupId
     group: NameId,
@@ -173,6 +202,7 @@ impl Groups {
     /// A part's CollisionGroup written, by the property or SetPartCollisionGroup: "" is ignored and a longer name cut to
     /// 100 bytes; a change in the Workspace works out its CollisionGroupId.
     fn write_name(&self, engine: &Engine, part: InstanceId, name: &[u8]) {
+        crate::world::query::collision_groups(engine);
         self.registry.borrow_mut().active = true;
         if name.is_empty() {
             return;
@@ -255,9 +285,9 @@ fn instance_arg(args: &Args, index: usize) -> Result<Option<InstanceId>, Flow> {
     }
 }
 
-/// A playing client reads the registry but may not change it.
+/// A playing client reads the registry but may not change it (`--loopback`'s one VM plays the server too).
 fn server_only(engine: &Engine) -> Result<(), Flow> {
-    if engine.options.run_context == RunContext::Client && !engine.options.edit_mode() {
+    if engine.options.run_context == RunContext::Client && !engine.options.edit_mode() && !engine.options.loopback {
         return raise("This API can only be used on the server!");
     }
     Ok(())
@@ -302,10 +332,15 @@ pub fn install(engine: &Rc<Engine>, behaviors: &mut Behaviors) {
     let reflection = engine.reflection.clone();
     let names = (reflection.class_id("PhysicsService"), reflection.class_id("BasePart"), reflection.name_id("CollisionGroup"), reflection.name_id("CollisionGroupId"));
     let (Some(service), Some(base_part), Some(group), Some(group_id)) = names else { return };
-    let groups = Rc::new(Groups { registry: RefCell::new(Registry::new()), base_part, group, group_id });
+    let groups = Rc::new(Groups { registry: shared(engine).clone(), base_part, group, group_id });
+    // (the place file's groups seed the registry before any method reads it: world/query.rs's collision_groups)
     let mut add = |name: &str, function: MethodFn| {
         if let Some(name) = reflection.name_id(name) {
-            behaviors.add_method(service, name, function);
+            let seeded: MethodFn = Rc::new(move |lua, engine, id, args| {
+                crate::world::query::collision_groups(engine);
+                function(lua, engine, id, args)
+            });
+            behaviors.add_method(service, name, seeded);
         }
     };
 

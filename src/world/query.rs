@@ -31,7 +31,7 @@ use crate::{
     Engine, InstanceId, K, NameId, State,
     lua::{Args, Flow, enum_item_value, instance_id, instance_value, raise, values},
     reflection::EnumItemId,
-    services::MethodFn,
+    services::{MethodFn, physics::Registry},
     value::Value,
 };
 
@@ -258,7 +258,7 @@ pub fn solids(engine: &Engine, filter: &Filter) -> Vec<Solid> {
 
 /// Whether a ray cast in the group `ray_group` meets the part `part`: the two groups collide (a part with no CollisionGroup
 /// written is in Default; a ray's group not registered meets everything)
-fn group_collides(groups: &CollisionGroups, state: &State, property: Option<NameId>, ray_group: &[u8], part: InstanceId) -> bool {
+fn group_collides(groups: &Registry, state: &State, property: Option<NameId>, ray_group: &[u8], part: InstanceId) -> bool {
     let Some(ray) = groups.id(ray_group) else { return true };
     let own = match property.and_then(|n| state.dom.raw_get(part, n)) {
         Some(Value::String(group)) => groups.id(group.as_bytes()).unwrap_or(0),
@@ -440,105 +440,48 @@ struct QueryTraceCalls {
     counts: HashMap<&'static str, u64>,
 }
 
-/// PhysicsService's collision groups: up to 32 named groups ("Default" is id 0) and, for each, a bitmask of the groups it
-/// collides with (a grid read by index: `collides[a] >> b & 1`). Everything collides until a pair is set otherwise.
-pub struct CollisionGroups {
-    names: [Option<Box<[u8]>>; 32],
-    collides: [u32; 32],
-    /// The place's CollisionGroupData has been read (the first PhysicsService use or ray cast reads it)
+/// The place's CollisionGroupData, waiting to seed PhysicsService's registry (services/physics.rs: the one registry the
+/// service's methods write and the ray casts below read, so a group a place defines and one a script registers are alike)
+#[derive(Default)]
+struct GroupSeed {
     /// The place's CollisionGroupData bytes, when the snapshots carry them (read in place of the service's property)
     pending: Option<Vec<u8>>,
+    /// The data has been read (the first PhysicsService use or ray cast reads it)
     loaded: bool,
 }
 
-impl Default for CollisionGroups {
-    fn default() -> Self {
-        let mut names: [Option<Box<[u8]>>; 32] = std::array::from_fn(|_| None);
-        names[0] = Some(b"Default".as_slice().into());
-        Self { names, collides: [u32::MAX; 32], pending: None, loaded: false }
-    }
-}
-
-impl CollisionGroups {
-    pub fn id(&self, name: &[u8]) -> Option<usize> {
-        self.names.iter().position(|n| n.as_deref() == Some(name))
-    }
-
-    pub fn name(&self, id: usize) -> Option<&[u8]> {
-        self.names.get(id).and_then(|n| n.as_deref())
-    }
-
-    pub fn collidable(&self, a: usize, b: usize) -> bool {
-        self.collides[a] >> b & 1 == 1
-    }
-
-    pub fn mask(&self, id: usize) -> u32 {
-        self.collides[id]
-    }
-
-    pub fn set_collidable(&mut self, a: usize, b: usize, collidable: bool) {
-        if collidable {
-            self.collides[a] |= 1 << b;
-            self.collides[b] |= 1 << a;
-        } else {
-            self.collides[a] &= !(1 << b);
-            self.collides[b] &= !(1 << a);
-        }
-    }
-
-    /// The new group's id; a group made in a freed slot collides with everything
-    pub fn register(&mut self, name: &[u8]) -> Result<usize, &'static str> {
-        if self.id(name).is_some() {
-            return Err("a collision group with that name already exists");
-        }
-        let slot = self.names.iter().position(Option::is_none).ok_or("the maximum of 32 collision groups is registered")?;
-        self.names[slot] = Some(name.into());
-        self.collides[slot] = u32::MAX;
-        for group in &mut self.collides {
-            *group |= 1 << slot;
-        }
-        Ok(slot)
-    }
-
-    pub fn unregister(&mut self, id: usize) {
-        if id != 0 {
-            self.names[id] = None;
-        }
-    }
-
-    pub fn rename(&mut self, id: usize, name: &[u8]) {
-        self.names[id] = Some(name.into());
-    }
-}
-
 #[derive(Default)]
-struct CollisionGroupsCell(RefCell<CollisionGroups>);
+struct GroupSeedCell(RefCell<GroupSeed>);
 
-impl crate::Extension for CollisionGroupsCell {}
+impl crate::Extension for GroupSeedCell {}
 
 pub fn set_collision_group_data(engine: &Engine, bytes: Vec<u8>) {
-    let mut groups = engine.extension_or_insert_with(CollisionGroupsCell::default).0.borrow_mut();
-    groups.pending = Some(bytes);
-    groups.loaded = false;
+    let mut seed = engine.extension_or_insert_with(GroupSeedCell::default).0.borrow_mut();
+    seed.pending = Some(bytes);
+    seed.loaded = false;
 }
 
-pub fn collision_groups(engine: &Engine) -> &RefCell<CollisionGroups> {
-    let cell = &engine.extension_or_insert_with(CollisionGroupsCell::default).0;
-    if !cell.borrow().loaded {
-        load_collision_groups(engine, cell);
+/// PhysicsService's registry, the place's groups read into it first
+pub fn collision_groups(engine: &Engine) -> &RefCell<Registry> {
+    let registry = crate::services::physics::shared(engine);
+    let seed = &engine.extension_or_insert_with(GroupSeedCell::default).0;
+    if !seed.borrow().loaded {
+        load_collision_groups(engine, seed, registry);
     }
-    cell
+    registry
 }
 
 /// The groups a place file defines: PhysicsService's CollisionGroupData, read once when the service exists (a game that
 /// registers only some of its groups in script still has the rest, and the masks Studio saved)
-fn load_collision_groups(engine: &Engine, cell: &RefCell<CollisionGroups>) {
+fn load_collision_groups(engine: &Engine, seed: &RefCell<GroupSeed>, registry: &RefCell<Registry>) {
     let state = engine.state.borrow();
     let Some(game) = state.dom.at(engine.world().workspace).parent else { return };
     let Some(service) = state.dom.at(game).children.iter().copied().find(|&child| &*engine.reflection.class(state.dom.at(child).class).name == "PhysicsService") else { return };
-    let mut groups = cell.borrow_mut();
-    groups.loaded = true;
-    let pending = groups.pending.take();
+    let pending = {
+        let mut seed = seed.borrow_mut();
+        seed.loaded = true;
+        seed.pending.take()
+    };
     let data: Option<Vec<u8>> = pending.or_else(|| engine.reflection.name_id("CollisionGroupData").and_then(|n| state.dom.raw_get(service, n)).and_then(|value| match value {
         Value::String(text) => Some(text.as_bytes().to_vec()),
         Value::Dom(variant) => match &**variant {
@@ -549,9 +492,9 @@ fn load_collision_groups(engine: &Engine, cell: &RefCell<CollisionGroups>) {
     }));
     match data.as_deref().and_then(|bytes| parse_collision_group_string(bytes).or_else(|| parse_collision_group_data(bytes))) {
         Some(found) => {
+            let mut groups = registry.borrow_mut();
             for (id, mask, name) in &found {
-                groups.names[*id] = Some(name.as_slice().into());
-                groups.collides[*id] = *mask;
+                groups.seed(*id, *mask, name);
             }
             crate::output::diagnostic(&format!("ree: {} collision groups read from the place's PhysicsService", found.len()));
         }

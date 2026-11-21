@@ -139,7 +139,6 @@ impl Output {
         if entry.kind == "print" && entry.message == DONE {
             self.done = true;
         }
-        }
         match &mut self.spool {
             Some(spool) => spool.write(&entry),
             None => self.entries.push(entry),
